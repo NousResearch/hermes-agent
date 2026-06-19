@@ -607,21 +607,17 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     except Exception:
         _bskin = None
         _hero = HERMES_CADUCEUS
-    left_lines = ["", _hero, ""]
-    model_short = model.split("/")[-1] if "/" in model else model
-    if model_short.endswith(".gguf"):
-        model_short = model_short[:-5]
-    if len(model_short) > 28:
-        model_short = model_short[:25] + "..."
-    ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
-
+    from rich.text import Text as _RichText
+    _hero_text = _RichText.from_markup(_hero) if _hero else _RichText("")
+    left_content = _RichText("\n")
+    left_content.append_text(_hero_text)
+    left_content.append("\n")
     if os.getenv("HERMES_YOLO_MODE"):
-        left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
-    left_lines.append(f"[dim {dim}]{cwd}[/]")
-    if session_id:
-        left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
-    left_content = "\n".join(left_lines)
+        left_content.append_text(
+            _RichText.from_markup(
+                f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]"
+            )
+        )
 
     right_lines = [f"[bold {accent}]Available Tools[/]"]
     toolsets_dict: Dict[str, list] = {}
@@ -696,27 +692,27 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
+                    f"[{text}]{srv['name']}[/] [dim {dim}]({srv['transport']})[/] "
                     f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
                 )
             elif srv.get("disabled") or status == "disabled":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[{text}]{srv['name']}[/] [dim {dim}]({srv['transport']})[/] "
                     f"[dim {dim}]— disabled[/]"
                 )
             elif status == "connecting":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[{text}]{srv['name']}[/] [dim {dim}]({srv['transport']})[/] "
                     f"[yellow]— connecting[/]"
                 )
             elif status == "configured":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[{text}]{srv['name']}[/] [dim {dim}]({srv['transport']})[/] "
                     f"[dim {dim}]— configured[/]"
                 )
             else:
                 right_lines.append(
-                    f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[red]{srv['name']}[/] [dim {dim}]({srv['transport']})[/] "
                     f"[red]— failed[/]"
                 )
 
@@ -738,6 +734,18 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
     else:
         right_lines.append(f"[dim {dim}]No skills installed[/]")
+
+    # Model/cwd/session info — displayed after tools and skills
+    model_short = model.split("/")[-1] if "/" in model else model
+    if model_short.endswith(".gguf"):
+        model_short = model_short[:-5]
+    if len(model_short) > 28:
+        model_short = model_short[:25] + "..."
+    ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+    right_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    right_lines.append(f"[dim {dim}]{cwd}[/]")
+    if session_id:
+        right_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0

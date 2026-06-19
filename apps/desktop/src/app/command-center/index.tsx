@@ -395,7 +395,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                         <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
-                          {cc.restartMessaging}
+                          {cc.restartGateway}
                         </Button>
                         <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
                           {cc.updateHermes}

@@ -881,7 +881,7 @@ export const ja = defineLocale({
     gatewayRunning: 'メッセージングゲートウェイが実行中',
     gatewayStopped: 'メッセージングゲートウェイが停止中',
     hermesActiveSessions: (version, count) => `Hermes ${version} · アクティブセッション ${count}`,
-    restartMessaging: 'メッセージングを再起動',
+    restartGateway: 'ゲートウェイを再起動',
     updateHermes: 'Hermes を更新',
     actionRunning: '実行中',
     actionDone: '完了',

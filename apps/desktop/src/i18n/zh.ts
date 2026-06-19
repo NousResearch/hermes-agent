@@ -951,7 +951,7 @@ export const zh: Translations = {
     gatewayRunning: '消息网关运行中',
     gatewayStopped: '消息网关已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活跃会话 ${count}`,
-    restartMessaging: '重启消息服务',
+    restartGateway: '重启网关',
     updateHermes: '更新 Hermes',
     actionRunning: '运行中',
     actionDone: '完成',

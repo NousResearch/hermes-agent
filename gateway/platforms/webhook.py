@@ -351,6 +351,16 @@ class WebhookAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
 
+    async def _read_limited_body(self, request: "web.Request") -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.content.iter_chunked(64 * 1024):
+            total += len(chunk)
+            if total > self._max_body_bytes:
+                raise ValueError("payload too large")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
         from hermes_constants import get_hermes_home

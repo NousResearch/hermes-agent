@@ -97,7 +97,6 @@ class TestForceFullRedraw:
         bare_cli._last_resize_width = 120
         # Same width on this resize → rows-only change.
         monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 120)
-        monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
 
         bare_cli._recover_after_resize(app, original_on_resize)
 

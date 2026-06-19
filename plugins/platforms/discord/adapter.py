@@ -40,6 +40,7 @@ class _Snowflake:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+_DISCORD_ALLOWLIST_WILDCARD = "*"
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -2784,7 +2785,7 @@ class DiscordAdapter(BasePlatformAdapter):
             getattr(self, "_allow_all_users", False)
             or _env_flag("DISCORD_ALLOW_ALL_USERS")
             or _env_flag("GATEWAY_ALLOW_ALL_USERS")
-            or "*" in allowed_users
+            or _DISCORD_ALLOWLIST_WILDCARD in allowed_users
         ):
             return True
         has_users = bool(allowed_users)

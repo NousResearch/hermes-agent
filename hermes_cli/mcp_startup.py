@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from contextlib import nullcontext
 from typing import Optional
 
 _mcp_discovery_lock = threading.Lock()
@@ -48,6 +47,14 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         )
         _mcp_discovery_thread = thread
         thread.start()
+
+
+def _discover_mcp_tools_without_interactive_oauth() -> None:
+    from tools.mcp_oauth import suppress_interactive_oauth
+    from tools.mcp_tool import discover_mcp_tools
+
+    with suppress_interactive_oauth():
+        discover_mcp_tools()
 
 
 def _resolve_discovery_timeout(explicit: "float | None") -> float:

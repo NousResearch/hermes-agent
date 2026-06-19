@@ -4236,6 +4236,17 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
 _agent_tools_lock = threading.Lock()
 
 
+def has_registered_mcp_tools() -> bool:
+    """True if any MCP server currently has tools registered in the registry.
+
+    Cheap — checks the live server map under ``_lock``, no registry walk.  Used
+    by the per-turn refresh hook so a session with no MCP servers configured
+    (the common case) skips the ``get_tool_definitions`` rebuild entirely.
+    """
+    with _lock:
+        return bool(_servers)
+
+
 def refresh_agent_mcp_tools(agent, *, quiet_mode: bool = True) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry.
 

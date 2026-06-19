@@ -437,7 +437,7 @@ class TestMediaUpload:
         assert calls[3][1]["chunk_index"] == 2
 
     @pytest.mark.asyncio
-    @patch("tools.url_safety.is_safe_url", return_value=True)
+    @patch("tools.url_safety.async_is_safe_url", return_value=True)
     async def test_download_remote_bytes_rejects_large_content_length(self, _mock_safe):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -457,7 +457,7 @@ class TestMediaUpload:
                 yield b"abc"
 
         class FakeClient:
-            def stream(self, method, url, headers=None):
+            def stream(self, method, url, headers=None, **kwargs):
                 return FakeResponse()
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -465,6 +465,85 @@ class TestMediaUpload:
 
         with pytest.raises(ValueError, match="exceeds WeCom limit"):
             await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=4)
+
+    @pytest.mark.asyncio
+    @patch(
+        "tools.url_safety.async_is_safe_url",
+        side_effect=lambda url: not str(url).startswith("http://169.254.169.254"),
+    )
+    async def test_download_remote_bytes_blocks_unsafe_redirect_target(self, _mock_safe):
+        from gateway.platforms.wecom import WeComAdapter
+
+        consumed = False
+
+        class FakeResponse:
+            is_redirect = True
+            url = "https://example.com/file.bin"
+            headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def aiter_bytes(self):
+                nonlocal consumed
+                consumed = True
+                yield b"metadata"
+
+        class FakeClient:
+            def stream(self, method, url, headers=None, **kwargs):
+                return FakeResponse()
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = FakeClient()
+
+        with pytest.raises(ValueError, match="unsafe redirect URL"):
+            await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=1024)
+
+        assert consumed is False
+
+    @pytest.mark.asyncio
+    @patch(
+        "tools.url_safety.async_is_safe_url",
+        side_effect=lambda url: not str(url).startswith("http://169.254.169.254"),
+    )
+    async def test_download_remote_bytes_blocks_unsafe_final_response_url_before_body_read(self, _mock_safe):
+        from gateway.platforms.wecom import WeComAdapter
+
+        consumed = False
+
+        class FakeResponse:
+            is_redirect = False
+            url = "http://169.254.169.254/latest/meta-data/"
+            headers = {"content-length": "8"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                nonlocal consumed
+                consumed = True
+                yield b"metadata"
+
+        class FakeClient:
+            def stream(self, method, url, headers=None, **kwargs):
+                return FakeResponse()
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = FakeClient()
+
+        with pytest.raises(ValueError, match="unsafe final URL"):
+            await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=1024)
+
+        assert consumed is False
 
     @pytest.mark.asyncio
     async def test_cache_media_decrypts_url_payload_before_writing(self):
@@ -548,6 +627,44 @@ class TestSend:
 
         assert result.success is True
         adapter.send.assert_awaited_once_with(chat_id="chat-123", content="demo\nhttps://example.com/demo.png", reply_to=None)
+
+    @pytest.mark.asyncio
+    @patch(
+        "tools.url_safety.async_is_safe_url",
+        side_effect=lambda url: not str(url).startswith("http://169.254.169.254"),
+    )
+    async def test_send_image_blocks_unsafe_remote_redirect_before_upload(self, _mock_safe):
+        from gateway.platforms.wecom import WeComAdapter
+
+        class FakeResponse:
+            is_redirect = True
+            url = "https://example.com/demo.png"
+            headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        class FakeClient:
+            def stream(self, method, url, headers=None, **kwargs):
+                return FakeResponse()
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = FakeClient()
+        adapter._upload_media_bytes = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="msg-1"))
+
+        result = await adapter.send_image("chat-123", "https://example.com/demo.png", caption="demo")
+
+        assert result.success is True
+        adapter._upload_media_bytes.assert_not_awaited()
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat-123",
+            content="demo\nhttps://example.com/demo.png",
+            reply_to=None,
+        )
 
     @pytest.mark.asyncio
     async def test_send_voice_sends_caption_and_downgrade_note(self):

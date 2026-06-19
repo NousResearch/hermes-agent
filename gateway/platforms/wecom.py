@@ -42,7 +42,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 try:
     import aiohttp
@@ -72,6 +72,7 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
+REMOTE_MEDIA_MAX_REDIRECTS = 10
 
 APP_CMD_SUBSCRIBE = "aibot_subscribe"
 APP_CMD_CALLBACK = "aibot_msg_callback"
@@ -103,6 +104,23 @@ ABSOLUTE_MAX_BYTES = FILE_MAX_BYTES
 UPLOAD_CHUNK_SIZE = 512 * 1024
 MAX_UPLOAD_CHUNKS = 100
 VOICE_SUPPORTED_MIMES = {"audio/amr"}
+
+
+def _redirect_target_from_response(response: Any) -> Optional[str]:
+    """Return the redirect target visible from an httpx response."""
+    if not getattr(response, "is_redirect", False):
+        return None
+
+    headers = getattr(response, "headers", {}) or {}
+    location = headers.get("location")
+    if location:
+        return urljoin(str(getattr(response, "url", "")), str(location))
+
+    next_request = getattr(response, "next_request", None)
+    if next_request:
+        return str(next_request.url)
+
+    return None
 
 
 def check_wecom_requirements() -> bool:
@@ -1070,9 +1088,7 @@ class WeComAdapter(BasePlatformAdapter):
         url: str,
         max_bytes: int,
     ) -> Tuple[bytes, Dict[str, str]]:
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+        from tools.url_safety import async_is_safe_url
 
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
@@ -1080,31 +1096,52 @@ class WeComAdapter(BasePlatformAdapter):
         client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         created_client = client is not self._http_client
         try:
-            async with client.stream(
-                "GET",
-                url,
-                headers={
-                    "User-Agent": "HermesAgent/1.0",
-                    "Accept": "*/*",
-                },
-            ) as response:
-                response.raise_for_status()
-                headers = {key.lower(): value for key, value in response.headers.items()}
-                content_length = headers.get("content-length")
-                if content_length and content_length.isdigit() and int(content_length) > max_bytes:
-                    raise ValueError(
-                        f"Remote media exceeds WeCom limit: {int(content_length)} bytes > {max_bytes} bytes"
-                    )
+            current_url = url
+            for _redirect_count in range(REMOTE_MEDIA_MAX_REDIRECTS + 1):
+                if not await async_is_safe_url(current_url):
+                    raise ValueError(f"Blocked unsafe URL (SSRF protection): {current_url[:80]}")
 
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > max_bytes:
+                async with client.stream(
+                    "GET",
+                    current_url,
+                    headers={
+                        "User-Agent": "HermesAgent/1.0",
+                        "Accept": "*/*",
+                    },
+                    follow_redirects=False,
+                ) as response:
+                    if getattr(response, "is_redirect", False):
+                        redirect_url = _redirect_target_from_response(response)
+                        if not redirect_url:
+                            raise ValueError("Remote media redirect did not include a target")
+                        if not await async_is_safe_url(redirect_url):
+                            raise ValueError("Blocked unsafe redirect URL (SSRF protection)")
+                        current_url = redirect_url
+                        continue
+
+                    final_url = str(getattr(response, "url", current_url))
+                    if final_url and not await async_is_safe_url(final_url):
+                        raise ValueError("Blocked unsafe final URL (SSRF protection)")
+
+                    response.raise_for_status()
+                    headers = {key.lower(): value for key, value in response.headers.items()}
+                    content_length = headers.get("content-length")
+                    if content_length and content_length.isdigit() and int(content_length) > max_bytes:
                         raise ValueError(
-                            f"Remote media exceeds WeCom limit while downloading: {len(data)} bytes > {max_bytes} bytes"
+                            f"Remote media exceeds WeCom limit: {int(content_length)} bytes > {max_bytes} bytes"
                         )
 
-                return bytes(data), headers
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > max_bytes:
+                            raise ValueError(
+                                f"Remote media exceeds WeCom limit while downloading: {len(data)} bytes > {max_bytes} bytes"
+                            )
+
+                    return bytes(data), headers
+
+            raise ValueError("Remote media exceeded redirect limit")
         finally:
             if created_client:
                 await client.aclose()

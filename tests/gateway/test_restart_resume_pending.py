@@ -41,6 +41,7 @@ from gateway.run import (
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
+    _should_suppress_normal_final_send,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -66,9 +67,29 @@ def test_resume_pending_is_cleared_only_after_successful_turn():
     assert _should_clear_resume_pending_after_turn({"completed": True}) is True
     assert _should_clear_resume_pending_after_turn({"interrupted": True}) is False
     assert _should_clear_resume_pending_after_turn({"completed": False}) is False
+    assert _should_clear_resume_pending_after_turn(
+        {"completed": False, "budget_exhausted": True, "final_response": "progress"}
+    ) is False
     assert _should_clear_resume_pending_after_turn({"failed": True}) is False
     assert _should_clear_resume_pending_after_turn({"partial": True}) is False
     assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
+
+
+def test_budget_exhausted_final_response_is_not_suppressed_after_stream_preview():
+    stream_consumer = MagicMock(final_response_sent=True, final_content_delivered=True)
+
+    assert _should_suppress_normal_final_send(
+        {"final_response": "Done.", "response_previewed": True}, stream_consumer
+    ) is True
+    assert _should_suppress_normal_final_send(
+        {
+            "completed": False,
+            "budget_exhausted": True,
+            "final_response": "⚠️ Iteration budget exhausted — task is not verified complete.",
+            "response_previewed": True,
+        },
+        stream_consumer,
+    ) is False
 
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):

@@ -27,6 +27,46 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _budget_snapshot(agent, api_call_count: int) -> tuple[int, int]:
+    """Return the best stable budget counters for user/result metadata."""
+    budget = getattr(agent, "iteration_budget", None)
+    if budget is not None:
+        return int(getattr(budget, "used", 0) or 0), int(getattr(budget, "max_total", 0) or 0)
+    return int(api_call_count), int(getattr(agent, "max_iterations", 0) or 0)
+
+
+def _budget_exhaustion_reason(agent, api_call_count: int) -> str | None:
+    """Classify max-iteration/shared-budget exhaustion, if present."""
+    max_iterations = int(getattr(agent, "max_iterations", 0) or 0)
+    if max_iterations > 0 and api_call_count >= max_iterations:
+        return f"max_iterations_reached({api_call_count}/{max_iterations})"
+
+    budget = getattr(agent, "iteration_budget", None)
+    if budget is not None and getattr(budget, "remaining", 1) <= 0:
+        used, maximum = _budget_snapshot(agent, api_call_count)
+        return f"iteration_budget_exhausted({used}/{maximum})"
+
+    return None
+
+
+def _format_budget_exhausted_response(progress_summary: str | None) -> str:
+    """Runtime-owned incomplete-state wording for exhausted turns."""
+    lines = [
+        "⚠️ Iteration budget exhausted — task is not verified complete.",
+        "I stopped because the per-turn tool/API iteration budget ran out. "
+        "The work may be partially done, but this is not a verified final answer.",
+        "Send `continue` to resume from the current transcript, or raise `max_iterations` for this task.",
+    ]
+    summary = (progress_summary or "").strip()
+    if summary:
+        lines.extend([
+            "",
+            "Progress summary from the model (not completion authority):",
+            summary,
+        ])
+    return "\n".join(lines)
+
+
 def finalize_turn(
     agent,
     *,
@@ -50,24 +90,30 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
-    if final_response is None and (
-        api_call_count >= agent.max_iterations
-        or agent.iteration_budget.remaining <= 0
-    ):
+    _budget_exhausted_reason = _budget_exhaustion_reason(agent, api_call_count)
+    _budget_exhausted = _budget_exhausted_reason is not None
+    _budget_used, _budget_max = _budget_snapshot(agent, api_call_count)
+    if _budget_exhausted:
+        _turn_exit_reason = _budget_exhausted_reason
+
+    if final_response is None and _budget_exhausted:
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
-            f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+            f"⚠️ Iteration budget exhausted ({_budget_used}/{_budget_max}) "
             "— asking model to summarise"
         )
         if not agent.quiet_mode:
             agent._safe_print(
-                f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+                f"\n⚠️  Iteration budget exhausted ({_budget_used}/{_budget_max}) "
                 "— requesting summary..."
             )
-        final_response = agent._handle_max_iterations(messages, api_call_count)
+        try:
+            final_response = agent._handle_max_iterations(messages, api_call_count)
+        except Exception:
+            logger.warning("Failed to get budget-exhausted progress summary", exc_info=True)
+            final_response = ""
 
         # If running as a kanban worker, signal the dispatcher that the
         # worker could not complete (rather than treating it as a
@@ -93,7 +139,7 @@ def finalize_turn(
                         _kanban_task,
                         error=(
                             f"Iteration budget exhausted "
-                            f"({api_call_count}/{agent.max_iterations}) — "
+                            f"({_budget_used}/{_budget_max}) — "
                             "task could not complete within the allowed "
                             "iterations"
                         ),
@@ -101,13 +147,13 @@ def finalize_turn(
                         release_claim=True,
                         end_run=True,
                         event_payload_extra={
-                            "budget_used": api_call_count,
-                            "budget_max": agent.max_iterations,
+                            "budget_used": _budget_used,
+                            "budget_max": _budget_max,
                         },
                     )
                     logger.info(
                         "recorded budget-exhausted failure for task %s (%d/%d)",
-                        _kanban_task, api_call_count, agent.max_iterations,
+                        _kanban_task, _budget_used, _budget_max,
                     )
                 finally:
                     try:
@@ -125,6 +171,7 @@ def finalize_turn(
     completed = (
         final_response is not None
         and api_call_count < agent.max_iterations
+        and not _budget_exhausted
         and not failed
     )
 
@@ -162,8 +209,6 @@ def finalize_turn(
         if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
     )
     _resp_len = len(final_response) if final_response else 0
-    _budget_used = agent.iteration_budget.used if agent.iteration_budget else 0
-    _budget_max = agent.iteration_budget.max_total if agent.iteration_budget else 0
 
     _diag_msg = (
         "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
@@ -284,6 +329,9 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    if _budget_exhausted and not interrupted:
+        final_response = _format_budget_exhausted_response(final_response)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
@@ -330,6 +378,10 @@ def finalize_turn(
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
+        "budget_exhausted": _budget_exhausted,
+        "budget_used": _budget_used,
+        "budget_max": _budget_max,
+        "failure_reason": "budget_exhausted" if _budget_exhausted else None,
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,

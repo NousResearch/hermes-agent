@@ -2746,7 +2746,7 @@ class AIAgent:
                 + "the request was interrupted mid-call before a reply was "
                 "received. Send `continue` to retry."
             )
-        if reason == "budget_exhausted":
+        if reason == "budget_exhausted" or reason.startswith("iteration_budget_exhausted"):
             return (
                 prefix
                 + "the per-turn iteration/cost budget was exhausted before a "

@@ -99,6 +99,14 @@ def test_explanation_for_max_iterations_reached_prefix_match():
     assert "iteration" in out.lower()
 
 
+def test_explanation_for_iteration_budget_exhausted_prefix_match():
+    out = AIAgent._format_turn_completion_explanation(
+        "iteration_budget_exhausted(3/3)"
+    )
+    assert "iteration" in out.lower()
+    assert "continue" in out.lower()
+
+
 def test_explanation_for_all_retries_exhausted():
     out = AIAgent._format_turn_completion_explanation(
         "all_retries_exhausted_no_response"

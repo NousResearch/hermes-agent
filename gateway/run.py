@@ -2269,6 +2269,31 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _should_suppress_normal_final_send(agent_result: dict, stream_consumer: Any) -> bool:
+    """Return True when streamed/previewed final delivery already reached chat.
+
+    Budget-exhausted turns are deliberately excluded even though they are not
+    marked ``failed``: the deterministic incomplete-state response is new
+    runtime-owned content and must not be suppressed just because earlier
+    interim text or token streaming reached the user.
+    """
+    if not isinstance(agent_result, dict):
+        return False
+    if agent_result.get("failed") or agent_result.get("budget_exhausted"):
+        return False
+
+    final_response = agent_result.get("final_response") or ""
+    is_empty_sentinel = not final_response or final_response == "(empty)"
+    transformed = bool(agent_result.get("response_transformed"))
+    if is_empty_sentinel or transformed:
+        return False
+
+    streamed = bool(stream_consumer and getattr(stream_consumer, "final_response_sent", False))
+    previewed = bool(agent_result.get("response_previewed"))
+    content_delivered = bool(stream_consumer and getattr(stream_consumer, "final_content_delivered", False))
+    return streamed or previewed or content_delivered
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -16575,12 +16600,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
-                    _previewed = bool(result.get("response_previewed"))
-                    _already_streamed = bool(
-                        (_sc and getattr(_sc, "final_response_sent", False))
-                        or _previewed
-                        or (_sc and getattr(_sc, "final_content_delivered", False))
-                    )
+                    _already_streamed = _should_suppress_normal_final_send(result, _sc)
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
                         try:
@@ -16737,9 +16757,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
-        # BUT: never suppress delivery when the agent failed — the error
-        # message is new content the user hasn't seen, and it must reach
-        # them even if streaming had sent earlier partial output.
+        # BUT: never suppress delivery when the agent failed or exhausted its
+        # iteration budget — the error/incomplete-state message is new content
+        # the user hasn't seen, and it must reach them even if streaming had
+        # sent earlier partial output.
         #
         # Also never suppress when the final response is "(empty)" — this
         # means the model failed to produce content after tool calls (common
@@ -16749,32 +16770,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
-        if isinstance(response, dict) and not response.get("failed"):
-            _final = response.get("final_response") or ""
-            _is_empty_sentinel = not _final or _final == "(empty)"
+        if _should_suppress_normal_final_send(response, _sc):
             _streamed = bool(
                 _sc and getattr(_sc, "final_response_sent", False)
             )
-            # response_previewed means the interim_assistant_callback already
-            # sent the final text via the adapter (non-streaming path).
             _previewed = bool(response.get("response_previewed"))
             _content_delivered = bool(
                 _sc and getattr(_sc, "final_content_delivered", False)
             )
-            # Plugin hooks (e.g. transform_llm_output) may have appended content
-            # after streaming finished — when the response was transformed, always
-            # send the final version so the appended content reaches the client.
+            logger.info(
+                "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
+                session_key or "?",
+                _streamed,
+                _previewed,
+                _content_delivered,
+            )
+            response["already_sent"] = True
+        elif isinstance(response, dict) and not response.get("failed") and not response.get("budget_exhausted"):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
             _transformed = bool(response.get("response_transformed"))
-            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _content_delivered):
-                logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
-                    session_key or "?",
-                    _streamed,
-                    _previewed,
-                    _content_delivered,
-                )
-                response["already_sent"] = True
-            elif not _is_empty_sentinel and _transformed and _sc is not None:
+            if not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.
                 _sc_msg_id = _sc.message_id

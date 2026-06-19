@@ -1308,8 +1308,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     summary_request = (
         "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
+        "This turn is not verified complete. Provide a concise progress summary only: "
+        "what changed, what is still uncertain, and the next concrete step. "
+        "Do not claim the task is done unless the transcript already proves it, "
+        "and do not call any more tools."
     )
     messages.append({"role": "user", "content": summary_request})
 

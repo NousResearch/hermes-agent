@@ -69,10 +69,14 @@ async def _deliver_to_teams(conversation_id: str, text: str) -> bool:
         return False
 
 
-async def post_minutes(consult, transcript: "MeetingTranscript", conversation_id: str) -> str:
+async def post_minutes(
+    consult, transcript: "MeetingTranscript", conversation_id: str, *, deliver=None
+) -> str:
     """Summarize the transcript via the agent, then post the minutes to Teams.
 
-    Returns a short spoken-result string. No-op on an empty transcript.
+    ``deliver`` is an injectable ``async (conversation_id, text) -> bool`` (defaults
+    to the Teams standalone sender) — decouples voice from the chat adapter and
+    keeps this unit-testable. Returns a short spoken-result string.
     """
     if transcript.is_empty() or not conversation_id:
         return "There wasn't enough of a conversation to summarize."
@@ -84,7 +88,8 @@ async def post_minutes(consult, transcript: "MeetingTranscript", conversation_id
     minutes = (minutes or "").strip()
     if not minutes:
         return "I couldn't summarize the meeting."
-    ok = await _deliver_to_teams(conversation_id, f"📝 **Meeting minutes**\n\n{minutes}")
+    deliver = deliver or _deliver_to_teams
+    ok = await deliver(conversation_id, f"📝 **Meeting minutes**\n\n{minutes}")
     return (
         "I've posted the minutes to your Teams chat."
         if ok

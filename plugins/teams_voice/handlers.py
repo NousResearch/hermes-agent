@@ -26,7 +26,14 @@ from . import audio, expression, group_call_gate, meeting, protocol, realtime_to
 from .agent_consult import AgentConsult
 from .meeting import MeetingTranscript
 from .bridge_server import CallSession, CallSessionHandler
-from .config import BYTES_PER_FRAME, FRAME_DURATION_MS, PCM_SAMPLE_RATE_HZ, TeamsVoiceConfig, caller_allowed
+from .call_session_base import (
+    _PENDING_OUTBOUND,
+    BaseTeamsCallHandler,
+    _pending_pop,
+    _pending_set,
+)
+from .call_tools import CallToolRunner
+from .config import BYTES_PER_FRAME, FRAME_DURATION_MS, PCM_SAMPLE_RATE_HZ, TeamsVoiceConfig
 from .echo_guard import EchoGuard
 from .outbound import OutboundError, place_call
 from .realtime.openai_client import REALTIME_SAMPLE_RATE_HZ, RealtimeConfig, RealtimeSession
@@ -36,30 +43,6 @@ from .vision_store import StoredFrame, VisionStore
 PCM_SAMPLE_RATE_HZ_MS = PCM_SAMPLE_RATE_HZ // 1000  # samples per ms (16) — duration math
 
 logger = logging.getLogger(__name__)
-
-# Shared across connections: the inbound call that requests a callback and the
-# outbound leg that delivers it are *different* WebSocket connections, so the
-# pending spoken result is keyed by the worker's callId here. Entries carry a TTL
-# so a never-answered call-back can't leak its result string indefinitely.
-_PENDING_OUTBOUND: dict[str, tuple[str, float]] = {}
-_PENDING_TTL_S = 600.0
-
-
-def _pending_prune() -> None:
-    now = time.monotonic()
-    for k in [k for k, (_t, exp) in _PENDING_OUTBOUND.items() if exp <= now]:
-        _PENDING_OUTBOUND.pop(k, None)
-
-
-def _pending_set(call_id: str, text: str) -> None:
-    _pending_prune()
-    _PENDING_OUTBOUND[call_id] = (text, time.monotonic() + _PENDING_TTL_S)
-
-
-def _pending_pop(call_id: str) -> str | None:
-    _pending_prune()
-    entry = _PENDING_OUTBOUND.pop(call_id, None)
-    return entry[0] if entry else None
 
 
 class EchoCallSessionHandler(CallSessionHandler):
@@ -87,19 +70,13 @@ class EchoCallSessionHandler(CallSessionHandler):
         self._ts += FRAME_DURATION_MS
 
 
-class RealtimeCallSessionHandler(CallSessionHandler):
+class RealtimeCallSessionHandler(BaseTeamsCallHandler):
     """Bridges a Teams call to an OpenAI/Azure realtime speech-to-speech model."""
 
     def __init__(self, config: RealtimeConfig, bridge_config: TeamsVoiceConfig | None = None) -> None:
+        super().__init__(bridge_config)  # shared session policy / state
         self._cfg = config
-        self._bridge = bridge_config
-        self._require_recording = bridge_config.require_recording_status if bridge_config else True
         self._rt: RealtimeSession | None = None
-        self._session: CallSession | None = None
-        self._caller: protocol.CallerInfo | None = None
-        self._outbound = False
-        self._greeted = False
-        self._pending_greeting: str | None = None
         # Outbound (model -> worker) framing state.
         self._out_seq = 0
         self._out_ts = 0
@@ -110,50 +87,20 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         self._last_emotion: str | None = None
         self._echo = EchoGuard()
         self._vision = VisionStore()
-        self._consult = AgentConsult()
-        # Group-call gate state.
-        wake = tuple(bridge_config.wake_phrases) if (bridge_config and bridge_config.wake_phrases) else ("assistant", "hermes")
-        self._gate_cfg = group_call_gate.GroupCallGateConfig(wake_phrases=wake)
-        self._last_addressed_ms: float | None = None
         self._drop_response = False  # deterministic egress drop for gated turns
         # Ambient continuous vision (push the latest changed frame per source ~6s).
         self._ambient_task: asyncio.Task | None = None
         self._ambient_interval_s = 6.0
         self._ambient_last_ts: dict[str, int] = {}
         self._vision_budget = VisionBudget(bridge_config.max_vision_per_minute if bridge_config else 30)
-        self._meeting = MeetingTranscript()
-        self._thread_id = ""
         self._last_speaker = ""  # from unmixed-audio speaker_name, for attribution
+        self._tools = CallToolRunner(self)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     async def on_session_start(self, session: CallSession, msg: protocol.SessionStart) -> None:
-        await super().on_session_start(session, msg)
-        self._session = session
-        self._caller = msg.caller
-        self._thread_id = msg.thread_id
-        self._outbound = (msg.direction or "").lower() == "outbound"
-        # If this is the delivery leg of a call-back, fetch the pending result.
-        if self._outbound:
-            self._pending_greeting = _pending_pop(msg.call_id)
-
-        # Caller allowlist (enforced only when configured): reject unmatched inbound.
-        if not self._outbound and self._bridge and not caller_allowed(
-            self._bridge, msg.caller.aad_id, msg.caller.display_name
-        ):
-            logger.info("[teams_voice] caller not allowlisted; rejecting %s", session.call_id)
-            await session._ws.close()
+        if not await self._begin_session(session, msg):  # state + allowlist + scope
             return
-
-        # Agent session continuity scope.
-        scope = self._bridge.session_scope if self._bridge else "per-call"
-        if scope == "per-thread":
-            skey = msg.thread_id or msg.call_id
-        elif scope == "per-aad":
-            skey = msg.caller.aad_id or msg.call_id
-        else:
-            skey = msg.call_id
-        self._consult = AgentConsult(session_id=f"teams:{skey}")
 
         rt = RealtimeSession(replace(self._cfg, instructions=self._build_instructions()))
         rt.tools = realtime_tools.default_tools()
@@ -172,10 +119,6 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         # Greeting fires on recording-active (greet-on-answer); show a neutral face now.
         await self._safe_expression(expression.NEUTRAL)
         self._ambient_task = asyncio.create_task(self._ambient_vision_loop())
-
-    def _first_name(self) -> str:
-        name = (self._caller.display_name if self._caller else "") or ""
-        return name.strip().split(" ")[0] if name.strip() else ""
 
     def _build_instructions(self) -> str:
         """Augment base instructions with roster name + group-gate etiquette."""
@@ -357,6 +300,7 @@ class RealtimeCallSessionHandler(CallSessionHandler):
     async def _on_input_transcript(self, text: str) -> None:
         """Caller's finished turn — drive verbal interrupts and the group gate."""
         self._echo.mark_caller_turn()
+        # Capture all speech for the minutes (full meeting, not just addressed turns).
         self._meeting.add(self._last_speaker or self._first_name() or "Caller", text)
         # 1) Deterministic verbal interrupt ("stop" / "توقف" / "⟨name⟩, stop").
         if verbal_interrupts.is_verbal_interrupt(text, self._gate_cfg.wake_phrases):
@@ -364,15 +308,8 @@ class RealtimeCallSessionHandler(CallSessionHandler):
             await self._cut_playback()
             return
         # 2) Group-call gate: stay silent unless addressed (2+ humans).
-        is_group = (self._session.human_count if self._session else 0) >= 2
         now = time.monotonic() * 1000.0
-        decision = group_call_gate.should_respond_to_group_turn(
-            transcript=text,
-            is_group=is_group,
-            config=self._gate_cfg,
-            last_addressed_at_ms=self._last_addressed_ms,
-            now_ms=now,
-        )
+        is_group, decision = self._group_decision(text, now)
         if decision.respond:
             if decision.addressed:
                 self._last_addressed_ms = now
@@ -413,183 +350,12 @@ class RealtimeCallSessionHandler(CallSessionHandler):
             args = {}
         # Show a "thinking" face while the tool runs; the reply re-cues the emotion.
         await self._safe_expression(expression.THINKING)
-        result = await self._run_tool(name, args if isinstance(args, dict) else {})
+        result = await self._tools.run_tool(name, args if isinstance(args, dict) else {})
         if self._rt is not None:
             await self._rt.send_function_result(call_id, result or "Done.")
 
-    async def _run_tool(self, name: str, args: dict) -> str:
-        try:
-            if name == "hermes_agent_consult":
-                return await self._consult.ask(str(args.get("query", "")))
-            if name == "hermes_agent_task":
-                return await self._agent_task(str(args.get("query", "")))
-            if name == "look_at_screen":
-                return await self._look_at_screen(
-                    str(args.get("question", "")), args.get("source"), str(args.get("scope") or "live")
-                )
-            if name == "show_to_caller":
-                return await self._show_to_caller(str(args.get("prompt", "")), args.get("count", 1))
-            if name == "call_me_back":
-                return await self._call_me_back(str(args.get("message", "")))
-            if name == "post_meeting_minutes":
-                return await meeting.post_minutes(self._consult, self._meeting, self._thread_id)
-        except Exception:  # noqa: BLE001 — a tool fault must not break the call
-            logger.error("[teams_voice] tool %s failed", name, exc_info=True)
-            return "Sorry, that didn't work."
-        return f"Unknown tool: {name}."
 
-    async def _look_at_screen(self, question: str, source: str | None, scope: str = "live") -> str:
-        if not self._vision_budget.try_consume():
-            return "I've looked at a lot just now — give me a moment before the next one."
-        prompt = question.strip() or "Describe what you see."
-        if scope == "history":
-            frames = self._vision.history(limit=6)
-            if not frames:
-                return "I don't have any earlier frames to look back on."
-            content: list[dict] = [{"type": "text", "text": prompt}]
-            for f in frames:  # timestamped, attributed keyframes
-                content.append({"type": "text", "text": f"(earlier, from {f.describe()})"})
-                content.append({"type": "image_url", "image_url": {"url": f.data_url()}})
-        else:
-            want = "camera" if str(source or "").lower() == "camera" else "screenshare"
-            frame = self._vision.latest(want) or self._vision.latest()
-            if frame is None:
-                return "I can't see a shared screen or camera right now."
-            content = [
-                {"type": "text", "text": f"{prompt} (looking at the {frame.describe()})"},
-                {"type": "image_url", "image_url": {"url": frame.data_url()}},
-            ]
-        return await self._vision_consult(content)
-
-    async def _vision_consult(self, content: list[dict]) -> str:
-        try:
-            from agent.auxiliary_client import async_call_llm
-
-            resp = await async_call_llm(
-                task="vision", messages=[{"role": "user", "content": content}], max_tokens=400
-            )
-            text = resp.choices[0].message.content if resp and resp.choices else ""
-            return (text or "").strip() or "I couldn't quite make that out."
-        except Exception:  # noqa: BLE001
-            self._vision_budget.refund()  # consult failed before the model — give it back
-            logger.error("[teams_voice] vision consult failed", exc_info=True)
-            return "I had trouble looking at that."
-
-    async def _show_to_caller(self, prompt: str, count: object = 1) -> str:
-        prompt = prompt.strip()
-        if not prompt:
-            return "What would you like me to show?"
-        try:
-            n = max(1, min(int(count), 3))
-        except (TypeError, ValueError):
-            n = 1
-        try:
-            from tools.image_generation_tool import image_generate_tool
-
-            paths: list[str] = []
-            for _ in range(n):
-                raw = await asyncio.to_thread(
-                    lambda: image_generate_tool(prompt=prompt, aspect_ratio="landscape")
-                )
-                data = json.loads(raw)
-                if data.get("success") and data.get("image"):
-                    paths.append(data["image"])
-            if not paths:
-                return "I couldn't create that image."
-            # Paced slideshow: 4.5s hold for non-final, 5s for the final image.
-            for idx, path in enumerate(paths):
-                final = idx == len(paths) - 1
-                img_bytes = Path(path).read_bytes()
-                mime = "image/png" if str(path).lower().endswith(".png") else "image/jpeg"
-                if self._session is not None:
-                    await self._session.send_display_image(
-                        base64.b64encode(img_bytes).decode("ascii"),
-                        mime,
-                        duration_ms=5000 if final else 4500,
-                        mode="overlay",
-                        caption=prompt[:80],
-                    )
-                if not final:
-                    await asyncio.sleep(4.0)
-            return "I'm showing it on screen now." if len(paths) == 1 else f"Showing you {len(paths)} images."
-        except Exception:  # noqa: BLE001
-            logger.error("[teams_voice] show_to_caller failed", exc_info=True)
-            return "I made the image but couldn't display it."
-
-    async def _call_me_back(self, message: str) -> str:
-        message = message.strip()
-        caller = self._caller
-        if self._bridge is None or caller is None or not caller.aad_id:
-            return "I can't call you back — I don't have a number to reach you."
-        tenant = caller.tenant_id or self._bridge.tenant_id
-        if not tenant:
-            return "I can't call you back — missing your tenant."
-        try:
-            result = await place_call(
-                user_object_id=caller.aad_id,
-                tenant_id=tenant,
-                shared_secret=self._bridge.shared_secret,
-                worker_base_url=self._bridge.worker_base_url,
-                allow_remote=self._bridge.allow_remote_worker,
-            )
-        except OutboundError as exc:
-            logger.warning("[teams_voice] call_me_back failed: %s", exc)
-            return "I couldn't place the call-back just now."
-        call_id = result.get("callId")
-        if call_id:
-            _pending_set(call_id, message or "Here's what you asked for.")
-        return "Okay — I'll call you right back with that."
-
-    async def _agent_task(self, query: str) -> str:
-        """Run a long job in the background; deliver the result via a call-back."""
-        query = query.strip()
-        caller = self._caller
-        if not query:
-            return "What would you like me to work on?"
-        if self._bridge is None or caller is None or not caller.aad_id:
-            # No way to call back — fall back to an inline consult.
-            return await self._consult.ask(query)
-        asyncio.create_task(self._run_background_task(query, caller))
-        return "Got it — I'll work on that in the background and call you back with the result."
-
-    async def _run_background_task(self, query: str, caller: protocol.CallerInfo) -> None:
-        try:
-            result = await self._consult.ask(query, timeout_s=300.0)
-        except Exception:  # noqa: BLE001
-            logger.error("[teams_voice] background task failed", exc_info=True)
-            result = "I couldn't complete that task."
-        if self._bridge is None or not caller.aad_id:
-            return
-        tenant = caller.tenant_id or self._bridge.tenant_id
-        if not tenant:
-            return
-        try:
-            res = await place_call(
-                user_object_id=caller.aad_id,
-                tenant_id=tenant,
-                shared_secret=self._bridge.shared_secret,
-                worker_base_url=self._bridge.worker_base_url,
-                allow_remote=self._bridge.allow_remote_worker,
-            )
-        except OutboundError as exc:
-            logger.warning("[teams_voice] background callback failed: %s", exc)
-            return
-        cid = res.get("callId")
-        if cid:
-            _pending_set(cid, result)
-
-    # ── helpers ──────────────────────────────────────────────────────────────
-
-    async def _safe_expression(self, emotion: str) -> None:
-        if self._session is None:
-            return
-        try:
-            await self._session.send_expression(emotion)
-        except Exception:  # noqa: BLE001 — cosmetic
-            pass
-
-
-class StreamingCallSessionHandler(CallSessionHandler):
+class StreamingCallSessionHandler(BaseTeamsCallHandler):
     """Streaming voice path: STT → agent → TTS (half-duplex, turn-based).
 
     Segments caller audio into utterances (VAD), transcribes them, applies the
@@ -599,40 +365,41 @@ class StreamingCallSessionHandler(CallSessionHandler):
     """
 
     def __init__(self, bridge_config: TeamsVoiceConfig | None = None) -> None:
+        super().__init__(bridge_config)  # shared session policy / state
         from .streaming_audio import UtteranceBuffer
 
-        self._bridge = bridge_config
-        self._require_recording = bridge_config.require_recording_status if bridge_config else True
         self._utterance_task: asyncio.Task | None = None
-        self._session: CallSession | None = None
-        self._caller: protocol.CallerInfo | None = None
         self._buf = UtteranceBuffer()
-        self._consult = AgentConsult()
-        wake = tuple(bridge_config.wake_phrases) if (bridge_config and bridge_config.wake_phrases) else ("assistant", "hermes")
-        self._gate_cfg = group_call_gate.GroupCallGateConfig(wake_phrases=wake)
-        self._last_addressed_ms: float | None = None
         self._out_seq = 0
         self._out_ts = 0
         self._processing = False  # half-duplex: one utterance at a time
-        self._meeting = MeetingTranscript()
-        self._thread_id = ""
 
     async def on_session_start(self, session: CallSession, msg: protocol.SessionStart) -> None:
-        await super().on_session_start(session, msg)
-        self._session = session
-        self._caller = msg.caller
-        self._thread_id = msg.thread_id
-        # Caller allowlist parity with the realtime path.
-        if (msg.direction or "").lower() != "outbound" and self._bridge and not caller_allowed(
-            self._bridge, msg.caller.aad_id, msg.caller.display_name
-        ):
-            logger.info("[teams_voice] caller not allowlisted; rejecting %s", session.call_id)
-            await session._ws.close()
+        if not await self._begin_session(session, msg):  # state + allowlist + scope
             return
-        scope = self._bridge.session_scope if self._bridge else "per-call"
-        key = msg.thread_id if scope == "per-thread" else (msg.caller.aad_id if scope == "per-aad" else msg.call_id)
-        self._consult = AgentConsult(session_id=f"teams:{key or msg.call_id}")
         await self._safe_expression(expression.NEUTRAL)
+
+    async def on_recording_status(self, session: CallSession, msg: protocol.RecordingStatus) -> None:
+        await super().on_recording_status(session, msg)
+        if not session.recording_active or self._greeted:
+            return
+        self._greeted = True
+        # Greet-on-answer: outbound speaks the pending result; inbound greets by name.
+        if self._outbound and self._pending_greeting:
+            text, self._pending_greeting = self._pending_greeting, None
+        elif not self._outbound:
+            name = self._first_name()
+            text = f"Hello{(' ' + name) if name else ''}, how can I help you?"
+        else:
+            return
+        self._processing = True  # half-duplex: hold the turn while we greet
+        self._utterance_task = asyncio.create_task(self._speak_turn(text))
+
+    async def _speak_turn(self, text: str) -> None:
+        try:
+            await self._speak(text)
+        finally:
+            self._processing = False
 
     async def on_session_end(self, session: CallSession, msg: protocol.SessionEnd) -> None:
         await super().on_session_end(session, msg)
@@ -661,22 +428,19 @@ class StreamingCallSessionHandler(CallSessionHandler):
                 return
             if verbal_interrupts.is_verbal_interrupt(transcript, self._gate_cfg.wake_phrases):
                 return  # nothing playing in half-duplex; just don't reply
-            is_group = (self._session.human_count if self._session else 0) >= 2
-            now = time.monotonic() * 1000.0
-            decision = group_call_gate.should_respond_to_group_turn(
-                transcript=transcript, is_group=is_group, config=self._gate_cfg,
-                last_addressed_at_ms=self._last_addressed_ms, now_ms=now,
-            )
-            if not decision.respond:
-                return
-            if decision.addressed:
-                self._last_addressed_ms = now
-            caller_name = (self._caller.display_name.split(" ")[0] if self._caller and self._caller.display_name else "Caller")
-            self._meeting.add(caller_name, transcript)
+            # Capture ALL caller speech for the minutes — including unaddressed
+            # meeting discussion — before the respond gate.
+            self._meeting.add(self._first_name() or "Caller", transcript)
             # On-demand "summarize the meeting" → post minutes instead of a normal reply.
             if meeting.is_summary_request(transcript):
                 await self._speak(await meeting.post_minutes(self._consult, self._meeting, self._thread_id))
                 return
+            now = time.monotonic() * 1000.0
+            _is_group, decision = self._group_decision(transcript, now)
+            if not decision.respond:
+                return
+            if decision.addressed:
+                self._last_addressed_ms = now
             await self._safe_expression(expression.THINKING)
             reply = await self._consult.ask(transcript)
             self._meeting.add("Assistant", reply)
@@ -758,11 +522,3 @@ class StreamingCallSessionHandler(CallSessionHandler):
                 Path(out).unlink(missing_ok=True)
             except OSError:
                 pass
-
-    async def _safe_expression(self, emotion: str) -> None:
-        if self._session is None:
-            return
-        try:
-            await self._session.send_expression(emotion)
-        except Exception:  # noqa: BLE001
-            pass

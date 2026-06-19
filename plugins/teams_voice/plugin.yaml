@@ -25,3 +25,29 @@ optional_env:
     description: "Bind address for the bridge WebSocket server (default 127.0.0.1)."
   - name: TEAMS_VOICE_PORT
     description: "Port for the bridge WebSocket server (default 8443)."
+  - name: TEAMS_VOICE_ALLOWLIST
+    description: "Comma-separated caller AAD object ids allowed to call (empty = allow all)."
+  - name: TEAMS_VOICE_WAKE_PHRASES
+    description: "Comma-separated group-call wake phrases (default: assistant,hermes)."
+  - name: TEAMS_VOICE_MEETING_RECAP
+    description: "Post end-of-call meeting minutes to the Teams chat (true/false)."
+  - name: TEAMS_VOICE_MAX_VISION_PER_MINUTE
+    description: "Per-call vision spend cap across look_at_screen + ambient push (0 = unlimited)."
+  - name: TEAMS_VOICE_SESSION_SCOPE
+    description: "Agent session continuity: per-call | per-thread | per-aad."
+  - name: TEAMS_VOICE_WORKER_BASE_URL
+    description: "Worker loopback HTTP endpoint for outbound place-call (default http://127.0.0.1:9440)."
+  - name: TEAMS_VOICE_TENANT_ID
+    description: "Default Azure AD tenant for outbound calls (falls back to TEAMS_TENANT_ID)."
+  - name: TEAMS_VOICE_REALTIME_BACKEND
+    description: "Realtime speech provider: azure | openai."
+  - name: TEAMS_VOICE_AZURE_ENDPOINT
+    description: "Azure OpenAI resource endpoint for the realtime model."
+  - name: TEAMS_VOICE_AZURE_DEPLOYMENT
+    description: "Azure realtime deployment name (e.g. gpt-realtime)."
+  - name: TEAMS_VOICE_AZURE_API_VERSION
+    description: "Azure realtime API version (e.g. 2025-04-01-preview)."
+  - name: TEAMS_VOICE_REALTIME_VOICE
+    description: "Realtime voice name (e.g. cedar)."
+  - name: TEAMS_VOICE_BILINGUAL
+    description: "Pin the realtime model to bilingual Arabic/English (true/false)."

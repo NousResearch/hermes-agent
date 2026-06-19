@@ -1301,6 +1301,17 @@ export interface McpCatalogEntry {
   transport: "http" | "stdio";
   auth_type: "api_key" | "oauth" | "none";
   required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  // Transport details — what actually connects (http) or runs (stdio).
+  command: string | null;
+  args: string[];
+  url: string | null;
+  // Git bootstrap (only set for entries that clone + build locally).
+  install_url: string | null;
+  install_ref: string | null;
+  bootstrap: string[];
+  // Default tool pre-selection (null = all tools pre-checked) + guidance text.
+  default_enabled: string[] | null;
+  post_install: string;
   needs_install: boolean;
   installed: boolean;
   enabled: boolean;

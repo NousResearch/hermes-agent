@@ -62,6 +62,11 @@ from hermes_cli.config import (
     recommended_update_command_for_method,
     redact_key,
 )
+from hermes_cli.memory_providers import (
+    MemoryProvider,
+    ProviderField,
+    get_memory_provider,
+)
 from gateway.status import (
     get_running_pid,
     get_runtime_status_running_pid,
@@ -139,6 +144,11 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
+    # Serializes chat-argv resolution so concurrent /api/pty connections
+    # don't trigger overlapping ``npm install`` / ``npm run build`` work.
+    # On app.state (not a module global) so the Lock binds to the running
+    # event loop during lifespan startup — see _get_event_state's docstring.
+    app.state.chat_argv_lock = asyncio.Lock()
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -177,6 +187,20 @@ def _get_event_state(app: "FastAPI"):
         app.state.event_channels = {}
         app.state.event_lock = asyncio.Lock()
         return app.state.event_channels, app.state.event_lock
+
+
+def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
+    """Return the chat-argv resolution lock from app.state.
+
+    Mirrors :func:`_get_event_state`: prefers the lifespan-initialised Lock
+    (created on the correct event loop) but lazily initialises it for
+    non-``with`` TestClient usages.
+    """
+    try:
+        return app.state.chat_argv_lock
+    except AttributeError:
+        app.state.chat_argv_lock = asyncio.Lock()
+        return app.state.chat_argv_lock
 
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
@@ -668,6 +692,10 @@ class EnvVarDelete(BaseModel):
 class EnvVarReveal(BaseModel):
     key: str
     profile: Optional[str] = None
+
+
+class MemoryProviderConfigUpdate(BaseModel):
+    values: Dict[str, str] = {}
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -3160,6 +3188,160 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _memory_provider_config_path(provider: MemoryProvider) -> Path:
+    return get_hermes_home() / provider.name / "config.json"
+
+
+def _read_memory_provider_file(provider: MemoryProvider) -> Dict[str, Any]:
+    path = _memory_provider_config_path(provider)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        _log.warning("Failed to read memory provider config from %s", path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_field_value(field: ProviderField, data: Dict[str, Any]) -> str:
+    """Resolve the stored value for a non-secret field, honoring legacy reads."""
+
+    for source_key in (field.key, *field.aliases):
+        value = data.get(source_key)
+        if value:
+            return str(value)
+
+    env_on_disk = load_env()
+    for env_key in field.env_fallbacks:
+        value = env_on_disk.get(env_key)
+        if value:
+            return str(value)
+
+    return field.default
+
+
+def _field_is_set(field: ProviderField, data: Dict[str, Any]) -> bool:
+    """Whether a secret field has a value anywhere it may have been written."""
+
+    env_on_disk = load_env()
+    for env_key in (field.env_key, *field.env_fallbacks):
+        if env_key and env_on_disk.get(env_key):
+            return True
+    return any(data.get(source_key) for source_key in (field.key, *field.aliases))
+
+
+def _memory_provider_payload(provider: MemoryProvider) -> Dict[str, Any]:
+    data = _read_memory_provider_file(provider)
+    fields: List[Dict[str, Any]] = []
+
+    for field in provider.fields:
+        entry: Dict[str, Any] = {
+            "key": field.key,
+            "label": field.label,
+            "kind": field.kind,
+            "description": field.description,
+            "placeholder": field.placeholder,
+            "options": [
+                {"value": opt.value, "label": opt.label, "description": opt.description}
+                for opt in field.options
+            ],
+        }
+
+        if field.is_secret:
+            # Secrets are write-only over the API; only expose whether one is set.
+            entry["value"] = ""
+            entry["is_set"] = _field_is_set(field, data)
+        else:
+            value = _read_field_value(field, data)
+            if field.kind == "select" and value not in field.allowed_values():
+                value = field.default
+            entry["value"] = value
+            entry["is_set"] = bool(value)
+
+        fields.append(entry)
+
+    return {"name": provider.name, "label": provider.label, "fields": fields}
+
+
+def _coerce_field_value(field: ProviderField, raw: str) -> str:
+    """Validate and normalize a submitted non-secret value, or raise ValueError."""
+
+    value = (raw or "").strip()
+    if field.kind == "select":
+        if not value:
+            value = field.default
+        if value not in field.allowed_values():
+            raise ValueError(f"Invalid value for '{field.key}'")
+        return value
+    return value or field.default
+
+
+@app.get("/api/memory/providers/{name}/config")
+async def get_memory_provider_config(name: str):
+    provider = get_memory_provider(name)
+    if provider is None:
+        # Undeclared providers (e.g. builtin) have no config surface. Return an
+        # empty schema so the generic panel simply renders nothing.
+        return {"name": name, "label": name, "fields": []}
+    return _memory_provider_payload(provider)
+
+
+@app.put("/api/memory/providers/{name}/config")
+async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
+    provider = get_memory_provider(name)
+    if provider is None:
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+
+    values = body.values or {}
+
+    try:
+        existing = _read_memory_provider_file(provider)
+        json_values: Dict[str, Any] = {}
+        secrets: Dict[str, str] = {}
+
+        for field in provider.fields:
+            if field.is_secret:
+                submitted = (values.get(field.key) or "").strip()
+                if submitted and field.env_key:
+                    secrets[field.env_key] = submitted
+                continue
+
+            raw = (
+                values[field.key]
+                if field.key in values
+                else str(existing.get(field.key, field.default))
+            )
+            json_values[field.key] = _coerce_field_value(field, raw)
+
+        config = load_config()
+        memory_config = config.get("memory")
+        if not isinstance(memory_config, dict):
+            memory_config = {}
+            config["memory"] = memory_config
+        memory_config["provider"] = provider.name
+        save_config(config)
+
+        path = _memory_provider_config_path(provider)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing.update(json_values)
+        from utils import atomic_json_write
+
+        atomic_json_write(path, existing, mode=0o600)
+
+        for env_key, secret in secrets.items():
+            save_env_value(env_key, secret)
+
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _log.exception("PUT /api/memory/providers/%s/config failed", name)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/api/config")
 async def get_config(profile: Optional[str] = None):
     with _profile_scope(profile):
@@ -3294,7 +3476,7 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options(profile: Optional[str] = None):
+def get_model_options(profile: Optional[str] = None, refresh: bool = False):
     """Return authenticated providers + their curated model lists.
 
     REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
@@ -3305,6 +3487,10 @@ def get_model_options(profile: Optional[str] = None):
     ``profile`` scopes the picker context (current model/provider, custom
     providers from config, per-profile .env auth state) so the Models page
     reads the SAME profile /api/model/set writes.
+
+    ``refresh`` busts the per-provider model-id disk cache so every row
+    re-fetches its live catalog — used by the picker's explicit "Refresh
+    Models" control. Normal opens leave it false to stay on the 1h cache.
     """
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
@@ -3320,12 +3506,12 @@ def get_model_options(profile: Optional[str] = None):
         with _profile_scope(profile):
             return build_models_payload(
                 load_picker_context(),
-                max_models=50,
                 include_unconfigured=True,
                 picker_hints=True,
                 canonical_order=True,
                 pricing=True,
                 capabilities=True,
+                refresh=bool(refresh),
             )
     except HTTPException:
         raise
@@ -3395,7 +3581,7 @@ def get_recommended_default_model(provider: str = ""):
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        payload = build_models_payload(load_picker_context(), max_models=50)
+        payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = row.get("models") or []
@@ -6884,8 +7070,19 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     # desktop routes their DELETE to the remote backend. Omit for current/default.
     db = _open_session_db_for_profile(profile)
     try:
-        if not db.delete_session(session_id):
-            raise HTTPException(status_code=404, detail="Session not found")
+        # Resolve exact ids / unique prefixes like every other session endpoint
+        # (detail, messages, rename, export all do). A session that no longer
+        # exists is an idempotent success: DELETE's contract is "ensure it's
+        # gone", and the desktop optimistically removes the row then RESTORES it
+        # on any error — so a 404 on an already-absent row resurrected a ghost
+        # row and surfaced "session not found". /goal + auto-compression churn
+        # leaves transient empty rows (reaped by empty-session hygiene) that
+        # race the sidebar snapshot, which is exactly when this fired. Mirrors
+        # the bulk-delete endpoint, which already treats ghost ids as success.
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            return {"ok": True, "already_absent": True}
+        db.delete_session(sid)
         return {"ok": True}
     finally:
         db.close()
@@ -7677,17 +7874,35 @@ async def list_mcp_catalog(profile: Optional[str] = None):
             }
         for entry in catalog_entries:
             auth = entry.auth
+            transport = entry.transport
+            install = entry.install
             entries.append({
                 "name": entry.name,
                 "description": entry.description,
                 "source": entry.source,
-                "transport": entry.transport.type,
+                "transport": transport.type,
                 "auth_type": getattr(auth, "type", "none"),
                 # Env vars the user must supply (names + prompts only, never values).
                 "required_env": [
                     {"name": e.name, "prompt": e.prompt, "required": e.required}
                     for e in getattr(auth, "env", []) or []
                 ],
+                # Transport details so the UI can show exactly what connects/runs.
+                # The trust model (docs: user-guide/features/mcp) tells users to
+                # inspect command/args/url and the install bootstrap before
+                # installing — surface them rather than hiding them in the repo.
+                "command": transport.command,
+                "args": list(transport.args or []),
+                "url": transport.url,
+                # Git bootstrap (present only for entries that clone + build).
+                "install_url": install.url if install else None,
+                "install_ref": install.ref if install else None,
+                "bootstrap": list(install.bootstrap) if install else [],
+                # Default tool pre-selection hint and post-install guidance.
+                "default_enabled": list(entry.tools.default_enabled)
+                if entry.tools.default_enabled is not None
+                else None,
+                "post_install": entry.post_install or "",
                 "needs_install": entry.install is not None,
                 "installed": installed_state.get(entry.name, (False, False))[0],
                 "enabled": installed_state.get(entry.name, (False, False))[1],
@@ -10638,7 +10853,8 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
-# (State is initialised in _lifespan on app startup — see above.)
+# (Channel state and the chat-argv lock are initialised in _lifespan on app
+# startup — see _get_event_state / _get_chat_argv_lock above.)
 
 
 def _resolve_chat_argv(
@@ -10753,6 +10969,30 @@ def _build_gateway_ws_url() -> Optional[str]:
         qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
 
     return f"ws://{netloc}/api/ws?{qs}"
+
+
+async def _resolve_chat_argv_async(
+    resume: Optional[str] = None,
+    sidecar_url: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> tuple[list[str], Optional[str], Optional[dict]]:
+    """Resolve chat argv without blocking the dashboard event loop.
+
+    ``_resolve_chat_argv`` may run ``npm install`` / ``npm run build`` through
+    ``_make_tui_argv``.  Keep that synchronous work off the WebSocket event
+    loop so reverse proxies and existing dashboard connections can continue
+    to exchange keepalives while the TUI launch command is prepared.  The
+    async lock preserves the previous one-build-at-a-time behavior when
+    multiple browser tabs connect at once without occupying worker threads
+    while queued connections wait.
+    """
+    async with _get_chat_argv_lock(app):
+        return await asyncio.to_thread(
+            _resolve_chat_argv,
+            resume=resume,
+            sidecar_url=sidecar_url,
+            profile=profile,
+        )
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
@@ -10885,7 +11125,7 @@ async def pty_ws(ws: WebSocket) -> None:
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(
+        argv, cwd, env = await _resolve_chat_argv_async(
             resume=resume, sidecar_url=sidecar_url, profile=profile
         )
     except HTTPException as exc:

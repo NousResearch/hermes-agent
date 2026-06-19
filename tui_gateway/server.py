@@ -174,6 +174,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # response writes are safe.
 _LONG_HANDLERS = frozenset(
     {
+        "billing.step_up",
         "browser.manage",
         "cli.exec",
         "plugins.manage",
@@ -1015,6 +1016,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
             _emit("session.info", sid, info)
+            # If MCP discovery is still in flight (a server slower than the
+            # bounded wait_for_mcp_discovery join in _make_agent), the agent
+            # was built without those tools. Catch up once they land — see
+            # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
+            _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
@@ -1213,6 +1219,27 @@ def _ensure_session_db_row(session: dict) -> None:
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
+    # The composer override may carry the RESOLVED provider "custom" for a named
+    # ``providers:`` / ``custom_providers:`` entry. Persisting bare "custom" here
+    # (the very first DB write for a fresh desktop session, before the agent is
+    # built) is the origin of the recurring "No LLM provider configured" rows:
+    # on the next resume bare "custom" routes to OpenRouter with no key. Recover
+    # the durable ``custom:<name>`` identity from the override's base_url, else
+    # the configured provider, so a routable identity is persisted from the
+    # start (matches _runtime_model_config's normalization).
+    if str(model_config.get("provider") or "").strip().lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            healed = canonical_custom_identity(
+                base_url=model_config.get("base_url") or None
+            )
+            if healed:
+                model_config["provider"] = healed
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed (db row)", exc_info=True
+            )
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
     if tier := session.get("create_service_tier_override"):
@@ -1574,6 +1601,28 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
 
+    # Heal a bare ``"custom"`` provider stored by an older build (or any leak
+    # site that bypassed _runtime_model_config's normalization). Bare custom is
+    # the resolved billing class, not a routable identity — restoring it as the
+    # session's provider override routes the resume to the OpenRouter default
+    # URL with no api_key, surfacing as "No LLM provider configured". Recover
+    # the durable ``custom:<name>`` menu key from the stored base_url, falling
+    # back to the configured provider when the row has no base_url (the
+    # recurring Desktop/TUI regression vector). If neither names a real entry,
+    # drop the bare provider entirely so resume falls back to the configured
+    # default rather than the broken OpenRouter route.
+    if provider.strip().lower() == "custom":
+        healed = None
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            healed = canonical_custom_identity(base_url=base_url or None)
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed", exc_info=True
+            )
+        provider = healed or ("" if not base_url else provider)
+
     if model:
         # Use the same dict-shaped override that live /model switches use so a
         # DB-restored session can preserve custom endpoint metadata across both
@@ -1608,21 +1657,27 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     if model:
         config["model"] = model
     if provider:
-        if provider == "custom" and base_url:
+        if provider.strip().lower() == "custom":
             # ``agent.provider`` is the RESOLVED provider, and for any named
             # ``providers:`` / ``custom_providers:`` entry that is the literal
             # string "custom" — persisting it loses the entry identity, so a
             # later resume/rebuild cannot re-resolve the entry's credentials
             # (the api_key is deliberately never persisted; see
             # _stored_session_runtime_overrides). Recover the canonical
-            # ``custom:<name>`` menu key from the endpoint URL so
-            # resolve_runtime_provider() can find the entry again.
+            # ``custom:<name>`` menu key from the endpoint URL when present,
+            # else from the configured provider — this second fallback is the
+            # fix for sessions built WITHOUT a base_url on the override (the
+            # recurring Desktop/TUI "No LLM provider configured" regression:
+            # bare "custom" with no base_url was persisted verbatim and routed
+            # to OpenRouter with no key on the next resume).
             try:
                 from hermes_cli.runtime_provider import (
-                    find_custom_provider_identity,
+                    canonical_custom_identity,
                 )
 
-                provider = find_custom_provider_identity(base_url) or provider
+                provider = (
+                    canonical_custom_identity(base_url=base_url) or provider
+                )
             except Exception:
                 logger.debug(
                     "custom provider identity lookup failed", exc_info=True
@@ -1851,6 +1906,22 @@ def _load_provider_routing() -> dict:
 
 def _load_show_reasoning() -> bool:
     return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
+
+
+def _load_memory_notifications() -> str:
+    """Self-improvement review notification mode from config.yaml.
+
+    Parity with the messaging gateway (``gateway/run.py``) and the classic CLI:
+    ``display.memory_notifications`` controls whether the background review's
+    "💾 Self-improvement review: …" summary is surfaced. Without this the
+    TUI/desktop backend always behaved as ``"on"`` and silently ignored a user
+    who set ``off``. Accepts ``off`` / ``on`` (default) / ``verbose``; a bool is
+    normalized for back-compat.
+    """
+    raw = (_load_cfg().get("display") or {}).get("memory_notifications")
+    if isinstance(raw, bool):
+        return "on" if raw else "off"
+    return str(raw).lower() if raw else "on"
 
 
 def _load_tool_progress_mode() -> str:
@@ -3405,6 +3476,87 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
+def _schedule_mcp_late_refresh(sid: str, agent) -> None:
+    """Refresh a session's tool snapshot when MCP discovery lands late.
+
+    The agent snapshots ``agent.tools`` once at build time and never re-reads
+    the registry (run_agent/agent_init). ``_make_agent`` briefly joins the
+    background MCP discovery thread (``wait_for_mcp_discovery``, ~0.75s) so
+    already-spawning servers land in that snapshot — but a server that takes
+    longer than the bound to connect (common for an HTTP MCP server on first
+    connect) lands *after* the agent is built. Its tools are then absent from
+    both the agent and the banner for the whole session, even though the
+    classic CLI shows them (the CLI re-derives ``get_tool_definitions`` at
+    banner render time, which re-waits, so it picks them up).
+
+    This schedules an off-critical-path daemon that waits for discovery to
+    finish, then rebuilds the snapshot and re-emits ``session.info`` so both
+    the agent's callable tools and the banner count catch up — the same
+    rebuild ``/reload-mcp`` performs, but automatic.
+
+    Cache safety: the rebuild only runs while the session is still pre-first-
+    turn (no API call made yet → nothing cached to invalidate). If the user
+    has already sent a message, we leave the snapshot frozen rather than
+    invalidate the prompt cache mid-conversation — those late tools then
+    require an explicit ``/reload-mcp`` (which gates on user consent), exactly
+    as today. No-op when discovery already finished before the agent build.
+    """
+    try:
+        from tui_gateway.entry import mcp_discovery_in_flight, join_mcp_discovery
+    except Exception:
+        return
+    if not mcp_discovery_in_flight():
+        return
+
+    def _wait_then_refresh() -> None:
+        # Bounded but generous — a server still not connected after this is
+        # genuinely slow/dead; the user can /reload-mcp once it recovers.
+        if not join_mcp_discovery(timeout=30.0):
+            return
+        with _sessions_lock:
+            session = _sessions.get(sid)
+            # Session may have been closed/reset while we waited.
+            if session is None or session.get("agent") is not agent:
+                return
+            # Cache safety: never rebuild the tool list once the conversation
+            # has started — that would invalidate the cached prompt prefix.
+            if (
+                int(getattr(agent, "_user_turn_count", 0) or 0) > 0
+                or int(getattr(agent, "_api_call_count", 0) or 0) > 0
+            ):
+                return
+            try:
+                from model_tools import get_tool_definitions
+
+                new_defs = get_tool_definitions(
+                    enabled_toolsets=_load_enabled_toolsets(),
+                    quiet_mode=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Late MCP refresh: get_tool_definitions failed for %s: %s",
+                    sid,
+                    exc,
+                )
+                return
+            # No change (discovery added nothing new) → don't churn the client.
+            if len(new_defs or []) == len(getattr(agent, "tools", []) or []):
+                return
+            agent.tools = new_defs
+            agent.valid_tool_names = (
+                {t["function"]["name"] for t in new_defs} if new_defs else set()
+            )
+            info = _session_info(agent, session)
+        # Emit outside the lock — write_json must not block under _sessions_lock.
+        _emit("session.info", sid, info)
+
+    threading.Thread(
+        target=_wait_then_refresh,
+        name=f"tui-mcp-late-refresh-{sid}",
+        daemon=True,
+    ).start()
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -3464,25 +3616,27 @@ def _make_agent(
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
         resolve_kwargs = {}
-        if (
-            override_base_url
-            and str(requested_provider or "").strip().lower() == "custom"
-        ):
+        if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
             # (see _runtime_model_config) stored the resolved provider
             # "custom", which _get_named_custom_provider cannot match back to
             # a named ``providers:`` / ``custom_providers:`` entry — the
-            # rebuild then either raised auth_unavailable or silently
-            # resolved placeholder credentials against the patched-back
-            # base_url. Recover the entry identity from the persisted
-            # base_url; failing that, hand the base_url to the direct-alias
-            # branch so pool/env credentials can still be resolved for it.
-            from hermes_cli.runtime_provider import find_custom_provider_identity
+            # rebuild then either raised auth_unavailable, silently resolved
+            # placeholder credentials against the patched-back base_url, or
+            # (when no base_url was stored) routed to the OpenRouter default
+            # with no key, surfacing as "No LLM provider configured". Recover
+            # the entry identity from the persisted base_url, falling back to
+            # the configured provider when the override carries no base_url
+            # (the recurring Desktop/TUI regression vector).
+            from hermes_cli.runtime_provider import canonical_custom_identity
 
-            recovered = find_custom_provider_identity(override_base_url)
+            recovered = canonical_custom_identity(base_url=override_base_url or None)
             if recovered:
                 requested_provider = recovered
-            resolve_kwargs["explicit_base_url"] = override_base_url
+            if override_base_url:
+                # Failing identity recovery, still hand the base_url to the
+                # direct-alias branch so pool/env credentials resolve for it.
+                resolve_kwargs["explicit_base_url"] = override_base_url
         runtime = resolve_runtime_provider(
             requested=requested_provider,
             target_model=model or None,
@@ -3633,6 +3787,10 @@ def _init_session(
         agent.background_review_callback = lambda message, _sid=sid: _emit(
             "review.summary", _sid, {"text": str(message)}
         )
+        # Honor display.memory_notifications (off | on | verbose) like the
+        # messaging gateway and CLI do — otherwise the review always behaved as
+        # "on" on the TUI/desktop and a user who set "off" was ignored.
+        agent.memory_notifications = _load_memory_notifications()
     except Exception:
         # Bare AIAgents that don't expose the attribute (unlikely, but keep
         # session startup resilient).
@@ -3643,6 +3801,7 @@ def _init_session(
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
+    _schedule_mcp_late_refresh(sid, agent)
 
 
 def _new_session_key() -> str:
@@ -4260,6 +4419,27 @@ def _(rid, params: dict) -> dict:
             found = {}
         else:
             return _err(rid, 4007, "session not found")
+
+    # Follow the compression-continuation chain to the live tip so a resume on
+    # a rotated-out parent id binds to the descendant that actually holds the
+    # post-compression turns. Auto-compression ends the session and forks a
+    # continuation child; without this, resuming the original id (the desktop's
+    # routed id when the chat was opened before it rotated) reloads the parent
+    # transcript and the response generated after compression is missing — the
+    # "I came back and the reply isn't there" bug on large sessions. Resolving
+    # here also re-anchors the fast path below so a still-live rotated session
+    # is reused (by its new key) instead of rebuilding a duplicate agent on the
+    # stale parent. Skipped for lazy watch windows, which intentionally attach
+    # to the exact child branch they were opened on.
+    if found and not is_truthy_value(params.get("lazy", False)):
+        try:
+            tip = db.resolve_resume_session_id(target)
+        except Exception:
+            tip = target
+        if tip and tip != target:
+            target = tip
+            found = db.get_session(target) or found
+
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
         profile_home
     )
@@ -5030,6 +5210,221 @@ def _(rid, params: dict) -> dict:
     except Exception:
         # Fail-open: TUI treats this as "not logged in" and shows the prompt.
         return _ok(rid, {"logged_in": False, "balance_lines": [], "identity_line": None, "topup_url": None, "depleted": False})
+
+
+# ===========================================================================
+# Phase 2b terminal billing RPC methods
+# ===========================================================================
+#
+# These return STRUCTURED success envelopes (result.ok / result.error) rather
+# than JSON-RPC-level errors, so the TUI's rpc() promise always resolves and the
+# Ink side can branch on the typed billing error code (insufficient_scope,
+# rate_limited, no_payment_method, …) to render the right affordance instead of
+# landing in a generic catch. The data-building lives in the shared core
+# (agent/billing_view.py + hermes_cli/nous_billing.py) — same as /credits.
+
+
+def _serialize_billing_error(exc) -> dict:
+    """Map a BillingError into the result.error envelope the TUI branches on."""
+    from hermes_cli.nous_billing import (
+        BillingRateLimited,
+        BillingScopeRequired,
+    )
+
+    kind = "error"
+    if isinstance(exc, BillingScopeRequired):
+        kind = "insufficient_scope"
+    elif isinstance(exc, BillingRateLimited):
+        kind = "rate_limited"
+    elif getattr(exc, "error", None):
+        kind = str(exc.error)
+    return {
+        "ok": False,
+        "error": kind,
+        "message": str(exc),
+        "portal_url": getattr(exc, "portal_url", None),
+        "retry_after": getattr(exc, "retry_after", None),
+        "payload": getattr(exc, "payload", {}) or {},
+    }
+
+
+def _serialize_billing_state(state) -> dict:
+    """Serialize a BillingState for the wire (Decimals → strings, money-safe)."""
+    from agent.billing_view import format_money
+
+    def _s(value):
+        return None if value is None else str(value)
+
+    card = None
+    if state.card is not None:
+        card = {"brand": state.card.brand, "last4": state.card.last4, "masked": state.card.masked}
+    monthly_cap = None
+    if state.monthly_cap is not None:
+        mc = state.monthly_cap
+        monthly_cap = {
+            "limit_usd": _s(mc.limit_usd),
+            "limit_display": format_money(mc.limit_usd),
+            "spent_this_month_usd": _s(mc.spent_this_month_usd),
+            "spent_display": format_money(mc.spent_this_month_usd),
+            "is_default_ceiling": mc.is_default_ceiling,
+        }
+    auto_reload = None
+    if state.auto_reload is not None:
+        ar = state.auto_reload
+        auto_reload = {
+            "enabled": ar.enabled,
+            "threshold_usd": _s(ar.threshold_usd),
+            "threshold_display": format_money(ar.threshold_usd),
+            "reload_to_usd": _s(ar.reload_to_usd),
+            "reload_to_display": format_money(ar.reload_to_usd),
+        }
+    return {
+        "ok": True,
+        "logged_in": state.logged_in,
+        "org_name": state.org_name,
+        "org_slug": state.org_slug,
+        "role": state.role,
+        "is_admin": state.is_admin,
+        "can_charge": state.can_charge,
+        "balance_usd": _s(state.balance_usd),
+        "balance_display": format_money(state.balance_usd),
+        "cli_billing_enabled": state.cli_billing_enabled,
+        "charge_presets": [_s(p) for p in state.charge_presets],
+        "charge_presets_display": [format_money(p) for p in state.charge_presets],
+        "min_usd": _s(state.min_usd),
+        "max_usd": _s(state.max_usd),
+        "card": card,
+        "monthly_cap": monthly_cap,
+        "auto_reload": auto_reload,
+        "portal_url": state.portal_url,
+        "error": state.error,
+    }
+
+
+@method("billing.state")
+def _(rid, params: dict) -> dict:
+    """GET /api/billing/state → serialized BillingState (Screen 1 + 5).
+
+    Fail-open like credits.view: a logged-out / unreachable portal yields
+    {ok:true, logged_in:false}. No scope required for this endpoint.
+    """
+    try:
+        from agent.billing_view import build_billing_state
+
+        state = build_billing_state()
+        return _ok(rid, _serialize_billing_state(state))
+    except Exception:
+        return _ok(rid, {"ok": True, "logged_in": False, "error": "could not load billing state"})
+
+
+@method("billing.charge")
+def _(rid, params: dict) -> dict:
+    """POST /api/billing/charge → {ok, chargeId} or a typed error envelope.
+
+    params: {amount_usd: str|number, idempotency_key?: str}. If no key is
+    supplied, the server-side core mints a fresh one and returns it so the TUI can
+    reuse it on retry of the SAME purchase.
+    """
+    from hermes_cli.nous_billing import BillingError, post_charge
+    from agent.billing_view import new_idempotency_key
+
+    amount = params.get("amount_usd")
+    if amount is None:
+        return _ok(rid, {"ok": False, "error": "invalid_request", "message": "amount_usd is required"})
+    key = params.get("idempotency_key") or new_idempotency_key()
+    try:
+        result = post_charge(amount_usd=amount, idempotency_key=key)
+        return _ok(rid, {"ok": True, "charge_id": result.get("chargeId"), "idempotency_key": key})
+    except BillingError as exc:
+        env = _serialize_billing_error(exc)
+        env["idempotency_key"] = key  # so the TUI can reuse on retry
+        return _ok(rid, env)
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc), "idempotency_key": key})
+
+
+@method("billing.charge_status")
+def _(rid, params: dict) -> dict:
+    """GET /api/billing/charge/{id} → {ok, status, ...} or typed error.
+
+    The poll. Caller drives the 2s/5-min cadence; this is a single status read.
+    """
+    from hermes_cli.nous_billing import BillingError, get_charge_status
+
+    charge_id = params.get("charge_id")
+    if not charge_id:
+        return _ok(rid, {"ok": False, "error": "invalid_charge_id", "message": "charge_id is required"})
+    try:
+        result = get_charge_status(charge_id)
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "status": result.get("status"),
+                "amount_usd": result.get("amountUsd"),
+                "settled_at": result.get("settledAt"),
+                "reason": result.get("reason"),
+            },
+        )
+    except BillingError as exc:
+        return _ok(rid, _serialize_billing_error(exc))
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc)})
+
+
+@method("billing.auto_reload")
+def _(rid, params: dict) -> dict:
+    """PATCH /api/billing/auto-top-up → {ok:true} or typed error (Screen 2).
+
+    params: {enabled: bool, threshold: number, top_up_amount: number}.
+    """
+    from hermes_cli.nous_billing import BillingError, patch_auto_top_up
+
+    try:
+        enabled = bool(params.get("enabled"))
+        threshold = params.get("threshold")
+        top_up_amount = params.get("top_up_amount")
+        if threshold is None or top_up_amount is None:
+            return _ok(rid, {"ok": False, "error": "invalid_request", "message": "threshold and top_up_amount are required"})
+        patch_auto_top_up(enabled=enabled, threshold=threshold, top_up_amount=top_up_amount)
+        return _ok(rid, {"ok": True})
+    except BillingError as exc:
+        return _ok(rid, _serialize_billing_error(exc))
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc)})
+
+
+@method("billing.step_up")
+def _(rid, params: dict) -> dict:
+    """Run the lazy billing:manage step-up device flow → {ok, granted}.
+
+    Triggered by the TUI after a billing call returns error=insufficient_scope.
+    Returns granted:false when the server silently downscopes (non-admin / unticked).
+
+    Runs on the thread pool (in _LONG_HANDLERS): the device flow blocks for the
+    whole device-code lifetime (minutes), so it must not stall the main stdin loop.
+    The verification URL/code reach the TUI via an out-of-band ``billing.step_up.
+    verification`` event (a plain print would be dropped by the JSON-RPC stdout
+    pipe), and the browser is opened TUI-side via openExternalUrl — never with the
+    gateway's headless webbrowser.open (hence open_browser=False).
+    """
+    sid = params.get("session_id") or ""
+    try:
+        from hermes_cli.auth import step_up_nous_billing_scope
+
+        def _on_verification(url: str, code: str) -> None:
+            _emit(
+                "billing.step_up.verification",
+                sid,
+                {"verification_url": url, "user_code": code},
+            )
+
+        granted = step_up_nous_billing_scope(
+            open_browser=False, on_verification=_on_verification
+        )
+        return _ok(rid, {"ok": True, "granted": bool(granted)})
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc), "granted": False})
 
 
 @method("session.status")
@@ -9122,7 +9517,7 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
-            max_models=50,
+            refresh=bool(params.get("refresh")),
         )
         return _ok(rid, payload)
     except Exception as e:

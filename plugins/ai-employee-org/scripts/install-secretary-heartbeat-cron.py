@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
-"""Register or update the job-seeker daily scan cron job in ~/.hermes/cron/jobs.json."""
+"""Register secretary daily heartbeat cron in ~/.hermes/cron/jobs.json."""
 
 from __future__ import annotations
 
 import argparse
-import copy
 import json
-import uuid
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-JOB_ID = "a1ee7700job1"
-JOB_NAME = "求職スキャン（BizReach/Findy/LAPRAS/クラウドワークス）"
-SCRIPT_NAME = "job-seeker-telegram-digest.py"
-OPS_DIR = Path(r"C:/Users/downl/Documents/ops/job-seeker")
+JOB_ID = "a3ee7700sec1"
+JOB_NAME = "秘書ハートビート（Kanban棚卸し）"
 
-PROMPT = r"""（no_agent モード: このプロンプトは未使用。stdout が Telegram に配信される）
+PROMPT = r"""あなたは secretary プロファイルの秘書エージェントです。ai-company ボードを点検します。
 
-スキャン本体は run_scan.py。求人ダイジェスト（タイトル・会社・URL）が Telegram に届く。
-詳細レポート: ops/job-seeker/reports/YYYY-MM-DD-scan.md
+【必須手順】
+1. `hermes kanban list --status ready,running,blocked,todo` で全体を把握。
+2. ready が空なら、blocked のうち人間判断待ち以外を comment し、必要なら promote。
+3. ready/todo が完全に空なら、kanban_create で種タスク1件（assignee=secretary, 優先度低）を追加し、子タスク案を comment のみ（勝手に大量作成しない）。
+4. Telegram 要約10行以内。応募・返信・公開は block のまま触らない。
+
+【ルール】
+- 429 時は fallback_providers に従う。推測でモデルを変えない。
 """
 
 
 def _hermes_home() -> Path:
-    import os
-
     return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 
 
@@ -37,6 +38,7 @@ def _load_jobs(path: Path) -> dict:
 
 def _save_jobs(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat()
     with path.open("w", encoding="utf-8", newline="\n") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -53,16 +55,16 @@ def build_job(*, profile: str, telegram_origin: dict | None = None) -> dict:
         "id": JOB_ID,
         "name": JOB_NAME,
         "prompt": PROMPT,
-        "skills": ["google-workspace", "ai-employee-org"],
+        "skills": ["ai-employee-org"],
         "skill": "ai-employee-org",
         "model": None,
         "provider": None,
         "base_url": None,
-        "script": SCRIPT_NAME,
-        "no_agent": True,
+        "script": None,
+        "no_agent": False,
         "context_from": None,
-        "schedule": {"kind": "cron", "expr": "0 9,18 * * *", "display": "0 9,18 * * *"},
-        "schedule_display": "0 9,18 * * *",
+        "schedule": {"kind": "cron", "expr": "30 8 * * *", "display": "30 8 * * *"},
+        "schedule_display": "30 8 * * * (daily 08:30)",
         "repeat": {"times": None, "completed": 0},
         "enabled": True,
         "state": "scheduled",
@@ -76,53 +78,32 @@ def build_job(*, profile: str, telegram_origin: dict | None = None) -> dict:
         "last_delivery_error": None,
         "deliver": "origin",
         "origin": origin,
-        "enabled_toolsets": ["web", "browser", "terminal", "file"],
-        "workdir": str(OPS_DIR),
+        "enabled_toolsets": ["terminal", "file", "kanban"],
+        "workdir": None,
         "profile": profile,
     }
 
 
-def _deploy_cron_script(profile: str) -> Path:
-    """Copy telegram digest wrapper into the profile's HERMES_HOME/scripts."""
-    import os
-    import shutil
-
-    src = Path(__file__).resolve().parent / SCRIPT_NAME
-    if not src.is_file():
-        raise FileNotFoundError(f"Missing cron script source: {src}")
-
-    if profile and profile.lower() != "default":
-        home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        # Installer runs from default shell — resolve profile home explicitly.
-        profiles_root = Path.home() / ".hermes" / "profiles"
-        home = profiles_root / profile
-    else:
-        home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-
-    scripts_dir = home / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    dest = scripts_dir / SCRIPT_NAME
-    shutil.copy2(src, dest)
-    return dest
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", default="job-seeker", help="Hermes profile for cron")
+    parser.add_argument("--profile", default="secretary")
+    parser.add_argument("--telegram-chat-id", default="")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    OPS_DIR.mkdir(parents=True, exist_ok=True)
-    (OPS_DIR / "reports").mkdir(exist_ok=True)
-    (OPS_DIR / "applications").mkdir(exist_ok=True)
-    seen = OPS_DIR / "seen.json"
-    if not seen.exists():
-        seen.write_text("[]\n", encoding="utf-8")
+    origin = None
+    if args.telegram_chat_id.strip():
+        origin = {
+            "platform": "telegram",
+            "chat_id": args.telegram_chat_id.strip(),
+            "chat_name": "Home",
+            "thread_id": None,
+        }
 
     jobs_path = _hermes_home() / "cron" / "jobs.json"
     store = _load_jobs(jobs_path)
     jobs = store.setdefault("jobs", [])
-    new_job = build_job(profile=args.profile)
+    new_job = build_job(profile=args.profile, telegram_origin=origin)
 
     replaced = False
     for i, job in enumerate(jobs):
@@ -137,11 +118,8 @@ def main() -> int:
         print(json.dumps(new_job, ensure_ascii=False, indent=2))
         return 0
 
-    deployed = _deploy_cron_script(args.profile)
     _save_jobs(jobs_path, store)
     print(f"{'Updated' if replaced else 'Added'} cron job {JOB_ID} in {jobs_path}")
-    print(f"Deployed script: {deployed}")
-    print("Schedule: 09:00 and 18:00 daily - no_agent script -> Telegram digest")
     return 0
 
 

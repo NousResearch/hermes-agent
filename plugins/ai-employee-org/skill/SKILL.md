@@ -35,7 +35,7 @@ parallel subtasks inside a turn.
 
 ## How to Run
 
-### 0. Recommended: bundled plugin (Hermes repo)
+### 0. Recommended: this plugin (bundled in Hermes repo)
 
 ```powershell
 hermes plugins enable ai-employee-org
@@ -44,11 +44,7 @@ hermes ai-employees status
 hermes gateway run
 ```
 
-This enables the plugin, creates five profiles, kanban board `ai-company`, ops dirs,
-operator stack overlay, bundled skill, and five role crons (job-seeker uses
-`no_agent` script → Telegram digest).
-
-See `plugins/ai-employee-org/README.md` for CLI reference.
+See `plugins/ai-employee-org/README.md` for full CLI reference.
 
 ### 1. Bootstrap profiles and board (manual / legacy)
 

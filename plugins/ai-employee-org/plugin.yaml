@@ -1,0 +1,9 @@
+name: ai-employee-org
+version: 1.0.0
+description: "Five-role AI employee org: profiles, kanban, crons, Telegram job digests."
+author: "zapabobouj, Hermes integration"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows

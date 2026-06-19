@@ -1,0 +1,49 @@
+# AI employee + async subagent routing with 429 failover.
+# Apply with:
+#   py -3 scripts/apply_operator_stack.py --stack-file config/operator/ai-employee-stack.yaml
+
+model:
+  provider: openai-codex
+  default: gpt-5.5-low
+  base_url: ''
+  api_key: ''
+  api_mode: codex_responses
+  max_tokens: 8192
+
+agent:
+  reasoning_effort: low
+  api_max_retries: 2
+
+# Synchronous and background subagents start on NVIDIA, then inherit the
+# fallback_providers chain below for automatic 429 rotation.
+delegation:
+  provider: nvidia
+  model: nvidia/nemotron-3-super-120b-a12b
+  reasoning_effort: none
+  max_concurrent_children: 3
+  max_async_children: 5
+  max_spawn_depth: 2
+  orchestrator_enabled: true
+
+# Main and subagents rotate through this chain after provider failures such as
+# 429 rate limits. The first NVIDIA entry is skipped automatically if a child
+# is already running on the same provider/model.
+fallback_providers:
+  - provider: nvidia
+    model: nvidia/nemotron-3-super-120b-a12b
+  - provider: nous
+    model: nvidia/nemotron-3-ultra-550b-a55b:free
+  - provider: nous
+    model: nvidia/nemotron-3-super-120b-a12b:free
+  - provider: nous
+    model: auto-free
+  - provider: custom
+    base_url: http://127.0.0.1:8080/v1
+    model: huihui-gemma-4-12b
+    key_env: LOCAL_API_KEY
+
+kanban:
+  dispatch_in_gateway: true
+  orchestrator_profile: secretary
+  dispatch_interval_seconds: 60
+  failure_limit: 2

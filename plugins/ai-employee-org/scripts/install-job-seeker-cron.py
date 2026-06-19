@@ -109,6 +109,7 @@ def _deploy_cron_script(profile: str) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", default="job-seeker", help="Hermes profile for cron")
+    parser.add_argument("--telegram-chat-id", default="", help="Telegram chat_id for delivery")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -122,7 +123,15 @@ def main() -> int:
     jobs_path = _hermes_home() / "cron" / "jobs.json"
     store = _load_jobs(jobs_path)
     jobs = store.setdefault("jobs", [])
-    new_job = build_job(profile=args.profile)
+    origin = None
+    if args.telegram_chat_id.strip():
+        origin = {
+            "platform": "telegram",
+            "chat_id": args.telegram_chat_id.strip(),
+            "chat_name": "Home",
+            "thread_id": None,
+        }
+    new_job = build_job(profile=args.profile, telegram_origin=origin)
 
     replaced = False
     for i, job in enumerate(jobs):

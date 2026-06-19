@@ -87,12 +87,23 @@ class TestInPlaceCompaction:
             row = db.get_session(sid)
             assert row["end_reason"] is None
             assert row["title"] == "my-research"
-            # Pre-compaction messages remain under the one id (FTS continuity).
-            assert row["message_count"] >= 8
-            # Flush cursor must NOT be reset to 0. Rotation resets it (a fresh
-            # row starts empty); in-place keeps writing to the same row, so the
-            # cursor only ever advances as current-turn messages are persisted.
-            assert agent._last_flushed_db_idx != 0
+            # DURABLE REPLACE (the core invariant): the persisted transcript is
+            # now the COMPACTED set, not "full history + summary". A resume must
+            # reload the compacted transcript so compaction actually shrinks the
+            # session and doesn't immediately re-compact (#38763).
+            reloaded = db.get_messages_as_conversation(sid)
+            assert len(reloaded) == 2
+            assert [m.get("content") for m in reloaded] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
+            assert row["message_count"] == 2
+            # Flush identity/cursor reset so next-turn appends diff against the
+            # compacted transcript (rebuilds the identity set on next flush).
+            assert agent._last_flushed_db_idx == 0
+            assert agent._flushed_db_message_ids == set()
+            # Rotation-independent in-place signal set for the gateway.
+            assert agent._last_compaction_in_place is True
             # Transcript actually shrank.
             assert len(compressed) == 2
 
@@ -143,6 +154,37 @@ class TestRotationStillDefault:
             assert child[0]["title"] == "my-research #2"
             # Flush cursor reset for the new row.
             assert agent._last_flushed_db_idx == 0
+            # Rotation mode does NOT set the in-place signal.
+            assert getattr(agent, "_last_compaction_in_place", False) is False
+
+
+class TestInPlaceSignalForGateway:
+    """compress_context must expose a rotation-independent flag the gateway can
+    read (instead of an id-change diff) to re-baseline transcript handling."""
+
+    def test_signal_set_on_in_place_unset_on_rotation(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            # in-place → flag True
+            _seed(db, "s_ip", "ip")
+            a_ip = _make_agent(db, "s_ip", in_place=True)
+            compress_context(
+                a_ip, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+            assert a_ip._last_compaction_in_place is True
+
+            # rotation → flag False
+            _seed(db, "s_rot", "rot")
+            a_rot = _make_agent(db, "s_rot", in_place=False)
+            compress_context(
+                a_rot, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+            assert a_rot._last_compaction_in_place is False
 
 
 class TestInPlaceConfigDefault:

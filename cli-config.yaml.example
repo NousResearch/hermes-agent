@@ -735,6 +735,11 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#
+# Feishu-specific settings (config.yaml top-level, not under platforms:):
+#
+# feishu:
+#   allow_empty_at_reply: false      # When true, keep a reply-to message alive even if only the @mention remains after text stripping
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

@@ -395,6 +395,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    allow_empty_at_reply: bool = False
 
 
 @dataclass
@@ -1575,6 +1576,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            allow_empty_at_reply=_to_boolean(
+                extra.get("allow_empty_at_reply", os.getenv("FEISHU_ALLOW_EMPTY_AT_REPLY", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1607,6 +1611,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._allow_empty_at_reply = settings.allow_empty_at_reply
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3107,21 +3112,6 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> None:
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
 
-        if inbound_type == MessageType.TEXT:
-            text = _strip_edge_self_mentions(text, mentions)
-            if text.startswith("/"):
-                inbound_type = MessageType.COMMAND
-
-        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
-        if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
-
-        if inbound_type != MessageType.COMMAND:
-            hint = _build_mention_hint(mentions)
-            if hint:
-                text = f"{hint}\n\n{text}" if text else hint
-
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
@@ -3130,6 +3120,26 @@ class FeishuAdapter(BasePlatformAdapter):
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+
+        if inbound_type == MessageType.TEXT:
+            text = _strip_edge_self_mentions(text, mentions)
+            if text.startswith("/"):
+                inbound_type = MessageType.COMMAND
+
+        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
+        # Optional exception: keep an explicit reply alive so reply_to_text can
+        # still provide the missing context for a mention-only ping.
+        if inbound_type == MessageType.TEXT and not text and not media_urls:
+            if reply_to_message_id and self._allow_empty_at_reply:
+                text = "[Replying to the quoted message without additional text]"
+            else:
+                logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+                return
+
+        if inbound_type != MessageType.COMMAND:
+            hint = _build_mention_hint(mentions)
+            if hint:
+                text = f"{hint}\n\n{text}" if text else hint
 
         sender_primary = (
             getattr(sender_id, "open_id", None)

@@ -78,6 +78,31 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_xxx",
+        "FEISHU_APP_SECRET": "secret_xxx",
+        "FEISHU_ALLOW_EMPTY_AT_REPLY": "true",
+    }, clear=False)
+    def test_feishu_allow_empty_at_reply_loaded_from_env(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        self.assertTrue(adapter._allow_empty_at_reply)
+
+    def test_feishu_yaml_allow_empty_at_reply_loaded_into_platform_extra(self):
+        from gateway.config import Platform, load_gateway_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text("feishu:\n  allow_empty_at_reply: true\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("gateway.config.get_hermes_home", return_value=Path(tmpdir)):
+                    config = load_gateway_config()
+
+            self.assertTrue(config.platforms[Platform.FEISHU].extra["allow_empty_at_reply"])
+
 
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
@@ -4421,6 +4446,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._bot_open_id = "ou_bot"
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
+        adapter._allow_empty_at_reply = False
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
         adapter._fetch_message_text = AsyncMock(return_value=None)
         adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
@@ -4595,6 +4621,94 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             )
         )
         adapter._dispatch_inbound_event.assert_not_called()
+
+    def test_mention_only_reply_keeps_quoted_context(self):
+        adapter = self._build_adapter()
+        adapter._allow_empty_at_reply = True
+        message = SimpleNamespace(
+            content=json.dumps({"text": ""}),
+            message_type="text",
+            message_id="m_reply",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="om_parent",
+            upper_message_id=None,
+            root_id=None,
+            thread_id=None,
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="p2p",
+                message_id="m_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+        self.assertEqual(event.reply_to_text, "父消息内容")
+        self.assertIn("Replying to the quoted message", event.text)
+
+    def test_mention_only_reply_is_dropped_by_default(self):
+        adapter = self._build_adapter()
+        adapter._allow_empty_at_reply = False
+        message = SimpleNamespace(
+            content=json.dumps({"text": ""}),
+            message_type="text",
+            message_id="m_reply_default_drop",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="om_parent",
+            upper_message_id=None,
+            root_id=None,
+            thread_id=None,
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="p2p",
+                message_id="m_reply_default_drop",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_not_called()
+
+    def test_parent_reply_text_is_fetched(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "reply"}),
+            message_type="text",
+            message_id="m_reply_fetch",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="om_parent",
+            upper_message_id=None,
+            root_id=None,
+            thread_id=None,
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="p2p",
+                message_id="m_reply_fetch",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+        self.assertEqual(event.reply_to_text, "父消息内容")
 
 
 class TestFeishuFetchMessageText(unittest.TestCase):

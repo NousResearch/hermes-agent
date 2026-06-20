@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -93,7 +94,10 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
+    cache_audio_from_bytes,
+    cache_image_from_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -1392,6 +1396,311 @@ class DingTalkAdapter(BasePlatformAdapter):
                 line = line[indent:]
             out.append(line)
         return "\n".join(out)
+
+    # -- Media sending -------------------------------------------------------
+
+    _UPLOAD_SIZE_LIMITS = {
+        "image": 20 * 1024 * 1024,
+        "voice": 2 * 1024 * 1024,
+        "file": 20 * 1024 * 1024,
+        "video": 20 * 1024 * 1024,
+    }
+
+    async def _upload_media(self, file_path: str, media_type: str) -> Optional[str]:
+        """Upload media to DingTalk server, return media_id."""
+        token = await self._get_access_token()
+        if not token or not self._http_client:
+            return None
+
+        file_size = os.path.getsize(file_path)
+        max_size = self._UPLOAD_SIZE_LIMITS.get(media_type, 20 * 1024 * 1024)
+        if file_size > max_size:
+            logger.warning(
+                "[%s] File too large: %s (%d bytes, limit %d for %s)",
+                self.name, file_path, file_size, max_size, media_type,
+            )
+            return None
+
+        try:
+            url = "https://oapi.dingtalk.com/media/upload"
+            params = {"access_token": token, "type": media_type}
+            with open(file_path, "rb") as f:
+                file_data = f.read()
+            file_name = os.path.basename(file_path)
+            files = {"media": (file_name, file_data)}
+            resp = await self._http_client.post(url, params=params, files=files)
+            result = resp.json()
+            if result.get("errcode") == 0:
+                return result.get("media_id")
+            logger.error("[%s] Media upload failed: %s", self.name, result)
+            return None
+        except Exception as e:
+            logger.error("[%s] Media upload error: %s", self.name, e)
+            return None
+
+    def _get_chat_context(self, chat_id: str) -> tuple[bool, str]:
+        """Return (is_group, sender_staff_id) from stored message context."""
+        msg = self._message_contexts.get(chat_id)
+        if msg:
+            conv_type = getattr(msg, "conversation_type", "1")
+            is_group = str(conv_type) == "2"
+            sender_staff_id = getattr(msg, "sender_staff_id", "") or ""
+            return is_group, sender_staff_id
+        return False, chat_id
+
+    async def _send_proactive_media(
+        self,
+        chat_id: str,
+        media_id: str,
+        msg_key: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send media via DingTalk proactive message API."""
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="No access token")
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        is_group, sender_staff_id = self._get_chat_context(chat_id)
+
+        url = (
+            "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+            if is_group
+            else "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+        )
+
+        payload: Dict[str, Any] = {
+            "robotCode": self._robot_code,
+            "msgKey": msg_key,
+            "msgParam": json.dumps(extra or {}),
+        }
+        if is_group:
+            payload["openConversationId"] = chat_id
+        else:
+            payload["userIds"] = [sender_staff_id or chat_id]
+
+        try:
+            resp = await self._http_client.post(
+                url,
+                headers={
+                    "x-acs-dingtalk-access-token": token,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                data = resp.json()
+                errcode = data.get("errcode", 0)
+                if errcode == 0:
+                    logger.info("[%s] Proactive media sent: %s to %s", self.name, msg_key, chat_id)
+                    return SendResult(success=True, message_id=data.get("processQueryKey", ""))
+                logger.warning("[%s] Proactive media error: %s", self.name, data)
+                return SendResult(success=False, error=f"DingTalk error: {data}")
+            logger.warning("[%s] Proactive media HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.error("[%s] Proactive media exception: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send image via markdown embed (for URLs) or proactive API (for media_ids)."""
+        metadata = metadata or {}
+        if image_url.startswith("@"):
+            result = await self._send_proactive_media(
+                chat_id, image_url, "sampleImageMsg",
+                extra={"photoURL": image_url},
+            )
+            if result.success and caption:
+                await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            return result
+        content = f"![image]({image_url})"
+        if caption:
+            content = f"{caption}\n\n{content}"
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload local image and send via proactive API."""
+        metadata = metadata or {}
+        media_id = await self._upload_media(image_path, "image")
+        if media_id:
+            result = await self._send_proactive_media(
+                chat_id, media_id, "sampleImageMsg",
+                extra={"photoURL": media_id},
+            )
+            if result.success and caption:
+                await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            return result
+        text = f"Image: {os.path.basename(image_path)}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send animated GIF via proactive API (sampleImageMsg) for inline playback."""
+        metadata = metadata or {}
+        temp_path = None
+        try:
+            local_path = animation_url
+            if animation_url.startswith(("http://", "https://")):
+                if not self._http_client:
+                    return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+                resp = await self._http_client.get(animation_url, timeout=30.0)
+                resp.raise_for_status()
+                suffix = ".gif" if ".gif" in animation_url.lower() else ".dat"
+                fd, temp_path = tempfile.mkstemp(suffix=suffix)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(resp.content)
+                local_path = temp_path
+
+            if not os.path.exists(local_path):
+                return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+
+            media_id = await self._upload_media(local_path, "image")
+            if not media_id:
+                return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+
+            result = await self._send_proactive_media(
+                chat_id, media_id, "sampleImageMsg",
+                extra={"photoURL": media_id},
+            )
+            if result.success and caption:
+                await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            return result
+        except Exception as e:
+            logger.warning("[%s] send_animation failed, falling back to send_image: %s", self.name, e)
+            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send audio as a native DingTalk voice message via proactive API."""
+        if not os.path.exists(audio_path):
+            return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+
+        media_id = await self._upload_media(audio_path, "voice")
+        if not media_id:
+            return await super().send_voice(chat_id, audio_path, caption, reply_to)
+
+        duration_ms = await self._get_audio_duration_ms(audio_path)
+        return await self._send_proactive_media(
+            chat_id, media_id, "sampleAudio",
+            extra={"mediaId": media_id, "duration": str(duration_ms)},
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a video natively via DingTalk proactive API."""
+        if not os.path.exists(video_path):
+            return SendResult(success=False, error=f"Video file not found: {video_path}")
+
+        media_id = await self._upload_media(video_path, "video")
+        if not media_id:
+            return await super().send_video(chat_id, video_path, caption, reply_to)
+
+        filename = os.path.basename(video_path)
+        ext = os.path.splitext(video_path)[1].lstrip(".") or "mp4"
+        return await self._send_proactive_media(
+            chat_id, media_id, "sampleVideo",
+            extra={"mediaId": media_id, "videoName": filename, "videoType": ext},
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload file and send via proactive API."""
+        display_name = file_name or os.path.basename(file_path)
+        media_id = await self._upload_media(file_path, "file")
+        if media_id:
+            ext = os.path.splitext(file_path)[1].lstrip(".") or ""
+            result = await self._send_proactive_media(
+                chat_id, media_id, "sampleFile",
+                extra={"mediaId": media_id, "fileName": display_name, "fileType": ext},
+            )
+            if result.success and caption:
+                await self.send(chat_id, caption, reply_to=reply_to)
+            return result
+        text = f"File: {display_name}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id, text, reply_to=reply_to)
+
+    async def _get_audio_duration_ms(self, file_path: str) -> int:
+        """Estimate audio duration in ms via ffprobe, fallback 1000."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                "-of", "csv=p=0", file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                return int(float(stdout.decode().strip()) * 1000)
+        except (FileNotFoundError, ValueError):
+            pass
+        return 1000
+
+    # -- Lifecycle hooks (emoji reactions) -----------------------------------
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """No-op — Thinking emoji is fired in _IncomingHandler.process()."""
+        pass
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Handle CANCELLED case where no send() occurs to fire Done."""
+        if outcome == ProcessingOutcome.CANCELLED:
+            chat_id = event.source.chat_id
+            self._fire_done_reaction(chat_id)
 
 
 # ---------------------------------------------------------------------------

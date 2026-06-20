@@ -708,6 +708,16 @@ PLATFORM_HINTS = {
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
     ),
+    "dingtalk": (
+        "You are on DingTalk (钉钉). Markdown formatting is supported for your responses. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Images (.png, .jpg, .webp) "
+        "are sent as native photos, audio (.ogg, .mp3, .wav) sends as voice messages, "
+        "videos (.mp4) play inline, and other files (.pdf, .html, .docx, etc.) arrive as "
+        "downloadable documents. You can also include image URLs in markdown format "
+        "![alt](url) and they will be sent as native photos. Do NOT use the send_message "
+        "tool for file delivery — put MEDIA: tags directly in your response text."
+    ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "

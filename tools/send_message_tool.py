@@ -900,15 +900,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
-                f"target {platform.value} had only media attachments"
+                    f"send_message MEDIA delivery is not supported for {platform.value}. "
+                f"Instead, include MEDIA:/absolute/path/to/file directly in your response text "
+                f"and the gateway will deliver it as a native attachment."
             )
         }
     warning = None
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "include MEDIA:/path tags in your response text instead of using send_message."
         )
 
     last_result = None

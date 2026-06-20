@@ -4539,6 +4539,51 @@ def run_conversation(
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
+
+    # ── pre_response_delivery hook gate ────────────────────────────────
+    # Plugins can inspect conversation_history and block delivery if
+    # required tool calls are missing. If a hook returns
+    # {"action": "block", "message": "..."}, the turn is re-entered with
+    # the block reason injected as a user correction. Max one retry.
+    _response_retried = False
+    if final_response and not interrupted and not _response_retried:
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook, has_hook as _has_hook
+            if _has_hook("pre_response_delivery"):
+                _hook_results = _invoke_hook(
+                    "pre_response_delivery",
+                    session_id=agent.session_id,
+                    turn_id=turn_id,
+                    user_message=user_message,
+                    final_response=final_response,
+                    conversation_history=list(messages),
+                    platform=getattr(agent, "platform", None) or "",
+                )
+                for _result in _hook_results:
+                    if isinstance(_result, dict) and _result.get("action") == "block":
+                        _reason = _result.get("message", "Blocked by pre_response_delivery hook")
+                        logger.info(
+                            "pre_response_delivery: BLOCKED — %s (session=%s)",
+                            _reason, agent.session_id,
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"⚠️ Your response was blocked before delivery: {_reason}\n\n"
+                                "Please regenerate your response with ALL required "
+                                "delivery steps before composing text."
+                            ),
+                        })
+                        final_response = None
+                        _response_retried = True
+                        break
+        except Exception as exc:
+            logger.warning("pre_response_delivery hook failed: %s", exc)
+            _response_retried = True  # Prevent retry loop on hook error
+
+    if _response_retried:
+        continue  # Re-enter the tool-calling loop with correction injected
+
     from agent.turn_finalizer import finalize_turn
     return finalize_turn(
         agent,

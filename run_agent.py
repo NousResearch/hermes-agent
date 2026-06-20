@@ -1109,7 +1109,10 @@ class AIAgent:
         cfg = get_provider_request_timeout(self.provider, self.model)
         if cfg is not None:
             return cfg
-        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        try:
+            return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        except (TypeError, ValueError):
+            return 1800.0
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.

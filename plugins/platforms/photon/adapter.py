@@ -220,6 +220,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
+        self._sidecar_restart_lock = asyncio.Lock()
         self._inbound_task: Optional[asyncio.Task] = None
         self._inbound_running = False
         self._http_client: Optional["httpx.AsyncClient"] = None
@@ -399,6 +400,7 @@ class PhotonAdapter(BasePlatformAdapter):
         backoff = 1.0
         while self._inbound_running:
             try:
+                await self._ensure_sidecar_running()
                 async with client.stream(
                     "GET", url, headers=headers, timeout=None,
                 ) as resp:
@@ -825,6 +827,40 @@ class PhotonAdapter(BasePlatformAdapter):
             f"Photon sidecar did not become ready within 15s: {last_err}"
         )
 
+    async def _ensure_sidecar_running(self) -> None:
+        """Restart the supervised sidecar if it exited after initial connect."""
+        if not self._autostart_sidecar:
+            return
+        proc = self._sidecar_proc
+        if proc is not None and proc.poll() is None:
+            return
+        async with self._sidecar_restart_lock:
+            proc = self._sidecar_proc
+            if proc is not None and proc.poll() is None:
+                return
+            exit_code = proc.returncode if proc is not None else None
+            logger.warning(
+                "[photon] sidecar exited%s; restarting before reconnecting inbound stream",
+                f" with code {exit_code}" if exit_code is not None else "",
+            )
+            self._sidecar_proc = None
+            if self._sidecar_supervisor_task is not None:
+                self._sidecar_supervisor_task.cancel()
+                self._sidecar_supervisor_task = None
+            await self._start_sidecar()
+
+    async def _restart_sidecar_for_outbound_error(self, reason: str) -> None:
+        """Force a clean sidecar restart after a recoverable outbound transport fault."""
+        if not self._autostart_sidecar:
+            return
+        async with self._sidecar_restart_lock:
+            logger.warning(
+                "[photon] restarting sidecar after recoverable outbound error: %s",
+                reason,
+            )
+            await self._stop_sidecar()
+            await self._start_sidecar()
+
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:
         """Pump the sidecar's stdout/stderr into our logger."""
         if proc.stdout is None:  # subprocess was launched without stdout=PIPE
@@ -892,7 +928,40 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        """Send one text message through the sidecar.
+
+        Cron live-delivery calls adapter.send() directly, bypassing the
+        gateway response retry wrapper.  Keep recoverable sidecar restart logic
+        at this lowest text-send layer so cron, tools, and agent replies all
+        share it.
+        """
+        text = self.format_message(content)
+        result = await self._sidecar_send(chat_id, text)
+        if result.success or not self._is_recoverable_outbound_drop(result.error or ""):
+            return result
+        try:
+            await self._restart_sidecar_for_outbound_error(
+                "upstream_connection_dropped during direct /send"
+            )
+        except Exception as e:
+            logger.warning(
+                "[photon] sidecar restart after direct outbound drop failed: %s",
+                e,
+            )
+            return result
+        recovered = await self._sidecar_send(chat_id, text)
+        if recovered.success:
+            logger.info("[photon] recovered direct outbound send after sidecar restart")
+            return recovered
+        return recovered
+
+    @staticmethod
+    def _is_recoverable_outbound_drop(error_str: str) -> bool:
+        return (
+            "error_code=upstream_connection_dropped" in error_str
+            or "upstream_connection_dropped" in error_str
+            or "[upstream] Connection dropped" in error_str
+        )
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -1215,6 +1284,31 @@ class PhotonAdapter(BasePlatformAdapter):
             return result
 
         error_str = result.error or ""
+        if "error_code=upstream_connection_dropped" in error_str:
+            try:
+                await self._restart_sidecar_for_outbound_error(
+                    "upstream_connection_dropped during /send"
+                )
+            except Exception as e:
+                logger.warning(
+                    "[photon] sidecar restart after outbound drop failed: %s",
+                    e,
+                )
+            else:
+                recovered = await self.send(
+                    chat_id=chat_id,
+                    content=text,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if recovered.success:
+                    logger.info(
+                        "[photon] recovered outbound send after sidecar restart"
+                    )
+                    return recovered
+                error_str = recovered.error or error_str
+                result = recovered
+
         is_network = result.retryable or self._is_retryable_error(error_str)
         if not is_network and self._is_timeout_error(error_str):
             return result
@@ -1340,14 +1434,23 @@ class PhotonAdapter(BasePlatformAdapter):
         headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=body, headers=headers)
+        payload: Dict[str, Any] = {}
+        try:
+            payload = resp.json() or {}
+        except Exception:
+            payload = {}
         if resp.status_code != 200:
+            error_code = payload.get("error_code")
+            suffix = f" error_code={error_code}" if error_code else ""
             raise RuntimeError(
-                f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
+                f"Photon sidecar {path} returned {resp.status_code}{suffix}: {resp.text[:200]}"
             )
-        data = resp.json() or {}
+        data = payload
         if not data.get("ok"):
+            error_code = data.get("error_code")
+            suffix = f" error_code={error_code}" if error_code else ""
             raise RuntimeError(
-                f"Photon sidecar {path} reported error: {data.get('error')}"
+                f"Photon sidecar {path} reported error{suffix}: {data.get('error')}"
             )
         return data
 

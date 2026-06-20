@@ -57,6 +57,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
+import { isFatalInboundStreamError, classifyRecoverableOutboundError } from "./fatal-errors.mjs";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
@@ -80,6 +81,8 @@ const E164_RE = /^\+\d{6,}$/;
 const MAX_KNOWN_SPACES = 2048;
 const MAX_KNOWN_MESSAGES = 1024;
 const MAX_REACTION_HANDLES = 512;
+const FATAL_INBOUND_EXIT_CODE = 75;
+let fatalInboundExitScheduled = false;
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -143,6 +146,39 @@ const app = await Spectrum({
   options: { flattenGroups: true },
   telemetry,
 });
+
+async function stopAppForFatalInboundExit() {
+  try {
+    await Promise.race([
+      app.stop(),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch {
+    /* best effort */
+  }
+}
+
+function scheduleFatalInboundExit(reason) {
+  if (fatalInboundExitScheduled) return;
+  fatalInboundExitScheduled = true;
+  console.error(
+    "photon-sidecar: fatal inbound stream error; exiting so Hermes can " +
+      "restart a clean sidecar: " +
+      String(reason || "unknown")
+  );
+  setTimeout(async () => {
+    await stopAppForFatalInboundExit();
+    process.exit(FATAL_INBOUND_EXIT_CODE);
+  }, 0).unref?.();
+}
+
+const originalConsoleError = console.error.bind(console);
+console.error = (...args) => {
+  originalConsoleError(...args);
+  if (isFatalInboundStreamError(args.join(" "))) {
+    scheduleFatalInboundExit(args.join(" "));
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
@@ -365,6 +401,9 @@ async function normalizeEvent(space, message) {
       }
       console.error("photon-sidecar: inbound stream ended — re-subscribing");
     } catch (e) {
+      if (isFatalInboundStreamError(e)) {
+        scheduleFatalInboundExit(e && e.message ? e.message : String(e));
+      }
       console.error(
         "photon-sidecar: inbound stream errored — restarting: " +
           (e && e.message ? e.message : String(e))
@@ -416,13 +455,16 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-function serverError(res) {
+function serverError(res, details = {}) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
   // Don't leak stack traces or raw exception text to the caller — even
-  // though we listen on loopback, the supervisor logs the real error
-  // and the client only needs a generic failure signal.
-  res.end(JSON.stringify({ ok: false, error: "internal sidecar error" }));
+  // though we listen on loopback, the supervisor logs the real error.
+  // We do return a tiny machine-readable code so the Python adapter can
+  // distinguish recoverable upstream transport drops from permanent failures.
+  res.end(
+    JSON.stringify({ ok: false, error: "internal sidecar error", ...details })
+  );
 }
 
 function ok(res, data) {
@@ -665,9 +707,10 @@ const server = http.createServer(async (req, res) => {
       "photon-sidecar: handler error: " +
         (e && e.stack ? e.stack : String(e))
     );
+    const recoverable = classifyRecoverableOutboundError(e);
     // serverError() intentionally returns a generic message — see its
     // body for the rationale.
-    return serverError(res);
+    return serverError(res, recoverable ? { error_code: recoverable } : {});
   }
 });
 

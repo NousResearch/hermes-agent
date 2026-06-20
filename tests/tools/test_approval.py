@@ -375,6 +375,12 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_windows_absolute_home_bashrc(self, monkeypatch):
+        monkeypatch.setenv("HOME", r"C:\Users\alice")
+        dangerous, key, desc = detect_dangerous_command(r"echo x | tee C:\Users\alice\.bashrc")
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_custom_hermes_home_env(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
         assert dangerous is True
@@ -443,6 +449,14 @@ class TestHermesConfigWriteProtection:
         env_path = get_hermes_home() / ".env"
         dangerous, key, desc = detect_dangerous_command(
             f"sed -i 's/API_KEY=.*/API_KEY=x/' {env_path}"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_sed_in_place_windows_absolute_hermes_home_config(self, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", r"C:\Users\alice\.hermes")
+        dangerous, key, desc = detect_dangerous_command(
+            r"sed -i 's/manual/off/' C:\Users\alice\.hermes\config.yaml"
         )
         assert dangerous is True
         assert "hermes config" in desc.lower() or "in-place" in desc.lower()
@@ -572,6 +586,14 @@ class TestSensitiveRedirectPattern:
         assert dangerous is True
         assert key is not None
 
+    def test_append_to_windows_absolute_home_ssh_authorized_keys(self, monkeypatch):
+        monkeypatch.setenv("HOME", r"C:\Users\alice")
+        dangerous, key, desc = detect_dangerous_command(
+            r"cat key >> C:\Users\alice\.ssh\authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
     def test_append_to_tilde_ssh_authorized_keys(self):
         dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
         assert dangerous is True
@@ -594,6 +616,12 @@ class TestSensitiveRedirectPattern:
 
     def test_redirect_to_other_absolute_home_bashrc_is_not_current_user_sensitive(self):
         dangerous, key, desc = detect_dangerous_command("echo x > /tmp/not-current-home/.bashrc")
+        assert dangerous is False
+        assert key is None
+
+    def test_redirect_to_other_windows_home_bashrc_is_not_current_user_sensitive(self, monkeypatch):
+        monkeypatch.setenv("HOME", r"C:\Users\alice")
+        dangerous, key, desc = detect_dangerous_command(r"echo x > C:\Users\bob\.bashrc")
         assert dangerous is False
         assert key is None
 

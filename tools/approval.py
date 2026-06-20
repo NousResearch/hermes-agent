@@ -570,6 +570,10 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Fold Windows absolute home/profile paths before stripping shell backslash
+    # escapes below. Otherwise `C:\Users\alice\.bashrc` is reduced to
+    # `C:Usersalice.bashrc` before the sensitive-path fragments can see it.
+    command = _rewrite_windows_sensitive_paths(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
@@ -587,6 +591,74 @@ def _normalize_command_for_detection(command: str) -> str:
     # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
     # after this module is imported — as the hermetic test conftest does.
     command = _rewrite_resolved_hermes_home(command)
+    return command
+
+
+def _windows_absolute_path_to_slash(path: str) -> str | None:
+    """Return a slash-normalized Windows drive path, or None for non-Windows paths."""
+    candidate = (path or "").strip().strip('"\'')
+    if not re.match(r'^[a-zA-Z]:[\\/]', candidate):
+        return None
+    return candidate.replace("\\", "/").rstrip("/")
+
+
+def _replace_windows_prefix(command: str, prefix: str, replacement: str) -> str:
+    """Replace a Windows absolute path prefix with a canonical sensitive fragment.
+
+    This is intentionally prefix-scoped to the live HOME / HERMES_HOME values;
+    it does not make every arbitrary C:\\... path sensitive. Rewriting runs
+    before shell-backslash unescaping so Windows separators are not destroyed.
+    """
+    normalized_prefix = _windows_absolute_path_to_slash(prefix)
+    if not normalized_prefix:
+        return command
+
+    # First normalize drive-absolute path tokens in the command so both
+    # C:\Users\alice\.bashrc and C:/Users/alice/.bashrc compare the same way.
+    # Stop at shell separators/quotes/whitespace; quoted paths with spaces are
+    # outside the existing approval regex coverage but still no worse than before.
+    def _normalize_match(match: re.Match[str]) -> str:
+        return match.group(0).replace("\\", "/")
+
+    command = re.sub(
+        r'(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/][^\s"\'`|;&<>]*)',
+        _normalize_match,
+        command,
+    )
+
+    pattern = re.compile(re.escape(normalized_prefix) + r'(?=/|$)', re.IGNORECASE)
+    return pattern.sub(replacement.rstrip("/"), command)
+
+
+def _rewrite_windows_sensitive_paths(command: str) -> str:
+    """Fold Windows HOME/HERMES_HOME absolute paths into existing fragments.
+
+    The dangerous-command regexes are intentionally expressed in canonical
+    shell-ish forms (``~/.bashrc``, ``~/.ssh/``, ``~/.hermes/config.yaml``).
+    On Windows, commands frequently contain drive-absolute targets instead.
+    Normalize only the live user's HOME and active profile HERMES_HOME so these
+    equivalent sensitive targets hit the same patterns without broadening the
+    detector to unrelated users' files.
+    """
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    command = _replace_windows_prefix(command, home, "~")
+
+    hermes_candidates: list[str] = []
+    env_home = os.environ.get("HERMES_HOME")
+    if env_home:
+        hermes_candidates.append(env_home)
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_candidates.append(str(get_hermes_home().expanduser()))
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    for candidate in hermes_candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        command = _replace_windows_prefix(command, candidate, "~/.hermes")
     return command
 
 

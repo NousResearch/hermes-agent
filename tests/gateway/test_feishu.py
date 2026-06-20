@@ -2798,6 +2798,79 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_chunk_send_failure_continues_with_remaining_chunks(self):
+        """A failed chunk must not interrupt other chunks."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # Force truncate_message to produce 3 chunks
+        adapter.MAX_MESSAGE_LENGTH = 50
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                # Second chunk fails with a generic error
+                if len(captured["calls"]) == 2:
+                    raise RuntimeError("network timeout")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id=f"om_{len(captured['calls'])}"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr sss"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        # All 3 chunks should have been attempted despite chunk 2 failing
+        self.assertEqual(len(captured["calls"]), 3)
+        # Last chunk succeeded → overall success
+        self.assertTrue(result.success)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_all_chunks_fail_returns_failure(self):
+        """When every chunk fails, send returns failure."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.MAX_MESSAGE_LENGTH = 50
+
+        class _MessageAPI:
+            def create(self, request):
+                raise RuntimeError("connection refused")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr sss"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertFalse(result.success)
+        self.assertIn("connection refused", result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_advanced_markdown_lines(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

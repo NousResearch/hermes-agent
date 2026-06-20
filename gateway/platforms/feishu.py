@@ -1786,47 +1786,70 @@ class FeishuAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
-        try:
-            for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
-                try:
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type=msg_type,
-                        payload=payload,
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
+        chunk_errors: list[str] = []
+        for chunk in chunks:
+            msg_type, payload = self._build_outbound_payload(chunk)
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type=msg_type,
+                    payload=payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
+                    try:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    except Exception as fallback_exc:
+                        chunk_errors.append(str(fallback_exc))
+                        logger.warning("[Feishu] Chunk send failed after fallback: %s", fallback_exc)
+                        continue
+                else:
+                    chunk_errors.append(str(exc))
+                    logger.warning("[Feishu] Chunk send failed: %s", exc)
+                    continue
+            else:
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                last_response = response
+                    try:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    except Exception as fallback_exc:
+                        chunk_errors.append(str(fallback_exc))
+                        logger.warning("[Feishu] Chunk send failed after response fallback: %s", fallback_exc)
+                        continue
 
+            if self._response_succeeded(response):
+                last_response = response
+            else:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "send failed")
+                err_msg = f"[{code}] {msg}"
+                chunk_errors.append(err_msg)
+                logger.warning("[Feishu] Chunk send unsuccessful: %s", err_msg)
+
+        if last_response is not None:
             return self._finalize_send_result(last_response, "send failed")
-        except Exception as exc:
-            logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+        if chunk_errors:
+            return SendResult(success=False, error=chunk_errors[-1])
+        return SendResult(success=False, error="send failed: no chunks")
 
     async def edit_message(
         self,

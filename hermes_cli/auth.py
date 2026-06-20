@@ -1139,6 +1139,36 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     return auth_file
 
 
+def _load_provider_state_with_source(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
+    """Return a provider state plus the auth.json path it came from.
+
+    Most callers only need the state, but refresh paths that rotate single-use
+    OAuth refresh tokens must write the updated token chain back to the same
+    store they read. In profile mode ``_load_provider_state`` can read a
+    global-root fallback state; persisting a rotated Nous refresh token only to
+    the profile would leave the global/root store stale and cause the next
+    process to replay an already-consumed refresh token.
+    """
+    providers = auth_store.get("providers")
+    if isinstance(providers, dict):
+        state = providers.get(provider_id)
+        if isinstance(state, dict):
+            return dict(state), _auth_file_path()
+
+    global_path = _global_auth_file_path()
+    global_store = _load_global_auth_store()
+    if global_store:
+        global_providers = global_store.get("providers")
+        if isinstance(global_providers, dict):
+            global_state = global_providers.get(provider_id)
+            if isinstance(global_state, dict):
+                return dict(global_state), global_path
+    return None, None
+
+
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
     """Return a provider's persisted state.
 
@@ -1150,22 +1180,8 @@ def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Option
     the profile, the profile state fully shadows the global state on the next
     read. See issue #18594 follow-up.
     """
-    providers = auth_store.get("providers")
-    if isinstance(providers, dict):
-        state = providers.get(provider_id)
-        if isinstance(state, dict):
-            return dict(state)
-
-    # Read-only fallback to the global-root auth store (profile mode only;
-    # returns empty dict in classic mode so this is a no-op).
-    global_store = _load_global_auth_store()
-    if global_store:
-        global_providers = global_store.get("providers")
-        if isinstance(global_providers, dict):
-            global_state = global_providers.get(provider_id)
-            if isinstance(global_state, dict):
-                return dict(global_state)
-    return None
+    state, _source_path = _load_provider_state_with_source(auth_store, provider_id)
+    return state
 
 
 def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any]) -> None:
@@ -1175,6 +1191,30 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
         providers = auth_store["providers"]
     providers[provider_id] = state
     auth_store["active_provider"] = provider_id
+
+
+def _save_provider_state_to_source(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+    state: Dict[str, Any],
+    source_path: Optional[Path],
+) -> None:
+    """Persist provider state back to the auth store it was read from."""
+    active_path = _auth_file_path()
+    if source_path is None:
+        source_path = active_path
+    try:
+        same_store = source_path.resolve(strict=False) == active_path.resolve(strict=False)
+    except Exception:
+        same_store = source_path == active_path
+    if same_store:
+        _save_provider_state(auth_store, provider_id, state)
+        _save_auth_store(auth_store)
+        return
+
+    source_store = _load_auth_store(source_path)
+    _save_provider_state(source_store, provider_id, state)
+    _save_auth_store(source_store, target_path=source_path)
 
 
 def _store_provider_state(
@@ -5277,7 +5317,7 @@ def resolve_nous_access_token(
     """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "nous")
+        state, state_source_path = _load_provider_state_with_source(auth_store, "nous")
 
         if not state:
             raise AuthError(
@@ -5308,8 +5348,7 @@ def resolve_nous_access_token(
 
             if not _is_expiring(state.get("expires_at"), refresh_skew_seconds):
                 if merged_shared:
-                    _save_provider_state(auth_store, "nous", state)
-                    _save_auth_store(auth_store)
+                    _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
                 return access_token
 
             if not isinstance(refresh_token, str) or not refresh_token:
@@ -5344,8 +5383,7 @@ def resolve_nous_access_token(
                             exc,
                             reason="managed_access_token_refresh_failure",
                         )
-                        _save_provider_state(auth_store, "nous", state)
-                        _save_auth_store(auth_store)
+                        _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
                     raise
 
             now = datetime.now(timezone.utc)
@@ -5366,8 +5404,7 @@ def resolve_nous_access_token(
                 "insecure": verify is False,
                 "ca_bundle": verify if isinstance(verify, str) else None,
             }
-            _save_provider_state(auth_store, "nous", state)
-            _save_auth_store(auth_store)
+            _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
             _write_shared_nous_state(state)
             return state["access_token"]
 
@@ -5593,7 +5630,7 @@ def resolve_nous_runtime_credentials(
 
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "nous")
+        state, state_source_path = _load_provider_state_with_source(auth_store, "nous")
 
         if not state:
             raise AuthError("Hermes is not logged into Nous Portal.",
@@ -5630,8 +5667,7 @@ def resolve_nous_runtime_credentials(
                 )
                 return
             try:
-                _save_provider_state(auth_store, "nous", state)
-                _save_auth_store(auth_store)
+                _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
             except Exception as exc:
                 _oauth_trace(
                     "nous_state_persist_failed",
@@ -5802,7 +5838,7 @@ def resolve_nous_runtime_credentials(
         "expires_at": expires_at,
         "expires_in": expires_in,
         "source": NOUS_AUTH_PATH_INVOKE_JWT,
-        "auth_path": NOUS_AUTH_PATH_INVOKE_JWT,
+        "auth_path": str(state_source_path or _auth_file_path()),
     }
 
 

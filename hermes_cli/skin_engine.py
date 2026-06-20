@@ -760,6 +760,8 @@ def list_skins() -> List[Dict[str, str]]:
 
 def _macos_uses_light_theme() -> Optional[bool]:
     """Return the macOS appearance preference, or None when unavailable."""
+    if shutil.which("defaults") is None:
+        return None
     try:
         result = subprocess.run(
             ["defaults", "read", "-g", "AppleInterfaceStyle"],

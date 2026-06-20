@@ -59,6 +59,7 @@ class TestBuiltinSkins:
         from hermes_cli.skin_engine import load_skin
 
         monkeypatch.setattr(skin_engine.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(skin_engine.shutil, "which", lambda command: "/usr/bin/defaults")
         monkeypatch.setattr(
             skin_engine.subprocess,
             "run",
@@ -74,6 +75,7 @@ class TestBuiltinSkins:
         from hermes_cli.skin_engine import load_skin
 
         monkeypatch.setattr(skin_engine.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(skin_engine.shutil, "which", lambda command: "/usr/bin/defaults")
         monkeypatch.setattr(
             skin_engine.subprocess,
             "run",

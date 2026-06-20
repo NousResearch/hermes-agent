@@ -2327,9 +2327,10 @@ class TestWebServerEndpoints:
         # api_key follows the same lifecycle as base_url:
         # supplied → persisted.
         out = _apply_main_model_assignment(
-            {}, "custom", "m", "http://x/v1", "sk-secret"
+            {"api": "sk-legacy-old"}, "custom", "m", "http://x/v1", "sk-secret"
         )
         assert out["api_key"] == "sk-secret"
+        assert "api" not in out
 
         # same provider, no new key → existing key preserved (re-picking a model
         # on the same custom endpoint must not wipe the saved key).
@@ -2342,9 +2343,12 @@ class TestWebServerEndpoints:
 
         # switching providers without a new key → stale key cleared.
         out = _apply_main_model_assignment(
-            {"provider": "custom", "api_key": "sk-old"}, "openrouter", "m"
+            {"provider": "custom", "api_key": "sk-old", "api_mode": "anthropic_messages"},
+            "openrouter",
+            "m",
         )
-        assert out["api_key"] == ""
+        assert "api_key" not in out
+        assert "api_mode" not in out
 
     def test_parse_model_ids_handles_openai_and_bare_shapes(self):
         """Model discovery must tolerate the common /v1/models shapes and

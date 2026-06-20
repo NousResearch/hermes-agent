@@ -57,6 +57,7 @@ import logging
 import mimetypes
 import os
 import re
+import unicodedata
 import threading
 import time
 import uuid
@@ -154,9 +155,70 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Detect markdown tables: header + separator + optional body rows.
+# Converted to space-aligned code fences so Feishu renders them in monospace.
+_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|(?:\n\|.+\|)*", re.MULTILINE)
+_VS_RANGE = range(0xFE00, 0xFE10)  # Variation Selectors (zero-width)
+_ZW_CHARS = frozenset({0x200B, 0x200C, 0x200D, 0x2060})  # ZWSP, ZWNJ, ZWJ, Word Joiner
+
+
+def _display_width(s: str) -> int:
+    """Measure display width treating CJK / Ambiguous / emoji as 2 columns."""
+    w = 0
+    for ch in s:
+        cp = ord(ch)
+        if cp in _VS_RANGE or cp in _ZW_CHARS or unicodedata.category(ch).startswith("M"):
+            continue
+        eaw = unicodedata.east_asian_width(ch)
+        w += 2 if eaw in ("W", "F", "A") else 1
+    return w
+
+
+def _convert_md_tables(text: str) -> str:
+    """Convert markdown tables to space-padded rows inside code fences.
+
+    Feishu's ``md`` tag does not render markdown tables.  We parse the table,
+    lay out columns with space separators and a dash divider under the header,
+    and wrap the result in a fenced code block for monospace rendering.
+    """
+
+    def _table_to_simple(table_text: str) -> str:
+        lines = table_text.strip().splitlines()
+        if len(lines) < 2:
+            return table_text
+
+        def _parse_row(line: str) -> list[str]:
+            return [c.strip() for c in line.strip().strip("|").split("|")]
+
+        header = _parse_row(lines[0])
+        sep = _parse_row(lines[1])
+        col_count = max(len(header), len(sep))
+        header.extend([""] * (col_count - len(header)))
+        body: list[list[str]] = []
+        for line in lines[2:]:
+            cols = _parse_row(line)
+            cols.extend([""] * (col_count - len(cols)))
+            body.append(cols)
+
+        widths = [_display_width(header[c]) for c in range(col_count)]
+        for row in body:
+            for c in range(col_count):
+                widths[c] = max(widths[c], _display_width(row[c]))
+
+        def _pad(cell: str, width: int) -> str:
+            return cell + " " * (width - _display_width(cell))
+
+        out: list[str] = []
+        out.append("  ".join(_pad(header[c], widths[c]) for c in range(col_count)))
+        out.append("  ".join("-" * widths[c] for c in range(col_count)))
+        for row in body:
+            out.append("  ".join(_pad(row[c], widths[c]) for c in range(col_count)))
+        return "\n".join(out)
+
+    def _replace(match: re.Match) -> str:
+        return "```\n" + _table_to_simple(match.group(0)) + "\n```"
+
+    return _MARKDOWN_TABLE_RE.sub(_replace, text)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -4374,12 +4436,10 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # Convert them to space-aligned rows inside code fences so the
+        # md renderer displays them in monospace with proper alignment.
+        content = _convert_md_tables(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

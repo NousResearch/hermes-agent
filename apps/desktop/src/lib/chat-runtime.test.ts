@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -50,5 +50,33 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+
+describe('parseCommandDispatch', () => {
+  it('keeps the notice on a send directive (e.g. /goal set)', () => {
+    // The backend's /goal set returns {type:send, notice:"⊙ Goal set …", message}.
+    // Dropping the notice made /goal look like it did nothing in the desktop app.
+    const parsed = parseCommandDispatch({ type: 'send', notice: '⊙ Goal set', message: 'do the thing' })
+
+    expect(parsed).toEqual({ type: 'send', message: 'do the thing', notice: '⊙ Goal set' })
+  })
+
+  it('keeps message-only send directives working (no notice)', () => {
+    expect(parseCommandDispatch({ type: 'send', message: 'hi' })).toEqual({
+      type: 'send',
+      message: 'hi',
+      notice: undefined
+    })
+  })
+
+  it('parses a prefill directive with its notice (e.g. /undo)', () => {
+    const parsed = parseCommandDispatch({ type: 'prefill', notice: 'backed up 1 turn', message: 'edit me' })
+
+    expect(parsed).toEqual({ type: 'prefill', message: 'edit me', notice: 'backed up 1 turn' })
+  })
+
+  it('rejects a prefill directive missing its message', () => {
+    expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
   })
 })

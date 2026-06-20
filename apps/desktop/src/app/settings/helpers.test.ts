@@ -6,6 +6,12 @@ import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from 
 import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
 
 describe('settings helpers', () => {
+  it('lists Hindsight as a built-in desktop memory provider option', () => {
+    const options = enumOptionsFor('memory.provider', '', {})
+
+    expect(options).toContain('hindsight')
+  })
+
   describe('defineFieldCopy', () => {
     it('flattens nested field copy paths', () => {
       const copy = defineFieldCopy({

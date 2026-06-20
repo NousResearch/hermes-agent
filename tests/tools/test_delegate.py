@@ -1125,6 +1125,27 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "openrouter")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_bedrock_provider_uses_bedrock_converse_api_mode(self, mock_resolve):
+        """Bedrock delegation must enter the boto3/Converse init path."""
+        mock_resolve.return_value = {
+            "provider": "bedrock",
+            "model": "global.anthropic.claude-sonnet-4-6",
+            "base_url": None,
+            "api_key": "bedrock-session-token",
+            "api_mode": "anthropic_messages",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global.anthropic.claude-sonnet-4-6",
+            "provider": "bedrock",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["provider"], "bedrock")
+        self.assertEqual(creds["api_mode"], "bedrock_converse")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_custom_provider_with_empty_configured_provider_falls_back_to_runtime(self, mock_resolve):
         """When configured_provider is empty/None, the early return kicks in and
         we return provider=None regardless of what runtime resolved. The runtime

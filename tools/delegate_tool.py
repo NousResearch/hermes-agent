@@ -2751,12 +2751,19 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    api_mode = runtime.get("api_mode")
+    if configured_provider.lower() == "bedrock":
+        # Bedrock's runtime resolver reports the Anthropic wire format, but
+        # child agent construction uses the internal bedrock_converse mode to
+        # route through the boto3/Converse transport.
+        api_mode = "bedrock_converse"
+
     return {
         "model": configured_model or runtime.get("model") or None,
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
-        "api_mode": runtime.get("api_mode"),
+        "api_mode": api_mode,
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

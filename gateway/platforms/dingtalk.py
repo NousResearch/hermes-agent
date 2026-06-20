@@ -30,11 +30,13 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 try:
     import dingtalk_stream
@@ -102,6 +104,20 @@ MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
+
+# Inbound-message queue TTL.  queueKey entries that haven't received a new
+# message for this long are eligible for sweep (reference
+# core/message-handler.ts:92 uses 5 min).
+_INBOUND_QUEUE_TTL_SEC = 300
+# Busy-ACK phrases when inbound queue already has a pending task.  Picked
+# randomly so repeats don't feel scripted (reference utils/constants.ts
+# QUEUE_BUSY_ACK_PHRASES).
+_QUEUE_BUSY_ACK_PHRASES = (
+    "收到，让我先把前一条处理完 🙏",
+    "稍等，排队中……",
+    "收到～手头这条完事就来",
+    "别急，按顺序处理中",
+)
 
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
@@ -230,6 +246,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
         self._bg_tasks: Set[asyncio.Task] = set()
 
+        # Per-session inbound message queue
+        self._session_queues: Dict[str, asyncio.Task] = {}
+        self._session_last_activity: Dict[str, float] = {}
+        self._session_queue_sweeper: Optional[asyncio.Task] = None
+
     # -- Connection lifecycle -----------------------------------------------
 
     async def connect(self) -> bool:
@@ -291,6 +312,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
             self._stream_task = asyncio.create_task(self._run_stream())
+            self._session_queue_sweeper = asyncio.create_task(
+                self._sweep_session_queues()
+            )
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
             return True
@@ -350,6 +374,26 @@ class DingTalkAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
             self._stream_task = None
+
+        # Stop the session-queue sweeper.
+        if self._session_queue_sweeper:
+            self._session_queue_sweeper.cancel()
+            try:
+                await self._session_queue_sweeper
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._session_queue_sweeper = None
+
+        # Cancel any still-pending inbound-queue tasks.
+        if self._session_queues:
+            for task in list(self._session_queues.values()):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *self._session_queues.values(), return_exceptions=True,
+            )
+            self._session_queues.clear()
+        self._session_last_activity.clear()
 
         # Cancel any in-flight background tasks (emoji reactions, etc.)
         if self._bg_tasks:
@@ -522,6 +566,79 @@ class DingTalkAdapter(BasePlatformAdapter):
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
+
+
+    # -- Inbound serialization queue ---------------------------------------
+
+    def _inbound_queue_key(self, chatbot_msg: "ChatbotMessage") -> str:
+        conv_id = getattr(chatbot_msg, "conversation_id", "") or ""
+        sender_id = getattr(chatbot_msg, "sender_id", "") or ""
+        return conv_id or sender_id
+
+    async def _send_busy_ack(self, chatbot_msg: "ChatbotMessage") -> None:
+        if not self._http_client:
+            return
+        webhook = getattr(chatbot_msg, "session_webhook", "") or ""
+        if not webhook or not _DINGTALK_WEBHOOK_RE.match(webhook):
+            return
+        phrase = random.choice(_QUEUE_BUSY_ACK_PHRASES)
+        try:
+            await self._http_client.post(
+                webhook,
+                json={"msgtype": "text", "text": {"content": phrase}},
+                timeout=5.0,
+            )
+        except Exception as e:
+            logger.debug("[%s] busy ACK send failed: %s", self.name, e)
+
+    async def _enqueue_inbound(self, chatbot_msg: "ChatbotMessage") -> None:
+        queue_key = self._inbound_queue_key(chatbot_msg)
+        if not queue_key:
+            await self._on_message(chatbot_msg)
+            return
+
+        self._session_last_activity[queue_key] = time.monotonic()
+        prev_task = self._session_queues.get(queue_key)
+        is_busy = prev_task is not None and not prev_task.done()
+
+        if is_busy:
+            self._spawn_bg(self._send_busy_ack(chatbot_msg))
+
+        async def _chained() -> None:
+            if prev_task is not None:
+                try:
+                    await prev_task
+                except Exception:
+                    pass
+            await self._on_message(chatbot_msg)
+
+        task = asyncio.create_task(_chained())
+        self._session_queues[queue_key] = task
+
+        def _cleanup(t: asyncio.Task) -> None:
+            if self._session_queues.get(queue_key) is t:
+                self._session_queues.pop(queue_key, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _sweep_session_queues(self) -> None:
+        try:
+            while self._running:
+                await asyncio.sleep(60)
+                now = time.monotonic()
+                stale = [
+                    k for k, ts in self._session_last_activity.items()
+                    if now - ts > _INBOUND_QUEUE_TTL_SEC
+                ]
+                for k in stale:
+                    self._session_last_activity.pop(k, None)
+                    task = self._session_queues.get(k)
+                    if task is not None and task.done():
+                        self._session_queues.pop(k, None)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("[%s] session-queue sweep error: %s", self.name, e)
 
     # -- AI Card lifecycle helpers ------------------------------------------
 
@@ -1494,9 +1611,13 @@ class _IncomingHandler(
         return AckMessage.STATUS_OK, "OK"
 
     async def _safe_on_message(self, chatbot_msg: "ChatbotMessage") -> None:
-        """Wrapper that catches exceptions from _on_message."""
+        """Wrapper that catches exceptions from _on_message.
+
+        Dispatches through ``_enqueue_inbound`` so same-chat messages are
+        serialized (with a busy-ACK on the tail).
+        """
         try:
-            await self._adapter._on_message(chatbot_msg)
+            await self._adapter._enqueue_inbound(chatbot_msg)
         except Exception:
             logger.exception(
                 "[%s] Error processing incoming message", self._adapter.name

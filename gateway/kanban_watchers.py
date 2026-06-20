@@ -2583,6 +2583,11 @@ class GatewayKanbanWatchersMixin:
             self, "_kanban_sub_fail_counts", {}
         )
         self._kanban_sub_fail_counts = sub_fail_counts
+        # Per-task failure counter for severity demotion (P0→P1 after 2 failures).
+        _notifier_failure_counts: dict[str, int] = getattr(
+            self, "_kanban_notifier_failure_counts", {}
+        )
+        self._kanban_notifier_failure_counts = _notifier_failure_counts
         notifier_profile = getattr(self, "_kanban_notifier_profile", None)
         if not notifier_profile:
             notifier_profile = self._active_profile_name()
@@ -2678,6 +2683,23 @@ class GatewayKanbanWatchersMixin:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                if task is None:
+                                    # Phantom subscription — task row
+                                    # doesn't exist. Auto-unsubscribe to
+                                    # prevent perpetual cursor advancement
+                                    # and avoid broadcasting to all subs.
+                                    logger.debug(
+                                        "kanban notifier: task %s not found; "
+                                        "auto-unsubscribing %s/%s",
+                                        sub["task_id"], platform, slug,
+                                    )
+                                    _kb.remove_notify_sub(
+                                        conn, task_id=sub["task_id"],
+                                        platform=sub["platform"],
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id") or None,
+                                    )
+                                    continue
                                 # Platform-scoped routing: if the task has a
                                 # last_mutated_platform, only deliver to
                                 # subscriptions matching that platform.
@@ -2739,13 +2761,53 @@ class GatewayKanbanWatchersMixin:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
+                    # ── Dedup: same-task crashed+gave_up in one batch → keep only gave_up
+                    _event_kinds = [ev.kind for ev in d["events"]]
+                    if "crashed" in _event_kinds and "gave_up" in _event_kinds:
+                        d["events"] = [ev for ev in d["events"] if ev.kind != "crashed"]
                     for ev in d["events"]:
                         kind = ev.kind
+                        # ── M1: severity gate — skip events below user floor
+                        _failure_count = _notifier_failure_counts.get(sub["task_id"], 0)
+                        _ev_dict = {
+                            "kind": kind,
+                            "task_id": sub["task_id"],
+                            "payload": getattr(ev, "payload", None) or {},
+                            "_prior_failure_count": _failure_count,
+                        }
+                        _ok, _sev = _filter_event_for_push(_ev_dict)
+                        if not _ok:
+                            logger.debug(
+                                "kanban notifier: suppressed %s (sev=%s) for %s on board %s",
+                                kind, _sev, sub["task_id"], board_slug,
+                            )
+                            continue
+                        if kind in ("crashed", "gave_up", "timed_out"):
+                            _notifier_failure_counts[sub["task_id"]] = _failure_count + 1
+                        # ── M2: P1 event → buffer (skip push) ────────────
+                        if _sev == "P1" and self.notification_aggregator is not None:
+                            try:
+                                buf = self.notification_aggregator.buffer_p1_event(
+                                    board=board_slug,
+                                    task_id=sub["task_id"],
+                                    ev=ev,
+                                    task=task,
+                                    sub=sub,
+                                )
+                                if buf is None:
+                                    # buffer accepted the event, skip push
+                                    continue
+                                # buffer full / no aggregation needed, fall through
+                            except Exception as _p1_exc:
+                                logger.debug(
+                                    "kanban notifier: P1 buffer failed for %s: %s",
+                                    sub["task_id"], _p1_exc,
+                                )
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
+                        role_tag = f"@{who}" if who else "unassigned"
                         if kind == "completed":
                             # ── M5: Pipeline terminal report ────────────────
                             # When the completed task is a pipeline root and all
@@ -2779,7 +2841,7 @@ class GatewayKanbanWatchersMixin:
                                     r = lines[0][:160] if lines else task.result[:160]
                                     handoff = f"\n{r}"
                                 msg = (
-                                    f"✔ {tag}Kanban {sub['task_id']} done"
+                                    f"✔ {sub['task_id']} [{role_tag}] done"
                                     f" — {title}{handoff}"
                                 )
                             # ── M2: pipeline-done aggregated flush ──────────
@@ -2814,7 +2876,7 @@ class GatewayKanbanWatchersMixin:
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                            msg = f"⏸ {sub['task_id']} [{role_tag}] blocked{reason}"
                             # M3: append structured option block so the user
                             # can reply with a single digit (1-N) to unblock
                             # the task. Skipped for review-required: blocks
@@ -2901,21 +2963,21 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
+                                f"✖ {sub['task_id']} [{role_tag}] gave up "
                                 f"after repeated spawn failures{err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                                f"✖ {sub['task_id']} [{role_tag}] crashed "
+                                f"(pid gone); retrying"
                             )
                         elif kind == "timed_out":
                             limit = 0
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                                f"⏱ {sub['task_id']} [{role_tag}] timed out "
+                                f"(max_runtime={limit}s); retrying"
                             )
                         else:
                             continue

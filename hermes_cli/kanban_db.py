@@ -811,6 +811,12 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Originating platform string (e.g. "weixin", "feishu") recorded
+    # from the first subscription. Populated by ``add_notify_sub`` and
+    # the ``/kanban create`` slash command. NULL on legacy rows.
+    # Used by the notifier's platform-scoped routing to avoid
+    # broadcasting to the wrong adapter.
+    last_mutated_platform: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -885,6 +891,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            last_mutated_platform=(
+                row["last_mutated_platform"] if "last_mutated_platform" in keys else None
             ),
         )
 
@@ -1047,7 +1056,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    last_mutated_platform TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1703,6 +1713,40 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "last_mutated_platform" not in cols:
+        # Originating platform string (e.g. "weixin", "feishu") recorded
+        # from the first user mutation that created the subscription.
+        # Populated by ``add_notify_sub`` and the ``/kanban create`` slash
+        # command. NULL on legacy rows and on any creation path that doesn't
+        # go through ``add_notify_sub``. Used by the notifier's platform-
+        # scoped routing to avoid broadcasting to the wrong adapter.
+        _add_column_if_missing(
+            conn, "tasks", "last_mutated_platform", "last_mutated_platform TEXT"
+        )
+
+    # Backfill last_mutated_platform for legacy tasks that have subscriptions
+    # but no platform stamp yet. Runs after the column exists (added just
+    # above); the WHERE clause limits to affected rows + EXISTS guard is cheap.
+    # Guard against legacy DBs that don't have kanban_notify_subs yet.
+    _has_subs_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
+    ).fetchone() is not None
+    if _has_subs_table:
+        conn.execute(
+            """
+            UPDATE tasks SET last_mutated_platform = (
+                SELECT platform FROM kanban_notify_subs
+                WHERE task_id = tasks.id
+                ORDER BY created_at ASC LIMIT 1
+            )
+            WHERE (last_mutated_platform IS NULL OR last_mutated_platform = '')
+              AND EXISTS (
+                SELECT 1 FROM kanban_notify_subs
+                WHERE task_id = tasks.id
+              )
+            """
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2082,6 +2126,7 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    last_mutated_platform: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2246,8 +2291,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        last_mutated_platform
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2269,6 +2315,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        last_mutated_platform,
                     ),
                 )
                 for pid in parents:
@@ -2290,6 +2337,10 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+            # Auto-subscribe: if the board has an owner_platform in board.json
+            # and the task has no subscriptions yet, add one so the task owner
+            # gets notified of lifecycle events. Must be outside write_txn.
+            _auto_subscribe_creator(conn, task_id, board or get_current_board())
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2297,6 +2348,46 @@ def create_task(
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+def _auto_subscribe_creator(
+    conn: sqlite3.Connection,
+    task_id: str,
+    board: str,
+) -> None:
+    """Subscribe the board owner's platform if the task has no subscriptions yet.
+
+    This is the ``create_task`` fallback for callers that don't have platform
+    context (epoch orchestrator, CLI, dashboard).  Callers that *do* know the
+    platform (agent tool ``kanban_create``, slash commands) should pass a
+    ``notify_platform`` so the subscription is richer; this function is the
+    safety net for everyone else.
+
+    Reads ``board.json``'s ``owner_platform`` (and optionally
+    ``owner_chat_id``) — if they aren't set, no subscription is created and
+    the notifier stays silent for this task, which is the correct fallback for
+    headless / CI boards.
+    """
+    # Skip if the task already has any subscription.
+    row = conn.execute(
+        "SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if row and row[0] > 0:
+        return
+
+    meta = read_board_metadata(board)
+    owner_platform: Any = meta.get("owner_platform")
+    if not owner_platform:
+        return  # No owner configured — stay silent.
+
+    owner_chat = meta.get("owner_chat_id") or ""
+    add_notify_sub(
+        conn,
+        task_id=task_id,
+        platform=str(owner_platform).strip(),
+        chat_id=str(owner_chat).strip() if owner_chat else "",
+    )
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
@@ -7278,7 +7369,12 @@ def _default_spawn(
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    prompt = f"work kanban task {task.id}"
+    prompt = (
+        f"Complete kanban task {task.id}. DO NOT create a new task.\n"
+        f"1. kanban_show() to read the body.\n"
+        f"2. DO THE WORK (code, commands, changes) described in the body.\n"
+        f"3. kanban_complete() when done."
+    )
     env = dict(os.environ)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
@@ -7814,7 +7910,10 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+    Also stamps ``last_mutated_platform`` on the task when it's currently
+    NULL, so the notifier can route lifecycle events to the originating
+    platform instead of broadcasting to all subscribers."""
     now = int(time.time())
     with write_txn(conn):
         conn.execute(
@@ -7837,6 +7936,14 @@ def add_notify_sub(
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )
+        # Stamp last_mutated_platform on the task when NULL — first
+        # subscription's platform wins so the notifier doesn't broadcast
+        # to all subscribers on mixed-platform boards.
+        conn.execute(
+            "UPDATE tasks SET last_mutated_platform = ? "
+            "WHERE id = ? AND (last_mutated_platform IS NULL OR last_mutated_platform = '')",
+            (platform, task_id),
+        )
 
 
 def list_notify_subs(

@@ -98,6 +98,8 @@ try:
         GetMessageRequest,
         GetMessageResourceRequest,
         P2ImMessageMessageReadV1,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
         UpdateMessageRequest,
@@ -117,6 +119,8 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
+    PatchMessageRequest = None  # type: ignore[assignment]
+    PatchMessageRequestBody = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
@@ -1861,6 +1865,30 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def edit_interactive_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        card: Dict[str, Any],
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a previously sent Feishu interactive card with raw card JSON."""
+        del chat_id, finalize
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            body = self._build_patch_message_body(content=json.dumps(card, ensure_ascii=False))
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, "interactive card update failed")
+            if result.success:
+                result.message_id = message_id
+            return result
+        except Exception as exc:
+            logger.error("[Feishu] Failed to edit interactive card %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def send_exec_approval(
@@ -4778,6 +4806,23 @@ class FeishuAdapter(BasePlatformAdapter):
         if "UpdateMessageRequest" in globals():
             return (
                 UpdateMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        if "PatchMessageRequestBody" in globals() and PatchMessageRequestBody is not None:
+            return PatchMessageRequestBody.builder().content(content).build()
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        if "PatchMessageRequest" in globals() and PatchMessageRequest is not None:
+            return (
+                PatchMessageRequest.builder()
                 .message_id(message_id)
                 .request_body(request_body)
                 .build()

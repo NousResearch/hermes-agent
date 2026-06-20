@@ -207,6 +207,37 @@ class TestFeishuExecApproval:
         ids = list(adapter._approval_state.keys())
         assert ids[0] != ids[1]
 
+    @pytest.mark.asyncio
+    async def test_edit_interactive_card_updates_raw_card(self):
+        adapter = _make_adapter()
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="ignored"))
+        request_holder = {}
+
+        def build_body(*, content):
+            return SimpleNamespace(content=content)
+
+        def build_request(message_id, request_body):
+            request_holder["message_id"] = message_id
+            request_holder["body"] = request_body
+            return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+        adapter._build_patch_message_body = build_body
+        adapter._build_patch_message_request = build_request
+        adapter._client.im.v1.message.patch.return_value = response
+        card = {"config": {"wide_screen_mode": True}, "elements": []}
+
+        async def run_sync(func, *args):
+            return func(*args)
+
+        with patch.object(feishu_module.asyncio, "to_thread", side_effect=run_sync):
+            result = await adapter.edit_interactive_card("oc_123", "om_card", card)
+
+        assert result.success is True
+        assert result.message_id == "om_card"
+        assert request_holder["message_id"] == "om_card"
+        assert json.loads(request_holder["body"].content) == card
+        adapter._client.im.v1.message.patch.assert_called_once()
+
 
 # ===========================================================================
 # send_update_prompt — interactive card with buttons

@@ -1538,7 +1538,179 @@ class GatewaySlashCommandsMixin:
                 handler=_on_cost_confirm,
             )
 
-        return await _finish_switch()
+        confirm_text = await _finish_switch()
+
+        # --- Model suggestions: if the model wasn't in the provider's listing
+        # but close matches exist, send inline buttons so the user can
+        # one-click switch to a suggested model. ---
+        if result.suggestions:
+            try:
+                import itertools as _itertools
+                _suggest_counter = getattr(self, "_model_suggest_counter", None)
+                if _suggest_counter is None:
+                    _suggest_counter = _itertools.count(1)
+                    self._model_suggest_counter = _suggest_counter
+                suggest_id = f"{next(_suggest_counter)}"
+
+                # Build a short prompt for the suggestion buttons
+                short_requested = result.new_model.split("/")[-1] if "/" in result.new_model else result.new_model
+                suggest_msg = (
+                    f"💡 `{short_requested}` wasn't found in the model listing. "
+                    f"Click a similar model to switch:"
+                )
+
+                # The handler re-runs switch_model with the chosen suggestion.
+                # It captures the current switch context so the re-switch
+                # uses the same provider/credentials.
+                _provider = result.target_provider
+                _base_url = result.base_url
+                _api_key = result.api_key
+                _api_mode = result.api_mode
+                _persist_global = persist_global
+                _explicit_provider = explicit_provider
+                _user_provs = user_provs
+                _custom_provs = custom_provs
+                _current_model = result.new_model
+                _current_provider = result.target_provider
+                _current_base_url = result.base_url
+                _current_api_key = result.api_key
+                _session_key = session_key
+                _source = source
+                _event = event
+
+                async def _on_suggestion_click(chosen_model: str) -> str:
+                    """Re-run the model switch with the clicked suggestion."""
+                    inner_result = _switch_model(
+                        raw_input=chosen_model,
+                        current_provider=_current_provider,
+                        current_model=_current_model,
+                        current_base_url=_current_base_url,
+                        current_api_key=_current_api_key,
+                        is_global=_persist_global,
+                        explicit_provider=_explicit_provider,
+                        user_providers=_user_provs,
+                        custom_providers=_custom_provs,
+                    )
+                    if not inner_result.success:
+                        return t(
+                            "gateway.model.error_prefix",
+                            error=inner_result.error_message,
+                        )
+
+                    # Apply the switch (same logic as _finish_switch but
+                    # without the suggestion round — avoids infinite loops
+                    # since the suggested model should be in the listing).
+                    _cache_lock2 = getattr(self, "_agent_cache_lock", None)
+                    _cache2 = getattr(self, "_agent_cache", None)
+                    if _cache_lock2 and _cache2 is not None:
+                        with _cache_lock2:
+                            _ce = _cache2.get(_session_key)
+                        if _ce and _ce[0] is not None:
+                            try:
+                                _ce[0].switch_model(
+                                    new_model=inner_result.new_model,
+                                    new_provider=inner_result.target_provider,
+                                    api_key=inner_result.api_key,
+                                    base_url=inner_result.base_url,
+                                    api_mode=inner_result.api_mode,
+                                )
+                            except Exception as exc:
+                                logger.warning("Suggestion switch failed: %s", exc)
+
+                    # Persist to session DB
+                    _sess_db = getattr(self, "_session_db", None)
+                    if _sess_db is not None:
+                        try:
+                            _sess_entry = self.session_store.get_or_create_session(_source)
+                            _sess_db.update_session_model(
+                                _sess_entry.session_id, inner_result.new_model
+                            )
+                        except Exception:
+                            pass
+
+                    # Model note
+                    if not hasattr(self, "_pending_model_notes"):
+                        self._pending_model_notes = {}
+                    self._pending_model_notes[_session_key] = (
+                        f"[Note: model was just switched from {_current_model} to "
+                        f"{inner_result.new_model} via "
+                        f"{inner_result.provider_label or inner_result.target_provider}. "
+                        f"Adjust your self-identification accordingly.]"
+                    )
+
+                    # Session override
+                    self._session_model_overrides[_session_key] = {
+                        "model": inner_result.new_model,
+                        "provider": inner_result.target_provider,
+                        "api_key": inner_result.api_key,
+                        "base_url": inner_result.base_url,
+                        "api_mode": inner_result.api_mode,
+                    }
+                    self._evict_cached_agent(_session_key)
+
+                    # Persist to config if --global
+                    if _persist_global:
+                        try:
+                            if config_path.exists():
+                                with open(config_path, encoding="utf-8") as f:
+                                    cfg2 = yaml.safe_load(f) or {}
+                            else:
+                                cfg2 = {}
+                            raw_model2 = cfg2.get("model")
+                            if isinstance(raw_model2, dict):
+                                model_cfg2 = raw_model2
+                            elif isinstance(raw_model2, str) and raw_model2.strip():
+                                model_cfg2 = {"default": raw_model2.strip()}
+                                cfg2["model"] = model_cfg2
+                            else:
+                                model_cfg2 = {}
+                                cfg2["model"] = model_cfg2
+                            model_cfg2["default"] = inner_result.new_model
+                            model_cfg2["provider"] = inner_result.target_provider
+                            if inner_result.base_url:
+                                model_cfg2["base_url"] = inner_result.base_url
+                            from hermes_cli.config import save_config
+                            save_config(cfg2)
+                        except Exception as e:
+                            logger.warning("Failed to persist suggestion switch: %s", e)
+
+                    # Build confirmation
+                    plabel = inner_result.provider_label or inner_result.target_provider
+                    lines2 = [t("gateway.model.switched", model=inner_result.new_model)]
+                    lines2.append(t("gateway.model.provider_label", provider=plabel))
+                    if inner_result.warning_message:
+                        lines2.append(t("gateway.model.warning_prefix", warning=inner_result.warning_message))
+                    if _persist_global:
+                        lines2.append(t("gateway.model.saved_global"))
+                    else:
+                        lines2.append(t("gateway.model.session_only_hint"))
+                    return "\n".join(lines2)
+
+                from tools import slash_confirm as _slash_confirm_mod
+                _slash_confirm_mod.register(
+                    session_key, suggest_id, "model", _on_suggestion_click,
+                )
+
+                adapter = self.adapters.get(source.platform)
+                _metadata = self._thread_metadata_for_source(
+                    source, self._reply_anchor_for_event(event),
+                )
+                if adapter is not None:
+                    try:
+                        button_result = await adapter.send_model_suggestions(
+                            chat_id=source.chat_id,
+                            message=suggest_msg,
+                            suggestions=result.suggestions,
+                            suggest_id=suggest_id,
+                            session_key=session_key,
+                            metadata=_metadata,
+                        )
+                    except Exception as exc:
+                        logger.debug("send_model_suggestions failed: %s", exc)
+            except Exception as exc:
+                logger.debug("Model suggestion buttons failed: %s", exc)
+
+        return confirm_text
 
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.

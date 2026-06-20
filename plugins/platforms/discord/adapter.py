@@ -4763,6 +4763,53 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_model_suggestions(
+        self,
+        chat_id: str,
+        message: str,
+        suggestions: list,
+        suggest_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a model-suggestion prompt with one Discord button per suggestion."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            max_desc = 4088
+            body = message if len(message) <= max_desc else message[: max_desc - 3] + "..."
+            embed = discord.Embed(
+                title="💡 Similar models found",
+                description=body,
+                color=discord.Color.blurple(),
+            )
+
+            # Discord allows up to 5 buttons per row, 5 rows = 25 total.
+            clean_suggestions = [str(s) for s in suggestions[:25]]
+            view = ModelSuggestionView(
+                suggestions=clean_suggestions,
+                session_key=session_key,
+                suggest_id=suggest_id,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            view._message = msg
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            logger.warning("[%s] send_model_suggestions failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -5952,6 +5999,101 @@ def _define_discord_view_classes() -> None:
             for child in self.children:
                 child.disabled = True
             # Visually update the Discord message so buttons appear disabled.
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Prompt expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
+
+    class ModelSuggestionView(discord.ui.View):
+        """One-button-per-suggestion view for model switch suggestions.
+
+        Used after a /model switch where the requested model wasn't found in
+        the provider's listing but close matches exist.  Each button shows the
+        short model name; clicking resolves via ``tools.slash_confirm.resolve``
+        with the full model ID as the choice, which runs the handler the
+        gateway registered (re-runs switch_model with the suggested model).
+        """
+
+        def __init__(
+            self,
+            suggestions: list,
+            session_key: str,
+            suggest_id: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=300)
+            self.session_key = session_key
+            self.suggest_id = suggest_id
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+            self.suggestions = suggestions
+
+            for idx, model_id in enumerate(suggestions):
+                short = model_id.split("/")[-1] if "/" in model_id else model_id
+                if len(short) > 80:
+                    short = short[:77] + "..."
+                button = discord.ui.Button(
+                    label=short,
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"msug:{suggest_id}:{idx}",
+                )
+                button.callback = self._make_callback(idx, model_id)
+                self.add_item(button)
+
+        def _make_callback(self, idx: int, model_id: str):
+            async def _callback(interaction: discord.Interaction):
+                if self.resolved:
+                    await interaction.response.send_message(
+                        "This prompt has already been resolved.", ephemeral=True,
+                    )
+                    return
+                if not _component_check_auth(
+                    interaction, self.allowed_user_ids, self.allowed_role_ids,
+                ):
+                    await interaction.response.send_message(
+                        "You're not authorized to answer this prompt.", ephemeral=True,
+                    )
+                    return
+
+                self.resolved = True
+                short = model_id.split("/")[-1] if "/" in model_id else model_id
+
+                embed = interaction.message.embeds[0] if interaction.message.embeds else None
+                if embed:
+                    embed.color = discord.Color.green()
+                    embed.set_footer(text=f"Switching to {short} by {interaction.user.display_name}")
+                for child in self.children:
+                    child.disabled = True
+                await interaction.response.edit_message(embed=embed, view=self)
+
+                try:
+                    from tools import slash_confirm as _slash_confirm_mod
+                    result_text = await _slash_confirm_mod.resolve(
+                        self.session_key, self.suggest_id, model_id,
+                    )
+                    if result_text:
+                        await interaction.followup.send(result_text)
+                    logger.info(
+                        "Discord model-suggestion resolved for session %s "
+                        "(model=%s, user=%s)",
+                        self.session_key, model_id, interaction.user.display_name,
+                    )
+                except Exception as exc:
+                    logger.error("Discord model-suggestion resolve failed: %s", exc, exc_info=True)
+            return _callback
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
             msg = getattr(self, '_message', None)
             if msg:
                 try:

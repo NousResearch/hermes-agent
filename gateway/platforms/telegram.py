@@ -514,6 +514,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Model-suggestion button state: suggest_id → list of model IDs.
+        # Used by /model when the requested model isn't in the provider's
+        # listing but close matches exist (see send_model_suggestions).
+        self._model_suggestion_state: Dict[str, list] = {}
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
@@ -3390,6 +3394,72 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_model_suggestions(
+        self,
+        chat_id: str,
+        message: str,
+        suggestions: list,
+        suggest_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a model-suggestion prompt with one inline button per suggestion."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            preview = self.format_message(
+                message if len(message) <= 3800 else message[:3800] + "..."
+            )
+
+            # Build one button per suggestion. Telegram caps callback_data at
+            # 64 bytes, so use short indices and store the mapping server-side.
+            rows = []
+            for idx, model_id in enumerate(suggestions):
+                # Button label: show the short name (after last '/')
+                short = model_id.split("/")[-1] if "/" in model_id else model_id
+                # Truncate to Telegram's 64-byte button label limit
+                if len(short) > 60:
+                    short = short[:57] + "..."
+                rows.append([
+                    InlineKeyboardButton(
+                        short,
+                        callback_data=f"msug:{suggest_id}:{idx}",
+                    )
+                ])
+
+            keyboard = InlineKeyboardMarkup(rows)
+
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": preview,
+                "parse_mode": ParseMode.MARKDOWN_V2,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
+                )
+            )
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            # Store the suggestion list so the callback handler can resolve
+            # the index to a model ID.
+            self._slash_confirm_state[suggest_id] = session_key
+            self._model_suggestion_state[suggest_id] = suggestions
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_model_suggestions failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -4139,6 +4209,69 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Model-suggestion callbacks (msug:suggest_id:idx) ---
+        if data.startswith("msug:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                suggest_id = parts[1]
+                idx_str = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                suggestions = self._model_suggestion_state.pop(suggest_id, None)
+                session_key = self._slash_confirm_state.pop(suggest_id, None)
+                if not suggestions or not session_key:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                try:
+                    idx = int(idx_str)
+                    chosen_model = suggestions[idx]
+                except (ValueError, IndexError):
+                    await query.answer(text="Invalid selection.")
+                    return
+
+                short = chosen_model.split("/")[-1] if "/" in chosen_model else chosen_model
+                user_display = getattr(query.from_user, "first_name", "User")
+                await query.answer(text=f"Switching to {short}…")
+
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(f"🔄 {user_display} selected `{short}`"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                # Resolve via the slash_confirm module — the gateway registered
+                # a handler that re-runs switch_model with the chosen model.
+                try:
+                    from tools import slash_confirm as _slash_confirm_mod
+                    result_text = await _slash_confirm_mod.resolve(
+                        session_key, suggest_id, chosen_model,
+                    )
+                    if result_text and query.message:
+                        send_kwargs: Dict[str, Any] = {
+                            "chat_id": int(query.message.chat_id),
+                            "text": self.format_message(result_text),
+                            "parse_mode": ParseMode.MARKDOWN_V2,
+                            **self._link_preview_kwargs(),
+                        }
+                        await self._send_message_with_thread_fallback(**send_kwargs)
+                except Exception as exc:
+                    logger.error("[%s] model-suggestion callback failed: %s", self.name, exc, exc_info=True)
             return
 
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---

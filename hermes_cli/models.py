@@ -3696,8 +3696,15 @@ def validate_requested_model(
                     "message": None,
                 }
 
-            # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            # Auto-correct if the top match is very similar (e.g. typo).
+            # For explicit full model IDs (containing '/'), require an exact
+            # match. Custom endpoints often omit new or aliased models from their
+            # /models listing, so silently rewriting a full path to a different
+            # model is more dangerous than accepting it with a warning below.
+            auto_cutoff = 1.0 if "/" in requested_for_lookup else 0.9
+            auto = get_close_matches(
+                requested_for_lookup, api_models, n=1, cutoff=auto_cutoff
+            )
             if auto:
                 return {
                     "accepted": True,
@@ -3728,6 +3735,7 @@ def validate_requested_model(
                 "persist": True,
                 "recognized": False,
                 "message": message,
+                "suggestions": suggestions,
             }
 
         message = (

@@ -2569,6 +2569,35 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
+    async def send_model_suggestions(
+        self,
+        chat_id: str,
+        message: str,
+        suggestions: list,
+        suggest_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a model-suggestion prompt with one inline button per suggestion.
+
+        Called after a successful model switch where the requested model wasn't
+        found in the provider's listing but close matches exist.  Each button
+        lets the user re-switch to the suggested model with one click.
+
+        Button callbacks MUST resolve via
+        ``tools.slash_confirm.resolve(session_key, suggest_id, choice)``
+        where ``choice`` is the suggested model ID string.
+
+        The default implementation falls back to a plain text message with
+        the suggestions listed inline — adapters with button UIs (Telegram,
+        Discord) SHOULD override this for a richer UX.
+        """
+        return await self.send(
+            chat_id=chat_id,
+            content=message,
+            metadata=metadata,
+        )
+
     async def send_private_notice(
         self,
         chat_id: str,

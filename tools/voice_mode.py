@@ -35,6 +35,12 @@ def _import_audio():
     Raises ImportError or OSError if the libraries are not available
     (e.g. PortAudio missing on headless servers).
     """
+    # Belt-and-suspenders: ensure no foreign-venv site-packages shadow
+    # our own (observed: Mnemosyne python3.14 site-packages landing in
+    # sys.path via MCP discovery, breaking numpy C-extensions for 3.11).
+    import sys as _sys
+    _pyver = f"python{_sys.version_info.major}.{_sys.version_info.minor}"
+    _sys.path[:] = [p for p in _sys.path if "site-packages" not in p or _pyver in p]
     import sounddevice as sd
     import numpy as np
     return sd, np

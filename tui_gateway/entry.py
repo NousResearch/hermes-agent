@@ -11,6 +11,12 @@ if _src_root and _src_root not in sys.path:
 # directory shadow installed packages.
 sys.path = [p for p in sys.path if p not in {"", "."}]
 
+# Remove any foreign-venv site-packages that shadow our own (e.g. Mnemosyne's
+# python3.14 site-packages ending up here — CPython 3.11 can't load 3.14
+# C-extensions, breaking numpy/sounddevice imports).
+_pyver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+sys.path[:] = [p for p in sys.path if "site-packages" not in p or _pyver in p]
+
 import json
 import logging
 import signal

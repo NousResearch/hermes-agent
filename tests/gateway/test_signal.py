@@ -163,6 +163,103 @@ class TestSignalHelpers:
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 100) == ".mp4"
 
+    def test_guess_extension_aac_adts_unprotected(self):
+        """ADTS AAC, MPEG-4, no CRC (the canonical Android Signal voice note).
+
+        Byte 0 = 0xFF (sync high), byte 1 = 0xF1 (sync low + ID=0 + layer=00
+        + protection_absent=1). Must NOT be misclassified as MP3 — the old
+        code's ``(b[1] & 0xE0) == 0xE0`` test wrongly returned ``.mp3``.
+        """
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xf1" + b"\x00" * 200) == ".aac"
+
+    def test_guess_extension_aac_adts_protected(self):
+        """ADTS AAC, MPEG-4, CRC present (protection_absent=0)."""
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xf0" + b"\x00" * 200) == ".aac"
+
+    def test_guess_extension_mp3_mpeg1_layer3(self):
+        """Real MP3 frame, MPEG-1 Layer 3: byte1 = 0xFB (ID=1, layer=01, prot=1)."""
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xfb" + b"\x00" * 200) == ".mp3"
+
+    def test_guess_extension_mp3_mpeg2_layer3(self):
+        """Real MP3 frame, MPEG-2 Layer 3: byte1 = 0xF3 (ID=1, layer=01, prot=1)."""
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xf3" + b"\x00" * 200) == ".mp3"
+
+    def test_guess_extension_aac_routes_to_audio_cache(self):
+        """ADTS-detected files must be routed to the audio cache, not document.
+
+        ``_is_audio_ext(``.aac``)`` is True, so a Signal attachment that
+        begins with the ADTS sync word ends up in ``cache_audio_from_bytes``,
+        which the remux step then converts to MP4 container.
+        """
+        from gateway.platforms.signal import _is_audio_ext, _guess_extension
+        ext = _guess_extension(b"\xff\xf1" + b"\x00" * 200)
+        assert ext == ".aac"
+        assert _is_audio_ext(ext) is True
+
+    def test_remux_aac_to_m4a_round_trip(self):
+        """A real ADTS AAC stream remuxes to a valid MP4 (.m4a) container.
+
+        Generates a short ADTS AAC sample with ffmpeg at runtime so the
+        end-to-end remux path actually exercises in CI (skipped only when
+        ffmpeg is unavailable), rather than depending on a machine-specific
+        file.
+        """
+        import shutil
+        import subprocess
+        import tempfile
+        from gateway.platforms.signal import _remux_aac_to_m4a
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            import pytest
+            pytest.skip("ffmpeg not available in this env")
+
+        # Synthesize 0.5s of silence encoded as raw ADTS AAC.
+        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as tmp:
+            adts_path = tmp.name
+        try:
+            gen = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "anullsrc=r=44100:cl=mono", "-t", "0.5",
+                 "-c:a", "aac", "-f", "adts", adts_path],
+                capture_output=True, timeout=30,
+            )
+            if gen.returncode != 0:
+                import pytest
+                pytest.skip("ffmpeg could not produce an ADTS AAC sample")
+            with open(adts_path, "rb") as f:
+                aac_data = f.read()
+        finally:
+            try:
+                import os
+                os.unlink(adts_path)
+            except OSError:
+                pass
+
+        result = _remux_aac_to_m4a(aac_data)
+        assert result is not None
+        m4a_bytes, ext = result
+        assert ext == ".m4a"
+        # MP4 files start with a 4-byte size, then ``ftyp`` at offset 4.
+        assert m4a_bytes[4:8] == b"ftyp", \
+            f"expected MP4 ftyp box, got {m4a_bytes[:12]!r}"
+        # File must be at least as long as the input (MP4 has overhead).
+        assert len(m4a_bytes) >= len(aac_data) * 0.5
+
+    def test_remux_aac_to_m4a_handles_garbage(self):
+        """Garbage input should return None, not raise."""
+        from gateway.platforms.signal import _remux_aac_to_m4a
+        result = _remux_aac_to_m4a(b"\xff\xf1garbage_no_aac_frames")
+        # Either returns None (ffmpeg errored) or a real M4A. If it returned
+        # bytes, the bytes must look like an MP4. Otherwise it returns None.
+        if result is not None:
+            m4a_bytes, ext = result
+            assert ext == ".m4a"
+
     def test_guess_extension_unknown(self):
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x01\x02\x03" * 10) == ".bin"

@@ -17,6 +17,9 @@ import json
 import logging
 import os
 import random
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -39,6 +42,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from gateway.platforms.signal_format import markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
     SIGNAL_MAX_ATTACHMENTS_PER_MSG,
@@ -76,7 +80,14 @@ def _parse_comma_list(value: str) -> List[str]:
 
 
 def _guess_extension(data: bytes) -> str:
-    """Guess file extension from magic bytes."""
+    """Guess file extension from magic bytes.
+
+    Android Signal delivers voice notes as raw ADTS AAC frames, which share
+    the ``0xFF 0xFx`` sync word with MPEG-1/2 Layer 3 (MP3). The byte-1
+    layout disambiguates: ADTS packs ``ID layer protection_absent`` into
+    bits 3-0, where ``ID`` is 0 for MPEG-2/4 AAC and ``layer`` is always
+    0 for ADTS. A real MP3 frame has ``ID=1`` and ``layer`` in {1, 2, 3}.
+    """
     if data[:4] == b"\x89PNG":
         return ".png"
     if data[:2] == b"\xff\xd8":
@@ -92,6 +103,12 @@ def _guess_extension(data: bytes) -> str:
     if data[:4] == b"OggS":
         return ".ogg"
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        # ``0xFF 0xFx`` is shared by MP3 and ADTS AAC. The discriminator
+        # is bits 3-1 of byte 1: ADTS has ``ID=0`` and ``layer=00`` (mask
+        # 0xF6, target 0xF0); MP3 has ``ID=1`` and ``layer`` in {01,10,11}
+        # (mask 0xF6, target in {0xF2, 0xF4, 0xF6}).
+        if (data[1] & 0xF6) == 0xF0:
+            return ".aac"
         return ".mp3"
     if data[:2] == b"PK":
         return ".zip"
@@ -118,6 +135,61 @@ _EXT_TO_MIME = {
 def _ext_to_mime(ext: str) -> str:
     """Map file extension to MIME type."""
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+
+
+def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
+    """Losslessly remux raw ADTS AAC bytes into an MP4 (.m4a) container.
+
+    Used by the Signal attachment cache so Android voice notes land on disk
+    in a container that every major STT API (Groq, OpenAI, xAI, Mistral
+    Voxtral) will accept. ``ffmpeg -c:a copy`` is a single demux/remux —
+    no re-encode, no quality loss, sub-100ms for typical voice-note sizes.
+
+    Returns ``(m4a_bytes, ".m4a")`` on success, or ``None`` if ffmpeg is
+    missing, input is invalid, or remux fails for any reason. Callers
+    must treat ``None`` as "pass through unchanged" and not raise.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        # Common Homebrew/local prefixes on macOS dev hosts.
+        for prefix in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+            if os.path.isfile(prefix) and os.access(prefix, os.X_OK):
+                ffmpeg = prefix
+                break
+    if not ffmpeg:
+        logger.debug("Signal: ffmpeg not found, skipping AAC→M4A remux")
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as src:
+            src.write(aac_data)
+            src_path = src.name
+        dst_path = src_path[:-4] + ".m4a"
+        try:
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-i", src_path,
+                 "-c:a", "copy", "-movflags", "+faststart", dst_path],
+                capture_output=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
+                    proc.returncode, proc.stderr.decode("utf-8", "replace")[:300],
+                )
+                return None
+            with open(dst_path, "rb") as f:
+                return f.read(), ".m4a"
+        finally:
+            for p in (src_path, dst_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    except subprocess.TimeoutExpired:
+        logger.warning("Signal: AAC→M4A remux timed out (>10s)")
+        return None
+    except Exception:
+        logger.exception("Signal: AAC→M4A remux error")
+        return None
 
 
 def _render_mentions(text: str, mentions: list) -> str:
@@ -724,6 +796,18 @@ class SignalAdapter(BasePlatformAdapter):
         raw_data = base64.b64decode(result)
         ext = _guess_extension(raw_data)
 
+        # Android Signal voice notes are raw ADTS AAC streams. Most STT
+        # providers (Groq Whisper, OpenAI Whisper) reject raw ADTS — they
+        # require AAC to be muxed into an MP4 container. Remux losslessly
+        # with ``ffmpeg -c:a copy`` so the cached file is a normal .m4a.
+        # No re-encode, sub-100ms on a Pi 5. Graceful no-op if ffmpeg is
+        # absent: the raw ADTS file is cached as-is and STT may reject it
+        # (there is no downstream sniff-and-remux fallback).
+        if ext == ".aac":
+            remuxed: Optional[Tuple[bytes, str]] = await asyncio.to_thread(_remux_aac_to_m4a, raw_data)
+            if remuxed is not None:
+                raw_data, ext = remuxed
+
         if _is_image_ext(ext):
             path = cache_image_from_bytes(raw_data, ext)
         elif _is_audio_ext(ext):
@@ -821,144 +905,9 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _markdown_to_signal(text: str) -> tuple:
-        """Convert markdown to plain text + Signal textStyles list.
-
-        Signal doesn't render markdown.  Instead it uses ``bodyRanges``
-        (exposed by signal-cli as ``textStyle`` / ``textStyles`` params)
-        with the format ``start:length:STYLE``.
-
-        Positions are measured in **UTF-16 code units** (not Python code
-        points) because that's what the Signal protocol uses.
-
-        Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE.
-        (Signal's SPOILER style is not currently mapped — no standard
-        markdown syntax for it; would need ``||spoiler||`` parsing.)
-
-        Returns ``(plain_text, styles_list)`` where *styles_list* may be
-        empty if there's nothing to format.
-        """
-        import re
-
-        def _utf16_len(s: str) -> int:
-            """Length of *s* in UTF-16 code units."""
-            return len(s.encode("utf-16-le")) // 2
-
-        # Pre-process: normalize whitespace before any position tracking
-        # so later operations don't invalidate recorded offsets.
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = text.strip()
-
-        styles: list = []
-
-        # --- Phase 1: fenced code blocks  ```...``` → MONOSPACE ---
-        _CB = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
-        while m := _CB.search(text):
-            inner = m.group(1).rstrip("\n")
-            start = m.start()
-            text = text[: m.start()] + inner + text[m.end() :]
-            styles.append((start, len(inner), "MONOSPACE"))
-
-        # --- Phase 2: heading markers  # Foo → Foo (BOLD) ---
-        _HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
-        new_text = ""
-        last_end = 0
-        for m in _HEADING.finditer(text):
-            new_text += text[last_end : m.start()]
-            last_end = m.end()
-            eol = text.find("\n", m.end())
-            if eol == -1:
-                eol = len(text)
-            heading_text = text[m.end() : eol]
-            start = len(new_text)
-            new_text += heading_text
-            styles.append((start, len(heading_text), "BOLD"))
-            last_end = eol
-        new_text += text[last_end:]
-        text = new_text
-
-        # --- Phase 3: inline patterns (single-pass to avoid offset drift) ---
-        # The old code processed each pattern sequentially, stripping markers
-        # and recording positions per-pass.  Later passes shifted text without
-        # adjusting earlier positions → bold/italic landed mid-word.
-        #
-        # Fix: collect ALL non-overlapping matches first, then strip every
-        # marker in one pass so positions are computed against the final text.
-        _PATTERNS = [
-            (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), "BOLD"),
-            (re.compile(r"__(.+?)__", re.DOTALL), "BOLD"),
-            (re.compile(r"~~(.+?)~~", re.DOTALL), "STRIKETHROUGH"),
-            (re.compile(r"`(.+?)`"), "MONOSPACE"),
-            (re.compile(r"(?<!\*)\*(?!\*| )(.+?)(?<!\*)\*(?!\*)"), "ITALIC"),
-            (re.compile(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)"), "ITALIC"),
-        ]
-
-        # Collect all non-overlapping matches (earlier patterns win ties).
-        all_matches: list = []  # (start, end, g1_start, g1_end, style)
-        occupied: list = []     # (start, end) intervals already claimed
-        for pat, style in _PATTERNS:
-            for m in pat.finditer(text):
-                ms, me = m.start(), m.end()
-                if not any(ms < oe and me > os for os, oe in occupied):
-                    all_matches.append((ms, me, m.start(1), m.end(1), style))
-                    occupied.append((ms, me))
-        all_matches.sort()
-
-        # Build removal list so we can adjust Phase 1/2 styles.
-        # Each match removes its prefix markers (start..g1_start) and
-        # suffix markers (g1_end..end).
-        removals: list = []  # (position, length) sorted
-        for ms, me, g1s, g1e, _ in all_matches:
-            if g1s > ms:
-                removals.append((ms, g1s - ms))
-            if me > g1e:
-                removals.append((g1e, me - g1e))
-        removals.sort()
-
-        # Adjust Phase 1/2 styles for characters about to be removed.
-        def _adj(pos: int) -> int:
-            shift = 0
-            for rp, rl in removals:
-                if rp < pos:
-                    shift += min(rl, pos - rp)
-                else:
-                    break
-            return pos - shift
-
-        adjusted_prior: list = []
-        for s, l, st in styles:
-            ns = _adj(s)
-            ne = _adj(s + l)
-            if ne > ns:
-                adjusted_prior.append((ns, ne - ns, st))
-
-        # Strip all inline markers in one pass → positions are correct.
-        result = ""
-        last_end = 0
-        inline_styles: list = []
-        for ms, me, g1s, g1e, sty in all_matches:
-            result += text[last_end:ms]
-            pos = len(result)
-            inner = text[g1s:g1e]
-            result += inner
-            inline_styles.append((pos, len(inner), sty))
-            last_end = me
-        result += text[last_end:]
-        text = result
-
-        styles = adjusted_prior + inline_styles
-
-        # Convert code-point offsets → UTF-16 code-unit offsets
-        style_strings = []
-        for cp_start, cp_len, stype in sorted(styles):
-            # Safety: skip any out-of-bounds styles
-            if cp_start < 0 or cp_start + cp_len > len(text):
-                continue
-            u16_start = _utf16_len(text[:cp_start])
-            u16_len = _utf16_len(text[cp_start : cp_start + cp_len])
-            style_strings.append(f"{u16_start}:{u16_len}:{stype}")
-
-        return text, style_strings
+    def _markdown_to_signal(text: str) -> tuple[str, list[str]]:
+        """Backward-compatible wrapper around shared Signal formatting helper."""
+        return markdown_to_signal(text)
 
     def format_message(self, content: str) -> str:
         """Strip markdown for plain-text fallback (used by base class).

@@ -20,7 +20,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
+from pathlib import Path
 from typing import Any, Dict, List
+
+# ZenBrain 脚本路径，只加一次
+_ZENBRAIN_PATH = str(Path.home() / ".hermes" / "scripts")
+if _ZENBRAIN_PATH not in sys.path:
+    sys.path.insert(0, _ZENBRAIN_PATH)
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -120,6 +127,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._store = None
         self._retriever = None
         self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
+        self._pending_facts_cache = None  # (mtime, size) 避免重复读磁盘
 
     @property
     def name(self) -> str:
@@ -204,20 +212,34 @@ class HolographicMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if not self._retriever or not query:
-            return ""
+        # ── L4: fact_store 检索 ──
+        fact_lines = ""
+        if self._retriever and query:
+            try:
+                results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
+                if results:
+                    fact_lines = "\n".join(
+                        f"- [{r.get('trust_score', r.get('trust', 0)):.1f}] {r.get('content', '')}"
+                        for r in results
+                    )
+            except Exception as e:
+                logger.debug("Holographic prefetch failed: %s", e)
+
+        # ── ZenBrain 6层检索 ──
+        zenbrain_lines = ""
         try:
-            results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
-            if not results:
-                return ""
-            lines = []
-            for r in results:
-                trust = r.get("trust_score", r.get("trust", 0))
-                lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
-            return "## Holographic Memory\n" + "\n".join(lines)
+            from zenbrain_recall import recall
+            zenbrain_lines = recall(query or "")
         except Exception as e:
-            logger.debug("Holographic prefetch failed: %s", e)
-            return ""
+            logger.debug("ZenBrain recall failed: %s", e)
+
+        # ── 合并输出 ──
+        parts = []
+        if zenbrain_lines:
+            parts.append(zenbrain_lines)
+        if fact_lines:
+            parts.append(f"## Holographic Memory\n{fact_lines}")
+        return "\n\n".join(parts)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         # Holographic memory stores explicit facts via tools, not auto-sync.
@@ -253,6 +275,92 @@ class HolographicMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         self._store = None
         self._retriever = None
+
+    def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        """每轮开始时：
+        1. 消费 /tmp/hermes_pending_facts.json（如有）→ 写入 fact_store
+        2. 每5轮同步 MEMORY.md/USER.md LOCKED 规则到 fact_store
+        """
+        if not self._store or turn_number < 1:
+            return
+        
+        # ── 1. 消费待写入 facts（每轮都检查，零锁竞争）──
+        self._consume_pending_facts()
+        
+        # ── 2. LOCKED 规则同步（每5轮）──
+        if turn_number % 5 != 0:
+            return
+        try:
+            from pathlib import Path
+            import re
+            hermes_home = Path(kwargs.get("hermes_home", str(Path.home() / ".hermes")))
+            memory_md = hermes_home / "MEMORY.md"
+            user_md = hermes_home / "USER.md"
+            
+            locked_re = re.compile(r"§!LOCKED\s+([\s\S]+?)(?=§!END|§!LOCKED|$)", re.DOTALL)
+            
+            for filepath in (memory_md, user_md):
+                if not filepath.exists():
+                    continue
+                text = filepath.read_text(encoding="utf-8")
+                for match in locked_re.finditer(text):
+                    fact = match.group(1).strip()
+                    if len(fact) > 30:
+                        try:
+                            self._store.add_fact(
+                                fact, 
+                                category="cross_model",
+                                tags="locked"
+                            )
+                        except Exception:
+                            pass  # content UNIQUE constraint — already exists
+        except Exception:
+            pass  # 非致命
+    
+    def _consume_pending_facts(self) -> None:
+        """消费 /tmp/hermes_pending_facts.json → fact_store → 删文件。
+        由 obsidian_feishu_sync.py 生成，Gateway 内部写入，零 SQLite 锁竞争。
+        """
+        import json
+        import os
+        from pathlib import Path
+        
+        pending_file = Path("/tmp/hermes_pending_facts.json")
+        if not pending_file.exists():
+            self._pending_facts_cache = None
+            return
+        
+        # 缓存：文件未变化则跳过，减少磁盘 IO
+        stat = pending_file.stat()
+        cache_key = (stat.st_mtime, stat.st_size)
+        if self._pending_facts_cache == cache_key:
+            return
+        self._pending_facts_cache = cache_key
+        
+        try:
+            data = json.loads(pending_file.read_text(encoding="utf-8"))
+            facts = data.get("facts", [])
+            if not facts:
+                pending_file.unlink(missing_ok=True)
+                return
+            
+            added = 0
+            for f in facts:
+                try:
+                    self._store.add_fact(
+                        f["content"],
+                        category=f.get("category", "general"),
+                        tags=f.get("tags", ""),
+                    )
+                    added += 1
+                except Exception:
+                    pass  # 重复跳过
+            
+            pending_file.unlink(missing_ok=True)
+            if added > 0:
+                logger.info("Consumed %d/%d pending facts from obsidian_feishu_sync", added, len(facts))
+        except Exception:
+            pass  # 非致命，下轮再试
 
     # -- Tool handlers -------------------------------------------------------
 

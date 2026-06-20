@@ -127,13 +127,23 @@ class MemoryStore:
 
     def _init_db(self) -> None:
         """Create tables, indexes, and triggers if they do not exist. Enable WAL mode."""
-        # Use the shared WAL-fallback helper so memory_store.db degrades
-        # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same issue as
-        # state.db / kanban.db — see hermes_state._WAL_INCOMPAT_MARKERS).
+        import time as _time
+        # --- Defensive rollback: clear any stale transaction from a previous
+        #     buggy init / interrupted add_fact that left an open write-tx.
+        #     Without this, BEGIN IMMEDIATE from external scripts blocks
+        #     indefinitely and the WAL can't be checkpointed.
+        #     NOTE: rollback() is NOT thread-safe on its own — callers that
+        #     share the same connection across threads must hold a lock.
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
+        # --- WAL mode ---
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
+        # --- Schema ---
         self._conn.executescript(_SCHEMA)
-        # Migrate: add hrr_vector column if missing (safe for existing databases)
+        # --- Migrations ---
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
@@ -172,6 +182,8 @@ class MemoryStore:
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
             except sqlite3.IntegrityError:
                 # Duplicate content — return existing id
+                # 必须显式 rollback 释放残留写锁，否则累积导致 database is locked
+                self._conn.rollback()
                 row = self._conn.execute(
                     "SELECT fact_id FROM facts WHERE content = ?", (content,)
                 ).fetchone()

@@ -575,7 +575,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     skipped += 1
                 continue
 
-            if user_hash != origin_hash:
+            if _is_tracked_user_modification(origin_hash, user_hash):
                 # User modified this skill — don't overwrite their changes
                 user_modified.append(skill_name)
                 if not quiet:
@@ -671,6 +671,31 @@ def _rmtree_writable(path: Path) -> None:
     parent directory, so the retry handler makes the failing path **and its
     parent** writable before re-attempting.  See #34860, #34972.
     """
+    # Defense in depth (#48200): refuse to rmtree anything outside
+    # ``HERMES_HOME/skills/`` to prevent the catastrophic wipe of
+    # ``~/.hermes/`` (``.env``, ``MEMORY.md``, ``kanban.db``, custom
+    # skills, scripts, …) that an earlier incident observed. Five call
+    # sites in this file invoke this helper; if any one of them ever
+    # computes a destination outside the skills root — through a bad
+    # path join, a missing ``HERMES_HOME`` default, a malicious
+    # bundled-manifest entry, or a mid-flight exception that leaves a
+    # stale path in scope — this guard turns the resulting
+    # ``shutil.rmtree(~/.hermes)`` into a loud, recoverable ``ValueError``
+    # instead of silently destroying the user's install.
+    target = Path(path).resolve()
+    skills_root = SKILLS_DIR.resolve()
+    # Every legitimate caller passes a skill directory or its ``.bak``
+    # sibling — always a strict child of the skills root. The skills root
+    # itself must never be removed: a ``dest`` that collapses to
+    # ``SKILLS_DIR`` (e.g. a relative path resolving to ``.``) would wipe
+    # every installed skill, and its ``.bak`` sibling lands one level up in
+    # ``HERMES_HOME``. Require a strict-child relationship so both escape
+    # into the skills root and out of it are refused.
+    if skills_root not in target.parents:
+        raise ValueError(
+            f"refusing to rmtree {target!r}: not strictly under {skills_root!r} "
+            f"(scope guard — see #48200)"
+        )
     import stat
 
     def _on_error(func, fpath, exc_info):
@@ -785,6 +810,18 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     return {"ok": True, "action": action, "message": message, "synced": synced}
 
 
+def _is_tracked_user_modification(origin_hash: str, user_hash: str) -> bool:
+    """Whether an on-disk skill counts as a user modification ``hermes update`` keeps.
+
+    Shared by the sync loop (which decides what to skip) and
+    ``list_user_modified_bundled_skills`` (which surfaces the names) so the two
+    can never drift. A skill is a tracked modification only when it has a
+    recorded origin hash (an un-baselined / v1 entry with an empty hash is not)
+    and its current content hash differs from that origin.
+    """
+    return bool(origin_hash) and user_hash != origin_hash
+
+
 def list_user_modified_bundled_skills() -> List[dict]:
     """Return the bundled skills that ``hermes update`` keeps because the user
     edited them locally.
@@ -806,7 +843,7 @@ def list_user_modified_bundled_skills() -> List[dict]:
     bundled_dir = _get_bundled_dir()
     modified: List[dict] = []
     for skill_name, skill_dir in _discover_bundled_skills(bundled_dir):
-        origin_hash = manifest.get(skill_name)
+        origin_hash = manifest.get(skill_name, "")
         # No entry, or a v1 entry not yet baselined (empty hash): not a tracked
         # modification — the next sync handles it.
         if not origin_hash:
@@ -814,7 +851,7 @@ def list_user_modified_bundled_skills() -> List[dict]:
         dest = _compute_relative_dest(skill_dir, bundled_dir)
         if not dest.exists():
             continue
-        if _dir_hash(dest) != origin_hash:
+        if _is_tracked_user_modification(origin_hash, _dir_hash(dest)):
             modified.append(
                 {"name": skill_name, "dest": dest, "bundled_src": skill_dir}
             )
@@ -822,18 +859,23 @@ def list_user_modified_bundled_skills() -> List[dict]:
     return modified
 
 
-def _read_text_for_diff(path: Path) -> Optional[str]:
-    """Return file text for diffing, or ``None`` if the file is binary/unreadable."""
+def _read_for_diff(path: Path) -> Tuple[Optional[bytes], Optional[str]]:
+    """Read a file once for diffing.
+
+    Returns ``(raw_bytes, text)`` where ``text`` is ``None`` if the file is
+    binary; ``(None, None)`` if it could not be read. Returning the raw bytes
+    lets the caller compare binary files without re-reading them.
+    """
     try:
         data = path.read_bytes()
     except OSError:
-        return None
+        return None, None
     if b"\x00" in data:
-        return None
+        return data, None
     try:
-        return data.decode("utf-8")
+        return data, data.decode("utf-8")
     except UnicodeDecodeError:
-        return None
+        return data, None
 
 
 def diff_bundled_skill(name: str) -> dict:
@@ -844,7 +886,7 @@ def diff_bundled_skill(name: str) -> dict:
 
     Returns a dict:
         ``ok`` (bool), ``name`` (str), ``found`` (bool — bundled source exists),
-        ``user_present`` (bool), ``modified`` (bool), ``message`` (str),
+        ``modified`` (bool), ``message`` (str),
         ``diffs``: list of ``{"path": str, "status": str, "diff": str}`` where
         status is one of ``modified`` / ``added`` (only in user copy) /
         ``removed`` (only in bundled) / ``binary``.
@@ -859,7 +901,6 @@ def diff_bundled_skill(name: str) -> dict:
             "ok": False,
             "name": name,
             "found": False,
-            "user_present": False,
             "modified": False,
             "diffs": [],
             "message": (
@@ -873,32 +914,30 @@ def diff_bundled_skill(name: str) -> dict:
             "ok": False,
             "name": name,
             "found": True,
-            "user_present": False,
             "modified": False,
             "diffs": [],
             "message": f"No local copy of '{name}' found at {dest}.",
         }
 
-    user_files = {
-        p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()
-    }
-    stock_files = {
-        p.relative_to(bundled_src).as_posix()
-        for p in bundled_src.rglob("*")
-        if p.is_file()
-    }
+    user_files = set(_skill_file_list(dest))
+    stock_files = set(_skill_file_list(bundled_src))
 
     diffs: List[dict] = []
     for rel in sorted(user_files | stock_files):
         in_user = rel in user_files
         in_stock = rel in stock_files
-        user_text = _read_text_for_diff(dest / rel) if in_user else None
-        stock_text = _read_text_for_diff(bundled_src / rel) if in_stock else None
+        user_bytes, user_text = (
+            _read_for_diff(dest / rel) if in_user else (None, None)
+        )
+        stock_bytes, stock_text = (
+            _read_for_diff(bundled_src / rel) if in_stock else (None, None)
+        )
 
         if in_user and in_stock:
             if user_text is None or stock_text is None:
-                # At least one side is binary — report only if bytes differ.
-                if (dest / rel).read_bytes() != (bundled_src / rel).read_bytes():
+                # At least one side is binary — report only if bytes differ
+                # (reuse the bytes already read above, no second read).
+                if user_bytes != stock_bytes:
                     diffs.append(
                         {"path": rel, "status": "binary", "diff": "<binary file differs>"}
                     )
@@ -928,7 +967,6 @@ def diff_bundled_skill(name: str) -> dict:
         "ok": True,
         "name": name,
         "found": True,
-        "user_present": True,
         "modified": modified,
         "diffs": diffs,
         "message": (

@@ -35,6 +35,7 @@ from hermes_cli.profiles import (
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
+    profiles_to_serve,
 )
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -1524,3 +1525,48 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+class TestProfilesToServe:
+    """profiles_to_serve(multiplex) — the gateway's profile-enumeration chokepoint."""
+
+    def test_off_returns_only_active_default(self, profile_env):
+        serve = profiles_to_serve(multiplex=False)
+        assert len(serve) == 1
+        name, home = serve[0]
+        assert name == "default"
+        assert home == _get_default_hermes_home()
+
+    def test_off_returns_only_active_named(self, profile_env, monkeypatch):
+        # A named profile's gateway runs with HERMES_HOME pointing at the
+        # profile dir; get_active_profile_name() infers the name from there.
+        create_profile("coder", no_alias=True)
+        monkeypatch.setenv("HERMES_HOME", str(get_profile_dir("coder")))
+        serve = profiles_to_serve(multiplex=False)
+        assert len(serve) == 1
+        assert serve[0][0] == "coder"
+        assert serve[0][1] == get_profile_dir("coder")
+
+    def test_on_returns_default_plus_all_named(self, profile_env):
+        create_profile("coder", no_alias=True)
+        create_profile("writer", no_alias=True)
+        serve = dict(profiles_to_serve(multiplex=True))
+        assert set(serve) == {"default", "coder", "writer"}
+        assert serve["default"] == _get_default_hermes_home()
+        assert serve["coder"] == get_profile_dir("coder")
+
+    def test_on_default_always_first(self, profile_env):
+        create_profile("coder", no_alias=True)
+        serve = profiles_to_serve(multiplex=True)
+        assert serve[0][0] == "default"
+
+    def test_on_active_profile_does_not_change_set(self, profile_env):
+        """Enumeration is independent of which profile is active."""
+        create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+        serve = dict(profiles_to_serve(multiplex=True))
+        assert set(serve) == {"default", "coder"}
+
+    def test_on_no_named_profiles_returns_just_default(self, profile_env):
+        serve = profiles_to_serve(multiplex=True)
+        assert [n for n, _ in serve] == ["default"]

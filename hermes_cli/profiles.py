@@ -29,7 +29,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -808,6 +808,47 @@ def list_profiles() -> List[ProfileInfo]:
             ))
 
     return profiles
+
+
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+    """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
+
+    This is the single chokepoint for "which profiles does the inbound gateway
+    handle" so later multiplexing phases never re-derive the set.
+
+    - ``multiplex=False`` (default): returns exactly one entry for the *active*
+      profile — byte-for-byte the single-profile behavior the gateway has
+      always had. The name is ``"default"`` for the default profile or the
+      active named profile's id.
+    - ``multiplex=True``: returns the default profile plus every valid named
+      profile under ``profiles/``, each paired with its own HERMES_HOME.
+
+    Intentionally lightweight (a directory scan + name validation only): no
+    per-profile config reads, gateway-running probes, or skill counts like
+    :func:`list_profiles`. It runs on gateway startup and must stay cheap.
+
+    The returned ``hermes_home`` is the path to pass to
+    ``set_hermes_home_override`` when scoping a turn to that profile.
+    """
+    active = get_active_profile_name() or "default"
+    if not multiplex:
+        return [(active, get_profile_dir(active))]
+
+    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default":
+                continue  # default is the built-in entry already added above
+            if not _PROFILE_ID_RE.match(name):
+                continue
+            serve.append((name, entry))
+
+    return serve
 
 
 def create_profile(

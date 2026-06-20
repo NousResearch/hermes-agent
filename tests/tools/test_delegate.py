@@ -3029,6 +3029,41 @@ class TestFallbackModelInheritance(unittest.TestCase):
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
 
+    def test_child_inherits_fallback_chain_when_base_url_pinned(self):
+        """A subagent pinned to a direct endpoint via delegation.base_url must
+        STILL inherit the parent's fallback chain (#49417).
+
+        The hard pin (override_base_url / override_provider) controls the
+        PRIMARY route — the recommended pattern for predictable, cost-controlled
+        subagent routing — but it must not silently drop the parent's fallback
+        resilience, or any outage of the pinned endpoint kills every dispatch.
+        """
+        parent = _make_mock_parent(depth=0)
+        fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
+        parent._fallback_chain = [fallback_entry]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test fallback inheritance when pinned",
+                context=None,
+                toolsets=None,
+                model="MiniMax-M3",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="custom",
+                override_base_url="https://api.minimax.io/anthropic",
+                override_api_mode="anthropic_messages",
+            )
+
+        _, kwargs = MockAgent.call_args
+        # The pinned base_url controls the PRIMARY route...
+        self.assertEqual(kwargs["base_url"], "https://api.minimax.io/anthropic")
+        # ...but the parent's fallback chain must still be inherited.
+        self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+
 
 if __name__ == "__main__":
     unittest.main()

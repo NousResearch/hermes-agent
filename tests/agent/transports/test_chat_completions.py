@@ -458,6 +458,73 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["max_tokens"] == 4096
 
+    def test_custom_openai_endpoint_omits_profile_max_tokens_default(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma4-31b",
+            messages=msgs,
+            provider_profile=profile,
+            provider_name="custom",
+            base_url="http://vllm.example.test:11435/v1",
+            max_tokens=None,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert "max_tokens" not in kw
+
+    def test_custom_openai_endpoint_keeps_explicit_max_tokens(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma4-31b",
+            messages=msgs,
+            provider_profile=profile,
+            provider_name="custom",
+            base_url="http://vllm.example.test:11435/v1",
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 4096
+
+    def test_custom_openai_endpoint_keeps_ephemeral_max_tokens(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma4-31b",
+            messages=msgs,
+            provider_profile=profile,
+            provider_name="custom",
+            base_url="http://vllm.example.test:11435/v1",
+            max_tokens=None,
+            ephemeral_max_output_tokens=2048,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 2048
+
+    def test_custom_ollama_num_ctx_keeps_profile_max_tokens_default(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="llama3",
+            messages=msgs,
+            provider_profile=profile,
+            provider_name="custom",
+            base_url="http://localhost:11434/v1",
+            ollama_num_ctx=32768,
+            max_tokens=None,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 65536
+        assert kw["extra_body"]["options"]["num_ctx"] == 32768
+
     def test_ephemeral_overrides_max_tokens(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

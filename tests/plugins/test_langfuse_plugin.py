@@ -281,6 +281,8 @@ class TestTurnTraceIsolation:
         class _Span:
             def __init__(self):
                 self._otel_span = _OtelSpan()
+                self.id = f"span-{len(started)}"
+                self.trace_id = f"trace-{len(started)}"
 
             def update(self, **kw):
                 pass
@@ -292,14 +294,18 @@ class TestTurnTraceIsolation:
                 pass
 
             def start_observation(self, **kw):
-                return _Span()
+                raise AssertionError(
+                    "child observations must be opened from the Langfuse client, "
+                    "not from the root span context-manager path"
+                )
 
         class _Client:
             def create_trace_id(self, seed=None):
                 return f"trace::{seed}"
 
             def start_observation(self, **kw):
-                started.append(kw.get("trace_context", {}).get("trace_id"))
+                if kw.get("name") == "Hermes turn":
+                    started.append(kw.get("trace_context", {}).get("trace_id"))
                 return _Span()
 
             def flush(self):

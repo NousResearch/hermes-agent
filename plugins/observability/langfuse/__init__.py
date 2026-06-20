@@ -50,6 +50,11 @@ try:
 except Exception:  # pragma: no cover - fail-open if the private path moves
     _LFAttr = None
 
+try:
+    from opentelemetry import trace as _otel_trace_api
+except Exception:  # pragma: no cover - fail-open when optional dep is missing
+    _otel_trace_api = None
+
 
 @dataclass
 class TraceState:
@@ -702,7 +707,37 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
 def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, as_type: str,
                              input_value: Any, metadata: Optional[dict] = None,
                              model: Optional[str] = None, model_parameters: Optional[dict] = None) -> Any:
-    return state.root_span.start_observation(
+    # Langfuse v4's observation.start_observation() returns a context manager
+    # backed by _create_span_with_parent_context(). Hermes hooks can finish in a
+    # different asyncio task than they start in, so that generator/context path
+    # leaks OTel detach/GC errors and can drop child observations. Start a plain
+    # non-current span through the client instead, explicitly parented to the
+    # root OTel span when the SDK internals are available.
+    if _otel_trace_api is not None:
+        try:
+            root_otel_span = getattr(state.root_span, "_otel_span", None)
+            tracer = getattr(client, "_otel_tracer", None)
+            factory = getattr(client, "_create_observation_from_otel_span", None)
+            if root_otel_span is not None and tracer is not None and factory is not None:
+                parent_context = _otel_trace_api.set_span_in_context(root_otel_span)
+                otel_span = tracer.start_span(name=name, context=parent_context)
+                return factory(
+                    otel_span=otel_span,
+                    as_type=as_type,
+                    input=input_value,
+                    metadata=metadata or {},
+                    model=model,
+                    model_parameters=model_parameters,
+                )
+        except Exception as exc:  # pragma: no cover - fallback keeps tracing alive
+            _debug(f"direct child observation failed: {exc}")
+
+    trace_context = {"trace_id": state.trace_id}
+    parent_span_id = getattr(state.root_span, "id", None)
+    if parent_span_id:
+        trace_context["parent_span_id"] = parent_span_id
+    return client.start_observation(
+        trace_context=trace_context,
         name=name,
         as_type=as_type,
         input=input_value,

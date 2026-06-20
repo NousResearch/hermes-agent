@@ -8,6 +8,7 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    display_hermes_home,
     find_hermes_node_executable,
     get_default_hermes_root,
     get_hermes_home,
@@ -393,3 +394,45 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
+
+
+class TestDisplayHermesHome:
+    """Tests for display_hermes_home() display formatting.
+
+    Regression coverage for https://github.com/NousResearch/hermes-agent/issues/49500
+    — on Windows the relative tail must not leak backslashes into the
+    ``~/`` shorthand, producing a mixed path like ``~/AppData\\Local\\hermes``.
+    """
+
+    def test_posix_home_uses_shorthand(self, tmp_path, monkeypatch):
+        """Standard POSIX install renders the ``~/`` shorthand."""
+        monkeypatch.setattr(
+            hermes_constants, "get_hermes_home", lambda: tmp_path / ".hermes"
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert display_hermes_home() == "~/.hermes"
+
+    def test_windows_relative_tail_uses_forward_slashes(self, monkeypatch):
+        """Regression #49500: the Windows relative tail must render with
+        forward slashes so the whole string is a uniform POSIX-style path,
+        not the mixed ``~/AppData\\Local\\hermes`` that confused readers."""
+        from pathlib import PureWindowsPath
+
+        win_home = PureWindowsPath(r"C:\Users\tester\AppData\Local\hermes")
+        win_user_home = PureWindowsPath(r"C:\Users\tester")
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: win_home)
+        monkeypatch.setattr(Path, "home", lambda: win_user_home)
+
+        result = display_hermes_home()
+
+        assert result == "~/AppData/Local/hermes"
+        assert "\\" not in result
+
+    def test_custom_path_outside_home_unchanged(self, monkeypatch):
+        """Paths outside the user home still fall back to the absolute path."""
+        from pathlib import PureWindowsPath
+
+        custom = PureWindowsPath(r"D:\hermes-custom")
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: custom)
+        monkeypatch.setattr(Path, "home", lambda: PureWindowsPath(r"C:\Users\tester"))
+        assert display_hermes_home() == str(custom)

@@ -327,7 +327,12 @@ def display_hermes_home() -> str:
     """
     home = get_hermes_home()
     try:
-        return "~/" + str(home.relative_to(Path.home()))
+        # ``as_posix()`` keeps the separator style consistent with the ``~/``
+        # prefix. On Windows ``str(WindowsPath(...))`` uses backslashes, which
+        # would render a mixed path like ``~/AppData\Local\hermes`` (POSIX
+        # ``~/`` joined to a Windows tail). ``as_posix()`` yields
+        # ``~/AppData/Local/hermes`` so the whole display string is uniform.
+        return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:
         return str(home)
 

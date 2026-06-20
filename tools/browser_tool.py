@@ -2928,6 +2928,25 @@ _RISKY_BROWSER_EVAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bdocument\s*\.\s*forms\b.*\bvalue\b", re.I | re.S), "form value extraction"),
     (re.compile(r"\bquerySelector(?:All)?\s*\([^)]*(?:input|textarea|password)[^)]*\).*\bvalue\b", re.I | re.S), "form value extraction"),
 )
+_JS_STRING_LITERAL_RE = re.compile(
+    r"""'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`""",
+    re.S,
+)
+_SENSITIVE_BROWSER_EVAL_TOKENS: tuple[tuple[str, str], ...] = (
+    ("cookie", "document.cookie"),
+    ("localStorage", "web storage"),
+    ("sessionStorage", "web storage"),
+    ("indexedDB", "IndexedDB"),
+    ("caches", "Cache Storage"),
+    ("clipboard", "navigator sensitive API"),
+    ("credentials", "navigator sensitive API"),
+    ("serviceWorker", "navigator sensitive API"),
+    ("fetch", "network request"),
+    ("XMLHttpRequest", "network request"),
+    ("WebSocket", "network request"),
+    ("EventSource", "network request"),
+    ("sendBeacon", "network beacon"),
+)
 
 
 def _allow_unsafe_browser_evaluate() -> bool:
@@ -2949,6 +2968,51 @@ def _allow_unsafe_browser_evaluate() -> bool:
         return False
 
 
+def _decode_js_string_literal(literal: str) -> str:
+    """Best-effort decode of a JavaScript string literal for policy checks.
+
+    This is not a JS parser.  It only normalizes common escaped property names
+    such as ``document["co\\x6fkie"]`` before the fail-closed sensitive-token
+    check below.
+    """
+    if len(literal) < 2:
+        return literal
+    body = literal[1:-1]
+    try:
+        return bytes(body, "utf-8").decode("unicode_escape")
+    except Exception:
+        return body
+
+
+def _decoded_js_string_literals(expression: str) -> list[str]:
+    return [_decode_js_string_literal(match.group(0)) for match in _JS_STRING_LITERAL_RE.finditer(expression)]
+
+
+def _sensitive_browser_eval_token_reason(expression: str) -> Optional[str]:
+    """Return a risk reason for direct or quoted sensitive browser primitives.
+
+    ``browser_console(expression=...)`` executes in the page origin.  A denylist
+    that only searches direct spellings like ``document.cookie`` and ``fetch(``
+    misses equivalent JavaScript property access such as ``document["cookie"]``
+    or ``globalThis["fetch"](...)``.  Treat sensitive primitive names as risky
+    whether they appear as identifiers or decoded string-literal property names.
+    Concatenating all string literals catches simple obfuscations like
+    ``document["coo" + "kie"]`` while the config opt-in preserves the escape
+    hatch for trusted pages.
+    """
+    string_literals = _decoded_js_string_literals(expression)
+    concatenated_literals = "".join(string_literals).lower()
+    for token, reason in _SENSITIVE_BROWSER_EVAL_TOKENS:
+        if re.search(rf"\b{re.escape(token)}\b", expression, re.I):
+            return reason
+        token_lower = token.lower()
+        if any(token_lower in literal.lower() for literal in string_literals):
+            return reason
+        if token_lower in concatenated_literals:
+            return reason
+    return None
+
+
 def _risky_browser_eval_reason(expression: str) -> Optional[str]:
     """Return a human-readable reason if a JS expression uses risky primitives."""
     if not expression:
@@ -2956,7 +3020,7 @@ def _risky_browser_eval_reason(expression: str) -> Optional[str]:
     for pattern, reason in _RISKY_BROWSER_EVAL_PATTERNS:
         if pattern.search(expression):
             return reason
-    return None
+    return _sensitive_browser_eval_token_reason(expression)
 
 
 def _enforce_browser_eval_policy(expression: str) -> Optional[str]:

@@ -28,6 +28,25 @@ from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
 
+def _run_text_subprocess(cmd, **kwargs):
+    """Run a subprocess capturing decoded text without crashing on locale codecs.
+
+    ``subprocess.run(..., text=True)`` decodes child output with the system
+    locale codec. On non-UTF-8 Windows locales (e.g. Chinese CP936/GBK) a
+    child that emits UTF-8 bytes triggers ``UnicodeDecodeError`` inside the
+    reader thread, crashing ``hermes doctor`` mid-diagnosis (see issue #49499).
+
+    Pin ``encoding="utf-8"`` and ``errors="replace"`` so decoding is
+    deterministic across locales and undecodable bytes degrade to the
+    replacement character instead of raising. Callers may override either
+    value via *kwargs*.
+    """
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    kwargs.pop("text", None)
+    return subprocess.run(cmd, **kwargs)
+
+
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -1455,10 +1474,9 @@ def run_doctor(args):
             cmd += [target, "echo ok"]
             # Try to connect
             try:
-                result = subprocess.run(
+                result = _run_text_subprocess(
                     cmd,
                     capture_output=True,
-                    text=True,
                     timeout=15
                 )
             except subprocess.TimeoutExpired:
@@ -1601,10 +1619,10 @@ def run_doctor(args):
             try:
                 # Use resolved absolute path so Windows can execute
                 # npm.cmd (CreateProcessW can't run bare .cmd names).
-                audit_result = subprocess.run(
+                audit_result = _run_text_subprocess(
                     [_npm_bin, "audit", "--json", *audit_extra],
                     cwd=str(npm_dir),
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, timeout=30,
                 )
                 import json as _json
                 audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}

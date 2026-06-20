@@ -1476,3 +1476,63 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+class TestRunTextSubprocess:
+    """Regression coverage for issue #49499 — ``hermes doctor`` crashed with
+    ``UnicodeDecodeError`` on non-UTF-8 Windows locales (CP936/GBK) when a
+    captured subprocess emitted bytes invalid under the system codec.
+    """
+
+    def test_pins_utf8_and_replace_by_default(self, monkeypatch):
+        captured = {}
+
+        def _fake_run(cmd, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        monkeypatch.setattr(doctor.subprocess, "run", _fake_run)
+        doctor._run_text_subprocess(["echo", "hi"], capture_output=True)
+
+        assert captured["encoding"] == "utf-8"
+        assert captured["errors"] == "replace"
+        # ``text`` must not be forwarded alongside an explicit encoding.
+        assert "text" not in captured
+
+    def test_strips_text_kwarg(self, monkeypatch):
+        captured = {}
+
+        def _fake_run(cmd, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        monkeypatch.setattr(doctor.subprocess, "run", _fake_run)
+        # Callers historically passed text=True; it must be dropped so the
+        # explicit encoding/errors take effect (text=True + encoding is fine,
+        # but passing text alongside is redundant and we normalize it away).
+        doctor._run_text_subprocess(["echo", "hi"], capture_output=True, text=True)
+        assert "text" not in captured
+        assert captured["encoding"] == "utf-8"
+
+    def test_caller_can_override_encoding(self, monkeypatch):
+        captured = {}
+
+        def _fake_run(cmd, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        monkeypatch.setattr(doctor.subprocess, "run", _fake_run)
+        doctor._run_text_subprocess(["echo", "hi"], encoding="latin-1", errors="strict")
+        assert captured["encoding"] == "latin-1"
+        assert captured["errors"] == "strict"
+
+    def test_survives_bytes_invalid_under_gbk(self):
+        """End-to-end: bytes that raise UnicodeDecodeError under GBK decode
+        cleanly via the utf-8/replace default instead of crashing."""
+        code = r"import sys; sys.stdout.buffer.write(b'ok\xaa\xff tail')"
+        result = doctor._run_text_subprocess(
+            [sys.executable, "-c", code], capture_output=True
+        )
+        assert result.returncode == 0
+        assert result.stdout.startswith("ok")
+        assert "tail" in result.stdout

@@ -34,6 +34,7 @@ import type {
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -103,6 +104,7 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 }
 
 export default function ChannelsPage() {
+  const { t } = useI18n();
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
@@ -256,7 +258,7 @@ export default function ChannelsPage() {
         disabled={restarting}
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
-        {restarting ? "Restarting…" : "Restart gateway"}
+        {restarting ? t.channels.restarting : t.channels.restartGateway}
       </Button>,
     );
     return () => setEnd(null);
@@ -287,7 +289,7 @@ export default function ChannelsPage() {
             <div className="flex items-center gap-2 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
               <span>
-                Changes are saved. Restart the gateway for them to take effect.
+                {t.channels.changesSavedBanner}
               </span>
             </div>
             <Button

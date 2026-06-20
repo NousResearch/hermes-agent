@@ -362,3 +362,100 @@ class TestPostFallbackLinkage:
         after, wf, wt = _compaction_after_fallback(A(), now_monotonic=1.0, current_turn_id="T1")
         assert after is False and wf is None and wt is None
 
+
+# ─────────────── Task 6: wired done-site (real built-in compressor) ──────────
+
+import os  # noqa: E402
+from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+
+def _build_real_agent(db, session_id: str, emitted: list):
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            session_db=db,
+            session_id=session_id,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    # capture announce lines out-of-band
+    orig = agent._emit_status
+
+    def _spy(msg):
+        emitted.append(msg)
+        return orig(msg)
+
+    agent._emit_status = _spy
+    return agent
+
+
+def _real_transcript() -> list:
+    msgs = []
+    for i in range(20):
+        msgs.append({"role": "user", "content": f"turn {i} " + "content " * 200})
+        msgs.append({"role": "assistant", "content": f"reply {i} " + "answer " * 200})
+    return msgs
+
+
+class TestDoneSiteWiringBuiltin:
+    def test_builtin_compaction_emits_announce_with_session_pointer(self, tmp_path: Path):
+        from hermes_state import SessionDB
+
+        emitted: list = []
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("PARENT_ANNOUNCE", source="discord")
+        agent = _build_real_agent(db, "PARENT_ANNOUNCE", emitted)
+
+        cc = agent.context_compressor
+        # make a real summary (not None) so it's a clean compaction
+        cc._generate_summary = lambda *a, **k: "Summarized the earlier work."
+        cc.protect_last_n = 4
+
+        messages = _real_transcript()
+        from agent.model_metadata import estimate_request_tokens_rough
+        pre_req = estimate_request_tokens_rough(messages, system_prompt="sys", tools=agent.tools or None)
+        cc.threshold_tokens = int(pre_req * 0.3)
+
+        old_sid = agent.session_id
+        agent._compress_context(messages, "sys", approx_tokens=pre_req)
+        new_sid = agent.session_id
+
+        announce = [m for m in emitted if m.startswith("🗜️ Context compacted")]
+        assert len(announce) == 1, f"expected exactly one announce, got {emitted}"
+        line = announce[0]
+        # built-in → session pointer, NOT lcm
+        assert old_sid in line and new_sid in line
+        assert "previous:" in line and "current:" in line
+        assert "engine: lcm" not in line and "lcm.db" not in line
+        assert old_sid != new_sid  # a real rotation happened
+
+    def test_aborted_summary_does_not_emit_success_announce(self, tmp_path: Path):
+        from hermes_state import SessionDB
+
+        emitted: list = []
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("PARENT_ABORT", source="discord")
+        agent = _build_real_agent(db, "PARENT_ABORT", emitted)
+
+        cc = agent.context_compressor
+        cc.protect_last_n = 8
+        cc.abort_on_summary_failure = True  # abort → early return, no rotation
+        cc._generate_summary = lambda *a, **k: None
+
+        messages = _real_transcript()
+        from agent.model_metadata import estimate_request_tokens_rough
+        pre_req = estimate_request_tokens_rough(messages, system_prompt="sys", tools=agent.tools or None)
+        cc.threshold_tokens = int(pre_req * 0.3)
+
+        agent._compress_context(messages, "sys", approx_tokens=pre_req)
+
+        announce = [m for m in emitted if m.startswith("🗜️ Context compacted")]
+        assert announce == [], f"aborted summary must not announce success: {announce}"
+
+

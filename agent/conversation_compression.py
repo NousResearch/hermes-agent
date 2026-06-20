@@ -909,6 +909,51 @@ def compress_context(
         agent.session_id or "none", _pre_msg_count, len(compressed),
         f"{_compressed_est:,}",
     )
+
+    # ── In-chat compaction announce (engine-aware; additive to fallback) ──────
+    # Emitted out-of-band via _emit_status (persistent chat line, never injected
+    # into model history). Engine-correct recovery reference: built-in → session
+    # pointer; LCM → lossless-store + lcm_grep/lcm_expand guidance. Gating is the
+    # allow-list in _format_compaction_announce. Runs INSIDE the lock hold (the
+    # _release_lock() below) so the dedupe read-then-write is serialized.
+    try:
+        _cc = agent.context_compressor
+        _engine_name = getattr(_cc, "name", None)
+        _status = getattr(_cc, "_last_compression_status", None)
+        _old_sid = locals().get("old_session_id")
+        _new_sid = agent.session_id
+        if _engine_name == "lcm":
+            _dedupe_key = ("lcm", getattr(_cc, "compression_count", None))
+        else:
+            _dedupe_key = ("builtin", (_old_sid, _new_sid))
+        _now_mono = time.monotonic()
+        _after_fb, _win_from, _win_to = _compaction_after_fallback(
+            agent,
+            now_monotonic=_now_mono,
+            current_turn_id=getattr(agent, "_current_turn_id", None),
+        )
+        _emit_compaction_announce(
+            agent,
+            dedupe_key=_dedupe_key,
+            engine_name=_engine_name,
+            status=_status,
+            old_session_id=_old_sid,
+            new_session_id=_new_sid,
+            old_messages=_pre_msg_count,
+            new_messages=len(compressed),
+            pre_tokens=locals().get("_pre_request_est"),
+            post_tokens=_compressed_est,
+            model=getattr(agent, "model", None),
+            provider=getattr(agent, "provider", None),
+            window_from=_win_from,
+            window_to=_win_to,
+            summary_snippet=_extract_compaction_summary_snippet(compressed),
+            raw_store_count=None,  # session-scoped count not cheap here; omit (N-NEW-3)
+            after_fallback=_after_fb,
+        )
+    except Exception:
+        logger.debug("compaction announce skipped (non-fatal)", exc_info=True)
+
     # Release the lock on the OLD session_id only AFTER rotation completed
     # and all post-rotation bookkeeping (memory manager, context engine,
     # file dedup) ran. A concurrent path that wakes up the moment we

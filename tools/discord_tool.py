@@ -466,6 +466,139 @@ def _remove_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwarg
     return json.dumps({"success": True, "message": f"Role {role_id} removed from user {user_id}."})
 
 
+_CREATE_CHANNEL_TYPES = {
+    "text": 0,
+    "voice": 2,
+    "category": 4,
+    "announcement": 5,
+    "stage": 13,
+    "forum": 15,
+}
+
+# Discord permission bits that can create standing server-level power, expose
+# privileged moderation/server data, or materially affect other users when
+# minted into a new role. ``create_role`` rejects these by default; admins who
+# intentionally want the agent to create privileged roles can opt in via
+# ``discord.allow_privileged_role_perms``.
+_DANGEROUS_ROLE_PERMISSION_BITS = {
+    "kick_members": 1 << 1,
+    "ban_members": 1 << 2,
+    "administrator": 1 << 3,
+    "manage_channels": 1 << 4,
+    "manage_guild": 1 << 5,
+    "view_audit_log": 1 << 7,
+    "priority_speaker": 1 << 8,
+    "manage_messages": 1 << 13,
+    "mention_everyone": 1 << 17,
+    "view_guild_insights": 1 << 19,
+    "mute_members": 1 << 22,
+    "deafen_members": 1 << 23,
+    "move_members": 1 << 24,
+    "manage_nicknames": 1 << 27,
+    "manage_roles": 1 << 28,
+    "manage_webhooks": 1 << 29,
+    "manage_expressions": 1 << 30,
+    "manage_events": 1 << 33,
+    "manage_threads": 1 << 34,
+    "moderate_members": 1 << 40,
+    "view_creator_monetization_analytics": 1 << 41,
+    "pin_messages": 1 << 51,
+    "bypass_slowmode": 1 << 52,
+}
+_DANGEROUS_ROLE_PERMISSION_MASK = 0
+for _permission_bit in _DANGEROUS_ROLE_PERMISSION_BITS.values():
+    _DANGEROUS_ROLE_PERMISSION_MASK |= _permission_bit
+
+
+def _create_channel(
+    token: str,
+    guild_id: str,
+    name: str,
+    channel_type: str = "text",
+    parent_id: str = "",
+    topic: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Create a guild channel."""
+    type_id = _CREATE_CHANNEL_TYPES.get((channel_type or "text").lower())
+    if type_id is None:
+        return json.dumps({
+            "error": (
+                f"Unknown channel_type: {channel_type}. "
+                f"Known: {', '.join(_CREATE_CHANNEL_TYPES)}"
+            )
+        })
+    body: Dict[str, Any] = {"name": name, "type": type_id}
+    if parent_id:
+        body["parent_id"] = parent_id
+    if topic and type_id in {0, 5, 15}:
+        body["topic"] = topic
+    channel = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": channel["id"],
+        "name": channel.get("name"),
+        "type": _channel_type_name(channel.get("type", type_id)),
+    })
+
+
+def _create_category(token: str, guild_id: str, name: str, **_kwargs: Any) -> str:
+    """Create a guild category."""
+    channel = _discord_request(
+        "POST", f"/guilds/{guild_id}/channels", token,
+        body={"name": name, "type": 4},
+    )
+    return json.dumps({
+        "success": True,
+        "channel_id": channel["id"],
+        "name": channel.get("name"),
+        "type": _channel_type_name(channel.get("type", 4)),
+    })
+
+
+def _create_role(
+    token: str,
+    guild_id: str,
+    name: str,
+    permissions: str = "0",
+    mentionable: bool = False,
+    **_kwargs: Any,
+) -> str:
+    """Create a guild role."""
+    try:
+        permissions_int = int(str(permissions or "0"))
+    except (TypeError, ValueError):
+        return json.dumps({"error": f"Invalid permissions bitset for create_role: {permissions!r}"})
+
+    blocked = permissions_int & _DANGEROUS_ROLE_PERMISSION_MASK
+    if blocked and not _allow_privileged_role_perms():
+        blocked_names = sorted(
+            name for name, bit in _DANGEROUS_ROLE_PERMISSION_BITS.items()
+            if blocked & bit
+        )
+        return json.dumps({
+            "error": (
+                "Refusing to create a role with privileged permissions by default: "
+                f"{', '.join(blocked_names)}. Set "
+                "discord.allow_privileged_role_perms: true only if you explicitly "
+                "want Hermes to create privileged Discord roles."
+            )
+        })
+
+    body: Dict[str, Any] = {
+        "name": name,
+        "permissions": str(permissions_int),
+        "mentionable": bool(mentionable),
+    }
+    role = _discord_request("POST", f"/guilds/{guild_id}/roles", token, body=body)
+    return json.dumps({
+        "success": True,
+        "role_id": role["id"],
+        "name": role.get("name"),
+        "permissions": str(role.get("permissions", body["permissions"])),
+    })
+
+
 # ---------------------------------------------------------------------------
 # Action dispatch + metadata
 # ---------------------------------------------------------------------------
@@ -486,6 +619,9 @@ _ACTIONS = {
     "create_thread": _create_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
+    "create_channel": _create_channel,
+    "create_category": _create_category,
+    "create_role": _create_role,
 }
 
 _CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
@@ -511,6 +647,9 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("create_channel", "(guild_id, name)", "create a guild channel; optional channel_type, parent_id, topic"),
+    ("create_category", "(guild_id, name)", "create a channel category"),
+    ("create_role", "(guild_id, name)", "create a server role; optional permissions, mentionable"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -532,6 +671,9 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "create_channel": ["guild_id", "name"],
+    "create_category": ["guild_id", "name"],
+    "create_role": ["guild_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
@@ -580,6 +722,34 @@ def _load_allowed_actions_config() -> Optional[List[str]]:
             ", ".join(invalid), ", ".join(_ACTIONS.keys()),
         )
     return valid
+
+
+def _allow_privileged_role_perms() -> bool:
+    """Return whether create_role may mint privileged Discord permissions.
+
+    Fail closed: unlike the action schema allowlist, this guards a
+    privilege-granting mutation, so config read failures should not permit
+    privileged role creation.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug(
+            "discord: could not load config (%s); blocking privileged role perms.",
+            exc,
+        )
+        return False
+    raw = (cfg.get("discord") or {}).get("allow_privileged_role_perms", False)
+    if isinstance(raw, bool):
+        return raw
+    if raw not in (None, "", 0):
+        logger.warning(
+            "discord.allow_privileged_role_perms must be a boolean true to enable; "
+            "got %r (%s), blocking privileged role perms.",
+            raw, type(raw).__name__,
+        )
+    return False
 
 
 def _available_actions(
@@ -691,7 +861,32 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "New thread/channel/category/role name.",
+        },
+        "channel_type": {
+            "type": "string",
+            "enum": ["text", "voice", "category", "announcement", "stage", "forum"],
+            "description": "Channel type for create_channel (default text).",
+        },
+        "parent_id": {
+            "type": "string",
+            "description": "Parent category ID for create_channel.",
+        },
+        "topic": {
+            "type": "string",
+            "description": "Topic for create_channel text/announcement/forum channels.",
+        },
+        "permissions": {
+            "type": "string",
+            "description": (
+                "Discord permissions bitset string for create_role. Privileged "
+                "permission bits such as Administrator/Manage Roles are rejected "
+                "by default unless discord.allow_privileged_role_perms is true."
+            ),
+        },
+        "mentionable": {
+            "type": "boolean",
+            "description": "Whether the new role is mentionable (create_role).",
         },
         "limit": {
             "type": "integer",
@@ -835,6 +1030,11 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    channel_type: str = "text",
+    parent_id: str = "",
+    topic: str = "",
+    permissions: str = "0",
+    mentionable: bool = False,
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -872,6 +1072,11 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "channel_type": channel_type,
+        "parent_id": parent_id,
+        "topic": topic,
+        "permissions": permissions,
+        "mentionable": mentionable,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -890,6 +1095,11 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            channel_type=channel_type,
+            parent_id=parent_id,
+            topic=topic,
+            permissions=permissions,
+            mentionable=mentionable,
             limit=limit,
             before=before,
             after=after,
@@ -922,6 +1132,8 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
+    "channel_type": "text", "parent_id": "", "topic": "",
+    "permissions": "0", "mentionable": False,
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 

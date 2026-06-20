@@ -2106,8 +2106,14 @@ DEFAULT_CONFIG = {
         # or YAML list. Unknown names are dropped with a warning at load time.
         # Actions: list_guilds, server_info, list_channels, channel_info,
         # list_roles, member_info, search_members, fetch_messages, list_pins,
-        # pin_message, unpin_message, create_thread, add_role, remove_role.
+        # pin_message, unpin_message, create_thread, create_channel,
+        # create_category, create_role, add_role, remove_role.
         "server_actions": "",
+        # Safety cap for create_role: privileged permission bits (Administrator,
+        # Manage Roles/Guild/Channels/Webhooks, Ban/Kick, Mention Everyone) are
+        # rejected by default even when create_role is allowed. Set true only if
+        # you explicitly want Hermes to be able to mint privileged Discord roles.
+        "allow_privileged_role_perms": False,
         # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
         # When True, any uploaded file is cached to disk with mime
         # application/octet-stream and the path is surfaced to the agent so it

@@ -12,6 +12,8 @@ from tools.discord_tool import (
     _ACTIONS,
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
+    _DANGEROUS_ROLE_PERMISSION_BITS,
+    _allow_privileged_role_perms,
     _available_actions,
     _channel_type_name,
     _detect_capabilities,
@@ -830,6 +832,43 @@ class TestConfigAllowlist:
         assert "unexpected type" in caplog.text
 
 
+class TestPrivilegedRolePermsConfig:
+    def test_missing_key_defaults_false(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {}},
+        )
+        assert _allow_privileged_role_perms() is False
+
+    def test_explicit_false(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"allow_privileged_role_perms": False}},
+        )
+        assert _allow_privileged_role_perms() is False
+
+    def test_explicit_true(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"allow_privileged_role_perms": True}},
+        )
+        assert _allow_privileged_role_perms() is True
+
+    @pytest.mark.parametrize("raw", ["true", "false", "1", "0", "yes", 1])
+    def test_non_boolean_values_do_not_enable_override(self, monkeypatch, raw):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"allow_privileged_role_perms": raw}},
+        )
+        assert _allow_privileged_role_perms() is False
+
+    def test_load_failure_fails_closed(self, monkeypatch):
+        def bad_load():
+            raise RuntimeError("disk gone")
+        monkeypatch.setattr("hermes_cli.config.load_config", bad_load)
+        assert _allow_privileged_role_perms() is False
+
+
 # ---------------------------------------------------------------------------
 # Action filtering combines intents + allowlist
 # ---------------------------------------------------------------------------
@@ -1140,3 +1179,162 @@ class TestModelToolsIntegration:
         assert "discord" not in names
         assert "discord_admin" not in names
         assert "discord_server" not in names
+
+# ---------------------------------------------------------------------------
+# Action: create_channel / create_category / create_role
+# ---------------------------------------------------------------------------
+
+class TestServerSetupActions:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "333", "name": "ai-lab", "type": 0, "parent_id": "222"}
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="ai-lab",
+            channel_type="text",
+            parent_id="222",
+            topic="AI experiments",
+        ))
+        assert result == {"success": True, "channel_id": "333", "name": "ai-lab", "type": "text"}
+        mock_req.assert_called_once_with(
+            "POST",
+            "/guilds/111/channels",
+            "test-token",
+            body={"name": "ai-lab", "type": 0, "parent_id": "222", "topic": "AI experiments"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_category(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "444", "name": "onboarding", "type": 4}
+        result = json.loads(discord_admin_handler(action="create_category", guild_id="111", name="onboarding"))
+        assert result == {"success": True, "channel_id": "444", "name": "onboarding", "type": "category"}
+        mock_req.assert_called_once_with(
+            "POST",
+            "/guilds/111/channels",
+            "test-token",
+            body={"name": "onboarding", "type": 4},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {}},
+        )
+        mock_req.return_value = {"id": "555", "name": "Family", "permissions": "1024", "mentionable": False}
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Family",
+            permissions="1024",
+            mentionable=False,
+        ))
+        assert result == {"success": True, "role_id": "555", "name": "Family", "permissions": "1024"}
+        mock_req.assert_called_once_with(
+            "POST",
+            "/guilds/111/roles",
+            "test-token",
+            body={"name": "Family", "permissions": "1024", "mentionable": False},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role_blocks_administrator_by_default(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {}},
+        )
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Admin-ish",
+            permissions="8",
+        ))
+        assert "error" in result
+        assert "administrator" in result["error"]
+        assert "allow_privileged_role_perms" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role_blocks_combined_privileged_bits(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {}},
+        )
+        dangerous = str((1 << 3) | (1 << 28))  # administrator + manage_roles
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Privileged",
+            permissions=dangerous,
+        ))
+        assert "error" in result
+        assert "administrator" in result["error"]
+        assert "manage_roles" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    @pytest.mark.parametrize("permission_name, permission_bit", sorted(_DANGEROUS_ROLE_PERMISSION_BITS.items()))
+    def test_create_role_blocks_each_dangerous_permission_by_default(
+        self, mock_req, monkeypatch, permission_name, permission_bit,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {}},
+        )
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Privileged",
+            permissions=str(permission_bit),
+        ))
+        assert "error" in result
+        assert permission_name in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role_invalid_permissions_bitset(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Bad perms",
+            permissions="not-a-number",
+        ))
+        assert "error" in result
+        assert "Invalid permissions bitset" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role_override_allows_privileged_permissions(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"allow_privileged_role_perms": True}},
+        )
+        mock_req.return_value = {"id": "777", "name": "Ops", "permissions": "8"}
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Ops",
+            permissions="8",
+        ))
+        assert result == {"success": True, "role_id": "777", "name": "Ops", "permissions": "8"}
+        mock_req.assert_called_once_with(
+            "POST",
+            "/guilds/111/roles",
+            "test-token",
+            body={"name": "Ops", "permissions": "8", "mentionable": False},
+        )
+
+    def test_missing_name_for_create_channel(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(action="create_channel", guild_id="111"))
+        assert "error" in result
+        assert "name" in result["error"]

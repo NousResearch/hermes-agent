@@ -2065,6 +2065,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
             proxy_targets = ["api.telegram.org", *fallback_ips]
+            # Include custom base_url hostname so NO_PROXY entries for it
+            # are respected (e.g. self-hosted Bot API or proxy worker).
+            if custom_base_url:
+                from urllib.parse import urlparse
+                custom_host = urlparse(custom_base_url).hostname
+                if custom_host and custom_host not in proxy_targets:
+                    proxy_targets.append(custom_host)
             proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
             if fallback_ips and not proxy_url and not disable_fallback:
                 logger.info(

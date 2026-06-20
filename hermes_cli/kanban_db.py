@@ -1202,26 +1202,63 @@ def _cross_process_init_lock(path: Path):
     additive migrations single-file/single-writer across the whole host while
     leaving normal post-init DB usage concurrent under SQLite WAL.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
-    handle = lock_path.open("a+b")
+
+    # Acquire the cross-process advisory lock, but DEGRADE GRACEFULLY if the
+    # sidecar can't be created/opened/locked (e.g. a read-only mount, a lock
+    # file owned by another uid, or a filesystem that doesn't support
+    # ``flock``). Previously any ``PermissionError``/``OSError`` here raised
+    # and permanently blocked ALL migration on that board — the kanban DB
+    # could never self-heal. The advisory lock is an optimization to serialize
+    # first-connect setup across processes; the in-process ``_INIT_LOCK`` still
+    # protects threads within this process, and the additive migrations are
+    # idempotent and race-tolerant (``_add_column_if_missing`` swallows
+    # duplicate-column races). So on failure we log once and proceed WITHOUT
+    # the cross-process lock rather than blocking kanban on the board forever.
     try:
-        if _IS_WINDOWS:
-            import msvcrt
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except (PermissionError, OSError) as exc:
+        _log.warning(
+            "kanban: cross-process init lock unavailable for %s (%s); "
+            "proceeding without advisory lock — in-process lock still applies "
+            "and additive migrations are idempotent",
+            lock_path,
+            exc,
+        )
+        yield
+        return
 
-            # Lock a single byte in the sidecar file. ``msvcrt.locking`` starts
-            # at the current file position, so seek explicitly before both
-            # lock and unlock.  The file is opened in append/read binary mode so
-            # it always exists but the byte-range lock is the synchronization
-            # primitive; no payload needs to be written.
-            handle.seek(0)
-            locking = getattr(msvcrt, "locking")
-            lock_mode = getattr(msvcrt, "LK_LOCK")
-            locking(handle.fileno(), lock_mode, 1)
-        else:
-            import fcntl
+    try:
+        try:
+            if _IS_WINDOWS:
+                import msvcrt
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                # Lock a single byte in the sidecar file. ``msvcrt.locking``
+                # starts at the current file position, so seek explicitly
+                # before both lock and unlock.  The file is opened in
+                # append/read binary mode so it always exists but the
+                # byte-range lock is the synchronization primitive; no payload
+                # needs to be written.
+                handle.seek(0)
+                locking = getattr(msvcrt, "locking")
+                lock_mode = getattr(msvcrt, "LK_LOCK")
+                locking(handle.fileno(), lock_mode, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except (PermissionError, OSError) as exc:
+            # Could open the sidecar but not lock it — same degrade path.
+            _log.warning(
+                "kanban: could not acquire cross-process init lock on %s "
+                "(%s); proceeding without advisory lock",
+                lock_path,
+                exc,
+            )
+            handle.close()
+            yield
+            return
         yield
     finally:
         try:
@@ -1743,6 +1780,24 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+
+    # ``claim_lock`` / ``claim_expires`` live in SCHEMA_SQL's CREATE TABLE for
+    # fresh DBs but were never added to this additive-migration list. Boards
+    # created before these columns existed therefore lack them, and the
+    # one-shot backfill SELECT below references both — so on a legacy/drifted
+    # board the dispatcher tick crashed with
+    # ``sqlite3.OperationalError: no such column: claim_lock`` (issue: legacy
+    # boards never self-heal). Add them here with the EXACT types from
+    # SCHEMA_SQL (``claim_lock TEXT`` / ``claim_expires INTEGER``) using the
+    # same presence-checked, race-tolerant pattern as every other optional
+    # column, then re-snapshot ``cols`` so the backfill SELECT sees them.
+    if "claim_lock" not in cols:
+        _add_column_if_missing(conn, "tasks", "claim_lock", "claim_lock TEXT")
+    if "claim_expires" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "claim_expires", "claim_expires INTEGER"
+        )
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.

@@ -633,6 +633,51 @@ def _count_skills(profile_dir: Path) -> int:
     return count
 
 
+def _count_role_specific_skills(profile_dir: Path) -> int:
+    """Count skills in a profile that are NOT byte-identical copies of a
+    same-named skill in the default/global profile's skills/ directory.
+
+    ``hermes profile create`` seeds every new profile with the full bundled
+    skill set (documented behavior, see ``--no-skills``), so ``_count_skills``
+    alone reports the same total for every profile and gives no signal about
+    which skills are actually role-specific vs inherited (issue #49495).
+    This compares each profile skill's SKILL.md content against the default
+    profile's copy of the same skill name; a skill present only in this
+    profile, or whose content differs from the default profile's version,
+    counts as role-specific.
+    """
+    skills_dir = profile_dir / "skills"
+    if not skills_dir.is_dir():
+        return 0
+    try:
+        default_home = _get_default_hermes_home()
+    except Exception:
+        default_home = None
+    default_skills_dir = (default_home / "skills") if default_home else None
+
+    count = 0
+    for md in skills_dir.rglob("SKILL.md"):
+        if is_excluded_skill_path(md):
+            continue
+        try:
+            rel = md.relative_to(skills_dir)
+        except ValueError:
+            count += 1
+            continue
+        if default_skills_dir is None or profile_dir.resolve() == default_home.resolve():
+            # This IS the default profile, or we can't resolve one to
+            # compare against — every skill here is "its own".
+            count += 1
+            continue
+        default_md = default_skills_dir / rel
+        try:
+            if not default_md.is_file() or default_md.read_bytes() != md.read_bytes():
+                count += 1
+        except OSError:
+            count += 1
+    return count
+
+
 # ---------------------------------------------------------------------------
 # profile.yaml — per-profile metadata (description, role, etc.)
 # ---------------------------------------------------------------------------

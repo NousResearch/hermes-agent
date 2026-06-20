@@ -45,6 +45,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
@@ -55,6 +56,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Values should be readable via get_session_env (contextvar path)
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    assert get_session_env("HERMES_SESSION_SOURCE") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
@@ -63,10 +65,23 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
+    assert os.getenv("HERMES_SESSION_SOURCE") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_session_source_uses_contextvars(monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+
+    tokens = set_session_vars(source="tool")
+
+    assert get_session_env("HERMES_SESSION_SOURCE") == "tool"
+
+    clear_session_vars(tokens)
+
+    assert get_session_env("HERMES_SESSION_SOURCE") == ""
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):
@@ -188,6 +203,17 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     # After clear — should return "" (explicitly cleared), not os.environ (#10304)
     clear_session_vars(tokens)
     assert get_session_env("HERMES_SESSION_KEY") == ""
+
+
+def test_session_id_set_via_contextvars(monkeypatch):
+    """set_session_vars should set HERMES_SESSION_ID via contextvars."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-env-session")
+
+    tokens = set_session_vars(session_id="ctx-session-456")
+    assert get_session_env("HERMES_SESSION_ID") == "ctx-session-456"
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_SESSION_ID") == ""
 
 
 def test_set_session_env_includes_session_key():

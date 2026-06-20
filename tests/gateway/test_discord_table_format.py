@@ -41,7 +41,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import (  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
     _wrap_markdown_tables_for_discord,
     _render_table_block_for_discord,
     _render_table_compact,
@@ -196,7 +196,7 @@ class TestStripCellFormatting:
 
 
 from gateway.config import PlatformConfig
-from gateway.platforms.discord import DiscordAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 import discord as _discord_mod  # noqa: E402 — after mock setup
 

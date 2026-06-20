@@ -7,6 +7,7 @@ Windows-specific code paths can be exercised on any host.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -119,6 +120,205 @@ def test_detect_concurrent_is_noop_off_windows(_winp, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Parent-chain exclusion (issue #30768 follow-up — the setuptools .exe
+# launcher on Windows is a separate native process that spawns python.exe;
+# excluding only ``os.getpid()`` flags the launcher as a concurrent instance.
+# ---------------------------------------------------------------------------
+
+
+def _fake_psutil_with_parent_chain(
+    parent_chain: list[int],
+    proc_iter_rows: list,
+    *,
+    ancestor_exe: str | None = None,
+):
+    """Build a psutil stand-in that has Process()/parents()/exe() AND process_iter().
+
+    ``parent_chain`` is the ordered list of ancestor PIDs (closest first)
+    returned by ``proc.parents()`` on the seed (``os.getpid()``).
+    ``ancestor_exe`` is the executable path reported by each ancestor's
+    ``.exe()``; when it matches one of our shim paths the ancestor is
+    excluded (the launcher-shim case). Pass ``None`` to model an ancestor
+    whose exe can't be read (psutil error) — it stays in the candidate set.
+    """
+
+    class _FakeProc:
+        def __init__(self, pid: int, exe_path: str | None):
+            self.pid = pid
+            self._exe = exe_path
+
+        def exe(self):
+            if self._exe is None:
+                raise OSError("exe unavailable")
+            return self._exe
+
+        def parents(self):
+            return [_FakeProc(p, ancestor_exe) for p in parent_chain]
+
+    class _NoSuchProcess(Exception):
+        pass
+
+    class _AccessDenied(Exception):
+        pass
+
+    def _process(pid=None):
+        return _FakeProc(pid if pid is not None else os.getpid(), ancestor_exe)
+
+    return types.SimpleNamespace(
+        Process=_process,
+        NoSuchProcess=_NoSuchProcess,
+        AccessDenied=_AccessDenied,
+        process_iter=lambda attrs: iter(proc_iter_rows),
+    )
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_excludes_parent_chain(_winp, tmp_path):
+    """The .exe launcher (parent of os.getpid()) must NOT be flagged.
+
+    Simulates the real Windows topology: hermes.exe launcher (PID L) spawns
+    python.exe (PID os.getpid()). Both run from the same shim path. With the
+    old single-PID exclusion, L would be reported as a concurrent instance.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    launcher_pid = me + 100  # the .exe launcher — our parent
+
+    rows = [
+        _make_proc(me, str(shim), "python.exe"),
+        _make_proc(launcher_pid, str(shim), "hermes.exe"),
+    ]
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[launcher_pid],
+        proc_iter_rows=rows,
+        ancestor_exe=str(shim),
+    )
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    # Both self AND the launcher are excluded; no false positive.
+    assert result == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_still_finds_unrelated_other_hermes(_winp, tmp_path):
+    """A sibling hermes.exe outside our ancestor chain must still be reported."""
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    launcher_pid = me + 100  # our .exe launcher (parent — must be excluded)
+    sibling_pid = me + 200  # an UNRELATED hermes.exe (must still be reported)
+
+    rows = [
+        _make_proc(me, str(shim), "python.exe"),
+        _make_proc(launcher_pid, str(shim), "hermes.exe"),
+        _make_proc(sibling_pid, str(shim), "hermes.exe"),
+    ]
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[launcher_pid],
+        proc_iter_rows=rows,
+        ancestor_exe=str(shim),
+    )
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == [(sibling_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_parent_chain_walks_deep(_winp, tmp_path):
+    """Multi-level ancestry (shell → launcher → python) is fully excluded."""
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    parent_pid = me + 1
+    grandparent_pid = me + 2
+    greatgrandparent_pid = me + 3
+
+    rows = [
+        _make_proc(me, str(shim), "python.exe"),
+        _make_proc(parent_pid, str(shim), "hermes.exe"),
+        _make_proc(grandparent_pid, str(shim), "hermes.exe"),
+        _make_proc(greatgrandparent_pid, str(shim), "hermes.exe"),
+    ]
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[parent_pid, grandparent_pid, greatgrandparent_pid],
+        proc_iter_rows=rows,
+        ancestor_exe=str(shim),
+    )
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_parents_call_robust_to_one_bad_hop(_winp, tmp_path):
+    """The launcher shim is still excluded even when an ancestor exe is unreadable.
+
+    Field regression (issues #29341, #34795): the old per-hop ``parent()``
+    walk bailed on the FIRST psutil error, so an AccessDenied on any hop left
+    the launcher shim in the candidate set and re-triggered the false
+    positive. ``parents()`` returns the whole list at once; we evaluate each
+    ancestor independently, so one unreadable hop never strands the launcher.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    launcher_pid = me + 100
+
+    rows = [
+        _make_proc(me, str(shim), "python.exe"),
+        _make_proc(launcher_pid, str(shim), "hermes.exe"),
+    ]
+    # ancestor_exe=None → every ancestor's .exe() raises OSError. The helper
+    # must swallow it per-ancestor and not crash; the launcher won't be
+    # excluded in this degenerate case, but a real run reads the shim exe.
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[launcher_pid],
+        proc_iter_rows=rows,
+        ancestor_exe=None,
+    )
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    # No crash; helper completes. (Degenerate stub: launcher exe unreadable.)
+    assert result == [(launcher_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_parent_walk_handles_stub_without_process(_winp, tmp_path):
+    """Partially-stubbed psutil (no Process attr) must NOT crash the helper.
+
+    The function documents itself as "never raises"; a unit-test stub that
+    only models ``process_iter`` must still complete cleanly with a sensible
+    result rather than escape ``AttributeError`` to the caller.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    other_pid = me + 1
+
+    rows = [
+        _make_proc(me, str(shim), "hermes.exe"),
+        _make_proc(other_pid, str(shim), "hermes.exe"),
+    ]
+    # SimpleNamespace with ONLY process_iter — no Process / NoSuchProcess.
+    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(rows))
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    # Parent-walk silently failed; self still excluded; other still reported.
+    assert result == [(other_pid, "hermes.exe")]
+
+
+# ---------------------------------------------------------------------------
 # _format_concurrent_instances_message
 # ---------------------------------------------------------------------------
 
@@ -134,6 +334,11 @@ def test_format_message_mentions_pids_and_remediation(tmp_path):
     assert "--force" in msg
     # Mentions the file that would have been overwritten
     assert str(tmp_path / "hermes.exe") in msg
+    # Self-service kill command targets the exact stale PIDs (issue #34795).
+    assert "taskkill" in msg
+    assert "/PID 1234" in msg
+    assert "/PID 5678" in msg
+    assert "/F" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +445,97 @@ def test_quarantine_actionable_warning_when_everything_fails(
     # and tells the user what to do.
     assert "another process" in captured.lower()
     assert "Hermes Desktop" in captured or "gateway" in captured.lower()
+
+
+# ---------------------------------------------------------------------------
+# Windows gateway pause/resume before update mutation
+# ---------------------------------------------------------------------------
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
+    _winp,
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    import gateway.status as status_mod
+    import hermes_cli.gateway as gateway_mod
+
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    profile_proc = SimpleNamespace(profile="work", path=profile_home, pid=101)
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [101, 202])
+    monkeypatch.setattr(
+        gateway_mod,
+        "find_profile_gateway_processes",
+        lambda **_k: [profile_proc],
+    )
+    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    waited_for = []
+
+    def fake_wait(pids, *, timeout):
+        waited_for.extend(pids)
+        return set()
+
+    monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
+
+    terminated = []
+    monkeypatch.setattr(
+        status_mod,
+        "terminate_pid",
+        lambda pid, force=False: terminated.append((pid, force)),
+    )
+
+    token = cli_main._pause_windows_gateways_for_update()
+
+    assert token == {
+        "resume_needed": True,
+        "profiles": {"work": 101},
+        "unmapped_pids": [202],
+    }
+    assert waited_for == [101]
+    assert terminated == [(202, True)]
+
+    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
+    assert marker["target_pid"] == 101
+    assert marker["stopper_pid"] == os.getpid()
+
+    captured = capsys.readouterr().out
+    assert "Paused gateway profile(s): work" in captured
+    assert "without profile mapping" in captured
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_windows_gateways_after_update_relaunches_paused_profiles(
+    _winp,
+    monkeypatch,
+    capsys,
+):
+    import hermes_cli.gateway as gateway_mod
+
+    relaunched = []
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, old_pid: relaunched.append((profile, old_pid)) or True,
+    )
+
+    token = {
+        "resume_needed": True,
+        "profiles": {"default": 101, "work": 202},
+        "unmapped_pids": [],
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert token["resume_needed"] is False
+    assert relaunched == [("default", 101), ("work", 202)]
+    assert (
+        "Restarting Windows gateway profile(s): default, work"
+        in capsys.readouterr().out
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture
@@ -397,7 +396,6 @@ class TestWorktreeInclude:
         assert info is not None
 
         # Manually copy .worktreeinclude entries (mirrors cli.py logic)
-        import shutil
         include_file = git_repo / ".worktreeinclude"
         wt_path = Path(info["path"])
         for line in include_file.read_text().splitlines():

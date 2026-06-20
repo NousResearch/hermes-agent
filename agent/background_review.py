@@ -115,7 +115,10 @@ _SKILL_REVIEW_PROMPT = (
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
-    "  • Pinned skills (marked via 'hermes curator pin').\n"
+    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
+    "pin only blocks deletion/archive/consolidation by the curator, not "
+    "content updates. Patch them when a pitfall or missing step turns up, "
+    "same as any other agent-created skill.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture (these become persistent self-imposed constraints "
@@ -198,7 +201,10 @@ _COMBINED_REVIEW_PROMPT = (
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
-    "  • Pinned skills (marked via 'hermes curator pin').\n"
+    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
+    "pin only blocks deletion/archive/consolidation by the curator, not "
+    "content updates. Patch them when a pitfall or missing step turns up, "
+    "same as any other agent-created skill.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills (these become persistent self-imposed "
@@ -231,18 +237,25 @@ _COMBINED_REVIEW_PROMPT = (
 def summarize_background_review_actions(
     review_messages: List[Dict],
     prior_snapshot: List[Dict],
+    notification_mode: str = "on",
 ) -> List[str]:
     """Build the human-facing action summary for a background review pass.
 
-    Walks the review agent's session messages and collects "successful tool
-    action" descriptions to surface to the user (e.g. "Memory updated").
-    Tool messages already present in ``prior_snapshot`` are skipped so we
-    don't re-surface stale results from the prior conversation that the
-    review agent inherited via ``conversation_history`` (issue #14944).
+    Walks the review agent's session messages and collects successful memory
+    and skill-management actions to surface to the user. Tool messages already
+    present in ``prior_snapshot`` are skipped so stale inherited results are
+    not re-surfaced as fresh background work (issue #14944).
 
-    Matching is by ``tool_call_id`` when available, with a content-equality
-    fallback for tool messages that lack one.
+    ``notification_mode`` controls display detail:
+    - ``off``: return no actions.
+    - ``on``: generic "Memory updated"/tool messages.
+    - ``verbose``: include compact content previews from tool-call arguments.
     """
+    mode = str(notification_mode or "on").lower()
+    if mode == "off":
+        return []
+    verbose = mode == "verbose"
+
     existing_tool_call_ids = set()
     existing_tool_contents = set()
     for prior in prior_snapshot or []:
@@ -256,6 +269,43 @@ def summarize_background_review_actions(
             if isinstance(content, str):
                 existing_tool_contents.add(content)
 
+    # Map review-agent tool results back to the calls that produced them.  The
+    # result JSON only says "Entry added"; the call arguments contain action,
+    # target, and content previews.  Restricting to notify_tools also prevents
+    # helper tools from surfacing as memory work just because they succeeded.
+    notify_tools = {"memory", "skill_manage"}
+    all_tool_call_ids: set = set()
+    call_details: dict = {}
+    for msg in review_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            fn_name = fn.get("name", "")
+            tcid = tc.get("id")
+            if tcid:
+                all_tool_call_ids.add(tcid)
+            if fn_name not in notify_tools:
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            if tcid:
+                call_details[tcid] = {
+                    "tool": fn_name,
+                    "action": args.get("action", "?"),
+                    "target": args.get("target", "memory"),
+                    "content": args.get("content", ""),
+                    "old_text": args.get("old_text", ""),
+                    "operations": args.get("operations") or [],
+                    "name": args.get("name", ""),
+                    "old_string": args.get("old_string", ""),
+                    "new_string": args.get("new_string", ""),
+                }
+
     actions: List[str] = []
     for msg in review_messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
@@ -267,6 +317,8 @@ def summarize_background_review_actions(
             content_str = msg.get("content")
             if isinstance(content_str, str) and content_str in existing_tool_contents:
                 continue
+        if tcid and all_tool_call_ids and tcid not in call_details:
+            continue
         try:
             data = json.loads(msg.get("content", "{}"))
         except (json.JSONDecodeError, TypeError):
@@ -274,19 +326,92 @@ def summarize_background_review_actions(
         if not isinstance(data, dict) or not data.get("success"):
             continue
         message = data.get("message", "")
-        target = data.get("target", "")
-        if "created" in message.lower():
-            actions.append(message)
-        elif "updated" in message.lower():
-            actions.append(message)
-        elif "added" in message.lower() or (target and "add" in message.lower()):
+        detail = call_details.get(tcid, {})
+        target = data.get("target", "") or detail.get("target", "")
+        is_skill = detail.get("tool") == "skill_manage"
+
+        message_lower = message.lower()
+        if not verbose:
+            if "created" in message_lower:
+                actions.append(message)
+                continue
+            if "updated" in message_lower:
+                actions.append(message)
+                continue
+            if is_skill and "patched" in message_lower:
+                actions.append(message)
+                continue
+
+        if is_skill:
+            label = "Skill"
+        elif target:
             label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
-        elif "Entry added" in message:
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
-        elif "removed" in message.lower() or "replaced" in message.lower():
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+        else:
+            continue
+
+        if verbose:
+            action = detail.get("action", "")
+            content = detail.get("content", "")
+            old_text = detail.get("old_text", "")
+            skill_name = detail.get("name", "")
+            operations = detail.get("operations") or []
+            max_preview = 120
+            if is_skill:
+                change = data.get("_change", {})
+                old_string = change.get("old", "") or detail.get("old_string", "")
+                new_string = change.get("new", "") or detail.get("new_string", "")
+                description = change.get("description", "")
+                if action == "patch" and (old_string or new_string):
+                    old_preview = old_string[:80].replace("\n", " ") + (
+                        "…" if len(old_string) > 80 else ""
+                    )
+                    new_preview = new_string[:80].replace("\n", " ") + (
+                        "…" if len(new_string) > 80 else ""
+                    )
+                    actions.append(
+                        f"📝 Skill '{skill_name}' patched: "
+                        f"\"{old_preview}\" → \"{new_preview}\""
+                    )
+                elif action == "create" and description:
+                    actions.append(f"📝 Skill '{skill_name}' created: {description}")
+                elif action == "edit" and description:
+                    actions.append(f"📝 Skill '{skill_name}' rewritten: {description}")
+                else:
+                    actions.append(f"📝 {message}" if message else f"Skill {action}")
+            elif operations:
+                for op in operations:
+                    op = op or {}
+                    op_act = op.get("action", "")
+                    op_content = (op.get("content") or "")
+                    op_old = (op.get("old_text") or "")
+                    if op_act == "add" and op_content:
+                        preview = op_content[:max_preview] + ("…" if len(op_content) > max_preview else "")
+                        actions.append(f"{label} ➕ {preview}")
+                    elif op_act == "replace" and op_content:
+                        preview = op_content[:max_preview] + ("…" if len(op_content) > max_preview else "")
+                        actions.append(f"{label} ✏️ {preview}")
+                    elif op_act == "remove" and op_old:
+                        preview = op_old[:60] + ("…" if len(op_old) > 60 else "")
+                        actions.append(f"{label} ➖ {preview}")
+            elif action == "add" and content:
+                preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
+                actions.append(f"{label} ➕ {preview}")
+            elif action == "replace" and content:
+                preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
+                actions.append(f"{label} ✏️ {preview}")
+            elif action == "remove" and old_text:
+                preview = old_text[:60] + ("…" if len(old_text) > 60 else "")
+                actions.append(f"{label} ➖ {preview}")
+            else:
+                actions.append(f"{label} updated")
+        elif (
+            "added" in message_lower
+            or "replaced" in message_lower
+            or "removed" in message_lower
+            or "applied" in message_lower
+            or (target and "add" in message.lower())
+            or "Entry added" in message
+        ):
             actions.append(f"{label} updated")
     return actions
 
@@ -390,6 +515,9 @@ def _run_review_in_thread(
             # parent below so memory(action="add") writes from
             # the review still land on disk; the review just
             # has zero side effects on external providers.
+            # Match parent's toolset config so ``tools[]`` is byte-identical
+            # in the request body — Anthropic's cache key includes it.
+            # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
                 model=agent.model,
                 max_iterations=16,
@@ -401,10 +529,19 @@ def _run_review_in_thread(
                 api_key=_parent_runtime.get("api_key") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            # The review fork pins the parent's cached system prompt and keeps
+            # ``tools[]`` byte-identical to the parent so its outbound request
+            # hits the same provider cache prefix (see the toolset-parity note
+            # above). The between-turns MCP refresh in build_turn_context would
+            # add late-connecting MCP tools to this fork and break that parity,
+            # so opt the review fork out of it.
+            review_agent._skip_mcp_refresh = True
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled
@@ -438,6 +575,17 @@ def _run_review_in_thread(
             # if a future code path bypasses the cache.
             review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            # Never let the review fork compress. It shares the parent's
+            # session_id, so if it won a compression race it would rotate the
+            # parent into a NEW child that the gateway never adopts (the fork
+            # is single-lifecycle and dies right after this run_conversation).
+            # The foreground turn would then start from the stale parent and
+            # compress it again, leaving the same parent with two sibling
+            # children (issue #38727). Review also needs full context to
+            # produce a good memory/skill summary — compressing would strip
+            # detail. Both compression triggers in conversation_loop.py gate on
+            # agent.compression_enabled, so this short-circuits both paths.
+            review_agent.compression_enabled = False
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (
@@ -472,6 +620,11 @@ def _run_review_in_thread(
             finally:
                 clear_thread_tool_whitelist()
 
+            # Snapshot review actions before teardown. close() is allowed to
+            # clean per-session state, but the user-visible self-improvement
+            # summary still needs the completed review agent's tool results.
+            review_messages = list(getattr(review_agent, "_session_messages", []))
+
             # Tear down memory providers while stdout is still
             # redirected so background thread teardown (Honcho flush,
             # Hindsight sync, etc.) stays silent.  The finally block
@@ -484,7 +637,6 @@ def _run_review_in_thread(
                 review_agent.close()
             except Exception:
                 pass
-            review_messages = list(getattr(review_agent, "_session_messages", []))
             review_agent = None
 
         # Scan the review agent's messages for successful tool actions
@@ -496,6 +648,7 @@ def _run_review_in_thread(
         actions = summarize_background_review_actions(
             review_messages,
             messages_snapshot,
+            notification_mode=getattr(agent, "memory_notifications", "on"),
         )
 
         if actions:

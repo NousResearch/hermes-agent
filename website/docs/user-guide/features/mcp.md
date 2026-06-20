@@ -20,12 +20,7 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 
 ## Quick start
 
-1. Install MCP support (already included if you used the standard install script):
-
-```bash
-cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
-```
+1. MCP support ships with the standard install — no extra step needed.
 
 2. Add an MCP server to `~/.hermes/config.yaml`:
 
@@ -51,6 +46,131 @@ List the files in /home/user/projects and summarize the repo structure.
 ```
 
 Hermes will discover the MCP server's tools and use them like any other tool.
+
+## Catalog: one-click install for Nous-approved MCPs
+
+Hermes ships a curated catalog of MCP servers that Nous staff has reviewed
+and merged. They're disabled by default — install only what you actually
+want.
+
+```bash
+hermes mcp                # interactive picker (default)
+hermes mcp catalog        # plain-text list, scriptable
+hermes mcp install n8n    # install a catalog entry by name
+```
+
+The picker shows each entry with its current status:
+
+```
+n8n          available              Manage and inspect n8n workflows from Hermes
+linear       enabled                Linear issue/project management (remote OAuth)
+github       installed (disabled)   GitHub repo + PR tools
+```
+
+Hit `Enter` on a row to install (and walk through any required credentials),
+enable, disable, or uninstall. Catalog entries are stored under
+`optional-mcps/` in the hermes-agent repo — presence in that directory means
+Nous approval. There is no community submission tier; entries are added by
+merging a PR.
+
+Catalog entries can require:
+
+- **API key** — Hermes prompts at install time and writes the value to
+  `~/.hermes/.env`. Non-secret values (base URLs) go to the same file.
+- **OAuth** (remote MCP) — written as `auth: oauth` in your config; the MCP
+  client opens a browser on first connection.
+- **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
+  `hermes auth <provider>` if you haven't authenticated already.
+
+### Tool selection at install time
+
+After credentials are configured, Hermes probes the MCP server to list every
+tool it exposes and presents a checklist:
+
+```
+Select tools for 'linear' (SPACE toggle, ENTER confirm)
+  [x] find_issues       Find issues matching a query
+  [x] get_issue         Get a single issue
+  [x] create_issue      Create a new issue
+  [ ] delete_workspace  Delete a Linear workspace
+  ...
+```
+
+The pre-checked rows come from:
+
+1. **Your prior selection** if you've installed this entry before (reinstalls
+   preserve what you had — the manifest's defaults don't override it)
+2. **The manifest's `tools.default_enabled`** if the entry declares one (some
+   catalog entries pre-prune mutating or rarely-useful tools)
+3. **Everything** if neither applies
+
+Submit the checklist with ENTER. Only the checked tools end up in
+`mcp_servers.<name>.tools.include`. If you select everything, no filter is
+written (cleanest config shape, identical behavior).
+
+**If the probe fails** (server unreachable, OAuth not yet completed,
+backing service not running), the install still succeeds: the manifest's
+`tools.default_enabled` is applied directly (if declared), or no filter is
+written (if not). Re-run `hermes mcp configure <name>` once the server is
+reachable to refine.
+
+### Trust model
+
+Installing a catalog entry runs whatever the manifest specifies — `git clone`,
+the entry's `bootstrap` commands (`pip install`, `npm install`, etc.), and
+ultimately the MCP server's own code. Manifests are gated by PR review into
+the hermes-agent repo, so Nous has reviewed each entry before it shipped —
+**but you should still read the manifest before installing**, especially the
+`source:` field's repository, the `install.bootstrap:` commands, and any
+`transport.command:` invocation.
+
+Manifests live at
+[`optional-mcps/<name>/manifest.yaml`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps)
+on GitHub. The picker also prints the manifest's `source:` URL at install
+time so you can quickly verify the upstream repo. The web dashboard's MCP
+page surfaces the same detail per catalog entry — transport, auth type, the
+endpoint URL (HTTP) or command + args (stdio), the git install source/ref and
+bootstrap commands, and setup notes — with the `source:` rendered as a
+clickable link, so you can inspect exactly what an entry connects to or runs
+before clicking Install.
+
+### Manifest version compatibility
+
+Manifests pin a `manifest_version`. The catalog is forward-compatible: if a
+PR adds an entry with a newer `manifest_version` than your installed Hermes
+understands, the picker will surface a warning (`⚠ '<name>' requires a newer
+Hermes`) for that entry instead of silently hiding it. Run `hermes update`
+to install the latest Hermes when you see that.
+
+### Runtime `${ENV_VAR}` substitution
+
+Inside an entry's `transport.command`, `transport.args`, `transport.url`,
+and `headers`, `${VAR}` placeholders are resolved at server-connect time
+from environment variables (which include everything in `~/.hermes/.env`).
+This is useful when a catalog entry wants to reference a value the user
+configured elsewhere — e.g. `${HOME}/foo` or `${MY_PROVIDER_TOKEN}`.
+
+Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
+substituted at install-time with the path the catalog cloned the entry's
+repo into.
+
+### Updating tool selection later
+
+```bash
+hermes mcp configure linear
+```
+
+Reopens the same checklist with your current selection pre-checked. Use this
+when you want more tools enabled, or when the server has added new tools that
+you want to opt into.
+
+### Updating the catalog manifest
+
+MCPs are never auto-updated. Re-run `hermes mcp install <name>` to refresh
+after a Hermes update if a manifest version changed.
+
+To add an MCP to the catalog, open a PR against
+[`optional-mcps/`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps).
 
 ## Two kinds of MCP servers
 
@@ -89,6 +209,77 @@ Use HTTP servers when:
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
+### OAuth-authenticated HTTP servers
+
+Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, dynamic client registration, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
+
+```yaml
+mcp_servers:
+  linear:
+    url: "https://mcp.linear.app/mcp"
+    auth: oauth
+```
+
+On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
+
+**Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Two ways to complete the flow:
+
+- **Paste-back (no setup):** on an interactive terminal Hermes prints "Or paste the redirect URL here…" alongside the authorize URL. Open the URL in your browser, approve, copy the full URL the browser ends up on (the redirect will show a connection error — that's expected), paste it at the prompt. Bare `?code=…&state=…` query strings work too.
+- **SSH port forward:** `ssh -N -L <port>:127.0.0.1:<port> user@host` in a separate terminal, then let the redirect flow normally.
+
+See [OAuth over SSH / Remote Hosts](../../guides/oauth-over-ssh.md#mcp-servers) for the full walkthrough, including DCR-less servers (e.g. Slack), pre-registered `client_id`/`client_secret`, scope customization, and re-auth via `hermes mcp login <server>`.
+
+**Pitfall — providers that don't support automatic registration (Google Drive, Atlassian).** Some servers reject the dynamic client registration step (RFC 7591) that bare `auth: oauth` relies on — Google's official Drive server (`https://drivemcp.googleapis.com/mcp/v1`) returns a `400 Bad Request`, so no OAuth client is created and no token is acquired. The symptom is subtle: these servers also serve `tools/list` *without* auth, so `hermes mcp login` can list the tools and look like it worked, but every real tool call later times out. `hermes mcp login` now detects this (it checks that a token actually landed on disk) and tells you to supply your own OAuth client. Create one in the provider's console and add it to config:
+
+```yaml
+mcp_servers:
+  googledrive:
+    url: "https://drivemcp.googleapis.com/mcp/v1"
+    auth: oauth
+    oauth:
+      client_id: "<your-oauth-client-id>"
+      client_secret: "<your-oauth-client-secret>"
+```
+
+Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
+
+**Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
+
+## mTLS / client certificates
+
+Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.
+
+`client_cert` accepts three shapes:
+
+- **A single combined PEM path** — one file holding both the certificate and the private key:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: "~/.certs/mcp-client.pem"
+```
+
+- **A `[cert, key]` 2-tuple** — certificate and key in separate files (equivalent to setting `client_cert` + `client_key`):
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key"]
+```
+
+- **A `[cert, key, password]` 3-tuple** — when the private key is encrypted, the third element is the key passphrase:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key", "${MCP_KEY_PASSWORD}"]
+```
+
+You can also keep the cert and key fully separate via `client_cert` (combined PEM) plus an explicit `client_key`. Paths support `~` expansion; a missing file raises a clear, server-scoped error rather than an opaque TLS handshake failure.
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -102,6 +293,8 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `env` | mapping | Environment variables passed to the stdio server |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
+| `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
+| `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
@@ -585,7 +778,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ## Related docs
 
-- [Use MCP with Hermes](/docs/guides/use-mcp-with-hermes)
-- [CLI Commands](/docs/reference/cli-commands)
-- [Slash Commands](/docs/reference/slash-commands)
-- [FAQ](/docs/reference/faq)
+- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
+- [CLI Commands](/reference/cli-commands)
+- [Slash Commands](/reference/slash-commands)
+- [FAQ](/reference/faq)

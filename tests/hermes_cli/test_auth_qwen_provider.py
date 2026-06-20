@@ -6,7 +6,6 @@ resolve_qwen_runtime_credentials, get_qwen_auth_status.
 """
 
 import json
-import os
 import stat
 import time
 from pathlib import Path
@@ -392,8 +391,84 @@ def test_get_qwen_auth_status_logged_in(qwen_env):
     assert status["api_key"] == "status-at"
 
 
+def test_get_qwen_auth_status_refreshes_expired_token(qwen_env):
+    expired_ms = int((time.time() - 3600) * 1000)
+    tokens = _make_qwen_tokens(access_token="old-at", expiry_date=expired_ms)
+    _write_qwen_creds(qwen_env, tokens)
+
+    refreshed = _make_qwen_tokens(access_token="refreshed-at")
+
+    with patch(
+        "hermes_cli.auth._refresh_qwen_cli_tokens", return_value=refreshed
+    ) as mock_refresh:
+        status = get_qwen_auth_status()
+
+    mock_refresh.assert_called_once()
+    assert status["logged_in"] is True
+    assert status["api_key"] == "refreshed-at"
+
+
+def test_get_qwen_auth_status_expired_unrefreshable_token_is_not_logged_in(qwen_env):
+    expired_ms = int((time.time() - 3600) * 1000)
+    tokens = _make_qwen_tokens(access_token="dead-at", expiry_date=expired_ms)
+    _write_qwen_creds(qwen_env, tokens)
+
+    with patch(
+        "hermes_cli.auth._refresh_qwen_cli_tokens",
+        side_effect=AuthError(
+            "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
+            provider="qwen-oauth",
+            code="qwen_refresh_failed",
+        ),
+    ) as mock_refresh:
+        status = get_qwen_auth_status()
+
+    mock_refresh.assert_called_once()
+    assert status["logged_in"] is False
+    assert "qwen auth qwen-oauth" in status["error"]
+
+
 def test_get_qwen_auth_status_not_logged_in(qwen_env):
     # No credentials file
     status = get_qwen_auth_status()
     assert status["logged_in"] is False
     assert "error" in status
+
+
+def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monkeypatch, capsys):
+    from hermes_cli.main import _model_flow_qwen_oauth
+
+    expired_ms = int((time.time() - 3600) * 1000)
+    tokens = _make_qwen_tokens(access_token="dead-at", expiry_date=expired_ms)
+    _write_qwen_creds(qwen_env, tokens)
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._refresh_qwen_cli_tokens",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AuthError(
+                "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
+                provider="qwen-oauth",
+                code="qwen_refresh_failed",
+            )
+        ),
+    )
+
+    prompt_called = {"value": False}
+    update_called = {"value": False}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: prompt_called.__setitem__("value", True),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._update_config_for_provider",
+        lambda *args, **kwargs: update_called.__setitem__("value", True),
+    )
+
+    _model_flow_qwen_oauth({}, current_model="qwen3-coder-plus")
+
+    out = capsys.readouterr().out
+    assert "Run: qwen auth qwen-oauth" in out
+    assert "Qwen refresh rejected" in out
+    assert prompt_called["value"] is False
+    assert update_called["value"] is False

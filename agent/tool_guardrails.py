@@ -186,6 +186,47 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
+# Patterns that indicate task-level failure even when the tool itself
+# exited successfully (exit code 0 / status "success").  Checked against
+# the output text of terminal and execute_code results.
+_TASK_FAILURE_PATTERNS = (
+    # Explicit error markers
+    "❌ error",
+    "error:",
+    "error ",
+    "failed",
+    "failure",
+    "traceback",
+    # HTTP-level errors in output
+    " 400 ",
+    " 401 ",
+    " 403 ",
+    " 404 ",
+    " 500 ",
+    # Common CLI error phrases
+    "command not found",
+    "no such file",
+    "permission denied",
+    "connection refused",
+    "connection reset",
+    "timed out",
+    "timeout expired",
+    "fatal error",
+    "fatal:",
+)
+
+
+def _output_indicates_task_failure(output_text: str) -> bool:
+    """Check if output text contains signs of task-level failure.
+
+    This catches cases where the tool process succeeded (exit code 0)
+    but the actual task failed (e.g. HTTP 400 in curl output, Error in
+    Python script stdout).
+    """
+    lower = output_text[:1000].lower()
+    return any(p in lower for p in _TASK_FAILURE_PATTERNS)
+
+
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
@@ -194,22 +235,43 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     callers in ``run_agent.py`` always pass an explicit ``failed=`` derived
     from ``_detect_tool_failure``; this function exists so standalone callers
     (tests, tooling) still get consistent behavior.
+
+    In addition to structural failure signals (exit code != 0, status="error"),
+    also checks the output text of terminal and execute_code for task-level
+    failure patterns (HTTP errors, tracebacks, etc.) even when the tool
+    process itself succeeded.
     """
     if result is None:
         return False, ""
     if file_mutation_result_landed(tool_name, result):
         return False, ""
 
+    data = safe_json_loads(result)
+
     if tool_name == "terminal":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
+            # exit_code == 0 but output contains task-level failure
+            output = data.get("output", "")
+            if output and _output_indicates_task_failure(output):
+                return True, " [task_failure]"
+        return False, ""
+
+    if tool_name == "execute_code":
+        if isinstance(data, dict):
+            status = data.get("status")
+            if status == "error":
+                return True, " [error]"
+            # status == "success" but output contains task-level failure
+            if status == "success":
+                output = data.get("output", "")
+                if output and _output_indicates_task_failure(output):
+                    return True, " [task_failure]"
         return False, ""
 
     if tool_name == "memory":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
@@ -260,25 +322,25 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
-            record = self._no_progress.get(signature)
-            if record is not None:
-                _result_hash, repeat_count = record
-                if repeat_count >= self.config.no_progress_block_after:
-                    decision = ToolGuardrailDecision(
-                        action="block",
-                        code="idempotent_no_progress_block",
-                        message=(
-                            f"Blocked {tool_name}: this read-only call returned the same "
-                            f"result {repeat_count} times. Stop repeating it unchanged; "
-                            "use the result already provided or try a different query."
-                        ),
-                        tool_name=tool_name,
-                        count=repeat_count,
-                        signature=signature,
-                    )
-                    self._halt_decision = decision
-                    return decision
+        # No-progress block: apply to ALL tools, not just idempotent ones.
+        record = self._no_progress.get(signature)
+        if record is not None:
+            _result_hash, repeat_count = record
+            if repeat_count >= self.config.no_progress_block_after:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="idempotent_no_progress_block",
+                    message=(
+                        f"Blocked {tool_name}: this call returned the same "
+                        f"result {repeat_count} times. Stop repeating it unchanged; "
+                        "use the result already provided or try a different approach."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -347,10 +409,9 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
-            self._no_progress.pop(signature, None)
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
-
+        # No-progress detection: track repeated identical results for ALL tools,
+        # not just idempotent ones. Mutating tools (terminal, execute_code) can
+        # also loop with "successful" but unchanging output.
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
         repeat_count = 1

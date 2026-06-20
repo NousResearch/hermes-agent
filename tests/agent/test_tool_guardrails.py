@@ -228,16 +228,46 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert blocked.code == "idempotent_no_progress_block"
 
 
-def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
+def test_mutating_tools_also_trigger_no_progress_warning_when_repeated():
+    """Mutating tools (terminal, execute_code, write_file) now also participate
+    in no_progress detection — repeated identical success output triggers warn."""
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
     )
 
-    for _ in range(3):
-        assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
-        assert controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False).action == "allow"
-        assert controller.before_call("custom_tool", {"x": 1}).action == "allow"
-        assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
+    # First call: allow
+    assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
+    d1 = controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False)
+    assert d1.action == "allow"
+
+    # Second call: warn (no_progress_warn_after=2)
+    assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
+    d2 = controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False)
+    assert d2.action == "warn"
+    assert d2.code == "idempotent_no_progress_warning"
+
+    # Third call: blocked (no_progress_block_after=2, hard_stop_enabled=True)
+    blocked = controller.before_call("write_file", {"path": "/tmp/x", "content": "x"})
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+    # Unknown tools also participate
+    controller2 = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    assert controller2.before_call("custom_tool", {"x": 1}).action == "allow"
+    assert controller2.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
+    assert controller2.before_call("custom_tool", {"x": 1}).action == "allow"
+    d = controller2.after_call("custom_tool", {"x": 1}, "ok", failed=False)
+    assert d.action == "warn"
 
 
 def test_reset_for_turn_clears_bounded_guardrail_state():
@@ -256,3 +286,73 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_terminal_exit_code_zero_with_task_failure_output_is_detected():
+    """Terminal with exit_code=0 but output containing error patterns is a failure."""
+    # HTTP 400 in output
+    result = json.dumps({"exit_code": 0, "output": "❌ Error: 400 Bad Request"})
+    is_fail, suffix = classify_tool_failure("terminal", result)
+    assert is_fail is True
+    assert "task_failure" in suffix
+
+    # Traceback in output
+    result = json.dumps({"exit_code": 0, "output": "Traceback (most recent call last):\n  File ..."})
+    is_fail, suffix = classify_tool_failure("terminal", result)
+    assert is_fail is True
+
+    # Normal success output should NOT be flagged
+    result = json.dumps({"exit_code": 0, "output": "File written successfully"})
+    is_fail, suffix = classify_tool_failure("terminal", result)
+    assert is_fail is False
+
+
+def test_execute_code_success_with_task_failure_output_is_detected():
+    """execute_code with status=success but output containing error patterns is a failure."""
+    # Error in output
+    result = json.dumps({"status": "success", "output": "❌ Error: connection refused"})
+    is_fail, suffix = classify_tool_failure("execute_code", result)
+    assert is_fail is True
+    assert "task_failure" in suffix
+
+    # Normal success output should NOT be flagged
+    result = json.dumps({"status": "success", "output": "All tests passed"})
+    is_fail, suffix = classify_tool_failure("execute_code", result)
+    assert is_fail is False
+
+    # status=error is still caught
+    result = json.dumps({"status": "error", "error": "Script failed"})
+    is_fail, suffix = classify_tool_failure("execute_code", result)
+    assert is_fail is True
+
+
+def test_mutating_tool_task_failure_triggers_exact_failure_counting():
+    """When terminal/execute_code output indicates task failure, repeated identical
+    calls should trigger the exact_failure counter (not just no_progress)."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_warn_after=2,
+            exact_failure_block_after=2,
+            same_tool_failure_halt_after=99,
+        )
+    )
+    args = {"command": "curl -s http://api.example.com/data"}
+    # exit_code=0 but output has error pattern → classified as failure
+    result = json.dumps({"exit_code": 0, "output": "❌ Error: 400 Bad Request"})
+
+    # First call: allow
+    assert controller.before_call("terminal", args).action == "allow"
+    d1 = controller.after_call("terminal", args, result, failed=True)
+    assert d1.action == "allow"
+
+    # Second call: warn (exact_failure_warn_after=2)
+    assert controller.before_call("terminal", args).action == "allow"
+    d2 = controller.after_call("terminal", args, result, failed=True)
+    assert d2.action == "warn"
+    assert d2.code == "repeated_exact_failure_warning"
+
+    # Third call: block (exact_failure_block_after=2, already failed 2 times)
+    blocked = controller.before_call("terminal", args)
+    assert blocked.action == "block"
+    assert blocked.code == "repeated_exact_failure_block"

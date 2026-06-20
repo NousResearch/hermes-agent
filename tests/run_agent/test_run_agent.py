@@ -3456,6 +3456,33 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_post_tool_empty_uses_one_nudge_then_generic_empty_retries(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp_tool = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp_empty = _mock_response(content=None, finish_reason="stop")
+        resp_done = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            resp_tool,
+            resp_empty,  # one post-tool nudge
+            resp_empty,  # generic empty retry 1/3, not another post-tool nudge
+            resp_empty,  # generic empty retry 2/3
+            resp_done,
+        ]
+        statuses = []
+        agent._emit_status = statuses.append
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+        assert result["final_response"] == "Done searching"
+        assert result["api_calls"] == 5
+        assert sum("Model returned empty after tool calls" in s for s in statuses) == 1
+        assert sum("Empty response from model" in s for s in statuses) == 2
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

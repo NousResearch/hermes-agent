@@ -140,6 +140,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.platforms.feishu_cardkit import cardkit_available as _cardkit_available
+from gateway.platforms.feishu_streaming_card import StreamingCardController
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -151,12 +153,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\|)|(^\s*\d+\.\s)|(^\s*---+\s*$)|"
+    r"(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|"
+    r"(\*[^\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -395,6 +396,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    streaming_card: bool = False  # Enable CardKit streaming cards (requires lark_oapi cardkit v1)
 
 
 @dataclass
@@ -1575,6 +1577,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            streaming_card=_to_boolean(
+                extra.get("streaming_card", os.getenv("FEISHU_STREAMING_CARD", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1607,6 +1612,19 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._streaming_card_enabled = settings.streaming_card
+        # Streaming card controllers per chat_id
+        self._streaming_card_controllers: Dict[str, StreamingCardController] = {}
+
+    @property
+    def SUPPORTS_MESSAGE_EDITING(self) -> bool:  # noqa: N802
+        """Edits only meaningful when streaming cards are enabled."""
+        return bool(self._streaming_card_enabled and self._client and _cardkit_available())
+
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N802
+        """Streaming cards require an explicit ``finalize=True`` edit to close."""
+        return bool(self._streaming_card_enabled and self._client and _cardkit_available())
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1783,6 +1801,37 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+
+        # -- Streaming card path --
+        if self._streaming_card_enabled and _cardkit_available():
+            prev_ctrl = self._streaming_card_controllers.get(chat_id)
+            if prev_ctrl and not prev_ctrl.is_failed and prev_ctrl.card_id:
+                # A streaming card already exists for this chat.  Append
+                # content to it instead of creating a separate card, so the
+                # user sees one continuous card across segment breaks.
+                ok = await prev_ctrl.stream_chunk(formatted)
+                if ok:
+                    # Return the existing card's message_id so that
+                    # stream_consumer keeps editing the same message.
+                    return SendResult(success=True, message_id=prev_ctrl.message_id or "")
+                # Streaming failed — mark controller as failed so we fall
+                # through to the normal post path.
+                logger.warning("[Feishu] Streaming card reuse failed, falling back to post")
+
+            # Create a new streaming card controller
+            ctrl = StreamingCardController(self._client, adapter_name=self.name)
+            msg_id = await ctrl.start(
+                chat_id,
+                reply_to=reply_to,
+                initial_content=formatted,
+            )
+            if msg_id:
+                self._streaming_card_controllers[chat_id] = ctrl
+                return SendResult(success=True, message_id=msg_id)
+            # Fall through to normal send on failure
+            logger.warning("[Feishu] Streaming card create failed, falling back to post")
+
+        # -- Normal send path --
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1841,6 +1890,25 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+
+        # -- Streaming card edit path --
+        if self._streaming_card_enabled and _cardkit_available():
+            ctrl = self._streaming_card_controllers.get(chat_id)
+            if ctrl and not ctrl.is_failed:
+                # Always stream_chunk, never finalize here.  This keeps the
+                # card alive across segment breaks (tool boundaries) so the
+                # user sees one continuous card for the entire reply.
+                # The card is finalized when:
+                #   (a) stream_chunk fails (controller becomes failed)
+                #   (b) send() is called with a new user message
+                #       (prev_ctrl is completed/failed → finalize + new card)
+                ok = await ctrl.stream_chunk(content, finalize=False)
+                if ok:
+                    return SendResult(success=True, message_id=ctrl.message_id or message_id)
+                # Fall through to normal edit on failure
+                logger.warning("[Feishu] Streaming card edit failed, falling back to IM update")
+
+        # -- Normal edit path --
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -4374,12 +4442,6 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

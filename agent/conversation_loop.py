@@ -4164,6 +4164,15 @@ def run_conversation(
                         _prior_was_tool
                         and not getattr(agent, "_post_tool_empty_retried", False)
                         and not _has_inline_thinking  # thinking model still working — let prefill handle
+                        # Do not keep injecting the same post-tool nudge on
+                        # every generic empty retry.  Provider/proxy stacks
+                        # such as WindsurfAPI+GLM can keep returning empty
+                        # after the first nudge; without this guard the loop
+                        # alternates nudge -> empty retry -> nudge and emits
+                        # noisy "Model returned empty after tool calls" on
+                        # every pass instead of progressing through the normal
+                        # empty-response retry budget.
+                        and getattr(agent, "_empty_content_retries", 0) <= 0
                     ):
                         agent._post_tool_empty_retried = True
                         # Clear stale narration so it doesn't resurface

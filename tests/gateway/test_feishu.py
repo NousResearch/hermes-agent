@@ -1,6 +1,7 @@
 """Tests for the Feishu gateway integration."""
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import tempfile
@@ -251,6 +252,56 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             metadata={"platform": "feishu"},
         )
         release_lock.assert_called_once_with("feishu-app-id", "cli_app")
+
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_app",
+        "FEISHU_APP_SECRET": "secret_app",
+    }, clear=True)
+    def test_disconnect_closes_live_websocket_client_before_stopping_thread_loop(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        ws_client = SimpleNamespace(_disconnect=AsyncMock(), _auto_reconnect=True)
+
+        class _ThreadLoop:
+            def __init__(self):
+                self.stopped = False
+
+            def is_closed(self):
+                return False
+
+            def call_soon_threadsafe(self, callback):
+                callback()
+
+            def call_later(self, _delay, callback):
+                callback()
+
+            def stop(self):
+                self.stopped = True
+
+        def _submit(coro, _loop):
+            coro.close()
+            future = concurrent.futures.Future()
+            future.set_result(None)
+            return future
+
+        adapter._ws_client = ws_client
+        adapter._ws_thread_loop = _ThreadLoop()
+        adapter._persist_seen_message_ids = Mock()
+        adapter._release_app_lock = AsyncMock()
+
+        with (
+            patch("gateway.platforms.feishu.asyncio.all_tasks", return_value=[]),
+            patch(
+                "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+                side_effect=_submit,
+            ) as submit,
+        ):
+            asyncio.run(adapter.disconnect())
+
+        ws_client._disconnect.assert_called_once_with()
+        submit.assert_called_once()
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",

@@ -50,17 +50,49 @@ async def test_send_succeeds_when_path_healthy():
 
 
 @pytest.mark.asyncio
-async def test_send_short_circuits_when_path_degraded():
-    """Degraded adapter returns failure WITHOUT calling send_message,
-    so cron's live-adapter branch falls through to standalone HTTP."""
+async def test_send_reports_retryable_failure_when_standalone_fallback_fails(monkeypatch):
+    """Degraded adapter never uses PTB; failed fallback remains retryable."""
     adapter = _make_adapter()
     adapter._send_path_degraded = True
+    standalone = AsyncMock(return_value={"error": "fallback failed"})
+    monkeypatch.setattr("tools.send_message_tool._send_telegram", standalone)
 
     result = await adapter.send("123", "hello")
 
     assert result.success is False
-    assert result.error == "send_path_degraded"
+    assert result.error == "send_path_degraded: standalone fallback failed: fallback failed"
     assert result.retryable is True
+    standalone.assert_awaited_once()
+    adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_degraded_send_path_uses_standalone_fallback(monkeypatch):
+    """Gateway replies must still deliver while the PTB send path is gated."""
+    adapter = _make_adapter()
+    adapter.config.token = "tok"
+    adapter._send_path_degraded = True
+    standalone = AsyncMock(
+        return_value={
+            "success": True,
+            "platform": "telegram",
+            "chat_id": "123",
+            "message_id": "99",
+        }
+    )
+    monkeypatch.setattr("tools.send_message_tool._send_telegram", standalone)
+
+    result = await adapter.send("123", "hello")
+
+    assert result.success is True
+    assert result.message_id == "99"
+    standalone.assert_awaited_once_with(
+        "tok",
+        "123",
+        "hello",
+        thread_id=None,
+        disable_link_previews=False,
+    )
     adapter._bot.send_message.assert_not_awaited()
 
 

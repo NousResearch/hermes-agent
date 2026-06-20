@@ -1696,10 +1696,11 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
-        self._disable_websocket_auto_reconnect()
+        ws_client = self._disable_websocket_auto_reconnect()
         await self._stop_webhook_server()
 
         ws_thread_loop = self._ws_thread_loop
+        await self._close_websocket_client(ws_client, ws_thread_loop)
         if ws_thread_loop is not None and not ws_thread_loop.is_closed():
             logger.debug("[Feishu] Cancelling websocket thread tasks and stopping loop")
 
@@ -1749,14 +1750,44 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_media_batches.clear()
 
     def _disable_websocket_auto_reconnect(self) -> None:
-        if self._ws_client is None:
-            return
+        ws_client = self._ws_client
+        if ws_client is None:
+            return None
         try:
-            setattr(self._ws_client, "_auto_reconnect", False)
+            setattr(ws_client, "_auto_reconnect", False)
         except Exception:
             pass
         finally:
             self._ws_client = None
+        return ws_client
+
+    async def _close_websocket_client(
+        self,
+        ws_client: Optional[Any],
+        ws_thread_loop: Optional[asyncio.AbstractEventLoop],
+    ) -> None:
+        if ws_client is None:
+            return
+        disconnect = getattr(ws_client, "_disconnect", None)
+        if not callable(disconnect):
+            return
+        if ws_thread_loop is not None and not ws_thread_loop.is_closed():
+            coro = disconnect()
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, ws_thread_loop)
+            except Exception:
+                coro.close()
+                logger.debug("[Feishu] Failed to submit websocket close to thread loop", exc_info=True)
+                return
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
+            except Exception:
+                logger.debug("[Feishu] Failed to close websocket client cleanly", exc_info=True)
+            return
+        try:
+            await disconnect()
+        except Exception:
+            logger.debug("[Feishu] Failed to close websocket client without thread loop", exc_info=True)
 
     async def _stop_webhook_server(self) -> None:
         if self._webhook_runner is None:

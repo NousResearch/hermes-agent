@@ -3326,6 +3326,23 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             with _client_cache_lock:
                 _client_cache.clear()
 
+    def test_evict_cached_client_instance_closes_direct_match(self):
+        """Eviction must close the stored client, not just drop the dict entry."""
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_lock, _evict_cached_client_instance,
+        )
+
+        target = MagicMock(name="target_client")
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[("openrouter", False, None, None, None)] = (target, "x", None)
+        try:
+            assert _evict_cached_client_instance(target) is True
+            target.close.assert_called_once()
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
     def test_evict_cached_client_instance_walks_codex_wrapper(self):
         """Closing the underlying OpenAI client must evict the Codex shim."""
         from agent.auxiliary_client import (
@@ -3385,6 +3402,50 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             assert ("openai-codex", False, None, None, None) not in _client_cache
             assert ("openai-codex", True, None, None, None) not in _client_cache, (
                 "async cache entry survived eviction — wrapper is missing _real_client"
+            )
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_evict_cached_client_instance_closes_async_wrapper_real_client(self):
+        """Evicting an async shim must close its underlying sync real client.
+
+        Async auxiliary wrappers do not expose ``close()`` themselves, but they
+        retain ``_real_client`` specifically so cache-eviction code can reach
+        the actual OpenAI/httpx owner. Dropping only the wrapper leaks the real
+        client's pool FDs until process exit.
+        """
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_lock, _evict_cached_client_instance,
+            CodexAuxiliaryClient, AsyncCodexAuxiliaryClient,
+        )
+
+        close_calls = {"count": 0}
+
+        def _close():
+            close_calls["count"] += 1
+
+        real = SimpleNamespace(
+            api_key="k",
+            base_url="https://chatgpt.com/backend-api/codex",
+            responses=SimpleNamespace(stream=lambda **k: None),
+            close=_close,
+        )
+        sync_wrapper = CodexAuxiliaryClient(real, "gpt-5.5")
+        async_wrapper = AsyncCodexAuxiliaryClient(sync_wrapper)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[("openai-codex", True, None, None, None)] = (
+                async_wrapper,
+                "gpt-5.5",
+                None,
+            )
+        try:
+            assert _evict_cached_client_instance(async_wrapper) is True
+            assert close_calls["count"] == 1, (
+                "evicting an async wrapper must close its underlying real client; "
+                "otherwise the wrapper disappears but the real httpx/OpenAI pool "
+                "keeps its FDs open"
             )
         finally:
             with _client_cache_lock:

@@ -2600,22 +2600,13 @@ def _is_model_not_found_error(exc: Exception) -> bool:
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
-    with _client_cache_lock:
-        stale_keys = [
-            key for key in _client_cache
-            if _normalize_aux_provider(str(key[0])) == normalized
-        ]
-        for key in stale_keys:
-            client = _client_cache.get(key, (None, None, None))[0]
-            if client is not None:
-                _force_close_async_httpx(client)
-                try:
-                    close_fn = getattr(client, "close", None)
-                    if callable(close_fn):
-                        close_fn()
-                except Exception:
-                    pass
-            _client_cache.pop(key, None)
+    removed_clients, remaining_owner_ids = _pop_cached_clients(
+        lambda key, _entry: _normalize_aux_provider(str(key[0])) == normalized
+    )
+    _dispose_removed_cached_clients(
+        removed_clients,
+        remaining_owner_ids=remaining_owner_ids,
+    )
 
 
 def _evict_cached_client_instance(target: Any) -> bool:
@@ -2637,20 +2628,127 @@ def _evict_cached_client_instance(target: Any) -> bool:
     """
     if target is None:
         return False
-    evicted = False
+    owner = _cached_client_owner(target)
+    removed_clients, remaining_owner_ids = _pop_cached_clients(
+        lambda _key, entry: (
+            bool(entry)
+            and (
+                entry[0] is target
+                or _cached_client_owner(entry[0]) is owner
+            )
+        )
+    )
+    _dispose_removed_cached_clients(
+        removed_clients,
+        remaining_owner_ids=remaining_owner_ids,
+    )
+    return bool(removed_clients)
+
+
+def _explicit_real_client(client: Any) -> Any:
+    """Return ``client._real_client`` only when it is explicitly stored.
+
+    ``MagicMock`` auto-creates missing attributes on access, so plain
+    ``getattr(client, "_real_client", None)`` misclassifies direct mock clients
+    as wrappers. We only follow ``_real_client`` when it is explicitly present
+    on the instance (or declared in slots).
+    """
+    if client is None:
+        return None
+    try:
+        data = vars(client)
+    except TypeError:
+        data = None
+    if isinstance(data, dict) and "_real_client" in data:
+        return data.get("_real_client")
+    slots = getattr(type(client), "__slots__", ())
+    if isinstance(slots, str):
+        slots = (slots,)
+    if "_real_client" in slots:
+        try:
+            return object.__getattribute__(client, "_real_client")
+        except AttributeError:
+            return None
+    return None
+
+
+def _cached_client_owner(client: Any) -> Any:
+    """Return the underlying owner responsible for transport lifetime."""
+    cur = client
+    seen: set[int] = set()
+    while cur is not None:
+        ident = id(cur)
+        if ident in seen:
+            break
+        seen.add(ident)
+        real = _explicit_real_client(cur)
+        if real is None:
+            return cur
+        cur = real
+    return client
+
+
+def _cached_owner_ids_unlocked() -> set[int]:
+    owner_ids: set[int] = set()
+    for entry in _client_cache.values():
+        if not entry:
+            continue
+        owner = _cached_client_owner(entry[0])
+        if owner is not None:
+            owner_ids.add(id(owner))
+    return owner_ids
+
+
+def _dispose_cached_client_owner(owner: Any) -> None:
+    """Release transports for a removed cached client owner."""
+    if owner is None:
+        return
+    _force_close_async_httpx(owner)
+    try:
+        import inspect
+
+        close_fn = getattr(owner, "close", None)
+        if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
+            close_fn()
+    except Exception:
+        pass
+
+
+def _dispose_removed_cached_clients(
+    removed_clients: list[Any],
+    *,
+    remaining_owner_ids: set[int],
+) -> None:
+    """Dispose removed cached clients once no surviving cache entry owns them."""
+    disposed_owner_ids: set[int] = set()
+    for client in removed_clients:
+        owner = _cached_client_owner(client)
+        if owner is None:
+            continue
+        owner_id = id(owner)
+        if owner_id in disposed_owner_ids:
+            continue
+        if owner_id in remaining_owner_ids:
+            continue
+        disposed_owner_ids.add(owner_id)
+        _dispose_cached_client_owner(owner)
+
+
+def _pop_cached_clients(match) -> tuple[list[Any], set[int]]:
+    """Remove matching cached clients and return removed owners + survivors."""
+    removed_clients: list[Any] = []
     with _client_cache_lock:
-        for key in list(_client_cache.keys()):
-            entry = _client_cache.get(key)
-            if entry is None:
-                continue
-            cached = entry[0]
-            if cached is None:
-                continue
-            real = getattr(cached, "_real_client", None)
-            if cached is target or real is target:
-                del _client_cache[key]
-                evicted = True
-    return evicted
+        removed_keys: list[tuple] = []
+        for key, entry in list(_client_cache.items()):
+            if match(key, entry):
+                removed_keys.append(key)
+                client = entry[0] if entry else None
+                if client is not None:
+                    removed_clients.append(client)
+        for key in removed_keys:
+            _client_cache.pop(key, None)
+        remaining_owner_ids = _cached_owner_ids_unlocked()
+    return removed_clients, remaining_owner_ids
 
 
 def _pool_cache_hint(
@@ -4483,17 +4581,17 @@ def _client_cache_key(
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
+    removed_clients: list[Any] = []
     with _client_cache_lock:
         old_entry = _client_cache.get(cache_key)
         if old_entry is not None and old_entry[0] is not client:
-            _force_close_async_httpx(old_entry[0])
-            try:
-                close_fn = getattr(old_entry[0], "close", None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
+            removed_clients.append(old_entry[0])
         _client_cache[cache_key] = (client, default_model, bound_loop)
+        remaining_owner_ids = _cached_owner_ids_unlocked()
+    _dispose_removed_cached_clients(
+        removed_clients,
+        remaining_owner_ids=remaining_owner_ids,
+    )
 
 
 def _refresh_nous_auxiliary_client(
@@ -4599,25 +4697,13 @@ def shutdown_cached_clients() -> None:
     Call this during CLI shutdown, *before* the event loop is closed, to
     avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
     """
-    import inspect
-
-    with _client_cache_lock:
-        for key, entry in list(_client_cache.items()):
-            client = entry[0]
-            if client is None:
-                continue
-            # Mark any async httpx transport as closed first (prevents __del__
-            # from scheduling aclose() on a dead event loop).
-            _force_close_async_httpx(client)
-            # Sync clients: close the httpx connection pool cleanly.
-            # Async clients: skip — we already neutered __del__ above.
-            try:
-                close_fn = getattr(client, "close", None)
-                if close_fn and not inspect.iscoroutinefunction(close_fn):
-                    close_fn()
-            except Exception:
-                pass
-        _client_cache.clear()
+    removed_clients, remaining_owner_ids = _pop_cached_clients(
+        lambda _key, _client: True
+    )
+    _dispose_removed_cached_clients(
+        removed_clients,
+        remaining_owner_ids=remaining_owner_ids,
+    )
 
 
 def cleanup_stale_async_clients() -> None:
@@ -4628,15 +4714,17 @@ def cleanup_stale_async_clients() -> None:
     This is defense-in-depth — the primary fix is ``neuter_async_httpx_del``
     which disables ``__del__`` entirely.
     """
-    with _client_cache_lock:
-        stale_keys = []
-        for key, entry in _client_cache.items():
-            client, _default, cached_loop = entry
-            if cached_loop is not None and cached_loop.is_closed():
-                _force_close_async_httpx(client)
-                stale_keys.append(key)
-        for key in stale_keys:
-            del _client_cache[key]
+    removed_clients, remaining_owner_ids = _pop_cached_clients(
+        lambda _key, entry: (
+            bool(entry)
+            and entry[2] is not None
+            and entry[2].is_closed()
+        )
+    )
+    _dispose_removed_cached_clients(
+        removed_clients,
+        remaining_owner_ids=remaining_owner_ids,
+    )
 
 
 def _is_openrouter_client(client: Any) -> bool:
@@ -4712,6 +4800,8 @@ def _get_cached_client(
         is_vision=is_vision,
         task=task,
     )
+    removed_clients: list[Any] = []
+    remaining_owner_ids: set[int] = set()
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
@@ -4728,11 +4818,18 @@ def _get_cached_client(
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
                 # Stale — evict and fall through to create a new client.
-                _force_close_async_httpx(cached_client)
-                del _client_cache[cache_key]
+                removed_entry = _client_cache.pop(cache_key, None)
+                if removed_entry and removed_entry[0] is not None:
+                    removed_clients.append(removed_entry[0])
+                remaining_owner_ids = _cached_owner_ids_unlocked()
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
+    if removed_clients:
+        _dispose_removed_cached_clients(
+            removed_clients,
+            remaining_owner_ids=remaining_owner_ids,
+        )
     # Build outside the lock.
     # For pool-backed api_key providers, derive the active API key from the
     # pool entry rather than from env vars.  resolve_api_key_provider_credentials
@@ -4761,17 +4858,28 @@ def _get_cached_client(
         # For async clients, remember which loop they were created on so we
         # can detect stale entries later.
         bound_loop = current_loop
+        removed_clients = []
+        remaining_owner_ids = set()
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 # Safety belt: if the cache has grown beyond the max, evict
                 # the oldest entries (FIFO — dict preserves insertion order).
                 while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
                     evict_key, evict_entry = next(iter(_client_cache.items()))
-                    _force_close_async_httpx(evict_entry[0])
-                    del _client_cache[evict_key]
+                    _client_cache.pop(evict_key, None)
+                    if evict_entry and evict_entry[0] is not None:
+                        removed_clients.append(evict_entry[0])
                 _client_cache[cache_key] = (client, default_model, bound_loop)
+                remaining_owner_ids = _cached_owner_ids_unlocked()
             else:
+                removed_clients.append(client)
                 client, default_model, _ = _client_cache[cache_key]
+                remaining_owner_ids = _cached_owner_ids_unlocked()
+        if removed_clients:
+            _dispose_removed_cached_clients(
+                removed_clients,
+                remaining_owner_ids=remaining_owner_ids,
+            )
     return client, model or default_model
 
 

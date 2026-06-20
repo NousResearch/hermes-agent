@@ -13,6 +13,7 @@ The three-layer defence:
 """
 
 import asyncio
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -159,6 +160,57 @@ class TestCleanupStaleAsyncClients:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
 
+    def test_removing_stale_async_wrapper_preserves_shared_sync_owner(self):
+        """Cleaning a stale async wrapper must not close the shared sync owner."""
+        from agent.auxiliary_client import (
+            _client_cache,
+            _client_cache_lock,
+            cleanup_stale_async_clients,
+            CodexAuxiliaryClient,
+            AsyncCodexAuxiliaryClient,
+        )
+
+        close_calls = {"count": 0}
+
+        def _close():
+            close_calls["count"] += 1
+
+        real = type(
+            "RealClient",
+            (),
+            {
+                "api_key": "k",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "responses": MagicMock(stream=lambda **kwargs: None),
+                "close": staticmethod(_close),
+            },
+        )()
+        sync_wrapper = CodexAuxiliaryClient(real, "gpt-5.5")
+        async_wrapper = AsyncCodexAuxiliaryClient(sync_wrapper)
+
+        stale_loop = asyncio.new_event_loop()
+        stale_loop.close()
+
+        sync_key = ("openai-codex", False, "", "", "", (), False, "")
+        async_key = ("openai-codex", True, "", "", "", (), False, "")
+        with _client_cache_lock:
+            _client_cache[sync_key] = (sync_wrapper, "gpt-5.5", None)
+            _client_cache[async_key] = (async_wrapper, "gpt-5.5", stale_loop)
+
+        try:
+            cleanup_stale_async_clients()
+            with _client_cache_lock:
+                assert sync_key in _client_cache
+                assert async_key not in _client_cache
+            assert close_calls["count"] == 0, (
+                "stale async wrapper cleanup must not close the shared real client "
+                "while the sync cache entry still survives"
+            )
+        finally:
+            with _client_cache_lock:
+                _client_cache.pop(sync_key, None)
+                _client_cache.pop(async_key, None)
+
 
 # ---------------------------------------------------------------------------
 # Cache bounded growth (#10200)
@@ -288,6 +340,183 @@ class TestClientCacheBoundedGrowth:
                 # The latest entries should be present
                 assert (f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", False, "", "", "", (), False) in _client_cache
         finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+                _client_cache.update(saved)
+
+    def test_fifo_cache_eviction_closes_sync_client(self, monkeypatch):
+        """Real FIFO eviction must close the oldest sync client.
+
+        The cache-size guard in ``_get_cached_client()`` used to delete the
+        oldest entry without calling ``close()``. For sync OpenAI clients that
+        leaks the underlying httpx pool until process exit, which is exactly
+        the slow-burn FD growth pattern we are chasing in the gateway.
+        """
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        class FakeClient:
+            def __init__(self, name: str):
+                self.name = name
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        created: list[FakeClient] = []
+
+        def fake_resolve(provider, model, async_mode, **kwargs):
+            client = FakeClient(provider)
+            created.append(client)
+            return client, model or f"{provider}-model"
+
+        with _client_cache_lock:
+            saved = dict(_client_cache)
+            _client_cache.clear()
+
+        monkeypatch.setattr(aux, "_CLIENT_CACHE_MAX_SIZE", 2)
+        monkeypatch.setattr(aux, "resolve_provider_client", fake_resolve)
+
+        try:
+            aux._get_cached_client("p1", async_mode=False)
+            aux._get_cached_client("p2", async_mode=False)
+            aux._get_cached_client("p3", async_mode=False)
+
+            assert [client.name for client in created] == ["p1", "p2", "p3"]
+            assert created[0].close_calls == 1, (
+                "oldest sync client must be closed when FIFO cache eviction runs; "
+                "otherwise its httpx pool keeps holding FDs after the cache drops "
+                "the only reference"
+            )
+            assert created[1].close_calls == 0
+            assert created[2].close_calls == 0
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+                _client_cache.update(saved)
+
+    def test_same_key_race_loser_sync_client_is_closed(self, monkeypatch):
+        """If another builder wins the same cache key, the losing sync client must close."""
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        class FakeClient:
+            def __init__(self, name: str):
+                self.name = name
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        created: list[FakeClient] = []
+
+        def fake_resolve(provider, model, async_mode, **kwargs):
+            client = FakeClient(f"{provider}-{len(created)}")
+            created.append(client)
+            if len(created) == 2:
+                with _client_cache_lock:
+                    _client_cache[cache_key] = (created[0], "winner-model", None)
+            return client, model or f"{provider}-model"
+
+        cache_key = ("p-race", False, "", "", "", (), False, "")
+        with _client_cache_lock:
+            saved = dict(_client_cache)
+            _client_cache.clear()
+
+        monkeypatch.setattr(aux, "resolve_provider_client", fake_resolve)
+
+        try:
+            first, _ = aux._get_cached_client("p-race", async_mode=False)
+            with _client_cache_lock:
+                _client_cache.clear()
+            second, _ = aux._get_cached_client("p-race", async_mode=False)
+
+            assert first is created[0]
+            assert second is created[0], "cache winner should be reused"
+            assert created[0].close_calls == 0
+            assert created[1].close_calls == 1, (
+                "same-key race loser must be closed when another client already "
+                "occupied the cache entry"
+            )
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+                _client_cache.update(saved)
+
+    def test_repeated_fifo_eviction_does_not_accumulate_os_fds(self, monkeypatch):
+        """Repeated auxiliary cache churn must not linearly leak real OS file descriptors."""
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        def _get_open_fd_count():
+            for fd_dir in ("/dev/fd", "/proc/self/fd"):
+                try:
+                    return sum(
+                        1 for entry in os.listdir(fd_dir) if str(entry).isdigit()
+                    )
+                except OSError:
+                    continue
+            return None
+
+        class PipeClient:
+            def __init__(self, name: str):
+                self.name = name
+                self._read_fd, self._write_fd = os.pipe()
+                self.closed = False
+
+            def close(self):
+                if self.closed:
+                    return
+                os.close(self._read_fd)
+                os.close(self._write_fd)
+                self.closed = True
+
+        created: list[PipeClient] = []
+
+        def fake_resolve(provider, model, async_mode, **kwargs):
+            client = PipeClient(provider)
+            created.append(client)
+            return client, model or f"{provider}-model"
+
+        with _client_cache_lock:
+            saved = dict(_client_cache)
+            _client_cache.clear()
+
+        baseline = _get_open_fd_count()
+        if baseline is None:
+            pytest.skip("open fd count unavailable on this platform")
+
+        monkeypatch.setattr(aux, "_CLIENT_CACHE_MAX_SIZE", 2)
+        monkeypatch.setattr(aux, "resolve_provider_client", fake_resolve)
+
+        try:
+            for idx in range(24):
+                aux._get_cached_client(f"p{idx}", async_mode=False)
+
+            mid = _get_open_fd_count()
+            assert mid is not None
+            # Two live cached clients each hold a pipe pair (4 fds total).
+            # Allow a little slack for interpreter/test harness noise, but
+            # reject the old linear-growth shape where every churned client
+            # stayed open.
+            assert mid - baseline <= 8, (
+                f"fd count grew from {baseline} to {mid} after repeated FIFO churn; "
+                "expected only the live cached clients to remain open"
+            )
+
+            aux.shutdown_cached_clients()
+            after_shutdown = _get_open_fd_count()
+            assert after_shutdown is not None
+            assert after_shutdown - baseline <= 4, (
+                f"fd count stayed elevated after cache shutdown: baseline={baseline}, "
+                f"after_shutdown={after_shutdown}"
+            )
+        finally:
+            for client in created:
+                try:
+                    client.close()
+                except OSError:
+                    pass
             with _client_cache_lock:
                 _client_cache.clear()
                 _client_cache.update(saved)

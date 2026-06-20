@@ -606,7 +606,8 @@ class TestLaunchdServiceRecovery:
 
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
-        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        plist_text = plist_path.read_text(encoding="utf-8")
+        assert "--replace" in plist_text
         # The calls list includes launchctl print probes from _launchd_domain()
         # before the bootout/bootstrap calls. Filter to only bootout/bootstrap.
         service_calls = [c for c in calls if "bootout" in c or "bootstrap" in c]
@@ -3151,3 +3152,23 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+    def test_launchd_plist_includes_number_of_files_resource_limits(self, tmp_path, monkeypatch):
+        """launchd plist must raise RLIMIT_NOFILE above the macOS default 256.
+
+        Regression: the installed launchd plist used the wrong resource-limit
+        key, so launchd ignored the requested fd ceiling and the gateway
+        inherits launchd's default soft limit of 256. Under any residual fd
+        growth, the process collapses into global ``EMFILE`` much earlier than
+        intended.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>HardResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>4096</integer>" in plist
+        assert "<integer>8192</integer>" in plist

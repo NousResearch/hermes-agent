@@ -2381,6 +2381,41 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    async def _send_via_standalone_fallback(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Bypass PTB's live Bot client when its send path is gated unhealthy."""
+        try:
+            from tools.send_message_tool import _send_telegram
+
+            result = await _send_telegram(
+                self.config.token,
+                chat_id,
+                content,
+                thread_id=self._metadata_thread_id(metadata),
+                disable_link_previews=self._disable_link_previews,
+            )
+        except Exception as exc:
+            logger.warning("[%s] Standalone Telegram fallback raised: %s", self.name, exc)
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+
+        if isinstance(result, dict) and result.get("success"):
+            return SendResult(
+                success=True,
+                message_id=str(result.get("message_id")) if result.get("message_id") else None,
+                raw_response=result,
+            )
+        error = result.get("error") if isinstance(result, dict) else result
+        return SendResult(
+            success=False,
+            error=f"send_path_degraded: standalone fallback failed: {error}",
+            retryable=True,
+            raw_response=result,
+        )
+
     async def send(
         self,
         chat_id: str,
@@ -2394,7 +2429,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return await self._send_via_standalone_fallback(chat_id, content, metadata)
 
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():

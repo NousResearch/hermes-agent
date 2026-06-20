@@ -5,6 +5,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { extractUnifiedDiff, parsePatch, applyPatchToContent, safeJoin } = require('./patchParser');
+const { summarizePatch, detectTestCommand } = require('./extensionUtils');
 const { AcpClient } = require('./acpClient');
 
 let provider;
@@ -65,7 +66,10 @@ class HermesChatProvider {
 
   resolveWebviewView(view) {
     this.view = view;
-    view.webview.options = { enableScripts: true };
+    view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')]
+    };
     view.webview.html = this.html();
     view.webview.onDidReceiveMessage(async (message) => {
       try {
@@ -449,91 +453,10 @@ class HermesChatProvider {
 
   html() {
     const nonce = String(Date.now());
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';"><style>
-      :root { color-scheme: dark light; --hermes-accent: var(--vscode-button-background); --hermes-accent-fg: var(--vscode-button-foreground); --hermes-card: color-mix(in srgb, var(--vscode-editor-background) 86%, transparent); --hermes-soft-border: color-mix(in srgb, var(--vscode-sideBar-border) 68%, transparent); --hermes-muted: color-mix(in srgb, var(--vscode-foreground) 68%, transparent); }
-      * { box-sizing: border-box; }
-      body { margin: 0; min-height: 100vh; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: radial-gradient(circle at 20% -10%, color-mix(in srgb, var(--hermes-accent) 18%, transparent), transparent 34%), linear-gradient(180deg, color-mix(in srgb, var(--vscode-sideBar-background) 92%, var(--hermes-accent) 8%), var(--vscode-sideBar-background)); }
-      header { padding: 14px 14px 12px; border-bottom: 1px solid var(--hermes-soft-border); display:flex; gap:10px; align-items:center; justify-content:space-between; backdrop-filter: blur(18px); }
-      .brand { min-width:0; display:flex; gap:10px; align-items:center; }
-      .orb { width:34px; height:34px; border-radius:12px; display:grid; place-items:center; color:var(--hermes-accent-fg); background: linear-gradient(135deg, var(--hermes-accent), color-mix(in srgb, var(--hermes-accent) 58%, #8b5cf6)); box-shadow: 0 10px 28px color-mix(in srgb, var(--hermes-accent) 26%, transparent); }
-      .title { font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-      .subtitle { margin-top:2px; font-size: 11px; color: var(--hermes-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .status { max-width:42%; color: var(--hermes-muted); background: color-mix(in srgb, var(--vscode-input-background) 78%, transparent); border:1px solid var(--hermes-soft-border); border-radius:999px; padding:5px 8px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      main { padding: 14px 12px 260px; display: flex; flex-direction: column; gap: 12px; height: 100vh; overflow-y: auto; scroll-behavior: smooth; }
-      .msg { position:relative; border: 1px solid var(--hermes-soft-border); border-radius: 16px; padding: 12px 13px; white-space: pre-wrap; line-height: 1.48; word-break: break-word; box-shadow: 0 6px 24px rgba(0,0,0,.10); }
-      .msg::before { content: attr(data-role); display:block; margin-bottom:7px; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--hermes-muted); }
-      .user { margin-left:18px; background: linear-gradient(135deg, color-mix(in srgb, var(--hermes-accent) 26%, var(--vscode-input-background)), var(--vscode-input-background)); border-color: color-mix(in srgb, var(--hermes-accent) 38%, var(--hermes-soft-border)); }
-      .assistant { margin-right:10px; background: var(--hermes-card); }
-      .error { border-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); background: color-mix(in srgb, var(--vscode-errorForeground) 10%, var(--vscode-editor-background)); }
-      .meta { color: var(--hermes-muted); font-size: 12px; background: color-mix(in srgb, var(--vscode-input-background) 60%, transparent); border-style:dashed; }
-      footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 10px 10px 12px; background: color-mix(in srgb, var(--vscode-sideBar-background) 88%, transparent); border-top: 1px solid var(--hermes-soft-border); backdrop-filter: blur(18px); box-shadow: 0 -12px 34px rgba(0,0,0,.18); }
-      textarea { width: 100%; min-height: 74px; resize: vertical; box-sizing: border-box; color: var(--vscode-input-foreground); background: color-mix(in srgb, var(--vscode-input-background) 94%, var(--hermes-accent) 6%); border: 1px solid var(--hermes-soft-border); border-radius: 14px; padding: 11px 12px; outline: none; line-height:1.35; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
-      textarea:focus { border-color: color-mix(in srgb, var(--hermes-accent) 65%, var(--hermes-soft-border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--hermes-accent) 18%, transparent); }
-      button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 999px; padding: 7px 11px; margin-top: 0; cursor:pointer; font-weight:600; }
-      button:hover { filter: brightness(1.08); }
-      button.secondary { background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 82%, transparent); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--hermes-soft-border); }
-      label { font-size: 12px; color: var(--hermes-muted); margin-right: 0; white-space: nowrap; display:inline-flex; gap:4px; align-items:center; padding:4px 7px; border:1px solid var(--hermes-soft-border); border-radius:999px; background: color-mix(in srgb, var(--vscode-input-background) 66%, transparent); }
-      .actions, .toggles { display:flex; gap:7px; flex-wrap:wrap; align-items:center; }
-      .toggles { margin-top: 8px; justify-content: space-between; }
-      .toggle-group { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
-      .actions { margin-top:9px; }
-      .patch-pill { margin-left:auto; color: var(--hermes-muted); font-size: 11px; border:1px solid var(--hermes-soft-border); border-radius:999px; padding:4px 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
-      .composer-top { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
-      select { min-width: 102px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border:1px solid var(--vscode-dropdown-border); border-radius:999px; padding:6px 8px; }
-      .prompt-buttons { display:flex; gap:6px; flex-wrap:wrap; margin: 10px 0 2px; }
-      .prompt-buttons button { font-size: 11px; padding: 6px 8px; }
-      pre { position: relative; margin: 10px 0; padding: 12px; border-radius: 12px; overflow:auto; background: var(--vscode-textCodeBlock-background); border:1px solid var(--hermes-soft-border); }
-      code { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
-      .copy { position:absolute; top:8px; right:8px; font-size:10px; padding:4px 7px; opacity:.84; }
-      .msg-actions { display:flex; justify-content:flex-end; margin-top:8px; gap:6px; }
-      .msg-actions button { font-size:10px; padding:4px 7px; }
-      details.tool-event { border:1px dashed var(--hermes-soft-border); border-radius: 12px; padding: 8px 10px; background: color-mix(in srgb, var(--vscode-input-background) 58%, transparent); color: var(--hermes-muted); }
-      details.tool-event summary { cursor:pointer; font-weight:700; color: var(--vscode-foreground); }
-      .patch-panel, .context-panel { display:none; border:1px solid color-mix(in srgb, var(--hermes-accent) 34%, var(--hermes-soft-border)); border-radius:16px; padding:10px; margin-bottom:9px; background: color-mix(in srgb, var(--hermes-accent) 10%, var(--vscode-editor-background)); }
-      .patch-panel.visible, .context-panel.visible { display:block; }
-      .patch-panel strong, .context-panel strong { display:block; margin-bottom:7px; }
-      .patch-panel .actions { margin-top:0; }
-      .panel-summary { color: var(--hermes-muted); font-size: 12px; line-height:1.45; margin-bottom:8px; }
-      .file-list { display:flex; flex-direction:column; gap:5px; max-height:96px; overflow:auto; margin-bottom:8px; }
-      .file-row { display:flex; justify-content:space-between; gap:8px; border:1px solid var(--hermes-soft-border); border-radius:10px; padding:5px 7px; background: color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); font-size:11px; }
-      .file-row span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .delta-plus { color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950); }
-      .delta-minus { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); }
-    </style></head><body><header><div class="brand"><div class="orb">✦</div><div><div class="title">Hermes Code</div><div class="subtitle">Workspace-aware coding copilot</div></div></div><span class="status" id="status">Ready</span></header><main id="messages"><div class="msg assistant" data-role="Hermes"><p>Ask Hermes to inspect, explain, edit, or review this workspace. Use the context menu for selection-aware commands.</p><div class="prompt-buttons"><button data-prompt="Review the current diff for risk, likely breakage, missing tests, and concrete fixes." class="secondary">Review diff</button><button data-prompt="Explain the active file and call out important risks or improvements." class="secondary">Explain file</button><button data-prompt="Find missing tests or weak coverage for the selected code or active file." class="secondary">Find tests</button></div></div></main><footer><div id="contextPanel" class="context-panel"><strong>Context inspector</strong><div id="contextSummary" class="panel-summary">Click Context to inspect what Hermes will see.</div></div><div id="patchPanel" class="patch-panel"><strong>Patch review</strong><div id="patchSummary" class="panel-summary">Patch summary unavailable.</div><div id="patchFiles" class="file-list"></div><div class="actions"><button class="secondary" id="preview">Preview</button><button id="apply">Apply</button><button class="secondary" id="copy">Copy</button><button class="secondary" id="discard">Discard</button><button class="secondary" id="runTests">Run tests</button><button class="secondary" id="runAnalyze">Run + analyze</button><button class="secondary" id="revert">Revert</button></div></div><div class="composer-top"><select id="mode"><option value="ask">Ask</option><option value="explain">Explain</option><option value="edit">Edit</option><option value="review">Review</option><option value="test">Test</option><option value="debug">Debug</option><option value="refactor">Refactor</option><option value="security">Security</option><option value="commit">Commit</option></select><textarea id="input" placeholder="Ask Hermes to edit, explain, test, or review…  ⌘/Ctrl+Enter"></textarea></div><div class="toggles"><div class="toggle-group"><label><input id="ctxFile" type="checkbox" checked> file</label><label><input id="ctxSel" type="checkbox" checked> selection</label><label><input id="ctxDiag" type="checkbox" checked> diagnostics</label><label><input id="ctxGit" type="checkbox"> git diff</label><label><input id="ctxInst" type="checkbox" checked> instructions</label></div><span class="patch-pill" id="patchState">No patch yet</span></div><div class="actions"><button id="send">Send</button><button class="secondary" id="review">Review diff</button><button class="secondary" id="diag">Diagnostics</button><button class="secondary" id="term">Terminal</button><button class="secondary" id="context">Context</button><button class="secondary" id="stop">Stop</button><button class="secondary" id="clear">Clear</button><button class="secondary" id="config">Config</button></div></footer><script nonce="${nonce}">
-      const vscode = acquireVsCodeApi(); const messages = document.getElementById('messages'); const input = document.getElementById('input'); const status = document.getElementById('status'); const patchState = document.getElementById('patchState'); const patchPanel = document.getElementById('patchPanel'); const patchSummary = document.getElementById('patchSummary'); const patchFiles = document.getElementById('patchFiles'); const contextPanel = document.getElementById('contextPanel'); const contextSummary = document.getElementById('contextSummary'); const modeSelect = document.getElementById('mode'); let partial;
-      function escapeHtml(text){ return (text||'').replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch])); }
-      function renderMarkdown(text){ const tick=String.fromCharCode(96); const fence=tick+tick+tick; const parts = String(text||'').split(new RegExp(fence+'([\\w.+-]*)\\n([\\s\\S]*?)'+fence,'g')); let html=''; for(let i=0;i<parts.length;i++){ if(i%3===0){ html += escapeHtml(parts[i]).replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>').replace(new RegExp(tick+'([^'+tick+']+)'+tick,'g'),'<code>$1</code>').replace(/\n/g,'<br>'); } else if(i%3===1){ const lang=escapeHtml(parts[i]||'text'); const code=escapeHtml(parts[i+1]||''); html += '<pre><button class="copy" data-copy="code">Copy</button><code data-lang="'+lang+'">'+code+'</code></pre>'; i++; } } return html; }
-      function roleLabel(cls){ if(cls==='user') return 'You'; if(cls==='assistant') return 'Hermes'; if(cls==='error') return 'Error'; return 'Event'; }
-      function addAssistantActions(div){ const actions=document.createElement('div'); actions.className='msg-actions'; actions.innerHTML='<button class="secondary" data-copy="message">Copy</button><button class="secondary" data-retry="1">Retry</button>'; div.appendChild(actions); }
-      function add(cls, text){ const div=document.createElement('div'); div.className='msg '+cls; div.dataset.role=roleLabel(cls); div.innerHTML=renderMarkdown(text); if(cls==='assistant') addAssistantActions(div); messages.appendChild(div); messages.scrollTop=messages.scrollHeight; return div; }
-      function addTool(text){ const details=document.createElement('details'); details.className='tool-event'; details.innerHTML='<summary>🔧 '+escapeHtml(String(text).split('\n')[0]||'Hermes tool')+'</summary><div>'+renderMarkdown(text)+'</div>'; messages.appendChild(details); messages.scrollTop=messages.scrollHeight; }
-      function options(){ return {mode: modeSelect.value, includeFile:ctxFile.checked, includeSelection:ctxSel.checked, includeDiagnostics:ctxDiag.checked, includeGitDiff:ctxGit.checked, includeInstructions:ctxInst.checked}; }
-      function send(textOverride){ const text=textOverride || input.value; if(!text.trim()) return; input.value=''; vscode.postMessage({type:'ask', text, options: options()}); }
-      function setPatchState(value){ patchState.textContent=value; patchPanel.classList.toggle('visible', value && !/^No patch/.test(value)); }
-      function renderPatchDetails(value){ if(!value || !value.files || !value.files.length){ patchSummary.textContent='No patch metadata available.'; patchFiles.innerHTML=''; return; } patchSummary.textContent=value.files.length+' file(s), '+value.hunks+' hunk(s), +'+value.additions+'/-'+value.deletions; patchFiles.innerHTML=value.files.map(f=>'<div class="file-row"><span>'+escapeHtml(f.path||'unknown')+'</span><span><span class="delta-plus">+'+f.additions+'</span> <span class="delta-minus">-'+f.deletions+'</span> · '+f.hunks+' h</span></div>').join(''); }
-      function renderContextSummary(value){ if(!value){ contextSummary.textContent='No context summary available.'; return; } const included=Object.entries(value.included||{}).filter(([,on])=>on).map(([name])=>name).join(', ') || 'none'; contextSummary.innerHTML='<div><b>Workspace</b>: '+escapeHtml(value.workspace||'none')+'</div><div><b>Active file</b>: '+escapeHtml(value.activeFile||'none')+(value.dirty?' <em>(unsaved)</em>':'')+'</div><div><b>Language</b>: '+escapeHtml(value.language||'n/a')+'</div><div><b>Selection</b>: '+value.selectionLines+' line(s), '+value.selectionChars+' chars</div><div><b>Diagnostics</b>: '+value.diagnostics+'</div><div><b>Git status files</b>: '+value.gitFiles+'</div><div><b>Instructions</b>: '+escapeHtml((value.instructionFiles||[]).join(', ')||'none')+'</div><div><b>Included</b>: '+escapeHtml(included)+'</div><div><b>Budget</b>: '+value.maxContextChars+' chars</div>'; contextPanel.classList.add('visible'); }
-      document.getElementById('send').onclick=()=>send();
-      document.getElementById('review').onclick=()=>vscode.postMessage({type:'reviewDiff'});
-      document.getElementById('diag').onclick=()=>vscode.postMessage({type:'diagnostics'});
-      document.getElementById('term').onclick=()=>vscode.postMessage({type:'terminal'});
-      document.getElementById('context').onclick=()=>vscode.postMessage({type:'inspectContext', options: options()});
-      document.getElementById('preview').onclick=()=>vscode.postMessage({type:'previewPatch'});
-      document.getElementById('apply').onclick=()=>vscode.postMessage({type:'applyPatch'});
-      document.getElementById('copy').onclick=()=>vscode.postMessage({type:'copyPatch'});
-      document.getElementById('discard').onclick=()=>vscode.postMessage({type:'discardPatch'});
-      document.getElementById('runTests').onclick=()=>vscode.postMessage({type:'runTests'});
-      document.getElementById('runAnalyze').onclick=()=>vscode.postMessage({type:'runTestsAndAnalyze'});
-      document.getElementById('revert').onclick=()=>vscode.postMessage({type:'revertPatch'});
-      document.getElementById('stop').onclick=()=>vscode.postMessage({type:'stop'});
-      document.getElementById('clear').onclick=()=>vscode.postMessage({type:'clear'});
-      document.getElementById('config').onclick=()=>vscode.postMessage({type:'configure'});
-      input.addEventListener('keydown', e=>{ if ((e.metaKey||e.ctrlKey) && e.key === 'Enter') send(); });
-      document.addEventListener('click', e=>{ const prompt=e.target.dataset.prompt; if(prompt) send(prompt); if(e.target.dataset.copy==='message'){ navigator.clipboard.writeText(e.target.closest('.msg').innerText.replace(/^Hermes\n/,'').replace(/Copy\s*Retry$/,'')); } if(e.target.dataset.copy==='code'){ navigator.clipboard.writeText(e.target.parentElement.querySelector('code').innerText); } if(e.target.dataset.retry){ const last=[...messages.querySelectorAll('.user')].pop(); if(last) send(last.innerText.replace(/^You\n/,'')); } });
-      window.addEventListener('message', event=>{ const {type,value}=event.data; if(type==='restore'){ messages.innerHTML=''; if(!value.length) add('assistant','Ask Hermes to inspect, explain, edit, or review this workspace.'); value.forEach(m=>add(m.role === 'error' ? 'error' : m.role, m.text)); } if(type==='patchState') setPatchState(value); if(type==='patchDetails') renderPatchDetails(value); if(type==='contextSummary') renderContextSummary(value); if(type==='status') status.textContent=value; if(type==='user') { partial=undefined; add('user', value); } if(type==='partial') { if(!partial) partial=add('assistant', value); else partial.innerHTML=renderMarkdown(value); } if(type==='assistant') { if(partial) { partial.innerHTML=renderMarkdown(value); addAssistantActions(partial); } else add('assistant', value); partial=undefined; } if(type==='error') add('error', value); if(type==='tool') addTool(value); if(type==='patch') { addTool(value+' Use the Patch review panel to preview/apply/copy/discard.'); setPatchState(value); } if(type==='postApply') addTool(value); if(type==='patchCleared') addTool(value); });
-      vscode.postMessage({type:'ready'});
-    </script></body></html>`;
-  }
-}
+    const styleUri = this.view.webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'main.css'));
+    const scriptUri = this.view.webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'main.js'));
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${this.view.webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${styleUri}"></head><body><header><div class="brand"><div class="orb">✦</div><div><div class="title">Hermes Code</div><div class="subtitle">Workspace-aware coding copilot</div></div></div><span class="status" id="status">Ready</span></header><main id="messages"><div class="msg assistant" data-role="Hermes"><p>Ask Hermes to inspect, explain, edit, or review this workspace. Use the context menu for selection-aware commands.</p><div class="prompt-buttons"><button data-prompt="Review the current diff for risk, likely breakage, missing tests, and concrete fixes." class="secondary">Review diff</button><button data-prompt="Explain the active file and call out important risks or improvements." class="secondary">Explain file</button><button data-prompt="Find missing tests or weak coverage for the selected code or active file." class="secondary">Find tests</button></div></div></main><footer><div id="contextPanel" class="context-panel"><strong>Context inspector</strong><div id="contextSummary" class="panel-summary">Click Context to inspect what Hermes will see.</div></div><div id="patchPanel" class="patch-panel"><strong>Patch review</strong><div id="patchSummary" class="panel-summary">Patch summary unavailable.</div><div id="patchFiles" class="file-list"></div><div class="actions"><button class="secondary" id="preview">Preview</button><button id="apply">Apply</button><button class="secondary" id="copy">Copy</button><button class="secondary" id="discard">Discard</button><button class="secondary" id="runTests">Run tests</button><button class="secondary" id="runAnalyze">Run + analyze</button><button class="secondary" id="revert">Revert</button></div></div><div class="composer-top"><select id="mode"><option value="ask">Ask</option><option value="explain">Explain</option><option value="edit">Edit</option><option value="review">Review</option><option value="test">Test</option><option value="debug">Debug</option><option value="refactor">Refactor</option><option value="security">Security</option><option value="commit">Commit</option></select><textarea id="input" placeholder="Ask Hermes to edit, explain, test, or review…  ⌘/Ctrl+Enter"></textarea></div><div class="toggles"><div class="toggle-group"><label><input id="ctxFile" type="checkbox" checked> file</label><label><input id="ctxSel" type="checkbox" checked> selection</label><label><input id="ctxDiag" type="checkbox" checked> diagnostics</label><label><input id="ctxGit" type="checkbox"> git diff</label><label><input id="ctxInst" type="checkbox" checked> instructions</label></div><span class="patch-pill" id="patchState">No patch yet</span></div><div class="actions"><button id="send">Send</button><button class="secondary" id="review">Review diff</button><button class="secondary" id="diag">Diagnostics</button><button class="secondary" id="term">Terminal</button><button class="secondary" id="context">Context</button><button class="secondary" id="stop">Stop</button><button class="secondary" id="clear">Clear</button><button class="secondary" id="config">Config</button></div></footer><script nonce="${nonce}" src="${scriptUri}"></script></body></html>`;
+  }}
 
 function getWorkspaceFolder() {
   const editor = vscode.window.activeTextEditor;
@@ -632,51 +555,6 @@ async function listInstructionFiles(root) {
   return found;
 }
 
-function summarizePatch(diffText) {
-  const files = [];
-  let current;
-  const finish = () => {
-    if (current) files.push(current);
-    current = undefined;
-  };
-  for (const line of String(diffText || '').replace(/\r\n/g, '\n').split('\n')) {
-    if (line.startsWith('diff --git ')) {
-      finish();
-      const parts = line.split(/\s+/);
-      current = { path: stripDiffPath(parts[3] || parts[2]), additions: 0, deletions: 0, hunks: 0 };
-      continue;
-    }
-    if (line.startsWith('--- ') && !current) {
-      current = { path: stripDiffPath(line.slice(4)), additions: 0, deletions: 0, hunks: 0 };
-      continue;
-    }
-    if (line.startsWith('+++ ') && current) {
-      const newPath = stripDiffPath(line.slice(4));
-      if (newPath !== '/dev/null') current.path = newPath;
-      continue;
-    }
-    if (!current) continue;
-    if (line.startsWith('@@ ')) current.hunks += 1;
-    else if (line.startsWith('+') && !line.startsWith('+++ ')) current.additions += 1;
-    else if (line.startsWith('-') && !line.startsWith('--- ')) current.deletions += 1;
-  }
-  finish();
-  const cleaned = files.filter((file) => file.path && (file.additions || file.deletions || file.hunks));
-  return {
-    files: cleaned,
-    additions: cleaned.reduce((sum, file) => sum + file.additions, 0),
-    deletions: cleaned.reduce((sum, file) => sum + file.deletions, 0),
-    hunks: cleaned.reduce((sum, file) => sum + file.hunks, 0)
-  };
-}
-
-function stripDiffPath(value) {
-  if (!value) return value;
-  const cleaned = value.trim().split('\t')[0].split(' ')[0];
-  if (cleaned === '/dev/null') return cleaned;
-  return cleaned.startsWith('a/') || cleaned.startsWith('b/') ? cleaned.slice(2) : cleaned;
-}
-
 async function readInstructionFiles(root, output) {
   const names = INSTRUCTION_FILE_NAMES;
   const chunks = [];
@@ -758,18 +636,6 @@ function truncate(text, max) {
   return text.slice(0, max) + `\n\n...[truncated ${text.length - max} chars]`;
 }
 
-async function detectTestCommand(cwd) {
-  const exists = async (name) => {
-    try { await fsp.stat(path.join(cwd, name)); return true; } catch { return false; }
-  };
-  if (await exists('package.json')) return 'npm test';
-  if (await exists('pyproject.toml') || await exists('pytest.ini')) return 'python -m pytest';
-  if (await exists('Package.swift')) return 'swift test';
-  if (await exists('go.mod')) return 'go test ./...';
-  if (await exists('Cargo.toml')) return 'cargo test';
-  if (await exists('Makefile')) return 'make test';
-  return 'echo "No standard test command detected. Edit this command and press Enter."';
-}
 
 function runCommand(command, args, cwd, maxBuffer = 100000) {
   return new Promise((resolve, reject) => {

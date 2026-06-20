@@ -2,7 +2,7 @@
   "name": "hermes-vscode",
   "displayName": "Hermes Code",
   "description": "Use Hermes Agent from a Claude-like VS Code/Cursor sidebar with editor, diagnostics, terminal, and patch/diff workflows.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "publisher": "nousresearch",
   "license": "MIT",
   "repository": {
@@ -15,7 +15,10 @@
     "LICENSE",
     "package.json",
     "media/hermes.svg",
+    "media/main.css",
+    "media/main.js",
     "src/acpClient.js",
+    "src/extensionUtils.js",
     "src/extension.js",
     "src/patchParser.js"
   ],
@@ -146,7 +149,7 @@
     }
   },
   "scripts": {
-    "test": "node --check src/extension.js && node --check src/acpClient.js && node test/patchParser.test.js && node test/acpClient.test.js",
+    "test": "node --check src/extension.js && node --check src/acpClient.js && node --check src/extensionUtils.js && node --check media/main.js && node test/patchParser.test.js && node test/acpClient.test.js && node test/extensionUtils.test.js",
     "package:check": "npm run test && node scripts/package-check.js"
   },
   "devDependencies": {}

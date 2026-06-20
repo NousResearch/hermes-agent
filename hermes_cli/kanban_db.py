@@ -2332,6 +2332,7 @@ def create_task(
     parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
+    idempotency_exclude_parent: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
@@ -2431,16 +2432,31 @@ def create_task(
     # duplicate. The preflight keeps the common duplicate path fast; the
     # same lookup is repeated inside the write transaction below so a racing
     # creator that wins after this check but before our INSERT cannot produce
-    # a second non-archived row with the same key.
-    if idempotency_key:
-        row = conn.execute(
+    # a second non-archived row with the same key.  Review-required routing can
+    # exclude parent-linked matches so a deadlocked child with the right
+    # idempotency key is not mistaken for an independent reviewer successor.
+    def _existing_idempotent_task() -> Optional[sqlite3.Row]:
+        if not idempotency_key:
+            return None
+        query = (
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
+        )
+        params: list[Any] = [idempotency_key]
+        if idempotency_exclude_parent:
+            query += (
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM task_links "
+                "  WHERE parent_id = ? AND child_id = tasks.id"
+                ") "
+            )
+            params.append(idempotency_exclude_parent)
+        query += "ORDER BY created_at DESC LIMIT 1"
+        return conn.execute(query, tuple(params)).fetchone()
+
+    row = _existing_idempotent_task()
+    if row:
+        return row["id"]
 
     now = int(time.time())
 
@@ -2465,15 +2481,9 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
-                if idempotency_key:
-                    row = conn.execute(
-                        "SELECT id FROM tasks WHERE idempotency_key = ? "
-                        "AND status != 'archived' "
-                        "ORDER BY created_at DESC LIMIT 1",
-                        (idempotency_key,),
-                    ).fetchone()
-                    if row:
-                        return row["id"]
+                row = _existing_idempotent_task()
+                if row:
+                    return row["id"]
 
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
@@ -5469,6 +5479,80 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    created_review_required_successors: list[str] = field(default_factory=list)
+    """Blocked review-required source task ids for which this dispatch tick
+    created an independent reviewer/triage successor."""
+    consumed_review_verdicts: list[str] = field(default_factory=list)
+    """Blocked source task ids whose completed reviewer verdicts were consumed
+    this dispatch tick."""
+    created_review_verdict_followups: list[str] = field(default_factory=list)
+    """Follow-up task ids created from consumed reviewer verdicts."""
+
+
+_LIVENESS_AUTHOR = "kanban-liveness"
+_REVIEW_REQUIRED_OWNER_KEYS = (
+    "review_owner",
+    "review_assignee",
+    "needed_review_owner",
+    "needed_profile",
+    "awaiting_profile",
+)
+_REVIEW_REQUIRED_SUCCESSOR_KEYS = (
+    "successor_task_ids",
+    "review_successor_task_ids",
+    "reviewer_task_ids",
+)
+_REVIEW_REQUIRED_RECEIPT_KEYS = (
+    "changed_files",
+    "tests_run",
+    "tests_passed",
+    "test_commands",
+    "commands",
+    "diff_path",
+    "artifacts",
+    "risk_class",
+    "review_type",
+    "review_kind",
+    "requested_verdict",
+    "decisions",
+)
+_REVIEW_REQUIRED_NEGATED_RED_GATE_PATTERNS = (
+    re.compile(
+        r"\bno\s+(?:active\s+|remaining\s+)?red[-\s]?gates?\s*"
+        r"(?:remains?|remaining|required|needed|present|left|appl(?:y|ies))?\b"
+    ),
+    re.compile(r"\bnot\s+(?:a\s+)?red[-\s]?gates?\b"),
+    re.compile(r"\bnot\s+red[-\s]?gated\b"),
+    re.compile(r"\bwithout\s+(?:a\s+)?red[-\s]?gates?\b"),
+    re.compile(r"\bnon[-\s]?red[-\s]?gated\b"),
+    re.compile(
+        r"\bno\s+stop\s*/\s*human\s+boundary\s*"
+        r"(?:remains?|remaining|required|needed|present|left)?\b"
+    ),
+    re.compile(
+        r"\bno\s+human\s+approval\s*"
+        r"(?:remains?|remaining|required|needed|present|left)?\b"
+    ),
+    re.compile(
+        r"\bhuman\s+approval\s+(?:is\s+)?(?:not|no\s+longer)\s+"
+        r"(?:required|needed|present|remaining)\b"
+    ),
+)
+_REVIEW_REQUIRED_RED_GATE_PATTERNS = (
+    re.compile(r"\bred[-\s]?gated\b"),
+    re.compile(r"\bred[-\s]?gates?\b"),
+    re.compile(r"\bhuman\s+approval\b"),
+    re.compile(r"\bstop\s*/\s*human\s+boundary\b"),
+)
+
+
+@dataclass
+class LivenessScanResult:
+    """Mutating liveness repairs performed by one scanner pass."""
+
+    created_review_required_successors: list[str] = field(default_factory=list)
+    consumed_review_verdicts: list[str] = field(default_factory=list)
+    created_review_verdict_followups: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -5478,6 +5562,448 @@ class ReviewVerdictConsumptionResult:
     consumed_review_verdicts: list[str] = field(default_factory=list)
     created_review_verdict_followups: list[str] = field(default_factory=list)
     skipped_review_verdicts: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class _ReviewRequiredRoute:
+    assignee: str
+    owner_source: str
+    triage: bool = False
+    red_gated: bool = False
+
+
+def _parse_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _metadata_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return list(value)
+    return [value]
+
+
+def _latest_block_reason(conn: sqlite3.Connection, task_id: str) -> str:
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row:
+        reason = _parse_json_dict(row["payload"]).get("reason")
+        if isinstance(reason, str):
+            return reason
+    row = conn.execute(
+        "SELECT summary FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'blocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return str(row["summary"] or "") if row else ""
+
+
+def _is_review_required_block(conn: sqlite3.Connection, task_id: str) -> bool:
+    return _latest_block_reason(conn, task_id).strip().lower().startswith("review-required:")
+
+
+def _latest_blocked_review_runs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT t.id AS task_id,
+               t.title AS task_title,
+               t.body AS task_body,
+               t.assignee AS task_assignee,
+               t.workspace_kind AS workspace_kind,
+               t.workspace_path AS workspace_path,
+               t.tenant AS tenant,
+               r.id AS run_id,
+               r.summary AS summary,
+               r.metadata AS metadata
+          FROM tasks t
+          JOIN task_runs r ON r.id = (
+                SELECT r2.id
+                  FROM task_runs r2
+                 WHERE r2.task_id = t.id
+                   AND r2.outcome = 'blocked'
+                   AND r2.ended_at IS NOT NULL
+                 ORDER BY r2.id DESC
+                 LIMIT 1
+          )
+         WHERE t.status = 'blocked'
+        """
+    ).fetchall()
+
+
+def _review_required_idempotency_key(task_id: str, run_id: int) -> str:
+    return f"review-required:{task_id}:{int(run_id)}"
+
+
+def _task_has_successor_for_review_required(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+    metadata: dict[str, Any],
+) -> bool:
+    declared = [
+        str(v).strip()
+        for key in _REVIEW_REQUIRED_SUCCESSOR_KEYS
+        for v in _metadata_list(metadata.get(key))
+        if str(v).strip()
+    ]
+    if declared:
+        placeholders = ",".join("?" * len(declared))
+        if conn.execute(
+            f"SELECT 1 FROM tasks WHERE id IN ({placeholders}) "
+            "AND status != 'archived' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM task_links "
+            "  WHERE parent_id = ? AND child_id = tasks.id"
+            ") LIMIT 1",
+            tuple(declared) + (task_id,),
+        ).fetchone():
+            return True
+
+    idem = _review_required_idempotency_key(task_id, run_id)
+    if conn.execute(
+        "SELECT 1 FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM task_links "
+        "  WHERE parent_id = ? AND child_id = tasks.id"
+        ") LIMIT 1",
+        (idem, task_id),
+    ).fetchone():
+        return True
+
+    rows = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_required_successor_created' "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for event in rows:
+        payload = _parse_json_dict(event["payload"])
+        if int(payload.get("run_id") or -1) != int(run_id):
+            continue
+        successor_id = str(payload.get("successor_task_id") or "").strip()
+        if not successor_id:
+            continue
+        if conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ? AND status != 'archived' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM task_links "
+            "  WHERE parent_id = ? AND child_id = tasks.id"
+            ") LIMIT 1",
+            (successor_id, task_id),
+        ).fetchone():
+            return True
+    return False
+
+
+def _json_dict_from_text(text: str) -> dict[str, Any]:
+    parsed = _parse_json_dict(text)
+    if parsed:
+        return parsed
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text or ""):
+        try:
+            value, _end = decoder.raw_decode(text[match.start() :])
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _latest_review_required_comment_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> dict[str, Any]:
+    rows = conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    owner_needles = tuple(key.lower() for key in _REVIEW_REQUIRED_OWNER_KEYS)
+    receipt_needles = tuple(key.lower() for key in _REVIEW_REQUIRED_RECEIPT_KEYS)
+    for row in rows:
+        body = str(row["body"] or "")
+        body_l = body.lower()
+        if (
+            "review-required" not in body_l
+            and not any(key in body_l for key in owner_needles)
+            and not any(key in body_l for key in receipt_needles)
+        ):
+            continue
+        parsed = _json_dict_from_text(body)
+        if parsed:
+            return parsed
+    return {}
+
+
+def _review_required_owner_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for key in _REVIEW_REQUIRED_OWNER_KEYS:
+        match = re.search(rf"\b{re.escape(key)}\s*[:=]\s*([A-Za-z0-9_.-]+)", text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+_REVIEW_REQUIRED_NESTED_DICT_KEYS = (
+    "review_required",
+    "review",
+    "successor_action",
+    "successor",
+    "block_reason",
+    "owner_hint",
+)
+
+
+def _review_required_nested_dicts(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    dicts: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def visit(item: dict[str, Any]) -> None:
+        marker = id(item)
+        if marker in seen:
+            return
+        seen.add(marker)
+        dicts.append(item)
+        for key in _REVIEW_REQUIRED_NESTED_DICT_KEYS:
+            value = item.get(key)
+            if isinstance(value, dict):
+                visit(value)
+
+    visit(metadata)
+    return dicts
+
+
+def _review_required_first_owner(metadata: dict[str, Any]) -> Optional[str]:
+    for item in _review_required_nested_dicts(metadata):
+        for key in _REVIEW_REQUIRED_OWNER_KEYS:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for item in _review_required_nested_dicts(metadata)[1:]:
+        for key in ("assignee", "profile", "owner"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _review_required_metadata_is_red_gated(metadata: dict[str, Any]) -> bool:
+    for item in _review_required_nested_dicts(metadata):
+        if item.get("requires_approval") or item.get("red_gate"):
+            return True
+        if _metadata_list(item.get("red_gates")):
+            return True
+        status_class = str(item.get("status_class") or "").strip().lower()
+        if status_class in {"red", "red-gated"}:
+            return True
+    return False
+
+
+def _review_required_reason_is_red_gated(reason: str) -> bool:
+    reason_l = (reason or "").lower()
+    for pattern in _REVIEW_REQUIRED_NEGATED_RED_GATE_PATTERNS:
+        reason_l = pattern.sub(" ", reason_l)
+    return any(pattern.search(reason_l) for pattern in _REVIEW_REQUIRED_RED_GATE_PATTERNS)
+
+
+def _review_required_is_red_gated(metadata: dict[str, Any], reason: str) -> bool:
+    if _review_required_reason_is_red_gated(reason):
+        return True
+    return _review_required_metadata_is_red_gated(metadata)
+
+
+def _review_required_has_code_change_receipts(metadata: dict[str, Any]) -> bool:
+    code_receipt_present = any(
+        _metadata_list(item.get(key))
+        for item in _review_required_nested_dicts(metadata)
+        for key in ("changed_files", "diff_path")
+    )
+    test_receipt_present = any(
+        _metadata_list(item.get(key))
+        for item in _review_required_nested_dicts(metadata)
+        for key in ("tests_run", "tests_passed", "test_commands", "commands")
+    )
+    return code_receipt_present and test_receipt_present
+
+
+def _review_required_route(
+    metadata: dict[str, Any],
+    reason: str,
+    comment_metadata: Optional[dict[str, Any]] = None,
+    source_assignee: Optional[str] = None,
+) -> _ReviewRequiredRoute:
+    comment_metadata = comment_metadata or {}
+    effective_metadata = {**comment_metadata, **metadata}
+    if _review_required_is_red_gated(effective_metadata, reason):
+        return _ReviewRequiredRoute(
+            assignee="default",
+            owner_source="red-gated",
+            red_gated=True,
+        )
+    explicit = _review_required_first_owner(metadata)
+    if explicit:
+        return _ReviewRequiredRoute(_canonical_assignee(explicit) or explicit, "explicit-metadata")
+    explicit = _review_required_first_owner(comment_metadata)
+    if explicit:
+        return _ReviewRequiredRoute(_canonical_assignee(explicit) or explicit, "explicit-comment")
+    explicit = _review_required_owner_from_text(reason)
+    if explicit:
+        return _ReviewRequiredRoute(_canonical_assignee(explicit) or explicit, "explicit-reason")
+    if (
+        _canonical_assignee(source_assignee) in {"builder", "stark"}
+        and _review_required_has_code_change_receipts(effective_metadata)
+    ):
+        return _ReviewRequiredRoute(
+            _canonical_assignee("researcher") or "researcher",
+            "code-review-receipts",
+        )
+    return _ReviewRequiredRoute("default", "router-triage", triage=True)
+
+
+def _review_required_card_body(
+    *,
+    source_id: str,
+    source_title: str,
+    source_assignee: Optional[str],
+    run_id: int,
+    reason: str,
+    metadata: dict[str, Any],
+    route: _ReviewRequiredRoute,
+) -> str:
+    lines = [
+        f"Review-required routed card created from source task {source_id}: {source_title}",
+        f"Source run: {run_id}",
+        f"Source assignee: {source_assignee or 'unassigned'}",
+        f"Block reason: {reason}",
+        f"Selected reviewer assignee: {route.assignee} ({route.owner_source})",
+        "",
+        "Review the source task handoff and return one of: approve/unblock source; "
+        "changes requested; stop/rollback/human approval required; insufficient evidence.",
+    ]
+    if route.triage:
+        lines.extend([
+            "",
+            "No explicit review owner was inferable; this is a router/triage packet, not executable review work.",
+        ])
+    if route.red_gated:
+        lines.extend(["", "RED-GATED: do not execute the gated action; route/approve explicitly first."])
+    red_gates = _metadata_list(metadata.get("red_gates"))
+    if red_gates:
+        lines.extend(["Red gates:"] + [f"- {gate}" for gate in red_gates])
+
+    receipt_lines: list[str] = []
+    for key in _REVIEW_REQUIRED_RECEIPT_KEYS:
+        value = metadata.get(key)
+        if value in (None, "", [], {}):
+            continue
+        try:
+            rendered = (
+                str(value)
+                if isinstance(value, (str, int, float, bool))
+                else json.dumps(value, ensure_ascii=False, sort_keys=True)
+            )
+        except TypeError:
+            rendered = str(value)
+        receipt_lines.append(f"- {key}: {rendered}")
+    if receipt_lines:
+        lines.extend(["", "Source receipt excerpts:"] + receipt_lines)
+    return "\n".join(lines)
+
+
+def _create_review_required_successor(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    metadata: dict[str, Any],
+    comment_metadata: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    source_id = row["task_id"]
+    run_id = int(row["run_id"])
+    comment_metadata = comment_metadata or {}
+    effective_metadata = {**comment_metadata, **metadata}
+    if _task_has_successor_for_review_required(conn, source_id, run_id, effective_metadata):
+        return None
+
+    reason = _latest_block_reason(conn, source_id)
+    route = _review_required_route(
+        metadata,
+        reason,
+        comment_metadata,
+        source_assignee=row["task_assignee"],
+    )
+    title = f"Review required: {row['task_title'] or source_id}"
+    if route.triage:
+        title = f"Route review-required: {row['task_title'] or source_id}"
+    if route.red_gated:
+        title = f"RED-GATED routing needed: {title}"
+
+    source_kind = row["workspace_kind"] or "scratch"
+    source_workspace = row["workspace_path"] if source_kind in {"dir", "worktree"} else None
+    successor_id = create_task(
+        conn,
+        title=title,
+        body=_review_required_card_body(
+            source_id=source_id,
+            source_title=row["task_title"] or "",
+            source_assignee=row["task_assignee"],
+            run_id=run_id,
+            reason=reason,
+            metadata=effective_metadata,
+            route=route,
+        ),
+        assignee=route.assignee,
+        created_by=_LIVENESS_AUTHOR,
+        workspace_kind=source_kind,
+        workspace_path=source_workspace,
+        tenant=row["tenant"],
+        idempotency_key=_review_required_idempotency_key(source_id, run_id),
+        idempotency_exclude_parent=source_id,
+        triage=route.triage and not route.red_gated,
+        initial_status="blocked" if route.red_gated else "running",
+    )
+    with write_txn(conn):
+        if route.red_gated:
+            _append_event(
+                conn,
+                successor_id,
+                "blocked",
+                {"reason": "red-gated: approval/routing required before execution"},
+            )
+        _append_event(
+            conn,
+            source_id,
+            "review_required_successor_created",
+            {
+                "successor_task_id": successor_id,
+                "run_id": run_id,
+                "idempotency_key": _review_required_idempotency_key(source_id, run_id),
+                "assignee": route.assignee,
+                "owner_source": route.owner_source,
+                "triage": route.triage,
+                "red_gated": route.red_gated,
+            },
+            run_id=run_id,
+        )
+    return successor_id
 
 
 def _extract_review_verdict(metadata: Any) -> Optional[dict[str, Any]]:
@@ -5779,6 +6305,53 @@ def consume_review_verdicts(conn: sqlite3.Connection) -> ReviewVerdictConsumptio
         result.consumed_review_verdicts.append(source_id)
         if created_followup:
             result.created_review_verdict_followups.append(created_followup)
+    return result
+
+
+def _source_has_independent_reviewer(conn: sqlite3.Connection, source_id: str) -> bool:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT r.task_id AS reviewer_task_id,
+               r.metadata AS metadata
+          FROM task_runs r
+          JOIN tasks rt ON rt.id = r.task_id
+         WHERE rt.status != 'archived'
+           AND r.metadata IS NOT NULL
+         ORDER BY r.id DESC
+        """
+    ).fetchall()
+    for row in rows:
+        verdict_doc = _extract_review_verdict(_parse_json_dict(row["metadata"]))
+        if not verdict_doc or verdict_doc.get("source_task_id") != source_id:
+            continue
+        reviewer_task_id = row["reviewer_task_id"]
+        if source_id not in parent_ids(conn, reviewer_task_id):
+            return True
+    return False
+
+
+def scan_liveness(conn: sqlite3.Connection) -> LivenessScanResult:
+    """Apply cheap Kanban liveness repairs used by the dispatcher.
+
+    Current mutating scope is intentionally narrow: completed review verdicts
+    are consumed first, then blocked sources whose latest block reason starts
+    with ``review-required:`` receive exactly one independent review/triage
+    successor.  The source remains blocked for successor creation and the
+    successor is not parent-linked to the source, avoiding review deadlock.
+    """
+    result = LivenessScanResult()
+    verdict_result = consume_review_verdicts(conn)
+    result.consumed_review_verdicts.extend(verdict_result.consumed_review_verdicts)
+    result.created_review_verdict_followups.extend(verdict_result.created_review_verdict_followups)
+    for row in _latest_blocked_review_runs(conn):
+        source_id = row["task_id"]
+        if not _is_review_required_block(conn, source_id):
+            continue
+        metadata = _parse_json_dict(row["metadata"])
+        comment_metadata = _latest_review_required_comment_metadata(conn, source_id)
+        successor_id = _create_review_required_successor(conn, row, metadata, comment_metadata)
+        if successor_id:
+            result.created_review_required_successors.append(source_id)
     return result
 
 
@@ -7103,6 +7676,17 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    if not dry_run:
+        liveness_result = scan_liveness(conn)
+        if liveness_result.created_review_verdict_followups:
+            recompute_ready(conn, failure_limit=failure_limit)
+        result.consumed_review_verdicts.extend(liveness_result.consumed_review_verdicts)
+        result.created_review_verdict_followups.extend(
+            liveness_result.created_review_verdict_followups
+        )
+        result.created_review_required_successors.extend(
+            liveness_result.created_review_required_successors
+        )
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

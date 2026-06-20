@@ -548,10 +548,13 @@ export interface SubagentEventPayload {
   goal: string
   input_tokens?: number
   iteration?: number
+  lane?: string
   model?: string
   output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
   output_tokens?: number
   parent_id?: null | string
+  profile?: string
+  provider?: string
   reasoning_tokens?: number
   status?: SubagentStatus
   subagent_id?: string

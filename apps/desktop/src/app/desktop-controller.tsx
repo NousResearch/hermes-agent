@@ -16,6 +16,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
+import { buildBlueprintDeepLinkCommand } from '../lib/blueprint-deep-link'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
@@ -331,28 +332,15 @@ export function DesktopController() {
   // that arrived during boot is flushed exactly once.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      // Sanitization (name allowlist, slot key/value filtering, control-char
+      // stripping) lives in buildBlueprintDeepLinkCommand so it can be unit
+      // tested; the result is interpolated verbatim into a slash command.
+      const command = buildBlueprintDeepLinkCommand(payload)
+
+      if (!command) {
         return
       }
 
-      const sanitizedName = (payload.name || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64)
-      if (!sanitizedName) return
-
-      const slots = Object.entries(payload.params || {})
-        .map(([k, v]) => {
-          // Sanitize key (allowlist) and value (strip control chars) before
-          // building the slash command — both reach the composer verbatim.
-          const cleanKey = String(k || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64)
-          if (!cleanKey) return ""
-          const cleanVal = String(v || "").replace(/[\r\n\x00-\x1f]/g, "")
-          const sval = /\s/.test(cleanVal) ? `"${cleanVal.replace(/"/g, '\\"')}"` : cleanVal
-
-          return `${cleanKey}=${sval}`
-        })
-        .filter(Boolean)
-        .join(' ')
-
-      const command = `/blueprint ${sanitizedName}${slots ? ' ' + slots : ''}`
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })

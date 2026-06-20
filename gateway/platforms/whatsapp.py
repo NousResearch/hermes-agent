@@ -27,9 +27,41 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_node_bin(name: str = "node") -> Optional[str]:
+    """Resolve node/npm preferring Hermes-managed installs over system PATH.
+
+    On Windows, Hermes installs its own Node/npm under
+    ``%LOCALAPPDATA%\\hermes\\node\\``.  If that exists, prefer it over
+    the system PATH copy to avoid broken, stale, or incompatible system
+    installs from silently breaking WhatsApp bridge startup.
+    """
+    hermes_home = get_hermes_home()
+    if _IS_WINDOWS:
+        # Hermes-managed Node on Windows: node.exe, npm.cmd, npx.cmd
+        hermes_node_dir = hermes_home / "node"
+        if hermes_node_dir.is_dir():
+            ext = ".cmd" if name != "node" else ".exe"
+            candidate = hermes_node_dir / f"{name}{ext}"
+            if candidate.is_file():
+                return str(candidate)
+            # Also try without extension (PATHEXT fallback)
+            candidate_no_ext = hermes_node_dir / name
+            if candidate_no_ext.is_file():
+                return str(candidate_no_ext)
+    else:
+        # POSIX: Hermes-managed Node under $HERMES_HOME/node/bin/
+        hermes_bin = hermes_home / "node" / "bin"
+        if hermes_bin.is_dir():
+            candidate = hermes_bin / name
+            if candidate.is_file():
+                return str(candidate)
+    # Fall back to system PATH
+    return shutil.which(name)
 
 
 def _kill_port_process(port: int) -> None:
@@ -212,10 +244,9 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
-    # (node.exe vs node) and get a meaningful "not installed" signal
-    # instead of spawning a cmd flash on Windows.
-    _node = shutil.which("node")
+    # Check for Node.js.  Prefer Hermes-managed Node over system PATH
+    # to avoid broken/stale system installs on Windows.
+    _node = _resolve_node_bin("node")
     if not _node:
         return False
     try:
@@ -404,10 +435,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     _deps_fresh = False
             if not _deps_fresh:
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-                # Resolve npm path so Windows can execute the .cmd shim.
-                # shutil.which honours PATHEXT; on POSIX it returns the
-                # plain executable path.
-                _npm_bin = shutil.which("npm") or "npm"
+                # Resolve npm path — prefer Hermes-managed npm to avoid
+                # broken/stale system PATH npm on Windows.
+                _npm_bin = _resolve_node_bin("npm") or "npm"
                 try:
                     # Read timeout from environment variable, default to 300 seconds (5 minutes)
                     # to accommodate slower systems like Unraid NAS
@@ -506,9 +536,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
+            # Resolve node binary — prefer Hermes-managed Node over
+            # system PATH to avoid broken/stale installs on Windows.
+            _bridge_node = _resolve_node_bin("node") or "node"
+
             self._bridge_process = subprocess.Popen(
                 [
-                    "node",
+                    _bridge_node,
                     str(bridge_path),
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),

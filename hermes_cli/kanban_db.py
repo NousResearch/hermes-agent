@@ -1149,6 +1149,86 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 
 # ---------------------------------------------------------------------------
+# SCHEMA_SQL column introspection (keeps the legacy-DB migration in sync)
+# ---------------------------------------------------------------------------
+
+# Table-level constraint keywords. A line inside ``CREATE TABLE`` that starts
+# with one of these is a constraint clause, NOT a column definition, and must
+# be excluded from the parsed column map.
+_TABLE_CONSTRAINT_KEYWORDS = (
+    "primary key",
+    "foreign key",
+    "unique",
+    "check",
+    "constraint",
+)
+
+
+def _parse_schema_columns(table: str, schema_sql: str = SCHEMA_SQL) -> "dict[str, str]":
+    """Parse ``CREATE TABLE <table>`` from SCHEMA_SQL into name -> column DDL.
+
+    Why: the legacy-DB migration historically hard-coded one ``ALTER TABLE``
+    per optional column, and any SCHEMA_SQL column forgotten in that list
+    silently broke legacy boards (5 incidents: claim_lock, claim_expires,
+    started_at, workspace_kind, workspace_path). Deriving the authoritative
+    column set directly from SCHEMA_SQL means no future column can be
+    forgotten — the generic reconcile picks it up automatically and the
+    drift-guard test fails loudly if the parse and SCHEMA_SQL disagree.
+    What: returns an ordered ``{column_name: "<name> <type/constraints>"}``
+    map for the named table, with SQL ``--`` comments stripped and
+    table-level constraint clauses (PRIMARY KEY (...), etc.) excluded. The
+    value is the exact DDL fragment usable as ``ALTER TABLE ADD COLUMN <ddl>``.
+    Test: ``_parse_schema_columns("tasks")`` includes ``started_at`` ->
+    "started_at INTEGER" and ``workspace_kind`` ->
+    "workspace_kind TEXT NOT NULL DEFAULT 'scratch'", and excludes ``id``'s
+    PRIMARY KEY from being treated as a separate constraint row.
+    """
+    # Isolate the body between the table's CREATE TABLE ... ( and its matching
+    # closing ");". SCHEMA_SQL has no nested parens at table scope, so the
+    # first ");" after the opening paren terminates the table body.
+    pattern = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?" + re.escape(table) + r"\s*\((.*?)\n\)\s*;",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(schema_sql)
+    if not match:
+        raise ValueError(f"table {table!r} not found in SCHEMA_SQL")
+    body = match.group(1)
+
+    columns: "dict[str, str]" = {}
+    for raw_line in body.splitlines():
+        # Strip trailing ``--`` comments and surrounding whitespace.
+        line = raw_line.split("--", 1)[0].strip().rstrip(",").strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(lowered.startswith(kw) for kw in _TABLE_CONSTRAINT_KEYWORDS):
+            continue
+        name = line.split(None, 1)[0]
+        # Defensive: a bare keyword line with no following type is not a column.
+        if " " not in line:
+            continue
+        columns[name] = line
+    return columns
+
+
+def _is_not_null_without_default(column_ddl: str) -> bool:
+    """Return True when a column DDL is NOT NULL but declares no DEFAULT.
+
+    Why: SQLite ``ALTER TABLE ADD COLUMN`` rejects a NOT NULL column that has
+    no DEFAULT (it can't backfill existing rows). The generic reconcile must
+    skip such a column rather than crash. None currently exist in the
+    optional set (``workspace_kind`` carries ``DEFAULT 'scratch'``), but this
+    guards against a future SCHEMA_SQL change introducing one.
+    What: case-insensitive check for ``NOT NULL`` present and ``DEFAULT`` absent.
+    Test: True for "x INTEGER NOT NULL"; False for
+    "workspace_kind TEXT NOT NULL DEFAULT 'scratch'" and "y TEXT".
+    """
+    lowered = column_ddl.lower()
+    return "not null" in lowered and "default" not in lowered
+
+
+# ---------------------------------------------------------------------------
 # Connection helpers
 # ---------------------------------------------------------------------------
 
@@ -1781,22 +1861,37 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
 
-    # ``claim_lock`` / ``claim_expires`` live in SCHEMA_SQL's CREATE TABLE for
-    # fresh DBs but were never added to this additive-migration list. Boards
-    # created before these columns existed therefore lack them, and the
-    # one-shot backfill SELECT below references both — so on a legacy/drifted
-    # board the dispatcher tick crashed with
-    # ``sqlite3.OperationalError: no such column: claim_lock`` (issue: legacy
-    # boards never self-heal). Add them here with the EXACT types from
-    # SCHEMA_SQL (``claim_lock TEXT`` / ``claim_expires INTEGER``) using the
-    # same presence-checked, race-tolerant pattern as every other optional
-    # column, then re-snapshot ``cols`` so the backfill SELECT sees them.
-    if "claim_lock" not in cols:
-        _add_column_if_missing(conn, "tasks", "claim_lock", "claim_lock TEXT")
-    if "claim_expires" not in cols:
-        _add_column_if_missing(
-            conn, "tasks", "claim_expires", "claim_expires INTEGER"
-        )
+    # Generic SCHEMA_SQL reconcile (the durable fix). The hand-maintained
+    # ALTER list above repeatedly drifted from SCHEMA_SQL's CREATE TABLE: a
+    # column added to SCHEMA_SQL for fresh DBs but forgotten here left legacy
+    # boards without it, and the one-shot backfill SELECT below (which reads
+    # claim_lock, claim_expires, started_at, ...) then crashed the dispatcher
+    # tick with ``sqlite3.OperationalError: no such column: <col>``. This bit
+    # 5 times (claim_lock, claim_expires, started_at, workspace_kind,
+    # workspace_path). Instead of chasing each column by hand, derive the
+    # authoritative column set straight from SCHEMA_SQL and ADD whatever the
+    # live table is missing, using the EXACT type/default SCHEMA_SQL declares.
+    # This runs BEFORE the backfill SELECT so every column it references
+    # exists. ``_add_column_if_missing`` is presence-checked and
+    # race-tolerant; we still gate on the live snapshot to avoid needless
+    # ALTERs. A column that is NOT NULL without a DEFAULT cannot be added by
+    # SQLite ALTER TABLE, so we skip+warn rather than crash (none exist in the
+    # set today — workspace_kind carries DEFAULT 'scratch' — but this guards
+    # future drift).
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    for name, ddl in _parse_schema_columns("tasks").items():
+        if name in cols:
+            continue
+        if _is_not_null_without_default(ddl):
+            _log.warning(
+                "kanban: SCHEMA_SQL column %r is NOT NULL without a DEFAULT and "
+                "cannot be added to a legacy 'tasks' table via ALTER TABLE; "
+                "skipping (DDL: %s)",
+                name,
+                ddl,
+            )
+            continue
+        _add_column_if_missing(conn, "tasks", name, ddl)
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
 
     # One-shot backfill: any task that is 'running' before runs existed

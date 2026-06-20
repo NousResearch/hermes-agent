@@ -321,14 +321,16 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+        self._include_history = extra.get("include_history", True)
+        self._history_limit = extra.get("history_limit", 50)
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
-        # Map chat_id (sender email) -> last subject + message-id for threading
-        self._thread_context: Dict[str, Dict[str, str]] = {}
+        # Map chat_id (sender email) -> last subject + message-id + conversation history
+        self._thread_context: Dict[str, Dict[str, Any]] = {}
 
         logger.info("[Email] Adapter initialized for %s", self._address)
 
@@ -582,11 +584,15 @@ class EmailAdapter(BasePlatformAdapter):
                 # only classification that surfaces both.
                 msg_type = MessageType.DOCUMENT
 
-        # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
-            "subject": subject,
-            "message_id": msg_data["message_id"],
-        }
+        # Store thread context for reply threading and conversation history
+        ctx = self._thread_context.setdefault(sender_addr, {"history": []})
+        ctx["subject"] = subject
+        ctx["message_id"] = msg_data["message_id"]
+        if self._include_history:
+            ctx["history"].append({"from": msg_data["sender_name"] or sender_addr, "body": body})
+            # Cap history to prevent unbounded growth
+            if len(ctx["history"]) > self._history_limit:
+                ctx["history"] = ctx["history"][-self._history_limit:]
 
         source = self.build_source(
             chat_id=sender_addr,
@@ -655,7 +661,21 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        # Build body with conversation history if enabled
+        history = ctx.get("history", [])
+        if self._include_history and history:
+            # Build a quoted-history block (skip the very last item if it's the
+            # same as the current reply — we append after sending)
+            quoted_lines = ["\n--- previous messages ---\n"]
+            for entry in history:
+                quoted_lines.append(f"\n{entry['from']} wrote:\n")
+                for line in entry["body"].splitlines():
+                    quoted_lines.append(f"> {line}")
+            email_body = body + "\n".join(quoted_lines)
+        else:
+            email_body = body
+
+        msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
         smtp = self._connect_smtp()
         try:
@@ -666,6 +686,12 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.quit()
             except Exception:
                 smtp.close()
+
+        # Record my reply in the thread history
+        if self._include_history:
+            ctx.setdefault("history", []).append({"from": self._address, "body": body})
+            if len(ctx["history"]) > self._history_limit:
+                ctx["history"] = ctx["history"][-self._history_limit:]
 
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id

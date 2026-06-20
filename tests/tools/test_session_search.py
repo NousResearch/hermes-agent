@@ -246,6 +246,42 @@ class TestRoleFilter:
             assert result["results"][0]["matched_role"] == "tool"
 
 
+
+
+class TestCompactionHygiene:
+    def test_discovery_hides_context_compaction_messages(self, db):
+        db.create_session("s_compacted", source="cli")
+        db.append_message(
+            "s_compacted",
+            role="assistant",
+            content="[CONTEXT COMPACTION — REFERENCE ONLY] secret needle summary",
+        )
+        db.append_message("s_compacted", role="user", content="ordinary needle request")
+
+        result = json.loads(session_search(query="needle", limit=5, db=db))
+
+        payload = json.dumps(result, ensure_ascii=False)
+        assert "CONTEXT COMPACTION" not in payload
+        assert "ordinary needle request" in payload
+
+    def test_scroll_hides_context_compaction_messages(self, db):
+        db.create_session("s_scroll", source="cli")
+        db.append_message(
+            "s_scroll",
+            role="assistant",
+            content="[CONTEXT COMPACTION — REFERENCE ONLY] hidden handoff",
+        )
+        anchor_id = db.append_message("s_scroll", role="user", content="visible anchor")
+
+        result = json.loads(session_search(session_id="s_scroll", around_message_id=anchor_id, window=2, db=db))
+
+        assert result["success"] is True
+        payload = json.dumps(result, ensure_ascii=False)
+        assert "CONTEXT COMPACTION" not in payload
+        assert "hidden handoff" not in payload
+        assert "visible anchor" in payload
+
+
 # =========================================================================
 # Scroll shape (session_id + around_message_id)
 # =========================================================================

@@ -912,6 +912,35 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
 
+
+    def test_denylist_blocks_builtin_memory_files_in_active_profile(self, tmp_path, monkeypatch):
+        """MEMORY.md/USER.md are profile-private state, never outbound documents."""
+        self._patch_roots(monkeypatch)
+
+        profile_home = tmp_path / "home" / ".hermes" / "profiles" / "booksignal"
+        profile_home.mkdir(parents=True)
+        memory_file = profile_home / "MEMORY.md"
+        user_file = profile_home / "USER.md"
+        memory_file.write_text("private agent memory")
+        user_file.write_text("private user profile")
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", profile_home)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(memory_file)) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(str(user_file)) is None
+
+    def test_denylist_blocks_memory_store_directory(self, tmp_path, monkeypatch):
+        """Deep memory stores under the profile are also private state."""
+        self._patch_roots(monkeypatch)
+
+        profile_home = tmp_path / "home" / ".hermes" / "profiles" / "booksignal"
+        memories_dir = profile_home / "memories"
+        memories_dir.mkdir(parents=True)
+        fact_db = memories_dir / "facts.json"
+        fact_db.write_text('{"private": true}')
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", profile_home)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(fact_db)) is None
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is

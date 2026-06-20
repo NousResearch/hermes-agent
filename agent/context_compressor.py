@@ -2386,26 +2386,17 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
 
         _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"}:
-            summary_role = "user"
-        else:
-            summary_role = "assistant"
-        # If the chosen role collides with the tail AND flipping wouldn't
-        # collide with the head, flip it.
-        if summary_role == first_tail_role:
-            flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
-                summary_role = flipped
-            else:
-                # Both roles would create consecutive same-role messages
-                # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
+        # Context handoffs are internal instructions for the *next* model. Never
+        # serialize them as assistant-role turns: assistant messages are the
+        # same channel that gateways persist/deliver as user-visible output, so
+        # a compaction handoff there can leak into transcripts or messaging
+        # adapters. Prefer a user-role handoff with explicit reference-only
+        # framing; if the protected tail already starts with a user message,
+        # merge the handoff into that user turn to avoid adjacent user messages.
+        summary_role = "user"
+        if first_tail_role == "user":
+            _merge_summary_into_tail = True
 
         # When the summary lands as a standalone role="user" message,
         # weak models read the verbatim "## Active Task" quote of a past

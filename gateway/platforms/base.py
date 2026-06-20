@@ -971,6 +971,14 @@ def _media_delivery_denied_paths() -> List[Path]:
         denied.append(hermes_root / "auth.json")
         denied.append(hermes_root / "credentials")
         denied.append(hermes_root / "config.yaml")
+        # Built-in and plugin memory stores are profile-private state. They may
+        # be Markdown/JSON and therefore look like ordinary deliverables, but a
+        # model-emitted MEDIA: tag or bare path must never upload them to a
+        # messaging platform. Cache roots under the profile remain allowlisted
+        # above before the denylist is applied.
+        denied.append(hermes_root / "MEMORY.md")
+        denied.append(hermes_root / "USER.md")
+        denied.append(hermes_root / "memories")
     return denied
 
 

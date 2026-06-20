@@ -33,6 +33,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+from agent.context_compressor import ContextCompressor
+
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
 # delegate subagent runs are tagged "subagent" — neither belongs in the
@@ -85,6 +87,22 @@ def _resolve_to_parent(db, session_id: str) -> str:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
     return cur
+
+
+def _is_compaction_handoff_message(m: Dict[str, Any]) -> bool:
+    """Return True for internal context-compression handoff turns.
+
+    These are implementation details injected into the model context, not user
+    transcript. They must not be surfaced by session_search discovery/scroll or
+    they can be mistaken for fresh user-visible chat content.
+    """
+    try:
+        if ContextCompressor._is_context_summary_content(m.get("content")):
+            return True
+    except Exception:
+        pass
+    content = m.get("content")
+    return isinstance(content, str) and content.lstrip().startswith("[CONTEXT COMPACTION")
 
 
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
@@ -324,7 +342,7 @@ def _scroll(
         logging.error("get_messages_around failed: %s", e, exc_info=True)
         return tool_error(f"failed to load messages: {e}", success=False)
 
-    messages = view.get("window") or []
+    messages = [m for m in (view.get("window") or []) if not _is_compaction_handoff_message(m)]
 
     # Lineage rebind: caller may have paired a parent session_id with a
     # message id that lives in a descendant (compaction / delegation creates
@@ -433,6 +451,8 @@ def _discover(
     seen_sessions = {}
     for r in raw_results:
         raw_sid = r["session_id"]
+        if _is_compaction_handoff_message(r):
+            continue
         resolved_sid = _resolve_to_parent(db, raw_sid)
         # Skip the current session lineage
         if current_lineage_root and resolved_sid == current_lineage_root:
@@ -472,9 +492,21 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_start": [
+                _shape_message(m)
+                for m in (view.get("bookend_start") or [])
+                if not _is_compaction_handoff_message(m)
+            ],
+            "messages": [
+                _shape_message(m, anchor_id=msg_id)
+                for m in (view.get("window") or [])
+                if not _is_compaction_handoff_message(m)
+            ],
+            "bookend_end": [
+                _shape_message(m)
+                for m in (view.get("bookend_end") or [])
+                if not _is_compaction_handoff_message(m)
+            ],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }

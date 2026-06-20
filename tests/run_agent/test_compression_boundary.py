@@ -196,3 +196,27 @@ class TestCompressionToolResultPreservation:
             if msg.get("role") == "tool":
                 assert msg["content"] != "[Result from earlier conversation — see context summary above]", \
                     f"Stub result found for {msg.get('tool_call_id')} — real result was lost"
+
+
+class TestSummaryRoleSafety:
+    def test_compression_summary_is_never_inserted_as_assistant_turn(self):
+        comp = _make_compressor(protect_first_n=2, protect_last_n=1)
+        comp._generate_summary = lambda *_args, **_kwargs: "compressed handoff"
+        comp._find_tail_cut_by_tokens = lambda messages, head_end, token_budget=None: len(messages) - 1
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "head user"},
+            {"role": "assistant", "content": "middle assistant 1"},
+            {"role": "user", "content": "middle user 1"},
+            {"role": "assistant", "content": "middle assistant 2"},
+            {"role": "user", "content": "middle user 2"},
+            {"role": "assistant", "content": "middle assistant 3"},
+            {"role": "assistant", "content": "tail assistant"},
+        ]
+
+        compressed = comp.compress(messages, current_tokens=7000, force=True)
+
+        summary_msgs = [m for m in compressed if "compressed handoff" in str(m.get("content"))]
+        assert summary_msgs, compressed
+        assert all(m.get("role") != "assistant" for m in summary_msgs)

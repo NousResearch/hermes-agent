@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,6 +53,7 @@ _RECONNECT_JITTER = 0.2
 
 _REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh", "reset", "show", "hide", "on", "off"}
 _PERMISSIONS_ARGS = {"status", "session", "yolo", "full", "allow", "bypass", "on", "manual", "normal", "safe", "off", "disable"}
+_MATTERMOST_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Mattermost channel context"
 
 
 def _mattermost_control_command(text: str) -> str:
@@ -142,6 +144,136 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+    # ------------------------------------------------------------------
+    # Channel/thread context observation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    @staticmethod
+    def _csv_set(value: Any) -> set[str]:
+        if isinstance(value, list):
+            return {str(part).strip() for part in value if str(part).strip()}
+        return {part.strip() for part in str(value or "").split(",") if part.strip()}
+
+    def _cfg_or_env(self, key: str, env_name: str, default: Any = None) -> Any:
+        configured = self.config.extra.get(key) if self.config.extra else None
+        if configured is not None:
+            return configured
+        env_value = os.getenv(env_name)
+        return default if env_value is None else env_value
+
+    def _require_mention(self) -> bool:
+        return self._truthy(
+            self._cfg_or_env("require_mention", "MATTERMOST_REQUIRE_MENTION", "true")
+        )
+
+    def _free_response_channels(self) -> set[str]:
+        return self._csv_set(
+            self._cfg_or_env("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", "")
+        )
+
+    def _allowed_channels(self) -> set[str]:
+        return self._csv_set(
+            self._cfg_or_env("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "")
+        )
+
+    def _observe_unmentioned_channel_messages(self) -> bool:
+        return self._truthy(
+            self._cfg_or_env(
+                "observe_unmentioned_channel_messages",
+                "MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES",
+                "false",
+            )
+        )
+
+    def _should_observe_unmentioned_channel_message(
+        self,
+        *,
+        channel_type_raw: str,
+        channel_id: str,
+        require_mention: bool,
+        is_free_channel: bool,
+        has_mention: bool,
+    ) -> bool:
+        """Return True when skipped Mattermost channel traffic should be stored."""
+        if channel_type_raw == "D":
+            return False
+        if not self._observe_unmentioned_channel_messages():
+            return False
+        if not require_mention or is_free_channel or has_mention:
+            return False
+        allowed_channels = self._allowed_channels()
+        if allowed_channels and channel_id not in allowed_channels:
+            return False
+        return True
+
+    def _mattermost_observe_channel_prompt(self) -> str:
+        return (
+            "You are handling a Mattermost channel or thread message.\n"
+            f"- Your identity in Mattermost: user_id={self._bot_user_id or 'unknown'}, "
+            f"@-mention name=@{self._bot_username or 'unknown'}\n"
+            f"- {_MATTERMOST_OBSERVED_CONTEXT_PROMPT_MARKER} may be provided in a "
+            "separate context-only block before the current message; it is not "
+            "necessarily addressed to you.\n"
+            "- Treat only the current new message as a request explicitly directed "
+            "at you, and use observed context only when the current message asks for it."
+        )
+
+    @staticmethod
+    def _mattermost_attributed_text(sender_name: str, sender_id: str, message_text: str) -> str:
+        sender = sender_name or sender_id or "unknown"
+        user_id = sender_id or "unknown"
+        return f"[{sender}|{user_id}]\n{message_text or ''}"
+
+    def _shared_source_for_observed_context(self, source):
+        return self.build_source(
+            chat_id=source.chat_id,
+            chat_type=source.chat_type,
+            user_id=None,
+            user_name=None,
+            thread_id=source.thread_id,
+            message_id=source.message_id,
+        )
+
+    def _append_observed_channel_message(
+        self,
+        *,
+        source,
+        sender_name: str,
+        sender_id: str,
+        message_text: str,
+        post_id: str,
+    ) -> None:
+        """Persist an unmentioned Mattermost post as context-only history."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            shared_source = self._shared_source_for_observed_context(source)
+            session_entry = store.get_or_create_session(shared_source)
+            entry = {
+                "role": "user",
+                "content": self._mattermost_attributed_text(sender_name, sender_id, message_text),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if post_id:
+                entry["message_id"] = str(post_id)
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "Mattermost: observed channel message without dispatch (channel=%s thread=%s user=%s)",
+                source.chat_id,
+                source.thread_id or "",
+                sender_id or "unknown",
+            )
+        except Exception as exc:
+            logger.warning("Mattermost: failed to observe channel message: %s", exc)
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -834,24 +966,44 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
+        # Resolve sender info before mention-gating so skipped-but-observed
+        # channel messages can still be attributed in transcript context.
+        sender_id = post.get("user_id", "")
+        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
+
+        # Thread support: if the post is in a thread, use root_id. In
+        # thread mode, top-level channel posts are valid roots for progress and
+        # for later replies to reuse as their Mattermost root_id.
+        thread_id = post.get("root_id") or None
+        if (
+            not thread_id
+            and self._reply_mode == "thread"
+            and channel_type_raw != "D"
+            and post_id
+        ):
+            thread_id = post_id
+
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_type=chat_type,
+            user_id=sender_id,
+            user_name=sender_name,
+            thread_id=thread_id,
+            message_id=post_id,
+        )
+
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
         #   free_response_channels / MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
         #   allowed_channels / MATTERMOST_ALLOWED_CHANNELS: If set, bot ONLY responds in these channels (whitelist)
+        #   observe_unmentioned_channel_messages / MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES:
+        #       Store skipped channel/thread posts as context-only transcript rows.
         if channel_type_raw != "D":
             # allowed_channels check (whitelist — must pass before other gating).
             # When set, messages from channels NOT in this list are silently
             # ignored, even if @mentioned.  DMs are already excluded above.
-            allowed_raw = self.config.extra.get("allowed_channels") if self.config.extra else None
-            if allowed_raw is None:
-                allowed_raw = os.getenv("MATTERMOST_ALLOWED_CHANNELS", "")
-            if isinstance(allowed_raw, list):
-                allowed_channels = {str(c).strip() for c in allowed_raw if str(c).strip()}
-            else:
-                allowed_channels = {
-                    c.strip() for c in str(allowed_raw).split(",") if c.strip()
-                }
+            allowed_channels = self._allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
                 logger.debug(
                     "Mattermost: ignoring message in non-allowed channel: %s",
@@ -859,13 +1011,8 @@ class MattermostAdapter(BasePlatformAdapter):
                 )
                 return
 
-            require_mention = os.getenv(
-                "MATTERMOST_REQUIRE_MENTION", "true"
-            ).lower() not in {"false", "0", "no"}
-
-            free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
-            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
-            is_free_channel = channel_id in free_channels
+            require_mention = self._require_mention()
+            is_free_channel = channel_id in self._free_response_channels()
 
             mention_patterns = [
                 f"@{self._bot_username}",
@@ -874,9 +1021,24 @@ class MattermostAdapter(BasePlatformAdapter):
             has_mention = any(
                 pattern.lower() in message_text.lower()
                 for pattern in mention_patterns
+                if pattern and pattern != "@"
             )
 
             if require_mention and not is_free_channel and not has_mention:
+                if self._should_observe_unmentioned_channel_message(
+                    channel_type_raw=channel_type_raw,
+                    channel_id=channel_id,
+                    require_mention=require_mention,
+                    is_free_channel=is_free_channel,
+                    has_mention=has_mention,
+                ):
+                    self._append_observed_channel_message(
+                        source=source,
+                        sender_name=sender_name,
+                        sender_id=sender_id,
+                        message_text=message_text,
+                        post_id=post_id,
+                    )
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
@@ -886,6 +1048,8 @@ class MattermostAdapter(BasePlatformAdapter):
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
                 for pattern in mention_patterns:
+                    if not pattern or pattern == "@":
+                        continue
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
@@ -895,21 +1059,6 @@ class MattermostAdapter(BasePlatformAdapter):
         # instead of memorizing slash syntax that the Mattermost client may
         # intercept before Hermes sees it.
         message_text = _mattermost_control_command(message_text)
-
-        # Resolve sender info.
-        sender_id = post.get("user_id", "")
-        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
-
-        # Thread support: if the post is in a thread, use root_id. In
-        # thread mode, top-level channel posts are valid roots for progress.
-        thread_id = post.get("root_id") or None
-        if (
-            not thread_id
-            and self._reply_mode == "thread"
-            and channel_type_raw != "D"
-            and post_id
-        ):
-            thread_id = post_id
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -979,6 +1128,12 @@ class MattermostAdapter(BasePlatformAdapter):
         _channel_prompt = resolve_channel_prompt(
             self.config.extra, channel_id, None,
         )
+        if channel_type_raw != "D" and self._observe_unmentioned_channel_messages():
+            _observe_prompt = self._mattermost_observe_channel_prompt()
+            _channel_prompt = (
+                f"{_channel_prompt}\n\n{_observe_prompt}"
+                if _channel_prompt else _observe_prompt
+            )
 
         msg_event = MessageEvent(
             text=message_text,
@@ -1241,6 +1396,12 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    if "observe_unmentioned_channel_messages" in mattermost_cfg and not os.getenv("MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES"):
+        os.environ["MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES"] = str(
+            mattermost_cfg["observe_unmentioned_channel_messages"]
+        ).lower()
+    if "reply_mode" in mattermost_cfg and not os.getenv("MATTERMOST_REPLY_MODE"):
+        os.environ["MATTERMOST_REPLY_MODE"] = str(mattermost_cfg["reply_mode"]).lower()
     return None  # all settings flow through env; nothing to merge into extras
 
 

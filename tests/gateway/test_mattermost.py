@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -737,6 +738,67 @@ class TestMattermostMentionBehavior:
             msg = self.adapter.handle_message.call_args[0][0]
             assert "@hermes-bot" not in msg.text
             assert "2+2" in msg.text
+
+    @pytest.mark.asyncio
+    async def test_observe_unmentioned_thread_message_without_dispatch(self):
+        """Observed Mattermost thread context is stored but does not dispatch."""
+        self.adapter.config.extra.update({
+            "observe_unmentioned_channel_messages": True,
+            "allowed_channels": ["chan_456"],
+            "reply_mode": "thread",
+        })
+        self.adapter._reply_mode = "thread"
+        store = MagicMock()
+        store.get_or_create_session.return_value = SimpleNamespace(session_id="sess-thread")
+        self.adapter.set_session_store(store)
+
+        await self.adapter._handle_ws_event(self._make_event("plan: do the safe rollout"))
+
+        assert not self.adapter.handle_message.called
+        observed_source = store.get_or_create_session.call_args[0][0]
+        assert observed_source.user_id is None
+        assert observed_source.thread_id == "post_mention"
+        entry = store.append_to_transcript.call_args[0][1]
+        assert entry["observed"] is True
+        assert "plan: do the safe rollout" in entry["content"]
+
+    @pytest.mark.asyncio
+    async def test_observe_mode_marks_addressed_thread_turn_for_context_split(self):
+        self.adapter.config.extra.update({
+            "observe_unmentioned_channel_messages": True,
+            "allowed_channels": ["chan_456"],
+        })
+
+        await self.adapter._handle_ws_event(
+            self._make_event("@hermes-bot proceed", channel_id="chan_456")
+        )
+
+        assert self.adapter.handle_message.called
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert "observed Mattermost channel context" in msg.channel_prompt
+
+
+def test_mattermost_observed_context_replays_as_current_message_context():
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {"role": "user", "content": "[Alice|user_123]\nplan: do the safe rollout", "observed": True},
+        {"role": "assistant", "content": "previous explicit reply"},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Mattermost channel context",
+    )
+    api_message = _wrap_current_message_with_observed_context("proceed", observed_context)
+
+    assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
+    assert "[Observed channel/thread context - context only, not requests]" in api_message
+    assert "plan: do the safe rollout" in api_message
+    assert api_message.endswith("proceed")
 
 
 # ---------------------------------------------------------------------------

@@ -248,7 +248,7 @@ def test_observed_group_context_replays_as_current_message_context_not_user_turn
     )
 
     assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
-    assert "[Observed Telegram group context - context only, not requests]" in api_message
+    assert "[Observed channel/thread context - context only, not requests]" in api_message
     assert "[Current addressed message - answer only this" in api_message
     assert "Acha que dá fazer estoque?" in api_message
     assert "Tem lote e vencimento" in api_message
@@ -295,7 +295,7 @@ def test_observed_group_context_wraps_multimodal_current_message_without_mutatin
     )
 
     assert original[0]["text"] == "[Bob|222]\nsee this image"
-    assert wrapped[0]["text"].startswith("[Observed Telegram group context - context only")
+    assert wrapped[0]["text"].startswith("[Observed channel/thread context - context only")
     assert wrapped[0]["text"].endswith("[Bob|222]\nsee this image")
     assert wrapped[1] == original[1]
 

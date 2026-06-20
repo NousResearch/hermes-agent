@@ -225,9 +225,33 @@ To find a channel ID in Mattermost: open the channel, click the channel name hea
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
+## Observing channel/thread context without auto-replying
+
+For control-room workflows, configure Mattermost so Hermes can **remember ordinary channel/thread posts** but only **responds when directly triggered**:
+
+```yaml
+mattermost:
+  require_mention: true
+  observe_unmentioned_channel_messages: true
+  reply_mode: thread
+  allowed_channels:
+    - "abc123def456ghi789jkl012mno"   # #ops
+```
+
+With this mode enabled, unmentioned messages in allowed Mattermost channels are appended to the channel/thread session transcript as observed context, but they do **not** dispatch the agent. A later `@bot proceed`, reply, or command in that same channel/thread can use that observed context. Observed rows are tagged with `[sender|user_id]` and wrapped as context-only input so the model does not treat old channel chatter as a new request.
+
+Equivalent environment variables:
+
+```bash
+MATTERMOST_REQUIRE_MENTION=true
+MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES=true
+MATTERMOST_REPLY_MODE=thread
+MATTERMOST_ALLOWED_CHANNELS="abc123def456ghi789jkl012mno"
+```
+
 ## Channel allowlist (`allowed_channels`)
 
-Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`.
+Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`. The same allowlist gates observed unmentioned context when `observe_unmentioned_channel_messages` is enabled.
 
 **DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message.
 

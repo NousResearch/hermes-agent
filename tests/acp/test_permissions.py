@@ -76,9 +76,12 @@ class TestApprovalBridge:
         assert tool_call.tool_call_id.startswith("perm-check-")
         assert tool_call.kind == "execute"
         assert tool_call.status == "pending"
-        assert "dangerous command" in tool_call.title
+        assert "Approve command" in tool_call.title
         assert "rm -rf /" in tool_call.title
         content_text = tool_call.content[0].content.text
+        assert "What I’m asking to do" in content_text
+        assert "Why permission is required" in content_text
+        assert "Risk:" in content_text
         assert "$ rm -rf /" in content_text
         assert "dangerous command" in content_text
         assert tool_call.raw_input == {

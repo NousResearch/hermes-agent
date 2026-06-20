@@ -12,7 +12,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult, _RETRYABLE_ERROR_PATTERNS
-from gateway.platforms.base import Platform, PlatformConfig
+from gateway.platforms.base import Platform, PlatformConfig, _retry_after_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +46,26 @@ class _StubAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"name": "test", "type": "direct", "chat_id": chat_id}
+
+
+# ---------------------------------------------------------------------------
+# Retry-after parsing
+# ---------------------------------------------------------------------------
+
+class TestRetryAfterSeconds:
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            ("Flood control exceeded. Retry in 32 seconds", 32.0),
+            ("Retry after 4", 4.0),
+            ("flood_control:29.5", 29.5),
+        ],
+    )
+    def test_extracts_platform_retry_after(self, error, expected):
+        assert _retry_after_seconds(error) == expected
+
+    def test_returns_none_without_retry_after(self):
+        assert _retry_after_seconds("httpx.ConnectError: refused") is None
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +208,26 @@ class TestSendWithRetryNetworkRetry:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
         assert result.success
+        assert len(adapter._send_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_honors_platform_retry_after_before_retrying(self):
+        """Flood-control errors must wait the server-advised window, not generic 2s backoff."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="Flood control exceeded. Retry in 32 seconds",
+                retryable=True,
+            ),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert result.success
+        sleep_args = mock_sleep.await_args
+        assert sleep_args is not None
+        assert sleep_args.args[0] >= 32
         assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio

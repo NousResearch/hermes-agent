@@ -96,6 +96,25 @@ async def test_edit_overflow_split_reports_partial_failure_when_continuation_fai
 
 
 @pytest.mark.asyncio
+async def test_edit_overflow_split_returns_retryable_flood_control_for_first_chunk(telegram_adapter):
+    """First-chunk flood control should be retried later, not logged as a hard adapter error."""
+    content = "word " * 120
+    telegram_adapter._bot.edit_message_text = AsyncMock(
+        side_effect=RuntimeError("Flood control exceeded. Retry in 32 seconds")
+    )
+    telegram_adapter._bot.send_message = AsyncMock()
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=False, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert result.retryable is True
+    assert result.error == "flood_control:32.0"
+    telegram_adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     """A partial overflow edit enters fallback instead of marking final delivered."""
     adapter = MagicMock()

@@ -397,6 +397,17 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
+    def load_persisted_history(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return the durable raw transcript for an ACP session."""
+        db = self._get_db()
+        if db is None:
+            return []
+        try:
+            return db.get_messages_as_conversation(session_id)
+        except Exception:
+            logger.warning("Failed to load persisted ACP history for %s", session_id, exc_info=True)
+            return []
+
     # ---- persistence via SessionDB ------------------------------------------
 
     def _get_db(self):

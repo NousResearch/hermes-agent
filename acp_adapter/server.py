@@ -103,6 +103,57 @@ _TEXT_RESOURCE_MIME_TYPES = {
 }
 
 
+def _merge_resumed_acp_result_messages(
+    *,
+    raw_history: list[dict[str, Any]],
+    model_history: list[dict[str, Any]],
+    result_messages: Any,
+) -> Any:
+    """Preserve raw restored ACP transcript rows when saving a resumed turn."""
+    raw_prefix = list(raw_history)
+    if not isinstance(result_messages, list):
+        logger.debug(
+            "ACP resumed result did not return message history; "
+            "preserving raw restored history"
+        )
+        return raw_prefix
+
+    if len(result_messages) >= len(model_history):
+        return raw_prefix + result_messages[len(model_history) :]
+
+    logger.debug(
+        "ACP resumed result is shorter than the model-history prefix; "
+        "preserving raw restored history without guessing a turn delta"
+    )
+    return raw_prefix
+
+
+def _resumed_acp_history_for_save(
+    *,
+    session_manager: SessionManager,
+    session_id: str,
+    raw_history: list[dict[str, Any]],
+    model_history: list[dict[str, Any]],
+    result_messages: Any,
+) -> list[dict[str, Any]]:
+    persisted_history = session_manager.load_persisted_history(session_id)
+    if (
+        len(persisted_history) > len(raw_history)
+        and persisted_history[: len(raw_history)] == raw_history
+    ):
+        return persisted_history
+    merged_history = _merge_resumed_acp_result_messages(
+        raw_history=raw_history,
+        model_history=model_history,
+        result_messages=result_messages,
+    )
+    if merged_history != raw_history:
+        return merged_history
+    if persisted_history[: len(raw_history)] == raw_history:
+        return persisted_history
+    return merged_history
+
+
 def _resource_display_name(uri: str, name: str | None = None, title: str | None = None) -> str:
     """Human-readable attachment name for prompt context."""
     raw_name = (name or "").strip()
@@ -1503,8 +1554,10 @@ class HermesACPAgent(acp.Agent):
             os.environ["HERMES_SESSION_ID"] = session_id
             try:
                 conversation_history = state.history
+                raw_resume_history = None
                 if getattr(state, "resumed_from_storage", False):
                     from agent.resume_history import sanitize_resumed_conversation_history
+                    raw_resume_history = list(state.history)
                     conversation_history = sanitize_resumed_conversation_history(state.history)
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1512,10 +1565,31 @@ class HermesACPAgent(acp.Agent):
                     task_id=session_id,
                     persist_user_message=user_text or "[Image attachment]",
                 )
+                if raw_resume_history is not None and isinstance(result, dict):
+                    result = dict(result)
+                    result["messages"] = _resumed_acp_history_for_save(
+                        session_manager=self.session_manager,
+                        session_id=session_id,
+                        raw_history=raw_resume_history,
+                        model_history=conversation_history,
+                        result_messages=result.get("messages"),
+                    )
                 state.resumed_from_storage = False
                 return result
             except Exception as e:
                 logger.exception("Agent error in session %s", session_id)
+                if raw_resume_history is not None:
+                    state.resumed_from_storage = False
+                    return {
+                        "final_response": f"Error: {e}",
+                        "messages": _resumed_acp_history_for_save(
+                            session_manager=self.session_manager,
+                            session_id=session_id,
+                            raw_history=raw_resume_history,
+                            model_history=conversation_history,
+                            result_messages=None,
+                        ),
+                    }
                 return {"final_response": f"Error: {e}", "messages": state.history}
             finally:
                 # Restore HERMES_INTERACTIVE.

@@ -36,7 +36,11 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import (
+    HermesACPAgent,
+    HERMES_VERSION,
+    _merge_resumed_acp_result_messages,
+)
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -1073,6 +1077,216 @@ class TestPrompt:
         await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
         assert state.history == expected_history
+
+    @pytest.mark.asyncio
+    async def test_resumed_prompt_preserves_raw_acp_history_when_saving(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+
+        def make_agent():
+            return SimpleNamespace(
+                model="test-model",
+                provider=None,
+                base_url=None,
+                api_mode=None,
+            )
+
+        manager = SessionManager(agent_factory=make_agent, db=db)
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/work")
+        raw_history = [
+            {
+                "role": "user",
+                "content": "show skill",
+                "message_id": "client-msg-1",
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "PRIVATE_REASONING",
+                "tool_calls": [
+                    {
+                        "id": "call_skill_view",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": '{"name":"secret"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_skill_view",
+                "tool_name": "skill_view",
+                "content": "RAW_TOOL_OUTPUT\nDEBUG_INSTRUCTION",
+            },
+            {"role": "assistant", "content": "Visible answer"},
+        ]
+        state.history = list(raw_history)
+        manager.save_session(state.session_id)
+
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        restored = manager.get_session(state.session_id)
+        assert restored is not None
+        assert restored.resumed_from_storage is True
+
+        captured_model_history = {}
+
+        def run_conversation(*, user_message, conversation_history, **kwargs):
+            captured_model_history["value"] = conversation_history
+            sanitized_result = conversation_history + [
+                {"role": "user", "content": "next prompt"},
+                {"role": "assistant", "content": "next answer"},
+            ]
+            # Simulate the agent's in-turn crash-resilience persistence writing
+            # the model-facing projection before the ACP wrapper performs its
+            # final save.
+            db.replace_messages(state.session_id, sanitized_result)
+            return {
+                "final_response": "next answer",
+                "messages": sanitized_result,
+            }
+
+        restored.agent.run_conversation = MagicMock(side_effect=run_conversation)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        acp_agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="next prompt")]
+        await acp_agent.prompt(prompt=prompt, session_id=state.session_id)
+
+        assert captured_model_history["value"] == [
+            {"role": "user", "content": "show skill"},
+            {"role": "assistant", "content": "Visible answer"},
+        ]
+
+        persisted = db.get_messages_as_conversation(state.session_id)
+        assert persisted == raw_history + [
+            {"role": "user", "content": "next prompt"},
+            {"role": "assistant", "content": "next answer"},
+        ]
+        serialized = repr(persisted)
+        assert "client-msg-1" in serialized
+        assert "PRIVATE_REASONING" in serialized
+        assert "skill_view" in serialized
+        assert "tool_call_id" in serialized
+        assert "call_skill_view" in serialized
+        assert "RAW_TOOL_OUTPUT" in serialized
+        assert "DEBUG_INSTRUCTION" in serialized
+
+    def test_resumed_acp_merge_splices_by_model_history_length(self):
+        raw_history = [
+            {"role": "user", "content": "raw", "message_id": "client-msg-1"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "function": {"name": "skill_view"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "raw tool"},
+        ]
+        model_history = [{"role": "user", "content": "raw"}]
+        result_messages = [
+            {"role": "user", "content": "raw normalized"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": "answer"},
+        ]
+
+        merged = _merge_resumed_acp_result_messages(
+            raw_history=raw_history,
+            model_history=model_history,
+            result_messages=result_messages,
+        )
+
+        assert merged == raw_history + result_messages[len(model_history) :]
+        assert {"role": "user", "content": "raw normalized"} not in merged
+
+    def test_resumed_acp_merge_preserves_raw_history_when_delta_is_unaligned(self):
+        raw_history = [
+            {"role": "user", "content": "raw", "message_id": "client-msg-1"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "raw tool"},
+        ]
+        model_history = [
+            {"role": "user", "content": "raw"},
+            {"role": "assistant", "content": "visible"},
+        ]
+        result_messages = [{"role": "assistant", "content": "compressed summary"}]
+
+        merged = _merge_resumed_acp_result_messages(
+            raw_history=raw_history,
+            model_history=model_history,
+            result_messages=result_messages,
+        )
+
+        assert merged == raw_history
+        assert {"role": "assistant", "content": "compressed summary"} not in merged
+
+    @pytest.mark.asyncio
+    async def test_resumed_prompt_exception_preserves_persisted_raw_history(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+
+        def make_agent():
+            return SimpleNamespace(
+                model="test-model",
+                provider=None,
+                base_url=None,
+                api_mode=None,
+            )
+
+        manager = SessionManager(agent_factory=make_agent, db=db)
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/work")
+        raw_history = [
+            {"role": "user", "content": "show skill", "message_id": "client-msg-1"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "PRIVATE_REASONING",
+                "tool_calls": [{"id": "call_skill_view", "function": {"name": "skill_view"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_skill_view",
+                "tool_name": "skill_view",
+                "content": "RAW_TOOL_OUTPUT",
+            },
+        ]
+        state.history = list(raw_history)
+        manager.save_session(state.session_id)
+
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        restored = manager.get_session(state.session_id)
+        assert restored is not None
+
+        def run_conversation(*, user_message, conversation_history, **kwargs):
+            db.replace_messages(
+                state.session_id,
+                raw_history + [{"role": "user", "content": "next prompt"}],
+            )
+            raise RuntimeError("boom")
+
+        restored.agent.run_conversation = MagicMock(side_effect=run_conversation)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        acp_agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="next prompt")]
+        response = await acp_agent.prompt(prompt=prompt, session_id=state.session_id)
+
+        assert response.stop_reason == "end_turn"
+        persisted = db.get_messages_as_conversation(state.session_id)
+        assert persisted == raw_history + [{"role": "user", "content": "next prompt"}]
+        serialized = repr(persisted)
+        assert "client-msg-1" in serialized
+        assert "PRIVATE_REASONING" in serialized
+        assert "skill_view" in serialized
+        assert "call_skill_view" in serialized
+        assert "RAW_TOOL_OUTPUT" in serialized
 
     @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):

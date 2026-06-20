@@ -1,5 +1,6 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -878,3 +879,57 @@ def test_update_node_dependencies_uses_private_hermes_npm_when_path_has_none(
 
     assert [call[0] for call in calls] == [str(npm), str(npm)]
     assert [call[1] for call in calls] == [project, project]
+
+
+def test_update_node_dependencies_keeps_user_node_first_when_using_user_npm(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import main as hm
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+
+    user_bin = tmp_path / "user" / "bin"
+    user_bin.mkdir(parents=True)
+    user_node = user_bin / "node"
+    user_node.write_text("#!/bin/sh\nprintf 'v24.0.0\\n'\n", encoding="utf-8")
+    user_node.chmod(0o755)
+    user_npm = user_bin / "npm"
+    user_npm.write_text("#!/bin/sh\n", encoding="utf-8")
+    user_npm.chmod(0o755)
+
+    hermes_home = tmp_path / ".hermes"
+    private_bin = hermes_home / "node" / "bin"
+    private_bin.mkdir(parents=True)
+    private_node = private_bin / "node"
+    private_node.write_text("#!/bin/sh\nprintf 'v22.12.0\\n'\n", encoding="utf-8")
+    private_node.chmod(0o755)
+    private_npm = private_bin / "npm"
+    private_npm.write_text("#!/bin/sh\n", encoding="utf-8")
+    private_npm.chmod(0o755)
+
+    calls = []
+
+    def fake_run_npm(npm_path, cwd, *, extra_args=(), capture_output=False, env=None):
+        calls.append((npm_path, Path(cwd), tuple(extra_args), capture_output, env))
+        return subprocess.CompletedProcess([npm_path], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(hm, "PROJECT_ROOT", project)
+    monkeypatch.setenv("PATH", str(user_bin))
+    monkeypatch.setattr(
+        hm.shutil,
+        "which",
+        lambda name: str(user_bin / name) if name in {"node", "npm"} else None,
+    )
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(hm, "_run_npm_install_deterministic", fake_run_npm)
+    monkeypatch.setattr(hm, "_nixos_build_env", lambda: {"PATH": str(user_bin)})
+
+    hm._update_node_dependencies()
+
+    assert [call[0] for call in calls] == [str(user_npm), str(user_npm)]
+    for call in calls:
+        env_path = call[4]["PATH"].split(os.pathsep)
+        assert env_path[0] == str(user_bin)
+        assert str(private_bin) not in env_path[:1]

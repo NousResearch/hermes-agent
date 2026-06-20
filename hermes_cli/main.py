@@ -7672,21 +7672,26 @@ def _cleanup_legacy_node_symlinks() -> Path:
     return hermes_home
 
 
-def _resolve_update_npm() -> str | None:
-    from hermes_cli.node_runtime import private_hermes_npm_path
+def _resolve_update_npm() -> tuple[str | None, bool]:
+    from hermes_cli.node_runtime import (
+        node_satisfies_hermes_floor,
+        private_hermes_npm_path,
+    )
 
     hermes_home = _cleanup_legacy_node_symlinks()
     npm = shutil.which("npm")
     if npm:
-        return npm
+        node = shutil.which("node")
+        use_hermes_node_path = not (node and node_satisfies_hermes_floor(node))
+        return npm, use_hermes_node_path
     private_npm = private_hermes_npm_path(hermes_home)
-    return str(private_npm) if private_npm else None
+    return (str(private_npm), True) if private_npm else (None, False)
 
 
 def _update_node_dependencies() -> None:
     from hermes_constants import with_hermes_node_path
 
-    npm = _resolve_update_npm()
+    npm, use_hermes_node_path = _resolve_update_npm()
     if not npm:
         return
 
@@ -7703,7 +7708,9 @@ def _update_node_dependencies() -> None:
     print("→ Updating Node.js dependencies...")
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
 
-    nixos_env = with_hermes_node_path(_nixos_build_env())
+    nixos_env = _nixos_build_env()
+    if use_hermes_node_path:
+        nixos_env = with_hermes_node_path(nixos_env)
 
     # Step 1: root install (no workspace recursion).
     root_args = [*extra_args, "--workspaces=false"]

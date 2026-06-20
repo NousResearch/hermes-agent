@@ -101,15 +101,17 @@ _nb_remove_legacy_node_links() {
     done
 }
 
-_nb_node_major() {
-    local v
-    v=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
-    [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
-}
-
 _nb_have_modern_node() {
     command -v node >/dev/null 2>&1 || return 1
-    [ "$(_nb_node_major)" -ge "$HERMES_NODE_MIN_VERSION" ]
+    local ver major minor
+    ver=$(node --version 2>/dev/null | sed 's/^v//')
+    major="${ver%%.*}"
+    minor="${ver#*.}"; minor="${minor%%.*}"
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    [[ "$minor" =~ ^[0-9]+$ ]] || minor=0
+    if [ "$major" -eq 20 ] && [ "$minor" -ge 19 ]; then return 0; fi
+    if [ "$major" -eq 22 ] && [ "$minor" -ge 12 ]; then return 0; fi
+    [ "$major" -gt 22 ]
 }
 
 # ---------------------------------------------------------------------------

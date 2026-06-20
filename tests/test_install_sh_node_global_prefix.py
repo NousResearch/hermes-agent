@@ -8,12 +8,21 @@ land in ``$HERMES_HOME/node/bin``: private to Hermes, but still visible to
 Hermes subprocess PATH construction and dependency detection.
 """
 
+import os
+import subprocess
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 NODE_BOOTSTRAP = REPO_ROOT / "scripts" / "lib" / "node-bootstrap.sh"
+
+
+def _write_executable(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 def test_install_sh_keeps_bundled_npm_global_prefix_inside_hermes_home() -> None:
@@ -81,3 +90,33 @@ def test_node_bootstrap_keeps_version_manager_and_bundled_cascade() -> None:
     assert "_nb_try_termux_pkg" in ensure_node_body
     assert "_nb_try_brew" in ensure_node_body
     assert "_nb_install_bundled_node" in ensure_node_body
+
+
+def test_node_bootstrap_version_floor_matches_desktop_build_floor(tmp_path) -> None:
+    cases = [
+        ("v20.18.9", False),
+        ("v20.19.0", True),
+        ("v22.11.0", False),
+        ("v22.12.0", True),
+        ("v24.0.0", True),
+    ]
+
+    for version, expected in cases:
+        bin_dir = tmp_path / version / "bin"
+        _write_executable(bin_dir / "node", f"#!/bin/sh\nprintf '{version}\\n'\n")
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "HOME": str(tmp_path / "home"),
+            "HERMES_HOME": str(tmp_path / "home" / ".hermes"),
+        }
+
+        result = subprocess.run(
+            ["bash", "-c", f'source "{NODE_BOOTSTRAP}"; _nb_have_modern_node'],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert (result.returncode == 0) is expected, version

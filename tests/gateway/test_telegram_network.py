@@ -1,4 +1,4 @@
-"""Tests for gateway.platforms.telegram_network – fallback transport layer.
+"""Tests for plugins.platforms.telegram.telegram_network – fallback transport layer.
 
 Background
 ----------
@@ -18,7 +18,7 @@ fallback IPs in order, then "stick" to whichever IP works.
 import httpx
 import pytest
 
-from gateway.platforms import telegram_network as tnet
+import plugins.platforms.telegram.telegram_network as tnet
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +438,7 @@ class TestAdapterFallbackIps:
                 sys.modules.setdefault(name, mod)
 
         from gateway.config import PlatformConfig
-        from gateway.platforms.telegram import TelegramAdapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
 
         config = PlatformConfig(enabled=True, token="test-token")
         if extra:

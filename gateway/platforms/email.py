@@ -485,7 +485,14 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    # Use BODY.PEEK[] instead of RFC822 so polling does NOT
+                    # implicitly mark incoming messages as \Seen server-side
+                    # (per RFC 3501 §6.4.5 — any BODY[...] fetch that is not
+                    # PEEK flips the \Seen flag). Same raw bytes returned;
+                    # only the side effect differs. Without PEEK, every poll
+                    # silently "reads" the user's inbox before they open it
+                    # in their mail client.
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
                     if status != "OK":
                         continue
 

@@ -957,6 +957,51 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(results[0]["sender_addr"], "john@test.com")
         self.assertEqual(results[0]["sender_name"], "John Doe")
 
+    def test_fetch_uses_peek_to_preserve_unread_state(self):
+        """Fetch must use BODY.PEEK[] (not RFC822) so polling does not
+        silently mark incoming messages as \\Seen server-side.
+
+        Per RFC 3501 §6.4.5, any BODY[...] fetch that is not PEEK
+        implicitly sets the \\Seen flag. RFC822 is a synonym for BODY[]
+        and has the same side effect. Using BODY.PEEK[] returns the same
+        raw bytes without touching the flag, so the user's mail client
+        still sees them as unread until the user actually opens them.
+        """
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        fetch_specs = []
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                fetch_specs.append(args)
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        self.assertEqual(len(fetch_specs), 1, "Expected exactly one fetch call")
+        # fetch args: (uid, fetch_spec)
+        fetch_spec = fetch_specs[0][1]
+        self.assertEqual(
+            fetch_spec, "(BODY.PEEK[])",
+            f"Fetch spec must be (BODY.PEEK[]) to avoid \\Seen side effect, got {fetch_spec!r}",
+        )
+        self.assertNotIn(
+            "RFC822", fetch_spec,
+            "RFC822 marks messages as \\Seen — use BODY.PEEK[] instead",
+        )
+
 
 class TestPollLoop(unittest.TestCase):
     """Test the async polling loop."""

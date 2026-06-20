@@ -4147,6 +4147,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
+    "minimax-cn",
     "nous",
 )
 
@@ -4195,6 +4196,8 @@ def _resolve_strict_vision_backend(
         return resolve_provider_client("copilot", model, is_vision=True)
     if provider == "openrouter":
         return _try_openrouter(model=model)
+    if provider == "minimax-cn":
+        return resolve_provider_client("minimax-cn", model, is_vision=True)
     if provider == "nous":
         return _try_nous(vision=True)
     if provider == "openai-codex":

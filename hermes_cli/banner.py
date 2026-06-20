@@ -192,6 +192,11 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _local_git_head(repo_dir: Path) -> Optional[str]:
+    """Return the current checkout HEAD for cache invalidation."""
+    return _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
@@ -297,19 +302,42 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check. The version guard matters for pip installs:
-    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
-    # changes VERSION but leaves rev unchanged (both None), and without this
-    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    repo_dir: Optional[Path] = None
+    repo_head: Optional[str] = None
+    if not embedded_rev:
+        # Prefer the running code's location over the profile-scoped path.
+        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+        # Path(__file__) always resolves to the actual installed checkout.
+        candidate_repo_dir = Path(__file__).parent.parent.resolve()
+        if not (candidate_repo_dir / ".git").exists():
+            candidate_repo_dir = hermes_home / "hermes-agent"
+        if (candidate_repo_dir / ".git").exists():
+            repo_dir = candidate_repo_dir
+            repo_head = _local_git_head(repo_dir)
+
+    # Read cache — invalidate if the embedded rev, installed version, or local
+    # checkout HEAD has changed since the last check. The version guard matters
+    # for pip installs: `check_via_pypi()` compares against VERSION, so a
+    # `pip install --upgrade` changes VERSION but leaves rev unchanged (both
+    # None), and without this the stale "behind" count would survive the
+    # upgrade for up to 6h. See #34491.
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
+            cache_fingerprint_matches = (
+                cached.get("rev") == embedded_rev
+                and cached.get("ver") == VERSION
+            )
+            if repo_dir is not None:
+                cache_fingerprint_matches = (
+                    cache_fingerprint_matches
+                    and repo_head is not None
+                    and cached.get("repo_head") == repo_head
+                )
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-                and cached.get("ver") == VERSION
+                and cache_fingerprint_matches
             ):
                 return cached.get("behind")
     except Exception:
@@ -317,22 +345,16 @@ def check_for_updates() -> Optional[int]:
 
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
+    elif repo_dir is None:
+        behind = check_via_pypi()
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            behind = check_via_pypi()
-        else:
-            behind = _check_via_local_git(repo_dir)
+        behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
-        )
+        payload = {"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}
+        if repo_head is not None:
+            payload["repo_head"] = repo_head
+        cache_file.write_text(json.dumps(payload))
     except Exception:
         pass
 

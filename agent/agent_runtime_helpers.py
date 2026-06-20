@@ -1059,6 +1059,10 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+        # Clear the fallback-announce dedupe so a LATER fallback episode (after
+        # this primary recovery) re-announces instead of being suppressed as a
+        # repeat of the prior transition (I5: once per episode, not once ever).
+        agent._last_fallback_announced = None
 
         # Re-sync auxiliary-routing globals back to the restored PRIMARY so a
         # post-recovery aux task (compression, etc.) routes to the primary

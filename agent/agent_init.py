@@ -991,6 +991,9 @@ def init_agent(
         agent._fallback_chain = []
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    # Tracks the last announced (old_model, new_model) fallback transition so a
+    # re-entrant fallback chain announces once per distinct transition (I5).
+    agent._last_fallback_announced = getattr(agent, "_last_fallback_announced", None)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     if agent._fallback_chain and not agent.quiet_mode:

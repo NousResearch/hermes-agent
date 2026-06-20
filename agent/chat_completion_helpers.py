@@ -1201,6 +1201,57 @@ def _primary_cooldown_seconds(error_context: Optional[Dict[str, Any]] = None) ->
     return max(default, min(seconds, 6 * 60 * 60))
 
 
+def _format_context_window(tokens: "int | None") -> str:
+    """Compact human label for a context window: 1M, 272K, 128K, etc."""
+    if not tokens or tokens <= 0:
+        return ""
+    if tokens >= 1_000_000:
+        whole = tokens / 1_000_000
+        return f"{whole:.0f}M" if whole == int(whole) else f"{whole:.1f}M"
+    if tokens >= 1_000:
+        return f"{tokens // 1000}K"
+    return str(tokens)
+
+
+def _emit_fallback_announce(
+    agent,
+    old_model: str,
+    new_model: str,
+    new_provider: str,
+    *,
+    old_window: "int | None" = None,
+    new_window: "int | None" = None,
+) -> None:
+    """Emit a single, always-visible chat status line when a model fallback
+    activates successfully.
+
+    Unlike ``_buffer_status`` (suppressed on successful recovery, flushed only on
+    a terminal turn failure), this routes through ``_emit_status`` so it reaches
+    the gateway ``status_callback`` (Discord/Telegram) AND the CLI every time —
+    closing the 2026-06-19 gap where an opus->gpt-5.5 fallback that *succeeded*
+    was invisible to the user.
+
+    De-duplicated on the ``(old_model, new_model)`` pair so a re-entrant fallback
+    chain that bounces to the same destination within a turn announces once
+    (Invariant I5). A no-op transition (``old_model == new_model``) is silent.
+    """
+    if not new_model or old_model == new_model:
+        return
+    transition = (old_model, new_model)
+    if getattr(agent, "_last_fallback_announced", None) == transition:
+        return
+    agent._last_fallback_announced = transition
+
+    msg = f"🔄 Model fallback: {old_model} → {new_model} ({new_provider})"
+    old_lbl = _format_context_window(old_window)
+    new_lbl = _format_context_window(new_window)
+    if old_lbl and new_lbl and old_lbl != new_lbl:
+        msg += f" · context window {old_lbl}→{new_lbl}"
+    emit = getattr(agent, "_emit_status", None)
+    if callable(emit):
+        emit(msg)
+
+
 def try_activate_fallback(
     agent,
     reason: "FailoverReason | None" = None,
@@ -1503,6 +1554,9 @@ def try_activate_fallback(
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
+            _old_ctx_window = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
             agent.context_compressor.update_model(
                 model=agent.model,
                 context_length=fb_context_length,
@@ -1520,6 +1574,24 @@ def try_activate_fallback(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
+        # Always-emitted, deduped fallback ANNOUNCE (separate from the
+        # suppress-on-recovery _buffer_status above, which only flushes on a
+        # TERMINAL turn failure — so a fallback that SUCCEEDS was invisible,
+        # the 2026-06-19 opus->gpt-5.5 case). This reaches the gateway
+        # status_callback (Discord/Telegram), not just the CLI, via _emit_status.
+        # Deduped on the (old->new) model pair so a re-entrant fallback chain
+        # that bounces to the same destination in one turn announces once (I5).
+        try:
+            _new_ctx_window = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
+            _emit_fallback_announce(
+                agent, old_model, fb_model, fb_provider,
+                old_window=locals().get("_old_ctx_window"),
+                new_window=_new_ctx_window,
+            )
+        except Exception:
+            logger.debug("fallback announce failed", exc_info=True)
         return True
     except Exception as e:
         logger.error("Failed to activate fallback %s: %s", fb_model, e)

@@ -1,18 +1,28 @@
-"""ByteRover memory plugin — MemoryProvider interface.
+"""ByteRover memory plugin — V4 build.
 
-Persistent memory via the ByteRover CLI (``brv``). Organizes knowledge into
-a hierarchical context tree with tiered retrieval (fuzzy text → LLM-driven
-search). Local-first with optional cloud sync.
+Replaces the cli-binary backend with ByteRover V4's bundled .mjs scripts
+(``recall.mjs``, ``record.mjs``, ``brv.mjs``).  No more ``brv curate``
+session protocol — record is one-shot via ``--html``.  Storage is
+resolved by ByteRover's space registry from the subprocess cwd; Hermes uses
+``$HERMES_HOME/byterover/`` as that workspace cwd, and the bound tree lives
+under ByteRover's data dir.
 
-Original PR #3499 by hieuntg81, adapted to MemoryProvider ABC.
+Per-question integration decisions (carried over from the planning round):
 
-Requires: ``brv`` CLI installed (npm install -g byterover-cli or
-curl -fsSL https://byterover.dev/install.sh | sh).
+- **Scripts location**: env override ``BYTEROVER_V4_SCRIPTS_DIR`` →
+  the Hermes-native skill install at ``$HERMES_HOME/skills/byterover/scripts/``.
+  (No ``.openclaw`` or dev-workspace fallback — Hermes ships its own copy.)
+- **System prompt block**: ships the current ByteRover skill curation rules
+  every turn, ported to Hermes' tool-call shape (calls ``brv_record`` instead
+  of shelling ``node record.mjs``).
+- **Tool name**: ``brv_record`` (not ``brv_curate``).  ByteRover V4's primitive is
+  ``record.mjs``; the tool name should be honest about it.
+- **Curation model**: agent-tool-driven only.  No ``on_pre_compress``,
+  ``sync_turn``, or ``on_memory_write`` auto-curation — those were always
+  guessing what to save from raw message text; the agent picks better when
+  it explicitly decides via the ``brv_record`` tool.
 
-Config via environment variables (profile-scoped via each profile's .env):
-  BRV_API_KEY   — ByteRover API key (for cloud features, optional for local)
-
-Working directory: $HERMES_HOME/byterover/ (profile-scoped context tree)
+External runtime dep: Node.js (any modern version) on ``PATH``.
 """
 
 from __future__ import annotations
@@ -22,363 +32,576 @@ import logging
 import os
 import shutil
 import subprocess
-import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
-from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# Timeouts
-_QUERY_TIMEOUT = 10   # brv query — should be fast
-_CURATE_TIMEOUT = 120  # brv curate — may involve LLM processing
-
-# Minimum lengths to filter noise
-_MIN_QUERY_LEN = 10
-_MIN_OUTPUT_LEN = 20
-
-
 # ---------------------------------------------------------------------------
-# brv binary resolution (cached, thread-safe)
+# Timeouts / thresholds
 # ---------------------------------------------------------------------------
 
-_brv_path_lock = threading.Lock()
-_cached_brv_path: Optional[str] = None
+_RECALL_TIMEOUT_S = 10
+_RECORD_TIMEOUT_S = 30
+_MIN_QUERY_LEN = 5
+_RECALL_LIMIT = 5
+
+# ---------------------------------------------------------------------------
+# Scripts dir resolution (cached)
+# ---------------------------------------------------------------------------
+
+def _hermes_scripts_dir() -> Path:
+    """Hermes-native skill install: ``$HERMES_HOME/skills/byterover/scripts``."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "skills" / "byterover" / "scripts"
 
 
-def _resolve_brv_path() -> Optional[str]:
-    """Find the brv binary on PATH or well-known install locations."""
-    global _cached_brv_path
-    with _brv_path_lock:
-        if _cached_brv_path is not None:
-            return _cached_brv_path if _cached_brv_path != "" else None
+def _resolve_scripts_dir() -> Optional[Path]:
+    """Locate the directory containing recall.mjs / record.mjs / brv.mjs.
 
-    found = shutil.which("brv")
-    if not found:
-        home = Path.home()
-        candidates = [
-            home / ".brv-cli" / "bin" / "brv",
-            Path("/usr/local/bin/brv"),
-            home / ".npm-global" / "bin" / "brv",
-        ]
-        for c in candidates:
-            if c.exists():
-                found = str(c)
-                break
-
-    with _brv_path_lock:
-        if _cached_brv_path is not None:
-            return _cached_brv_path if _cached_brv_path != "" else None
-        _cached_brv_path = found or ""
-    return found
+    Highest precedence: ``BYTEROVER_V4_SCRIPTS_DIR`` env var.  Otherwise the
+    Hermes-native skill install at ``$HERMES_HOME/skills/byterover/scripts`` —
+    no ``.openclaw`` or dev-workspace fallback.  Returns ``None`` if nothing
+    valid is found; the caller degrades gracefully (``is_available() == False``).
+    """
+    env = os.environ.get("BYTEROVER_V4_SCRIPTS_DIR", "").strip()
+    if env:
+        p = Path(env).expanduser()
+        if (p / "recall.mjs").is_file():
+            return p
+    p = _hermes_scripts_dir()
+    if (p / "recall.mjs").is_file():
+        return p
+    return None
 
 
-def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
-             cwd: str = None) -> dict:
-    """Run a brv CLI command. Returns {success, output, error}."""
-    brv_path = _resolve_brv_path()
-    if not brv_path:
-        return {"success": False, "error": "brv CLI not found. Install: npm install -g byterover-cli"}
-
-    cmd = [brv_path] + args
-    effective_cwd = cwd or str(_get_brv_cwd())
-    Path(effective_cwd).mkdir(parents=True, exist_ok=True)
-
-    env = os.environ.copy()
-    brv_bin_dir = str(Path(brv_path).parent)
-    env["PATH"] = brv_bin_dir + os.pathsep + env.get("PATH", "")
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=timeout, cwd=effective_cwd, env=env,
-            stdin=subprocess.DEVNULL,
-        )
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
-
-        if result.returncode == 0:
-            return {"success": True, "output": stdout}
-        return {"success": False, "error": stderr or stdout or f"brv exited {result.returncode}"}
-
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": f"brv timed out after {timeout}s"}
-    except FileNotFoundError:
-        global _cached_brv_path
-        with _brv_path_lock:
-            _cached_brv_path = None
-        return {"success": False, "error": "brv CLI not found"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+def _resolve_node() -> Optional[str]:
+    return shutil.which("node")
 
 
-def _get_brv_cwd() -> Path:
-    """Profile-scoped working directory for the brv context tree."""
+def _get_byterover_cwd() -> Path:
+    """Profile-scoped working directory for V4.
+
+    Hermes runs all V4 subprocesses from ``$HERMES_HOME/byterover/``.
+    ByteRover V4's ``resolveContextRoot`` maps that cwd through ByteRover's space
+    registry. The context tree itself lives under ByteRover's data dir; this
+    cwd is the stable Hermes workspace identity.
+    """
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "byterover"
 
 
+def _run_v4(
+    script_name: str,
+    args: List[str],
+    *,
+    timeout: int,
+    cwd: Path,
+) -> Dict[str, Any]:
+    """Invoke a V4 .mjs entry as a subprocess.
+
+    Best-effort throughout: any failure (missing node, missing script,
+    timeout, non-zero exit) collapses to ``{"success": False, "error": ...}``
+    so the caller can degrade rather than crash the agent loop.
+
+    Returns ``{"success": True, "output": <stdout-stripped>}`` on a clean
+    exit.  Callers that expect JSON envelopes from the .mjs script (recall,
+    record) should still parse ``output`` themselves.
+    """
+    scripts_dir = _resolve_scripts_dir()
+    if scripts_dir is None:
+        return {
+            "success": False,
+            "error": (
+                "ByteRover V4 scripts not found; install the byterover skill "
+                "at $HERMES_HOME/skills/byterover/scripts/ "
+                "(or set BYTEROVER_V4_SCRIPTS_DIR)"
+            ),
+        }
+    node = _resolve_node()
+    if not node:
+        return {"success": False, "error": "node not on PATH"}
+
+    script = scripts_dir / script_name
+    if not script.is_file():
+        return {"success": False, "error": f"{script} not found"}
+
+    cwd.mkdir(parents=True, exist_ok=True)
+    cmd = [node, str(script), *args]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": f"V4 {script_name} timed out after {timeout}s"}
+    except Exception as exc:  # noqa: BLE001 — defensive at the subprocess boundary
+        return {"success": False, "error": f"V4 {script_name}: {exc}"}
+
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return {"success": False, "error": err or f"V4 {script_name} exited {result.returncode}"}
+
+    return {"success": True, "output": (result.stdout or "").strip()}
+
+
 # ---------------------------------------------------------------------------
-# Tool schemas
+# Tool schema — single tool: brv_record
 # ---------------------------------------------------------------------------
 
-QUERY_SCHEMA = {
-    "name": "brv_query",
+RECORD_SCHEMA: Dict[str, Any] = {
+    "name": "brv_record",
     "description": (
-        "Search ByteRover's persistent knowledge tree for relevant context. "
-        "Returns memories, project knowledge, architectural decisions, and "
-        "patterns from previous sessions. Use for any question where past "
-        "context would help."
+        "Save knowledge to ByteRover as a structured <bv-topic> HTML "
+        "document. Use for decisions, rules, bug+fix pairs, conventions, "
+        "non-obvious gotchas, or facts the user asks you to remember. The "
+        "system prompt's <byterover-curate-guidance> block lists the full "
+        "<bv-*> vocabulary and the structural rules every topic must "
+        "follow. The agent authors the HTML; this tool just persists it."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "What to search for."},
+            "path": {
+                "type": "string",
+                "description": (
+                    "Topic path, slash-separated snake_case (e.g. "
+                    "'security/auth'). Do NOT include '.html' — the writer "
+                    "appends it. Must match the <bv-topic path=\"...\"> "
+                    "attribute on the HTML you pass."
+                ),
+            },
+            "html": {
+                "type": "string",
+                "description": (
+                    "One bare <bv-topic>...</bv-topic> HTML document. No "
+                    "code fences, no markdown wrapper, no <!doctype> / "
+                    "<html> / <body>. See the curate guidance for required "
+                    "attributes and the 19-element vocabulary."
+                ),
+            },
+            "overwrite": {
+                "type": "boolean",
+                "description": (
+                    "Replace an existing topic at this path. Default false. "
+                    "Set to true ONLY after reading the existing topic and "
+                    "merging its facts into the new HTML — overwriting "
+                    "without merging loses prior knowledge."
+                ),
+            },
         },
-        "required": ["query"],
+        "required": ["path", "html"],
     },
 }
 
-CURATE_SCHEMA = {
-    "name": "brv_curate",
-    "description": (
-        "Store important information in ByteRover's persistent knowledge tree. "
-        "Use for architectural decisions, bug fixes, user preferences, project "
-        "patterns — anything worth remembering across sessions. ByteRover's LLM "
-        "automatically categorizes and organizes the memory."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "content": {"type": "string", "description": "The information to remember."},
-        },
-        "required": ["content"],
-    },
-}
 
-STATUS_SCHEMA = {
-    "name": "brv_status",
-    "description": "Check ByteRover status — CLI version, context tree stats, cloud sync state.",
-    "parameters": {"type": "object", "properties": {}, "required": []},
+# ---------------------------------------------------------------------------
+# Curate guidance template (Hermes-flavored tool-call shape)
+# ---------------------------------------------------------------------------
+
+# Substitution sentinels (no f-strings — the body contains literal { } from
+# JSON / code examples and f-string brace-escaping would be unreadable).
+_RECORD_SCRIPT_SENTINEL = "@@RECORD_SCRIPT@@"
+_BRV_SCRIPT_SENTINEL = "@@BRV_SCRIPT@@"
+
+_GUIDANCE_TEMPLATE = """<byterover-curate-guidance>
+# IRON LAW — read and obey
+
+You are talking to a user inside Hermes. ByteRover is the user's durable
+memory across all Hermes sessions. Two rules govern every substantive turn:
+
+1. **USE the retrieved context** when a `<byterover-context>` block is
+   present above (injected by the recall step before this turn started).
+   Cite the topic path when your answer relies on it. Do not contradict a
+   retrieved `<bv-rule severity="must">` without explicitly flagging it.
+
+2. **CURATE new knowledge** at the END of your turn, before the final
+   reply, whenever your work this turn produced any of these:
+     - A decision the team / user should remember (e.g. "we use OAuth 2.0
+       with PKCE")
+     - A rule or convention worth pinning ("never log full JWTs")
+     - A bug root cause + the fix that resolved it
+     - A non-obvious gotcha, constraint, or pattern
+     - A fact the user explicitly asked you to save
+
+   You curate by calling the `brv_record` tool (NOT by running shell
+   commands). This is NOT optional for substantive turns — the user
+   expects ByteRover to learn from this conversation; that only happens
+   if you save now.
+
+## When to SKIP curation
+
+- The answer was a one-word reply, a greeting, or a clarifying question.
+- The retrieved context already covered everything; you added no new fact.
+- The user explicitly said "don't record this" or equivalent.
+
+If any of those apply, do not curate. Otherwise: curate.
+
+# HOW to curate — call the brv_record tool
+
+The tool takes two required args (`path`, `html`) and an optional
+`overwrite` flag. Author one bare `<bv-topic>...</bv-topic>` HTML document
+per topic and pass it as the `html` arg.
+
+```json
+{
+  "name": "brv_record",
+  "arguments": {
+    "path": "security/auth",
+    "html": "<bv-topic path=\\"security/auth\\" title=\\"Login flow\\" summary=\\"How users authenticate\\" keywords=\\"oauth,session,tokens\\" tags=\\"auth,security\\"><bv-reason>Authentication decisions affect credential custody and token handling across clients.</bv-reason><bv-task>End-user authentication design.</bv-task><bv-decision id=\\"d-oauth\\">Use OAuth 2.0 with PKCE.</bv-decision><bv-rule severity=\\"must\\">Tokens MUST be short-lived; refresh is handled by the gateway, not the client.</bv-rule><bv-fact subject=\\"auth_provider\\" category=\\"project\\" value=\\"OAuth 2.0 with PKCE\\" disclosure=\\"public\\">Production uses OAuth 2.0 with PKCE.</bv-fact></bv-topic>"
+  }
 }
+```
+
+# The full <bv-*> vocabulary — 19 elements, pick the right tag
+
+Topics are HTML built from a closed set of 19 structured element types.
+The engine indexes, ranks, and surfaces knowledge **by element type** —
+putting a rule inside `<bv-fact>` or a decision inside `<bv-highlights>`
+makes it unfindable. Use the element that matches the *kind* of knowledge.
+
+**The most common anti-pattern: stuffing everything into `<bv-highlights>`
+`<li>` items.** That produces flat topics with no structural index. Use
+the specialized elements below instead.
+
+## Container
+
+| Element | Purpose |
+|---|---|
+| `<bv-topic>` | The root container — exactly one per file. Carries path, title, summary, keywords, tags, related. |
+
+## Decisions and rules
+
+| Element | Attributes | When |
+|---|---|---|
+| `<bv-decision id="d-...">` | `id` kebab-case | A discrete decision the team / user made. Pair with `<bv-reason>`. Body = one sentence, the decision. |
+| `<bv-reason>` | none | The WHY behind a decision. 1-2 sentences. A decision without a reason rots fast. |
+| `<bv-rule severity="must|should|may" id="r-...">` | `severity` (RFC 2119), `id` | Binding rule. Body = verbatim rule text. |
+
+## Facts (structured, queryable)
+
+| Element | Attributes | When |
+|---|---|---|
+| `<bv-fact subject="snake_case_subject" category="..." value="extracted-form">` | `subject`, `category`, `value` | One discrete fact per element. `category` ∈ {`convention`, `preference`, `project`, `environment`, `team`, `personal`, `other`}. Body = canonical natural-language statement (NOT a label — the statement itself). |
+
+## Action items
+
+| Element | When |
+|---|---|
+| `<bv-task>` | The scoping element. "What this topic is about", one sentence. Almost every topic has one. |
+| `<bv-changes>` | Things that changed in this work. `<li>change</li>` per item. |
+
+## Bugs and fixes
+
+| Element | Attributes | When |
+|---|---|---|
+| `<bv-bug severity="low|medium|high|critical" id="b-...">` | `severity`, `id` | Bug record. Body = symptom + root cause. |
+| `<bv-fix id="f-...">` | `id` | Fix for a bug. Body = ordered list of steps. |
+
+## Patterns
+
+| Element | Attributes | When |
+|---|---|---|
+| `<bv-pattern id="p-...">` | `id` | A reusable pattern (e.g. retry-with-backoff). Body = pattern description + when to apply. |
+
+## Structure and process
+
+| Element | When |
+|---|---|
+| `<bv-flow>` | A process or sequence of steps. Body = natural-language description or numbered list. |
+| `<bv-structure>` | Architecture / system shape / hierarchy. Body = `<h3>` + `<ul>` / `<ol>`. |
+| `<bv-dependencies>` | Dependency relationships. `<li>dep</li>` per item. |
+| `<bv-highlights>` | Key takeaways AT A GLANCE — use SPARINGLY. If you have 5+ `<li>` items, ask yourself if they should be structured `<bv-fact>` / `<bv-rule>` instead. |
+
+## References and metadata
+
+| Element | When |
+|---|---|
+| `<bv-files>` | Source files this topic touches / references. `<li>src/path/to/file.ts</li>` per file. |
+| `<bv-timestamp>` | Reference date (ISO 8601). Use when the topic captures a point-in-time fact. |
+| `<bv-author>` | Person who authored / decided. Optional. |
+
+## Illustrative content
+
+| Element | Attributes | When |
+|---|---|---|
+| `<bv-examples>` | none | Worked examples, code snippets. Wrap code in `<pre><code>...</code></pre>`. |
+| `<bv-diagram type="mermaid|plantuml|ascii|dot|graphviz|other">` | `type` | Verbatim diagram source. Body = the diagram text exactly as given. |
+
+# Required structure (every topic you record)
+
+1. A `<bv-reason>` explaining the WHY of this curation. Missing this is the
+   most common authoring failure.
+2. A scoping element: `<bv-task>` (or `<h1>` + intro paragraph).
+3. At least one structural element beyond the task from:
+   `<bv-decision>`, `<bv-bug>`, `<bv-fix>`, `<bv-changes>`, `<bv-files>`,
+   `<bv-flow>`, `<bv-structure>`, `<bv-dependencies>`, `<bv-highlights>`,
+   `<bv-pattern>`, `<bv-examples>`, `<bv-diagram>`.
+4. `<bv-timestamp>` in ISO 8601 if the content has a reference date.
+5. One `<bv-fact subject="snake_case" category="..." value="...">canonical
+   statement</bv-fact>` for each discrete queryable fact.
+
+A topic containing ONLY `<bv-fact>` siblings is a placeholder. Same goes
+for ONLY `<bv-highlights><li>...</li></bv-highlights>` — that's flat, not
+structured.
+
+# <bv-topic> attributes
+
+## Required
+- `path` — slash-separated snake_case (e.g. `security/auth`). NO `.html`.
+  Must match the `path` arg you pass to `brv_record`.
+- `title` — human-readable short title.
+
+## Recommended
+- `summary` — one-line semantic summary. Drives the retrieval snippet.
+- `keywords` — CSV of retrieval terms; drives BM25 search ranking.
+- `tags` — CSV of categories.
+- `related` — CSV of cross-references: `"@security/cookies.html"` for file
+  targets, `"@ops"` for domain targets.
+
+## NEVER author these (system-managed; writer rejects them)
+
+`createdat`, `updatedat`, `id`, `importance`, `maturity`, `recency`.
+
+# Output contract (hard rules)
+
+- All attribute values are double-quoted strings, not single-quoted.
+- All attribute names are lowercase.
+- Path segments are snake_case with underscores between words:
+  `security/oauth_pkce`, NOT `security/oauth-pkce`.
+- `related=` uses `@path.html` for file targets and `@path` for folder/domain
+  targets. The `@` prefix is required.
+- The `html` argument is bare HTML: first character `<`, last characters
+  `</bv-topic>`. No code fence wrapper.
+- Do not invent custom elements outside the 19-element `<bv-*>` vocabulary, or
+  attributes outside each element's documented schema.
+
+# Sensitivity — mark facts you intend to share
+
+A topic can be shared at three views: full, redacted, and metadata. Mark a fact
+you intend to share with `disclosure="public"`; otherwise the fact defaults to
+restricted and is stripped from the redacted view.
+
+- `<bv-fact>` is the sole unit of per-item restriction.
+- Topic `title` and prose text inside `<bv-structure>`, `<bv-flow>`,
+  `<bv-highlights>`, etc. are public-by-contract; never put secrets there.
+- Absent or misspelled `disclosure` is treated as restricted.
+- `<bv-topic visibility>` does NOT make facts public; redaction consults each
+  fact's own `disclosure` attribute.
+
+# Record form used by Hermes
+
+ByteRover V4 supports a simple CLI record form (`--title --body`) and the rich form
+(`--html`). Hermes exposes only the rich form through `brv_record`, so always
+author the full `<bv-topic>...</bv-topic>` HTML yourself.
+
+# Preservation (when the user gave you primary-source material)
+
+- Exact rules → `<bv-rule severity="must|should">` verbatim.
+- Code snippets → `<pre><code>` inside `<bv-examples>`.
+- Diagrams → `<bv-diagram type="...">` verbatim.
+- Dates → resolve relative ("last Thursday") to absolute when possible.
+
+# Path-exists collision
+
+If `brv_record` returns `ok: false` with an "already exists" error:
+
+1. The path is taken. Pick one of two recovery paths:
+   - **Merge** (default — preserves prior knowledge):
+     1. Don't call `brv_record` blindly with `overwrite: true`. The
+        existing topic likely contains `<bv-rule>` / `<bv-fact>` /
+        `<bv-decision>` you'll DROP if you don't merge them.
+     2. (For now, with the current tool surface, the safest move is to
+        pick a slightly different `path`, e.g.
+        `security/auth_pkce_refresh` instead of `security/auth`.)
+   - **Replace** (only when the user explicitly asks for replacement):
+     Retry `brv_record` with `overwrite: true`. If the result includes a
+     `structural-loss` warning, your HTML dropped element types — add
+     them back and retry.
+
+# After-curate behavior
+
+When `brv_record` returns `ok: true`, briefly mention to the user that you
+saved the knowledge (e.g. "Saved to byterover at `security/auth`."). Do
+NOT dump the full HTML back at them — the file path is enough.
+
+If `brv_record` returns `ok: false`, surface the error message to the
+user plainly. Do not silently retry more than once.
+</byterover-curate-guidance>"""
+
+
+def _build_curate_guidance(scripts_dir: Optional[Path]) -> str:
+    """Render the guidance with the resolved scripts paths interpolated.
+
+    Even when scripts are missing we render with placeholder paths so the
+    agent still sees the structural rules and tool contract — recall and
+    record will simply fail at runtime with a clear error, which is better
+    than a silent empty guidance block.
+    """
+    base = scripts_dir if scripts_dir else Path("/byterover-v4-scripts-missing")
+    return (
+        _GUIDANCE_TEMPLATE
+        .replace(_RECORD_SCRIPT_SENTINEL, str(base / "record.mjs"))
+        .replace(_BRV_SCRIPT_SENTINEL, str(base / "brv.mjs"))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recalled-context wrapper (returned by prefetch)
+# ---------------------------------------------------------------------------
+
+_RECALL_BLOCK_HEADER = (
+    "<byterover-context>\n"
+    "# Project knowledge retrieved from ByteRover (authoritative — use it)\n\n"
+    "The topics below are facts, decisions, and rules the user has already\n"
+    "curated. Treat them as ground truth for anything they cover.\n\n"
+    "**Instructions for using this context:**\n"
+    "1. READ each <bv-topic> before drafting your answer.\n"
+    "2. ALIGN your answer with retrieved decisions and rules — if a\n"
+    "   <bv-rule severity=\"must\"> exists, do not contradict it.\n"
+    "3. CITE the topic path (e.g. \"per security/auth\") when relying on it.\n"
+    "4. SUPPLEMENT — don't duplicate. If the context already covers the\n"
+    "   question, lean on it; don't re-derive from scratch.\n"
+    "5. FLAG conflicts. If the user's request contradicts a retrieved rule,\n"
+    "   surface the conflict explicitly rather than silently overriding.\n\n"
+    "---\n\n"
+)
+
+
+def _wrap_recalled_content(content: str) -> str:
+    return f"{_RECALL_BLOCK_HEADER}{content}\n</byterover-context>"
 
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
 
-class ByteRoverMemoryProvider(MemoryProvider):
-    """ByteRover persistent memory via the brv CLI."""
 
-    def __init__(self):
-        self._cwd = ""
-        self._session_id = ""
-        self._turn_count = 0
-        self._sync_thread: Optional[threading.Thread] = None
+class ByteRoverMemoryProvider(MemoryProvider):
+    """ByteRover persistent memory via ByteRover V4 (.mjs scripts)."""
+
+    def __init__(self) -> None:
+        self._cwd: Path = Path()
+        self._session_id: str = ""
+        self._scripts_dir: Optional[Path] = None
+        self._curate_guidance: str = ""
 
     @property
     def name(self) -> str:
         return "byterover"
 
     def is_available(self) -> bool:
-        """Check if brv CLI is installed. No network calls."""
-        return _resolve_brv_path() is not None
+        """Plugin only activates if BOTH node and the V4 scripts dir are
+        discoverable. No network calls — pure filesystem checks."""
+        return _resolve_scripts_dir() is not None and _resolve_node() is not None
 
-    def get_config_schema(self):
-        return [
-            {
-                "key": "api_key",
-                "description": "ByteRover API key (optional, for cloud sync)",
-                "secret": True,
-                "env_var": "BRV_API_KEY",
-                "url": "https://app.byterover.dev",
-            },
-        ]
-
-    def initialize(self, session_id: str, **kwargs) -> None:
-        self._cwd = str(_get_brv_cwd())
+    def initialize(self, session_id: str, **kwargs: Any) -> None:
         self._session_id = session_id
-        self._turn_count = 0
-        Path(self._cwd).mkdir(parents=True, exist_ok=True)
+        self._cwd = _get_byterover_cwd()
+        self._scripts_dir = _resolve_scripts_dir()
+        self._curate_guidance = _build_curate_guidance(self._scripts_dir)
+        self._cwd.mkdir(parents=True, exist_ok=True)
+        logger.debug("byterover-v4 cwd prepared for cwd=%s", self._cwd)
 
     def system_prompt_block(self) -> str:
-        if not _resolve_brv_path():
+        """Return the full curate guidance every turn (per the integration
+        plan's Q2: ship full guidance, no smart-debounce)."""
+        if not self.is_available():
             return ""
-        return (
-            "# ByteRover Memory\n"
-            "Active. Persistent knowledge tree with hierarchical context.\n"
-            "Use brv_query to search past knowledge, brv_curate to store "
-            "important facts, brv_status to check state."
-        )
+        return self._curate_guidance
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Run brv query synchronously before the agent's first LLM call.
+        """Spawn recall.mjs and return the rendered <byterover-context>
+        block, or empty string if nothing relevant.
 
-        Blocks until the query completes (up to _QUERY_TIMEOUT seconds), ensuring
-        the result is available as context before the model is called.
+        Best-effort: any failure path returns "" so the agent loop is never
+        blocked by a recall outage.
         """
         if not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
-        result = _run_brv(
-            ["query", "--", query.strip()[:5000]],
-            timeout=_QUERY_TIMEOUT, cwd=self._cwd,
+
+        result = _run_v4(
+            "recall.mjs",
+            [query.strip()[:5000], "--cwd", str(self._cwd), "--limit", str(_RECALL_LIMIT)],
+            timeout=_RECALL_TIMEOUT_S,
+            cwd=self._cwd,
         )
-        if result["success"] and result.get("output"):
-            output = result["output"].strip()
-            if len(output) > _MIN_OUTPUT_LEN:
-                return f"## ByteRover Context\n{output}"
-        return ""
-
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """No-op: prefetch() now runs synchronously at turn start."""
-        pass
-
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Curate the conversation turn in background (non-blocking)."""
-        self._turn_count += 1
-
-        # Only curate substantive turns
-        if len(user_content.strip()) < _MIN_QUERY_LEN:
-            return
-
-        def _sync():
-            try:
-                combined = f"User: {user_content[:2000]}\nAssistant: {assistant_content[:2000]}"
-                _run_brv(
-                    ["curate", "--", combined],
-                    timeout=_CURATE_TIMEOUT, cwd=self._cwd,
-                )
-            except Exception as e:
-                logger.debug("ByteRover sync failed: %s", e)
-
-        # Wait for previous sync
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="brv-sync"
-        )
-        self._sync_thread.start()
-
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes to ByteRover."""
-        if action not in {"add", "replace"} or not content:
-            return
-
-        def _write():
-            try:
-                label = "User profile" if target == "user" else "Agent memory"
-                _run_brv(
-                    ["curate", "--", f"[{label}] {content}"],
-                    timeout=_CURATE_TIMEOUT, cwd=self._cwd,
-                )
-            except Exception as e:
-                logger.debug("ByteRover memory mirror failed: %s", e)
-
-        t = threading.Thread(target=_write, daemon=True, name="brv-memwrite")
-        t.start()
-
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Extract insights before context compression discards turns."""
-        if not messages:
+        if not result["success"]:
+            logger.debug("byterover-v4 recall failed: %s", result.get("error"))
             return ""
 
-        # Build a summary of messages about to be compressed
-        parts = []
-        for msg in messages[-10:]:  # last 10 messages
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip() and role in {"user", "assistant"}:
-                parts.append(f"{role}: {content[:500]}")
-
-        if not parts:
+        # recall.mjs always emits the envelope on stdout, even on no-match.
+        try:
+            envelope = json.loads(result["output"]) if result["output"] else {}
+        except json.JSONDecodeError as exc:
+            logger.debug("byterover-v4 recall returned non-JSON: %s", exc)
             return ""
 
-        combined = "\n".join(parts)
-
-        def _flush():
-            try:
-                _run_brv(
-                    ["curate", "--", f"[Pre-compression context]\n{combined}"],
-                    timeout=_CURATE_TIMEOUT, cwd=self._cwd,
-                )
-                logger.info("ByteRover pre-compression flush: %d messages", len(parts))
-            except Exception as e:
-                logger.debug("ByteRover pre-compression flush failed: %s", e)
-
-        t = threading.Thread(target=_flush, daemon=True, name="brv-flush")
-        t.start()
-        return ""
+        content = ((envelope.get("data") or {}).get("content") or "").strip()
+        if not content:
+            return ""
+        return _wrap_recalled_content(content)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [QUERY_SCHEMA, CURATE_SCHEMA, STATUS_SCHEMA]
+        return [RECORD_SCHEMA]
 
-    def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        if tool_name == "brv_query":
-            return self._tool_query(args)
-        elif tool_name == "brv_curate":
-            return self._tool_curate(args)
-        elif tool_name == "brv_status":
-            return self._tool_status()
-        return tool_error(f"Unknown tool: {tool_name}")
+    def handle_tool_call(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        **kwargs: Any,
+    ) -> str:
+        """Route brv_record tool calls to record.mjs.
+
+        Returns a JSON string. record.mjs's stdout is already a JSON
+        envelope (`{ok: true, data: {created, path, warnings}}` on
+        success, `{ok: false, error: "..."}` on failure), so we return its
+        output verbatim. Any subprocess-level failure is wrapped in the
+        same envelope shape so the agent sees a consistent contract.
+        """
+        if tool_name != "brv_record":
+            return json.dumps({"ok": False, "error": f"Unknown tool: {tool_name}"})
+
+        path = args.get("path") or ""
+        html = args.get("html") or ""
+        overwrite = bool(args.get("overwrite", False))
+
+        if not isinstance(path, str) or not path.strip():
+            return json.dumps({"ok": False, "error": "path is required and must be non-empty"})
+        if not isinstance(html, str) or not html.strip():
+            return json.dumps({"ok": False, "error": "html is required and must be non-empty"})
+
+        cmd_args = [path.strip(), "--html", html]
+        if overwrite:
+            cmd_args.append("--overwrite")
+
+        result = _run_v4(
+            "record.mjs",
+            cmd_args,
+            timeout=_RECORD_TIMEOUT_S,
+            cwd=self._cwd,
+        )
+        if not result["success"]:
+            return json.dumps({"ok": False, "error": result.get("error", "unknown error")})
+
+        # record.mjs returns a JSON envelope on stdout. Return it as-is.
+        output = result.get("output") or ""
+        if not output:
+            return json.dumps({"ok": True, "data": {"created": True, "warnings": []}})
+        return output
 
     def shutdown(self) -> None:
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=10.0)
+        # No daemon, no threads, no resources to release.
+        return None
 
-    # -- Tool implementations ------------------------------------------------
-
-    def _tool_query(self, args: dict) -> str:
-        query = args.get("query", "")
-        if not query:
-            return tool_error("query is required")
-
-        result = _run_brv(
-            ["query", "--", query.strip()[:5000]],
-            timeout=_QUERY_TIMEOUT, cwd=self._cwd,
-        )
-
-        if not result["success"]:
-            return tool_error(result.get("error", "Query failed"))
-
-        output = result.get("output", "").strip()
-        if not output or len(output) < _MIN_OUTPUT_LEN:
-            return json.dumps({"result": "No relevant memories found."})
-
-        # Truncate very long results
-        if len(output) > 8000:
-            output = output[:8000] + "\n\n[... truncated]"
-
-        return json.dumps({"result": output})
-
-    def _tool_curate(self, args: dict) -> str:
-        content = args.get("content", "")
-        if not content:
-            return tool_error("content is required")
-
-        result = _run_brv(
-            ["curate", "--", content],
-            timeout=_CURATE_TIMEOUT, cwd=self._cwd,
-        )
-
-        if not result["success"]:
-            return tool_error(result.get("error", "Curate failed"))
-
-        return json.dumps({"result": "Memory curated successfully."})
-
-    def _tool_status(self) -> str:
-        result = _run_brv(["status"], timeout=15, cwd=self._cwd)
-        if not result["success"]:
-            return tool_error(result.get("error", "Status check failed"))
-        return json.dumps({"status": result.get("output", "")})
-
-
-# ---------------------------------------------------------------------------
-# Plugin entry point
-# ---------------------------------------------------------------------------
-
-def register(ctx) -> None:
-    """Register ByteRover as a memory provider plugin."""
-    ctx.register_memory_provider(ByteRoverMemoryProvider())
+    def get_config_schema(self) -> List[Dict[str, Any]]:
+        # No API key, no remote auth. The only environment knob is the
+        # scripts dir override, which is process-level (env var) — not a
+        # per-profile setting.
+        return []

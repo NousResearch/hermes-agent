@@ -1998,6 +1998,14 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Compact skill_view for long skills while preserving safety-critical
+        # sections and exposing deterministic section selectors. Disabled by
+        # default for rollback-safe rollout; explicit skill_view(mode="brief")
+        # and section_slug/section_title work regardless of this flag.
+        "targeted_view": {
+            "enabled": False,
+            "threshold_chars": 20_000,
+        },
     },
 
     # Curator — background skill maintenance.

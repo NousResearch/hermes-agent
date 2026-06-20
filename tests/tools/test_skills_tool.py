@@ -571,6 +571,164 @@ class TestSkillView:
             skill["name"] for skill in list_result["skills"]
         ]
 
+    def test_targeted_brief_preserves_safety_sections_and_reports_savings(self, tmp_path):
+        body = """# Big Skill
+
+Opening overview that should remain visible.
+
+## Prerequisites
+Install the required CLI before acting.
+
+## Usage Catalog
+""" + ("example detail\n" * 250) + """
+## Boundaries
+Do not mutate production systems.
+
+## Verification
+Run the smoke test before reporting success.
+"""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "big-skill", body=body)
+            raw = skill_view("big-skill", mode="brief")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["retrieval_mode"] == "brief"
+        assert result["targeted_retrieval"]["full_chars"] > result["targeted_retrieval"]["returned_chars"]
+        assert result["targeted_retrieval"]["estimated_saved_chars"] > 0
+        assert "Prerequisites" in result["content"]
+        assert "Boundaries" in result["content"]
+        assert "Verification" in result["content"]
+        assert "example detail" not in result["content"]
+        assert result["sections"]
+        assert any(section["slug"] == "usage-catalog" for section in result["omitted_sections"])
+
+    def test_skill_view_section_slug_returns_exact_section(self, tmp_path):
+        body = """# Sectioned Skill
+
+Intro.
+
+## Setup
+Install tools.
+
+## Deep Dive
+Detailed implementation notes.
+
+### Nested Detail
+Nested content stays with the selected section.
+
+## Verification
+Run checks.
+"""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "sectioned", body=body)
+            raw = skill_view("sectioned", section_slug="deep-dive")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["retrieval_mode"] == "section"
+        assert result["section"]["slug"] == "deep-dive"
+        assert "Detailed implementation notes" in result["content"]
+        assert "Nested content stays" in result["content"]
+        assert "Install tools" not in result["content"]
+
+    def test_skill_view_full_escape_hatch_bypasses_brief(self, tmp_path):
+        body = "# Huge\n\n" + ("all details stay visible\n" * 300)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "full-skill", body=body)
+            raw = skill_view("full-skill", mode="brief", full=True)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["retrieval_mode"] == "full"
+        assert result["targeted_retrieval"]["estimated_saved_chars"] == 0
+        assert result["content"].count("all details stay visible") == 300
+
+    def test_targeted_view_feature_flag_auto_briefs_long_skills(self, tmp_path, monkeypatch):
+        body = """# Auto Brief
+
+Intro.
+
+## Reference Catalog
+""" + ("catalog detail\n" * 1800) + """
+## Safety
+Keep the safety note.
+"""
+        monkeypatch.setenv("HERMES_SKILL_VIEW_TARGETED", "1")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "auto-brief", body=body)
+            raw = skill_view("auto-brief")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["retrieval_mode"] == "brief"
+        assert "Keep the safety note" in result["content"]
+        assert "catalog detail" not in result["content"]
+
+    def test_brief_preserves_nested_and_long_safety_sections(self, tmp_path):
+        body = """# Large Skill
+
+Intro.
+
+## Safety
+""" + ("safe detail\n" * 500) + """
+### Nested Safety Detail
+Nested safety text must remain visible.
+
+## Examples
+""" + ("example\n" * 500)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "safety-heavy", body=body)
+            raw = skill_view("safety-heavy", mode="brief")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Nested safety text must remain visible" in result["content"]
+        assert result["content"].count("safe detail") == 500
+        assert "example\nexample" not in result["content"]
+
+    def test_safety_h1_preserves_neutral_child_sections(self, tmp_path):
+        body = """# Safety
+Do not skip safety guidance.
+
+## Neutral Detail
+This neutral child is part of the safety section.
+"""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "h1-safety", body=body)
+            raw = skill_view("h1-safety", mode="brief")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Do not skip safety guidance" in result["content"]
+        assert "This neutral child is part of the safety section" in result["content"]
+
+    def test_duplicate_heading_slugs_are_stable_and_retrievable(self, tmp_path):
+        body = """# Duplicate Skill
+
+Intro.
+
+## Notes
+First notes.
+
+## Notes
+Second notes.
+
+## Notes 2
+Natural suffix notes.
+"""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "duplicates", body=body)
+            listing = json.loads(skill_view("duplicates", mode="brief"))
+            selected = json.loads(skill_view("duplicates", section_slug="notes-2-2"))
+
+        assert [s["slug"] for s in listing["sections"] if s["title"].startswith("Notes")] == ["notes", "notes-2", "notes-2-2"]
+        assert selected["success"] is True
+        assert selected["section"]["slug"] == "notes-2-2"
+        assert "Natural suffix notes" in selected["content"]
+        assert "First notes" not in selected["content"]
+        assert "Second notes" not in selected["content"]
+
 
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):

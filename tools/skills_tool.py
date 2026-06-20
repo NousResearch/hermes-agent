@@ -762,6 +762,10 @@ def _serve_plugin_skill(
     *,
     preprocess: bool = True,
     session_id: str | None = None,
+    mode: str | None = None,
+    full: bool = False,
+    section_title: str | None = None,
+    section_slug: str | None = None,
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
@@ -846,24 +850,284 @@ def _serve_plugin_skill(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
-    return json.dumps(
+    plugin_content = f"{banner}{rendered_content}" if banner else rendered_content
+    normalized_mode = (mode or "").strip().lower()
+    if full or normalized_mode == "full":
+        effective_mode = "full"
+    elif section_title or section_slug:
+        effective_mode = "section"
+    elif normalized_mode == "brief":
+        effective_mode = "brief"
+    else:
+        targeted_enabled, targeted_threshold = _targeted_skill_config()
+        effective_mode = (
+            "brief" if targeted_enabled and len(plugin_content) >= targeted_threshold else "full"
+        )
+
+    sections = _split_markdown_sections(plugin_content)
+    section_listing = _section_index(sections)
+    returned_content = plugin_content
+    omitted_sections: list[dict[str, Any]] = []
+    selected_section: dict[str, Any] | None = None
+    if effective_mode == "section":
+        selected_section = _find_skill_section(
+            sections, section_title=section_title, section_slug=section_slug
+        )
+        if not selected_section:
+            selector = section_slug or section_title or ""
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Section '{selector}' not found in skill '{namespace}:{bare}'.",
+                    "sections": section_listing,
+                    "hint": "Use one of the listed section_slug values, or pass full=true for the complete skill.",
+                },
+                ensure_ascii=False,
+            )
+        returned_content = selected_section["content"].strip()
+    elif effective_mode == "brief":
+        returned_content, omitted_sections = _brief_skill_content(plugin_content, sections)
+
+    result = {
+        "success": True,
+        "name": f"{namespace}:{bare}",
+        "content": returned_content,
+        "description": description,
+        "linked_files": None,
+        "sections": section_listing,
+        "omitted_sections": omitted_sections,
+        "retrieval_mode": effective_mode,
+        "targeted_retrieval": _targeted_retrieval_metadata(
+            len(plugin_content), len(returned_content)
+        ),
+        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+    }
+    if selected_section:
+        result["section"] = {
+            "title": selected_section["title"],
+            "slug": selected_section["slug"],
+            "level": selected_section["level"],
+            "chars": len(selected_section["content"]),
+        }
+    return json.dumps(result, ensure_ascii=False)
+
+
+_TARGETED_SKILL_SAFETY_KEYWORDS = (
+    "prerequisite",
+    "setup",
+    "when to use",
+    "trigger",
+    "mandatory",
+    "must",
+    "safety",
+    "security",
+    "boundary",
+    "boundaries",
+    "pitfall",
+    "warning",
+    "verification",
+    "testing",
+    "quality gate",
+)
+_TARGETED_SKILL_DEFAULT_THRESHOLD = 20_000
+_TARGETED_SKILL_SECTION_LIMIT = 3_500
+_TARGETED_SKILL_REPEAT_CACHE: set[tuple[str, str, str]] = set()
+
+
+def _skill_section_slug(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")
+    return slug or "section"
+
+
+def _split_markdown_sections(markdown: str) -> list[dict[str, Any]]:
+    """Split Markdown into top-level retrieval sections with stable slugs."""
+    matches = list(re.finditer(r"(?m)^(#{1,6})\s+(.+?)\s*$", markdown))
+    if not matches:
+        return [
+            {
+                "title": "Document",
+                "slug": "document",
+                "level": 0,
+                "start": 0,
+                "end": len(markdown),
+                "content": markdown,
+            }
+        ]
+
+    sections: list[dict[str, Any]] = []
+    used_slugs: set[str] = set()
+    if matches[0].start() > 0:
+        prefix = markdown[: matches[0].start()]
+        if prefix.strip():
+            used_slugs.add("preamble")
+            sections.append(
+                {
+                    "title": "Preamble",
+                    "slug": "preamble",
+                    "level": 0,
+                    "start": 0,
+                    "end": matches[0].start(),
+                    "content": prefix,
+                }
+            )
+
+    for idx, match in enumerate(matches):
+        level = len(match.group(1))
+        end = len(markdown)
+        for later in matches[idx + 1 :]:
+            if len(later.group(1)) <= level:
+                end = later.start()
+                break
+        title = match.group(2).strip()
+        base_slug = _skill_section_slug(title)
+        slug = base_slug
+        suffix = 2
+        while slug in used_slugs:
+            slug = f"{base_slug}-{suffix}"
+            suffix += 1
+        used_slugs.add(slug)
+        next_heading = matches[idx + 1].start() if idx + 1 < len(matches) else len(markdown)
+        sections.append(
+            {
+                "title": title,
+                "slug": slug,
+                "level": level,
+                "start": match.start(),
+                "end": end,
+                "content": markdown[match.start() : end],
+                "intro_content": markdown[match.start() : next_heading],
+            }
+        )
+    return sections
+
+
+def _section_index(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
         {
-            "success": True,
-            "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
-            "description": description,
-            "linked_files": None,
-            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        },
-        ensure_ascii=False,
+            "title": section["title"],
+            "slug": section["slug"],
+            "level": section["level"],
+            "chars": len(section["content"]),
+        }
+        for section in sections
+    ]
+
+
+def _section_is_safety_critical(section: dict[str, Any]) -> bool:
+    text = f"{section['title']}\n{(section.get('intro_content') or section['content'])[:500]}".lower()
+    return any(keyword in text for keyword in _TARGETED_SKILL_SAFETY_KEYWORDS)
+
+
+def _truncate_skill_section(content: str) -> str:
+    if len(content) <= _TARGETED_SKILL_SECTION_LIMIT:
+        return content.rstrip()
+    return (
+        content[:_TARGETED_SKILL_SECTION_LIMIT].rstrip()
+        + "\n\n[Targeted retrieval: section truncated; request this section by section_slug for full detail.]"
     )
+
+
+def _brief_skill_content(markdown: str, sections: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    included: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    covered_end = -1
+    for idx, section in enumerate(sections):
+        if section["start"] < covered_end:
+            continue
+        include = idx == 0 or _section_is_safety_critical(section)
+        if include and section["slug"] not in seen:
+            included.append(section)
+            seen.add(section["slug"])
+            if _section_is_safety_critical(section):
+                covered_end = max(covered_end, section["end"])
+        else:
+            omitted.append(section)
+
+    rendered_sections: list[str] = []
+    for section in included:
+        if _section_is_safety_critical(section):
+            rendered_sections.append(section["content"].rstrip())
+            continue
+        section_content = section.get("intro_content") or section["content"]
+        rendered_sections.append(_truncate_skill_section(section_content))
+    body = "\n\n".join(rendered_sections).strip()
+    if omitted:
+        omitted_lines = "\n".join(
+            f"- {section['title']} (`{section['slug']}`, {len(section['content'])} chars)"
+            for section in omitted
+        )
+        body = (
+            f"{body}\n\n## Targeted retrieval available\n"
+            "Omitted non-safety sections can be loaded with `section_slug` or `section_title`:\n"
+            f"{omitted_lines}"
+        )
+    return body, _section_index(omitted)
+
+
+def _find_skill_section(
+    sections: list[dict[str, Any]], *, section_title: str | None, section_slug: str | None
+) -> dict[str, Any] | None:
+    if section_slug:
+        wanted = _skill_section_slug(section_slug)
+        for section in sections:
+            if section["slug"] == wanted:
+                return section
+    if section_title:
+        title_norm = section_title.strip().lower()
+        slug_norm = _skill_section_slug(section_title)
+        for section in sections:
+            if section["title"].strip().lower() == title_norm or section["slug"] == slug_norm:
+                return section
+    return None
+
+
+def _targeted_skill_config() -> tuple[bool, int]:
+    enabled = False
+    threshold = _TARGETED_SKILL_DEFAULT_THRESHOLD
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        targeted_cfg = cfg_get(cfg, "skills", "targeted_view", default={}) or {}
+        if isinstance(targeted_cfg, dict):
+            enabled = bool(targeted_cfg.get("enabled", enabled))
+            threshold = int(targeted_cfg.get("threshold_chars", threshold))
+    except Exception:
+        pass
+    env_enabled = os.getenv("HERMES_SKILL_VIEW_TARGETED", "").strip().lower()
+    if env_enabled in {"1", "true", "yes", "on"}:
+        enabled = True
+    elif env_enabled in {"0", "false", "no", "off"}:
+        enabled = False
+    return enabled, threshold
+
+
+def _targeted_retrieval_metadata(full_chars: int, returned_chars: int) -> dict[str, Any]:
+    saved = max(full_chars - returned_chars, 0)
+    return {
+        "full_chars": full_chars,
+        "returned_chars": returned_chars,
+        "estimated_saved_chars": saved,
+        "estimated_saved_percent": round((saved / full_chars) * 100, 1) if full_chars else 0.0,
+        "rollout": {
+            "explicit_modes": ["brief", "full"],
+            "escape_hatch": "Pass full=true or mode='full' to return complete SKILL.md content.",
+            "feature_flag": "Set skills.targeted_view.enabled=true or HERMES_SKILL_VIEW_TARGETED=1 to auto-brief long skills.",
+            "rollback": "Disable skills.targeted_view.enabled or unset HERMES_SKILL_VIEW_TARGETED; explicit full=true always bypasses briefing.",
+        },
+    }
 
 
 def skill_view(
     name: str,
-    file_path: str = None,
-    task_id: str = None,
+    file_path: str | None = None,
+    task_id: str | None = None,
     preprocess: bool = True,
+    mode: str | None = None,
+    full: bool = False,
+    section_title: str | None = None,
+    section_slug: str | None = None,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -943,6 +1207,10 @@ def skill_view(
                     bare,
                     preprocess=preprocess,
                     session_id=task_id,
+                    mode=mode,
+                    full=full,
+                    section_title=section_title,
+                    section_slug=section_slug,
                 )
 
             # Plugin exists but this specific skill is missing?
@@ -1450,19 +1718,75 @@ def skill_view(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
 
+        normalized_mode = (mode or "").strip().lower()
+        if full or normalized_mode == "full":
+            effective_mode = "full"
+        elif section_title or section_slug:
+            effective_mode = "section"
+        elif normalized_mode == "brief":
+            effective_mode = "brief"
+        else:
+            targeted_enabled, targeted_threshold = _targeted_skill_config()
+            effective_mode = (
+                "brief"
+                if targeted_enabled and len(rendered_content) >= targeted_threshold
+                else "full"
+            )
+
+        sections = _split_markdown_sections(rendered_content)
+        section_listing = _section_index(sections)
+        returned_content = rendered_content
+        omitted_sections: list[dict[str, Any]] = []
+        selected_section: dict[str, Any] | None = None
+
+        if effective_mode == "section":
+            selected_section = _find_skill_section(
+                sections, section_title=section_title, section_slug=section_slug
+            )
+            if not selected_section:
+                selector = section_slug or section_title or ""
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Section '{selector}' not found in skill '{skill_name}'.",
+                        "sections": section_listing,
+                        "hint": "Use one of the listed section_slug values, or pass full=true for the complete skill.",
+                    },
+                    ensure_ascii=False,
+                )
+            returned_content = selected_section["content"].strip()
+        elif effective_mode == "brief":
+            returned_content, omitted_sections = _brief_skill_content(
+                rendered_content, sections
+            )
+
+        retrieval_metadata = _targeted_retrieval_metadata(
+            len(rendered_content), len(returned_content)
+        )
+        if task_id:
+            cache_key = (task_id, skill_name, effective_mode)
+            retrieval_metadata["repeat_load"] = cache_key in _TARGETED_SKILL_REPEAT_CACHE
+            _TARGETED_SKILL_REPEAT_CACHE.add(cache_key)
+        else:
+            retrieval_metadata["repeat_load"] = False
+
         result = {
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
-            "content": rendered_content,
+            "content": returned_content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files
             else None,
+            "sections": section_listing,
+            "omitted_sections": omitted_sections,
+            "retrieval_mode": effective_mode,
+            "targeted_retrieval": retrieval_metadata,
             "required_environment_variables": required_env_vars,
             "required_commands": [],
             "missing_required_environment_variables": remaining_missing_required_envs,
@@ -1474,6 +1798,13 @@ def skill_view(
             if setup_needed
             else SkillReadinessStatus.AVAILABLE.value,
         }
+        if selected_section:
+            result["section"] = {
+                "title": selected_section["title"],
+                "slug": selected_section["slug"],
+                "level": selected_section["level"],
+                "chars": len(selected_section["content"]),
+            }
 
         setup_help = next((e["help"] for e in required_env_vars if e.get("help")), None)
         if setup_help:
@@ -1576,7 +1907,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content, a compact safety brief, a deterministic section, or a linked file (references, templates, scripts). Use mode='brief' for manifest/safety briefing, section_slug/section_title for targeted retrieval, and full=true as the explicit escape hatch.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1586,7 +1917,24 @@ SKILL_VIEW_SCHEMA = {
             },
             "file_path": {
                 "type": "string",
-                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content or targeted brief/section.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["brief", "full"],
+                "description": "OPTIONAL: 'brief' returns manifest plus safety-critical sections and omitted-section slugs; 'full' returns complete SKILL.md content.",
+            },
+            "full": {
+                "type": "boolean",
+                "description": "OPTIONAL: Explicit escape hatch. When true, returns complete SKILL.md content even if brief mode or auto-briefing is enabled.",
+            },
+            "section_title": {
+                "type": "string",
+                "description": "OPTIONAL: Return one deterministic Markdown section by exact heading title.",
+            },
+            "section_slug": {
+                "type": "string",
+                "description": "OPTIONAL: Return one deterministic Markdown section by stable slug from a prior sections list.",
             },
         },
         "required": ["name"],
@@ -1608,7 +1956,13 @@ def _skill_view_with_bump(args, **kw):
     telemetry failure never breaks the tool call."""
     name = args.get("name", "")
     result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+        name,
+        file_path=args.get("file_path"),
+        task_id=kw.get("task_id"),
+        mode=args.get("mode"),
+        full=bool(args.get("full", False)),
+        section_title=args.get("section_title"),
+        section_slug=args.get("section_slug"),
     )
     try:
         parsed = json.loads(result)

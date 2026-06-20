@@ -262,7 +262,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """
 
     # Default bridge location relative to the hermes-agent install
-    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[3] / "scripts" / "whatsapp-bridge"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)

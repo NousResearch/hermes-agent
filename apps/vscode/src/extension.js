@@ -5,7 +5,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { extractUnifiedDiff, parsePatch, applyPatchToContent, safeJoin } = require('./patchParser');
-const { summarizePatch, detectTestCommand } = require('./extensionUtils');
+const { summarizePatch, detectTestCommand, buildHermesPrompt, buildTerminalDebugPrompt, buildTestAnalysisPrompt, truncateText } = require('./extensionUtils');
 const { AcpClient } = require('./acpClient');
 
 let provider;
@@ -223,7 +223,7 @@ class HermesChatProvider {
     this.output.appendLine(combined || '(command produced no output)');
     const status = result.code === 0 ? 'succeeded' : `failed with exit ${result.code}`;
     this.post('tool', `Command ${status}. Sending captured output to Hermes for debugging.`);
-    const prompt = `The terminal command below ${status}. Analyze the captured output, identify likely root cause, and recommend the smallest next fix. If a code change is needed, return a unified diff.\n\nCommand:\n\n\`\`\`sh\n${command}\n\`\`\`\n\nOutput:\n\n\`\`\`text\n${truncate(combined || '(no output)', getMaxTestOutputChars())}\n\`\`\``;
+    const prompt = buildTerminalDebugPrompt(command, combined || '(no output)', status, getMaxTestOutputChars());
     await this.ask(prompt, { includeFile: true, includeSelection: true, includeDiagnostics: true, includeGitDiff: true, includeInstructions: true, wantsPatch: result.code !== 0, mode: result.code === 0 ? 'test' : 'debug' });
   }
 
@@ -497,7 +497,7 @@ class HermesChatProvider {
     this.output.appendLine(combined || '(test command produced no output)');
     const status = result.code === 0 ? 'passed' : `failed with exit ${result.code}`;
     this.post('tool', `Tests ${status}: ${command}`);
-    const prompt = `The detected test command \`${command}\` ${status}. Analyze this output, identify likely root cause, and recommend the smallest next fix. If a code change is needed, return a unified diff.\n\n\`\`\`text\n${truncate(combined || '(no output)', getMaxTestOutputChars())}\n\`\`\``;
+    const prompt = buildTestAnalysisPrompt(command, combined || '(no output)', status, getMaxTestOutputChars());
     await this.ask(prompt, { includeFile: true, includeSelection: true, includeDiagnostics: true, includeGitDiff: true, includeInstructions: true, wantsPatch: result.code !== 0, mode: result.code === 0 ? 'test' : 'debug' });
   }
 
@@ -629,27 +629,7 @@ async function getGitDiff(cwd) {
 }
 
 function buildPrompt(userText, contextBlock, options = {}) {
-  const mode = options.mode || 'ask';
-  const modeInstruction = modeInstructions(mode);
-  const patchInstruction = options.wantsPatch || ['edit', 'debug', 'refactor', 'test', 'security'].includes(mode)
-    ? '\nIf code edits are useful, return them as a unified diff in a ```diff fenced block. Keep explanations short and include verification commands.'
-    : '\nWhen code edits are useful, prefer a short explanation plus a unified diff in a ```diff fenced block.';
-  return `You are Hermes running inside a VS Code/Cursor extension. Use the supplied editor context. Be concise, operational, and careful with unsaved buffers. Do not expose secrets.\n${modeInstruction}${patchInstruction}\n\n${contextBlock}\n\n## User request\n\n${userText}`;
-}
-
-function modeInstructions(mode) {
-  const modes = {
-    ask: 'Mode: general coding assistant. Answer directly and cite relevant files/context.',
-    explain: 'Mode: explain. Clarify what the selected code/file does, important data flow, risks, and gotchas.',
-    edit: 'Mode: edit. Produce a focused patch that preserves behavior unless the user asks otherwise.',
-    review: 'Mode: review. Summarize risk, likely breakage, missing tests, and concrete recommended changes.',
-    test: 'Mode: test. Identify or add targeted tests and suggest the smallest verification command.',
-    debug: 'Mode: debug. Form a hypothesis, inspect evidence from context, propose fixes, and include verification steps.',
-    refactor: 'Mode: refactor. Improve structure/readability while preserving behavior and minimizing churn.',
-    security: 'Mode: security review. Focus on trust boundaries, secrets, authz/authn, injection, data exposure, and safe mitigations.',
-    commit: 'Mode: commit message. Summarize the current change as a concise conventional commit with optional body.'
-  };
-  return modes[mode] || modes.ask;
+  return buildHermesPrompt(userText, contextBlock, options);
 }
 
 function workspaceSessionName(cwd) {
@@ -682,8 +662,7 @@ function diagnosticsForActiveEditor() {
 }
 
 function truncate(text, max) {
-  if (!text || text.length <= max) return text || '';
-  return text.slice(0, max) + `\n\n...[truncated ${text.length - max} chars]`;
+  return truncateText(text, max);
 }
 
 

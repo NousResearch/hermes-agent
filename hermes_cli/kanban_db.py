@@ -1155,6 +1155,23 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Persistent board owner: the (platform, chat_id) delivery target the kanban
+-- orchestrator resolves for its task-loop injections. Survives process
+-- restarts and works across profiles — the in-memory cache and the
+-- notifier subscription set are both per-process / per-profile, so this table
+-- is the stable fallback that lets a converged board actually reach its
+-- orchestrator. One board may register several platforms; get_board_owner
+-- picks the most-recently-updated row.
+CREATE TABLE IF NOT EXISTS kanban_board_owners (
+    board      TEXT NOT NULL,
+    platform   TEXT NOT NULL,
+    chat_id    TEXT NOT NULL,
+    user_id    TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (board, platform, chat_id)
+);
+CREATE INDEX IF NOT EXISTS idx_board_owners_board ON kanban_board_owners(board);
 """
 
 
@@ -2937,6 +2954,63 @@ def _append_event(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Board owner — persistent delivery target for orchestrator injection
+# ---------------------------------------------------------------------------
+
+def get_board_owner(
+    conn: sqlite3.Connection, board: str
+) -> Optional[tuple[str, str]]:
+    """Return ``(platform, chat_id)`` for *board*'s persistent owner, or ``None``.
+
+    The kanban orchestrator's task-loop injection resolves its delivery target
+    through this lookup so a converged board can actually reach the
+    coordinator across process restarts and profile boundaries (the in-memory
+    cache and notifier subscriptions are per-process / per-profile). Multiple
+    platforms may be registered for one board; the most-recently-updated row
+    wins. Returns ``None`` on any miss or blank coordinates so callers fall
+    through to the next resolution tier.
+    """
+    row = conn.execute(
+        "SELECT platform, chat_id FROM kanban_board_owners "
+        "WHERE board = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+        (board,),
+    ).fetchone()
+    if not row:
+        return None
+    plat = (row["platform"] or "").strip()
+    chat = (row["chat_id"] or "").strip()
+    if not plat or not chat:
+        return None
+    return (plat.lower(), chat)
+
+
+def set_board_owner(
+    conn: sqlite3.Connection,
+    board: str,
+    platform: str,
+    chat_id: str,
+    user_id: Optional[str] = None,
+) -> None:
+    """Upsert a persistent ``(platform, chat_id)`` owner for *board*.
+
+    Idempotent on ``(board, platform, chat_id)``: a repeat registration only
+    bumps ``updated_at`` (and ``user_id`` when supplied). Run inside a
+    :func:`write_txn` — like :func:`_append_event`, this executes raw SQL on
+    an already-open connection rather than managing its own transaction.
+    """
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO kanban_board_owners "
+        "(board, platform, chat_id, user_id, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(board, platform, chat_id) DO UPDATE SET "
+        "user_id = COALESCE(excluded.user_id, kanban_board_owners.user_id), "
+        "updated_at = excluded.updated_at",
+        (board, (platform or "").lower().strip(), (chat_id or "").strip(), user_id, now),
     )
 
 

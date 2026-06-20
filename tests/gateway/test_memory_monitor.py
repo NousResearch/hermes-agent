@@ -7,6 +7,7 @@ leaks show up as a time series in agent.log / gateway.log.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 
@@ -120,3 +121,23 @@ def test_unavailable_rss_warns_and_does_not_start(caplog, monkeypatch):
     assert started is False
     assert mm.is_running() is False
     assert any("Memory monitoring unavailable" in r.getMessage() for r in caplog.records)
+
+
+def test_start_gateway_calls_start_memory_monitoring():
+    """Regression: start_gateway() must call start_memory_monitoring().
+
+    Issue #49773 — the memory heartbeat was never started because
+    start_gateway() did not import or call start_memory_monitoring().
+    This test verifies the call site exists in the source.
+    """
+    import gateway.run as run_mod
+
+    source = inspect.getsource(run_mod.start_gateway)
+    assert "start_memory_monitoring" in source, (
+        "start_gateway() must call start_memory_monitoring() for the "
+        "memory heartbeat to work — see issue #49773"
+    )
+    assert "from gateway.memory_monitor import" in source, (
+        "start_gateway() must import start_memory_monitoring from "
+        "gateway.memory_monitor — see issue #49773"
+    )

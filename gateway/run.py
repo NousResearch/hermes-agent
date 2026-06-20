@@ -17466,7 +17466,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="gateway-housekeeping",
     )
     housekeeping_thread.start()
-    
+
+    # Periodic memory usage heartbeat — daemon thread logs RSS + GC stats
+    # every 5 min so external watchdogs can monitor log freshness as a
+    # hung-detection heuristic.  Safe to call; creates its own daemon thread.
+    from gateway.memory_monitor import start_memory_monitoring
+    start_memory_monitoring()
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -17483,6 +17489,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         logger.debug("Cron provider stop() error: %s", e)
     cron_thread.join(timeout=5)
     housekeeping_thread.join(timeout=5)
+
+    # Stop memory monitor (logs a final RSS snapshot before teardown).
+    try:
+        from gateway.memory_monitor import stop_memory_monitoring
+        stop_memory_monitoring()
+    except Exception:
+        pass
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()

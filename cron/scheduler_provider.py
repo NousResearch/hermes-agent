@@ -172,6 +172,6 @@ class InProcessCronScheduler(CronScheduler):
         while not stop_event.is_set():
             try:
                 cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
-            except Exception as e:
-                logger.debug("Cron tick error: %s", e)
+            except BaseException as e:
+                logger.error("Cron tick error: %s", e, exc_info=True)
             stop_event.wait(interval)

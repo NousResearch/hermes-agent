@@ -1,3 +1,7 @@
+const { installStdioPipeErrorGuards } = require('./stdio-guards.cjs')
+
+installStdioPipeErrorGuards()
+
 const {
   app,
   BrowserWindow,
@@ -922,13 +926,13 @@ function openExternalUrl(rawUrl) {
 
   if (IS_WSL) {
     rememberLog(`[link] opening via WSL→Windows: ${url}`)
-    const proc = spawn('cmd.exe', ['/c', 'start', '""', url], {
+    const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $args[0]', url], {
       detached: true,
       stdio: 'ignore',
       windowsHide: true
     })
     proc.on('error', error => {
-      rememberLog(`[link] cmd.exe start failed: ${error.message}; falling back to xdg-open`)
+      rememberLog(`[link] PowerShell Start-Process failed: ${error.message}; falling back to xdg-open`)
       shell.openExternal(url).catch(fallback => rememberLog(`[link] xdg-open failed: ${fallback.message}`))
     })
     proc.unref()

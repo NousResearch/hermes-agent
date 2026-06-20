@@ -99,6 +99,7 @@ BUILT-IN SKINS
 ==============
 
 - ``default`` — Classic Hermes gold/kawaii (the current look)
+- ``auto`` — Follow system light/dark appearance where detectable
 - ``ares``    — Crimson/bronze war-god theme with custom spinner wings
 - ``mono``    — Clean grayscale monochrome
 - ``slate``   — Cool blue developer-focused theme
@@ -113,6 +114,10 @@ Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.
 """
 
 import logging
+import platform
+import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -120,6 +125,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+_AUTO_SKIN = {
+    "name": "auto",
+    "description": "Follow system light/dark appearance",
+    "source": "builtin",
+}
 
 
 # =============================================================================
@@ -721,7 +732,7 @@ def list_skins() -> List[Dict[str, str]]:
 
     Returns list of {"name": ..., "description": ..., "source": "builtin"|"user"}.
     """
-    result = []
+    result = [dict(_AUTO_SKIN)]
     for name, data in _BUILTIN_SKINS.items():
         result.append({
             "name": name,
@@ -747,8 +758,125 @@ def list_skins() -> List[Dict[str, str]]:
     return result
 
 
+def _macos_uses_light_theme() -> Optional[bool]:
+    """Return the macOS appearance preference, or None when unavailable."""
+    try:
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except Exception:
+        return None
+
+    # AppleInterfaceStyle is normally absent in light mode and "Dark" in dark
+    # mode. Treat command failure as light only when the defaults tool ran.
+    if result.returncode != 0:
+        return True
+
+    return result.stdout.strip().lower() != "dark"
+
+
+def _windows_app_uses_light_theme() -> Optional[bool]:
+    """Return the Windows app theme preference, or None when unavailable."""
+    try:
+        import winreg
+    except Exception:
+        return None
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            value, _kind = winreg.QueryValueEx(key, "AppsUseLightTheme")
+    except Exception:
+        return None
+
+    try:
+        return int(value) != 0
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_theme_probe(command: List[str]) -> Optional[str]:
+    """Run a desktop-theme probe command and return stdout when it works."""
+    if not command or shutil.which(command[0]) is None:
+        return None
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _linux_uses_light_theme() -> Optional[bool]:
+    """Return the Linux desktop color-scheme preference, or None if unknown."""
+    portal = _run_theme_probe(
+        [
+            "gdbus",
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.portal.Desktop",
+            "--object-path",
+            "/org/freedesktop/portal/desktop",
+            "--method",
+            "org.freedesktop.portal.Settings.Read",
+            "org.freedesktop.appearance",
+            "color-scheme",
+        ]
+    )
+    if portal:
+        values = [int(v) for v in re.findall(r"\d+", portal)]
+        if 1 in values:
+            return False
+        if 2 in values:
+            return True
+
+    gsettings = _run_theme_probe(
+        ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"]
+    )
+    if gsettings:
+        value = gsettings.strip("'\"").lower()
+        if "dark" in value:
+            return False
+        if "light" in value:
+            return True
+
+    return None
+
+
+def _resolve_auto_skin_name() -> str:
+    """Resolve the dynamic auto skin alias to a concrete built-in skin."""
+    system = platform.system()
+    if system == "Darwin":
+        light = _macos_uses_light_theme()
+    elif system == "Windows":
+        light = _windows_app_uses_light_theme()
+    elif system == "Linux":
+        light = _linux_uses_light_theme()
+    else:
+        light = None
+
+    return "daylight" if light is True else "default"
+
+
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name. Checks user skins first, then built-in."""
+    if str(name or "").strip().lower() == "auto":
+        return load_skin(_resolve_auto_skin_name())
+
     # Check user skins directory
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"

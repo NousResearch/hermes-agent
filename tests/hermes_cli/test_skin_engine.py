@@ -1,5 +1,7 @@
 """Tests for hermes_cli.skin_engine — the data-driven skin/theme system."""
 
+import subprocess
+
 import pytest
 
 
@@ -43,6 +45,71 @@ class TestSkinConfig:
 
 
 class TestBuiltinSkins:
+    def test_auto_skin_lists_as_builtin_alias(self):
+        from hermes_cli.skin_engine import list_skins
+
+        skins = list_skins()
+        auto = next(s for s in skins if s["name"] == "auto")
+
+        assert auto["source"] == "builtin"
+        assert "light/dark" in auto["description"]
+
+    def test_auto_skin_resolves_macos_dark_to_default(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        monkeypatch.setattr(skin_engine.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            skin_engine.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, stdout="Dark\n", stderr=""
+            ),
+        )
+
+        assert load_skin("auto").name == "default"
+
+    def test_auto_skin_resolves_macos_light_to_daylight(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        monkeypatch.setattr(skin_engine.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            skin_engine.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 1, stdout="", stderr="not found"
+            ),
+        )
+
+        assert load_skin("auto").name == "daylight"
+
+    def test_auto_skin_resolves_windows_light_to_daylight(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        monkeypatch.setattr(skin_engine.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(skin_engine, "_windows_app_uses_light_theme", lambda: True)
+
+        assert load_skin("auto").name == "daylight"
+
+    def test_auto_skin_resolves_linux_dark_to_default(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        monkeypatch.setattr(skin_engine.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(skin_engine, "_linux_uses_light_theme", lambda: False)
+
+        assert load_skin("auto").name == "default"
+
+    def test_auto_skin_falls_back_to_default_when_unknown(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        monkeypatch.setattr(skin_engine.platform, "system", lambda: "Plan9")
+
+        assert load_skin("auto").name == "default"
+
     def test_ares_skin_loads(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("ares")

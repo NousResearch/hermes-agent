@@ -173,6 +173,66 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
 
 
+def test_decomposed_child_inherits_parent_thread_subscription(tmp_path, monkeypatch):
+    """Child/successor terminal events should notify the card's front-door thread.
+
+    The gateway auto-subscribes the original /kanban-created card, but follow-up
+    work can be created later by decomposition/controller code. Those successors
+    must inherit the parent/root notification subscription so GO / blocked /
+    changes-requested terminal events are visible without periodic polling.
+    """
+    db_path = tmp_path / "inherited-sub.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="front-door card", triage=True, assignee="molly")
+        kb.add_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="thread-7",
+            notifier_profile="default",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="molly",
+            children=[
+                {
+                    "title": "ship the weld",
+                    "body": "Do the work and report back.",
+                    "assignee": "stark",
+                    "parents": [],
+                }
+            ],
+        )
+        assert child_ids
+        child = child_ids[0]
+        subs = kb.list_notify_subs(conn, child)
+        assert len(subs) == 1
+        assert subs[0]["chat_id"] == "chat-1"
+        assert subs[0]["thread_id"] == "thread-7"
+        assert subs[0]["notifier_profile"] == "default"
+        kb.complete_task(conn, child, summary="GO — child done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "default"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert child in adapter.sent[0]["text"]
+    assert "GO" in adapter.sent[0]["text"]
+    assert adapter.sent[0]["metadata"] == {"thread_id": "thread-7"}
+
+
+
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     """A retry cycle (crashed → reclaimed → crashed) notifies the user twice.
 

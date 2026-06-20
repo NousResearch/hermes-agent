@@ -38,7 +38,7 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
         assert kb.get_task(conn, tid).status == "triage"
 
     children = [
-        {"title": "research", "body": "look at prior art", "assignee": "researcher", "parents": []},
+        {"title": "research", "body": "look at prior art", "assignee": "analyst", "parents": []},
         {"title": "build it", "body": "write code", "assignee": "engineer", "parents": [0]},
     ]
     with kb.connect() as conn:
@@ -62,7 +62,7 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert root.assignee == "orchestrator"
     # First child has no internal parents → ready on recompute_ready.
     assert c0.status == "ready"
-    assert c0.assignee == "researcher"
+    assert c0.assignee == "analyst"
     # Second child has parents=[0] → stays in todo until c0 completes.
     assert c1.status == "todo"
     assert c1.assignee == "engineer"

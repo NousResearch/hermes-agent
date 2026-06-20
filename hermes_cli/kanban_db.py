@@ -103,6 +103,16 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
+# Legacy board language used role names before Brian's live mesh settled on
+# profile IDs. Keep the translation close to Kanban ingress/dispatch so old
+# cards and decomposer choices do not strand work in non-spawnable lanes.
+ROLE_ASSIGNEE_ALIASES: dict[str, str] = {
+    "operator": "winston",
+    "researcher": "brennan",
+    "builder": "stark",
+    "steward": "pepper",
+}
+
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
@@ -127,6 +137,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         invoke_hook(event, task_id=task_id, profile_name=profile_name, **fields)
     except Exception as exc:  # pragma: no cover - defensive
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
+
 
 
 # A running task's claim is valid for 15 minutes by default; after that the
@@ -2231,12 +2242,86 @@ def _claimer_id() -> str:
 # ---------------------------------------------------------------------------
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    """Normalize Kanban assignee names to real spawnable profile IDs.
+
+    Besides ordinary profile-name canonicalization, this maps the legacy role
+    labels that still appear in older board/task language onto the current live
+    profile IDs. That keeps both new cards and old rows from falling into the
+    dispatcher's ``skipped_nonspawnable`` bucket purely because they said
+    ``operator`` instead of ``winston``.
+    """
     if assignee is None:
+        return None
+    if not str(assignee).strip():
         return None
     from hermes_cli.profiles import normalize_profile_name
 
-    return normalize_profile_name(assignee)
+    normalized = normalize_profile_name(assignee)
+    alias_target = ROLE_ASSIGNEE_ALIASES.get(normalized)
+    if alias_target:
+        try:
+            from hermes_cli.profiles import profile_exists
+
+            if profile_exists(normalized):
+                return normalized
+        except Exception:
+            pass
+        return alias_target
+    return normalized
+
+
+def canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+    """Public wrapper for callers that need Kanban's assignee alias contract."""
+    return _canonical_assignee(assignee)
+
+
+def _alias_for_assignee(assignee: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(canonical, alias_used)`` for an assignee-like value."""
+    if assignee is None:
+        return None, None
+    if not str(assignee).strip():
+        return None, None
+    from hermes_cli.profiles import normalize_profile_name
+
+    normalized = normalize_profile_name(assignee)
+    canonical = _canonical_assignee(normalized)
+    return canonical, (normalized if canonical != normalized else None)
+
+
+def _apply_assignee_alias_unlocked(
+    conn: sqlite3.Connection,
+    task_id: str,
+    assignee: Optional[str],
+    *,
+    dry_run: bool = False,
+) -> Optional[str]:
+    """Canonicalize an existing task row's assignee, emitting an audit event.
+
+    ``create_task`` canonicalizes new rows, but long-lived boards may already
+    contain role-name assignees. The dispatcher calls this before profile
+    validation so legacy ``operator``/``researcher`` cards route to their live
+    profiles instead of being skipped as non-spawnable.
+    """
+    canonical, alias = _alias_for_assignee(assignee)
+    if canonical is None:
+        return None
+    if alias and not dry_run:
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET assignee = ? WHERE id = ? AND assignee = ?",
+                (canonical, task_id, assignee),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "assigned",
+                {
+                    "assignee": canonical,
+                    "source": "kanban.role_alias",
+                    "alias": alias,
+                },
+            )
+    return canonical
 
 
 def create_task(
@@ -2469,6 +2554,13 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                for pid in parents:
+                    _inherit_notify_subs_unlocked(
+                        conn,
+                        source_task_id=pid,
+                        target_task_id=task_id,
+                        source="parent",
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -4756,6 +4848,12 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            _inherit_notify_subs_unlocked(
+                conn,
+                source_task_id=task_id,
+                target_task_id=new_id,
+                source="decompose_root",
+            )
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).
@@ -6523,7 +6621,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        assignee = _canonical_assignee(row["assignee"])
+        if assignee and profile_exists(assignee):
             return True
     return False
 
@@ -6548,7 +6647,8 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     except Exception:
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        assignee = _canonical_assignee(row["assignee"])
+        if assignee and profile_exists(assignee):
             return True
     return False
 
@@ -6748,7 +6848,7 @@ def _dispatch_once_locked(
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
-    _default_assignee = (default_assignee or "").strip() or None
+    _default_assignee = _canonical_assignee(default_assignee)
     _default_assignee_resolved = False
     if _default_assignee:
         try:
@@ -6764,7 +6864,9 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
-        row_assignee = row["assignee"]
+        row_assignee = _apply_assignee_alias_unlocked(
+            conn, row["id"], row["assignee"], dry_run=dry_run,
+        )
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
             # unassigned ready task and an operator-configured fallback
@@ -6955,18 +7057,21 @@ def _dispatch_once_locked(
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
-        if not row["assignee"]:
+        row_assignee = _apply_assignee_alias_unlocked(
+            conn, row["id"], row["assignee"], dry_run=dry_run,
+        )
+        if not row_assignee:
             result.skipped_unassigned.append(row["id"])
             continue
         try:
             from hermes_cli.profiles import profile_exists
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if profile_exists is not None and not profile_exists(row_assignee):
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
-            result.spawned.append((row["id"], row["assignee"], ""))
+            result.spawned.append((row["id"], row_assignee, ""))
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -7829,6 +7934,70 @@ def task_age(task: Task) -> dict:
 # ---------------------------------------------------------------------------
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
+
+def _inherit_notify_subs_unlocked(
+    conn: sqlite3.Connection,
+    *,
+    source_task_id: str,
+    target_task_id: str,
+    source: str,
+) -> int:
+    """Copy gateway terminal-event subscriptions from one card to another.
+
+    The gateway auto-subscribes the original front-door ``/kanban create``
+    card. Follow-up/successor cards created later (decomposition, controller
+    repair cards, parent-linked continuations) must inherit that subscription
+    or their terminal GO / changes-requested / blocked events become silent.
+
+    Call only from an existing write transaction; this helper deliberately does
+    not open ``write_txn`` so create/decompose operations stay atomic.
+    """
+    if not source_task_id or not target_task_id or source_task_id == target_task_id:
+        return 0
+    cursor_row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS max_id FROM task_events WHERE task_id = ?",
+        (target_task_id,),
+    ).fetchone()
+    target_cursor = int(cursor_row["max_id"] if cursor_row else 0)
+    now = int(time.time())
+    inserted = 0
+    rows = conn.execute(
+        "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
+        "FROM kanban_notify_subs WHERE task_id = ?",
+        (source_task_id,),
+    ).fetchall()
+    for row in rows:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_notify_subs
+                (task_id, platform, chat_id, thread_id, user_id,
+                 notifier_profile, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                target_task_id,
+                row["platform"],
+                row["chat_id"],
+                row["thread_id"] or "",
+                row["user_id"],
+                row["notifier_profile"],
+                now,
+                target_cursor,
+            ),
+        )
+        inserted += max(0, cur.rowcount)
+    if inserted:
+        _append_event(
+            conn,
+            target_task_id,
+            "notify_sub_inherited",
+            {
+                "from_task_id": source_task_id,
+                "source": source,
+                "count": inserted,
+            },
+        )
+    return inserted
 
 def add_notify_sub(
     conn: sqlite3.Connection,

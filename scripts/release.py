@@ -478,6 +478,7 @@ AUTHOR_MAP = {
     "krionex1@gmail.com": "Krionex",
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",
     "ma.haohao2@xydigit.com": "MaHaoHao-ch",
+    "zheng.tao@xydigit.com": "xydigit-zt",
     "29756950+revaraver@users.noreply.github.com": "revaraver",
     "nexus@eptic.me": "TheEpTic",
     "74554762+wmagev@users.noreply.github.com": "wmagev",

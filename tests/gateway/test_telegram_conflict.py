@@ -244,7 +244,13 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
 
 @pytest.mark.asyncio
 async def test_connect_clears_webhook_before_polling(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter = TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"max_commands_per_scope": 31},
+        )
+    )
 
     monkeypatch.setattr(
         "gateway.status.acquire_scoped_lock",
@@ -281,10 +287,15 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
 
+    menu_commands = MagicMock(return_value=([("summarize", "Summarize")], 0))
+    monkeypatch.setattr("hermes_cli.commands.telegram_menu_commands", menu_commands)
+
     ok = await adapter.connect()
 
     assert ok is True
     bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    menu_commands.assert_called_once_with(max_commands=31)
+    assert bot.set_my_commands.await_count == 3
 
 
 @pytest.mark.asyncio

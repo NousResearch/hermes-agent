@@ -1467,6 +1467,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        # Clarify button state (clarify_id → session_key). The clarify_id
+        # itself is minted upstream by tools.clarify_gateway.
+        self._clarify_state: Dict[str, str] = {}
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
@@ -2000,6 +2003,130 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[List[str]],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive clarify card with one button per choice.
+
+        Multi-choice: renders one button per option plus a final "✏️ Other
+        (type answer)" button. Picking "Other" flips the entry into
+        text-capture mode so the next message becomes the response.
+
+        Open-ended (no choices): renders the question as plain markdown —
+        no buttons. The gateway's text-intercept captures the next message.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            elements: List[Dict[str, Any]] = [
+                {"tag": "markdown", "content": f"**❓ {self._escape_lark_markdown(question)}**"},
+            ]
+
+            if choices:
+                action_buttons: List[Dict[str, Any]] = []
+                for idx, choice in enumerate(choices):
+                    label = str(choice)
+                    if len(label) > 60:
+                        label = label[:57] + "..."
+                    action_buttons.append({
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": f"{idx + 1}. {label}"},
+                        "type": "default",
+                        "value": {
+                            "hermes_clarify_action": "choose",
+                            "clarify_id": clarify_id,
+                            "choice_idx": idx,
+                        },
+                    })
+                action_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "✏️ Other (type answer)"},
+                    "type": "default",
+                    "value": {
+                        "hermes_clarify_action": "other",
+                        "clarify_id": clarify_id,
+                    },
+                })
+                elements.append({"tag": "action", "actions": action_buttons})
+
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": "❓ Clarify", "tag": "plain_text"},
+                    "template": "blue",
+                },
+                "elements": elements,
+            }
+
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_clarify failed")
+            if result.success:
+                self._clarify_state[clarify_id] = session_key
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_clarify failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _escape_lark_markdown(text: str) -> str:
+        """Escape Lark-markdown control chars so user-supplied question text
+        cannot inject formatting (or break out of the surrounding **…**)."""
+        if not text:
+            return ""
+        out = []
+        for ch in text:
+            if ch in ("*", "_", "[", "]", "`"):
+                out.append("\\" + ch)
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    @staticmethod
+    def _build_resolved_clarify_card(*, question: str, choice_text: str, user_name: str) -> Dict[str, Any]:
+        q = FeishuAdapter._escape_lark_markdown(question)
+        c = FeishuAdapter._escape_lark_markdown(choice_text)
+        u = FeishuAdapter._escape_lark_markdown(user_name)
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✅ Clarify answered", "tag": "plain_text"},
+                "template": "green",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"**❓ {q}**\n\n**{u}:** {c}"},
+            ],
+        }
+
+    @staticmethod
+    def _build_awaiting_text_clarify_card(*, question: str, user_name: str) -> Dict[str, Any]:
+        q = FeishuAdapter._escape_lark_markdown(question) if question else "Awaiting your response"
+        u = FeishuAdapter._escape_lark_markdown(user_name)
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✏️ Awaiting typed answer", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"**❓ {q}**\n\n_Awaiting typed response from {u}…_"},
+            ],
+        }
 
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
@@ -2540,6 +2667,10 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        clarify_action = (
+            action_value.get("hermes_clarify_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
@@ -2549,6 +2680,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 action_value=action_value,
                 loop=loop,
             )
+        if clarify_action:
+            return self._handle_clarify_card_action(event=event, action_value=action_value, loop=loop)
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
@@ -2775,6 +2908,109 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve Feishu update prompt: %s", exc)
+
+    def _handle_clarify_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Resolve a clarify button click; return a replacement card."""
+        clarify_id = str(action_value.get("clarify_id") or "")
+        sub_action = str(action_value.get("hermes_clarify_action") or "")
+        if not clarify_id or clarify_id not in self._clarify_state:
+            logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized clarify click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        user_name = self._get_cached_sender_name(open_id) or open_id or "User"
+
+        # Look up the question and choice text from the clarify primitive.
+        question = ""
+        resolved_text: Optional[str] = None
+        try:
+            from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
+            entry = _clarify_entries.get(clarify_id)
+            if entry is not None:
+                question = entry.question or ""
+                if sub_action == "choose":
+                    idx = action_value.get("choice_idx")
+                    try:
+                        idx_int = int(idx)
+                    except (TypeError, ValueError):
+                        idx_int = -1
+                    if entry.choices and 0 <= idx_int < len(entry.choices):
+                        resolved_text = entry.choices[idx_int]
+        except Exception as exc:
+            logger.debug("[Feishu] Failed to read clarify entry %s: %s", clarify_id, exc)
+
+        if sub_action == "other":
+            # Flip to text-capture mode; keep _clarify_state alive so a
+            # late session-cleanup can still find the key.
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+                mark_awaiting_text(clarify_id)
+            except Exception as exc:
+                logger.warning("[Feishu] mark_awaiting_text failed: %s", exc)
+
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = self._build_awaiting_text_clarify_card(question=question, user_name=user_name)
+                response.card = card
+            return response
+
+        if sub_action != "choose":
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if resolved_text is None:
+            # Race with cleanup — fall back to index label so the agent
+            # sees an intentional response rather than nothing.
+            try:
+                idx_int = int(action_value.get("choice_idx"))
+                resolved_text = f"choice {idx_int + 1}"
+            except (TypeError, ValueError):
+                resolved_text = "choice"
+
+        # Schedule the unblock first; only drop state if the loop accepted
+        # the coroutine. Otherwise the agent would stay blocked with no
+        # state left to retry against.
+        if not self._submit_on_loop(loop, self._resolve_clarify(clarify_id, resolved_text, user_name)):
+            logger.warning("[Feishu] clarify %s: loop unavailable, keeping state", clarify_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        self._clarify_state.pop(clarify_id, None)
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_clarify_card(
+                question=question, choice_text=resolved_text, user_name=user_name,
+            )
+            response.card = card
+        return response
+
+    async def _resolve_clarify(self, clarify_id: str, choice_text: str, user_name: str) -> None:
+        """Unblock the agent thread waiting on this clarify."""
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+            resolved = resolve_gateway_clarify(clarify_id, choice_text)
+            if resolved:
+                logger.info(
+                    "Feishu clarify button resolved (id=%s, choice=%r, user=%s)",
+                    clarify_id, choice_text, user_name,
+                )
+            else:
+                logger.warning(
+                    "Feishu clarify button: resolve_gateway_clarify returned False (id=%s)",
+                    clarify_id,
+                )
+        except Exception as exc:
+            logger.error("Failed to resolve gateway clarify from Feishu button: %s", exc)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""

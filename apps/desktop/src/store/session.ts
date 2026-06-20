@@ -232,6 +232,23 @@ export const $lastVisibleMessageIsUser = computed($messages, lastVisibleMessageI
 export const $freshDraftReady = atom(false)
 export const $busy = atom(false)
 export const $awaitingResponse = atom(false)
+// Stored-session id whose most recent resume FAILED terminally (the gateway RPC
+// rejected AND the REST transcript fallback also failed), leaving the window
+// with no runtime and an empty transcript. Drives use-route-resume's self-heal:
+// while this matches the routed session the loader would otherwise latch
+// forever (messagesEmpty && !activeSessionId), so the hook re-attempts the
+// resume on the next render/focus/reconnect instead of stranding the window.
+// Null whenever the active route has a healthy (or in-flight) resume.
+export const $resumeFailedSessionId = atom<string | null>(null)
+// Stored-session id whose resume has EXHAUSTED its bounded auto-retries (the
+// terminal-failure latch above kept failing through all MAX_RESUME_RETRIES
+// attempts). Distinct from $resumeFailedSessionId, which is armed *during* the
+// backoff window too: this fires only once auto-recovery has given up, so the
+// chat view can swap the perpetual loader for an explicit error + manual Retry
+// affordance. A fresh resumeSession() (manual Retry, reconnect, reselect)
+// clears it and resets the retry counter. Null whenever the active route has a
+// healthy, in-flight, or still-auto-retrying resume.
+export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
@@ -276,6 +293,8 @@ export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
+export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
 

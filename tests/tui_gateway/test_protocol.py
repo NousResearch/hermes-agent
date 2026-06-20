@@ -509,6 +509,111 @@ def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypa
     assert resp["result"]["status"] == "streaming"
 
 
+def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monkeypatch):
+    """Race regression: a watch window opens on a freshly-spawned subagent and
+    resumes BEFORE the child's first run_conversation() flushes its DB row.
+
+    The child relays ``subagent.start`` (carrying child_session_id, which opens
+    the window) before ``_ensure_db_session`` writes the row, so
+    ``db.get_session(target)`` is momentarily empty. On slower hosts (WSL2) the
+    window's lazy resume consistently lands in this gap. It used to hard-fail
+    "session not found"; the frontend then 404'd on its REST messages fallback
+    and the watch window spun forever. Since the child is provably live
+    (``_child_run_active``), the lazy resume must instead register the live
+    session with empty history so the mirror can stream the turn.
+    """
+
+    target = "20260616_131212_racey"
+
+    class _DB:
+        def get_session(self, _sid):
+            # Row not flushed yet — the whole point of the race.
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            # No rows for an unwritten session.
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
+    )
+    # Child is live in the relay registry even though its row isn't written.
+    server._active_child_runs[target] = time.time()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "r1",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100, "lazy": True},
+            }
+        )
+    finally:
+        server._active_child_runs.pop(target, None)
+
+    # The resume must succeed (no "session not found") and register a live,
+    # agent-less watch session the mirror can find by stored key.
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["info"]["lazy"] is True
+    assert result["messages"] == []
+    # Live for the mirror; reported running so the window shows a busy state.
+    assert result["running"] is True
+    assert result["status"] == "streaming"
+    sid = result["session_id"]
+    assert server._find_live_session_by_key(target) == (sid, server._sessions[sid])
+    assert server._sessions[sid]["agent"] is None
+
+
+def test_session_resume_missing_row_non_lazy_still_errors(server, monkeypatch):
+    """The missing-row tolerance is scoped to lazy resumes of an ACTIVE child.
+    A normal (non-lazy) resume of a genuinely unknown id must still fail fast
+    with "session not found" rather than silently registering an empty session.
+    """
+
+    target = "20260616_000000_ghost"
+
+    class _DB:
+        def get_session(self, _sid):
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    # Non-lazy resume, no active child → hard error.
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+    assert "error" in resp
+    assert "session not found" in resp["error"]["message"].lower()
+
+    # Lazy resume but the child is NOT live → still an error (no live mirror to
+    # justify an empty session; this would just be a dead, sessionless window).
+    resp2 = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+    assert "error" in resp2
+    assert "session not found" in resp2["error"]["message"].lower()
+
+
 def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     """Repeated resume must not allocate duplicate live agents."""
 
@@ -1016,20 +1121,45 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
 
 
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
-def test_slash_exec_rejects_pending_input_commands(server, cmd):
-    """slash.exec must reject commands that use _pending_input in the CLI."""
-    sid = "test-session"
-    server._sessions[sid] = {"session_key": sid, "agent": None}
+def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
+    """slash.exec must route _pending_input commands to command.dispatch
+    internally instead of returning the old 4018 "use command.dispatch"
+    fallback error (#48848). Some TUI clients failed that client-side
+    fallback, dropping the input and surfacing "empty command".
 
-    resp = server.handle_request({
+    The contract is that slash.exec produces exactly the response
+    command.dispatch would for the same command — no fragile retry hop.
+    """
+    base, _, arg = cmd.partition(" ")
+
+    def fresh_session():
+        return {"session_key": "test-session", "agent": None}
+
+    sid = "test-session"
+
+    # Response from the (new) internal routing in slash.exec.
+    server._sessions[sid] = fresh_session()
+    routed = server.handle_request({
         "id": "r1",
         "method": "slash.exec",
         "params": {"command": cmd, "session_id": sid},
     })
 
-    assert "error" in resp
-    assert resp["error"]["code"] == 4018
-    assert "pending-input command" in resp["error"]["message"]
+    # Response from calling command.dispatch directly with the parsed parts.
+    server._sessions[sid] = fresh_session()
+    direct = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": base, "arg": arg, "session_id": sid},
+    })
+
+    # slash.exec must no longer emit the old client-fallback rejection.
+    if "error" in routed:
+        assert "pending-input command" not in routed["error"]["message"]
+
+    # Internal routing must yield the same payload as command.dispatch.
+    assert routed.get("result") == direct.get("result")
+    assert routed.get("error") == direct.get("error")
 
 
 def test_command_dispatch_queue_sends_message(server):

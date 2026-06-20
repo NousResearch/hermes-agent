@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -50,7 +50,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -195,6 +195,7 @@ def init_agent(
     status_callback: callable = None,
     notice_callback: callable = None,
     notice_clear_callback: callable = None,
+    event_callback: Optional[Callable[[str, dict], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
@@ -426,6 +427,7 @@ def init_agent(
     agent.status_callback = status_callback
     agent.notice_callback = notice_callback
     agent.notice_clear_callback = notice_clear_callback
+    agent.event_callback = event_callback
     agent.tool_gen_callback = tool_gen_callback
 
     
@@ -529,7 +531,14 @@ def init_agent(
     agent._last_activity_desc: str = "initializing"
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
-
+    # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
+    # Set on internal forks (e.g. background_review) that must keep ``tools[]``
+    # byte-identical to a parent for provider cache parity.
+    agent._skip_mcp_refresh = False
+    # Registry generation the current tool snapshot was derived from. Lets a
+    # late/concurrent refresh reject a stale (older-generation) rebuild instead
+    # of clobbering a newer one. Set adjacent to the tool snapshot below.
+    agent._tool_snapshot_generation = 0
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None
@@ -597,6 +606,7 @@ def init_agent(
     # (e.g. CLI voice mode adds a temporary prefix for the live call only).
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
 
     # Cache anthropic image-to-text fallbacks per image payload/URL so a
     # single tool loop does not repeatedly re-run auxiliary vision on the
@@ -950,7 +960,14 @@ def init_agent(
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
-    # Get available tools with filtering
+    # Get available tools with filtering. Capture the registry generation this
+    # snapshot is derived from FIRST, so a later concurrent refresh can tell
+    # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
+    try:
+        from tools.registry import registry as _snapshot_registry
+        agent._tool_snapshot_generation = _snapshot_registry._generation
+    except Exception:
+        agent._tool_snapshot_generation = 0
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
@@ -1153,6 +1170,9 @@ def init_agent(
                         "hermes_home": str(get_hermes_home()),
                         "agent_context": "primary",
                     }
+                    if _init_kwargs["platform"] == "cli":
+                        _init_kwargs["warning_callback"] = agent._emit_warning
+                        _init_kwargs["status_callback"] = agent._emit_status
                     # Thread session title for memory provider scoping
                     # (e.g. honcho uses this to derive chat-scoped session keys)
                     if agent._session_db:
@@ -1221,11 +1241,34 @@ def init_agent(
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
 
+    # Universal parallel-tool-call guidance toggle.  Default True.  Separate
+    # flag from task_completion_guidance because a user may want one but not
+    # the other.  Steers the model to batch independent tool calls into a
+    # single turn; the runtime already executes such batches concurrently.
+    agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics
     # are noisy.
     agent._environment_probe = bool(_agent_section.get("environment_probe", True))
+
+    # Per-platform prompt-hint overrides (config.yaml → platform_hints).
+    # Lets an enterprise admin append to or replace Hermes' built-in
+    # platform hint for a single messaging platform (e.g. WhatsApp) without
+    # affecting other platforms. Shape:
+    #   platform_hints:
+    #     whatsapp:
+    #       append: "When tabular output would help, invoke the ... skill."
+    #     slack:
+    #       replace: "Custom Slack hint that fully replaces the default."
+    # Stored verbatim; resolution happens in agent/system_prompt.py against
+    # the active platform. Invalid shapes are ignored defensively so a bad
+    # config entry can never break prompt assembly.
+    _platform_hints_cfg = _agent_cfg.get("platform_hints", {})
+    if not isinstance(_platform_hints_cfg, dict):
+        _platform_hints_cfg = {}
+    agent._platform_hint_overrides = _platform_hints_cfg
 
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -1296,6 +1339,14 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # In-place compaction: when True, compress_context() rewrites the message
+    # list + rebuilds the system prompt WITHOUT rotating the session id (no
+    # parent_session_id chain, no `name #N` renumber). See #38763 and
+    # agent/conversation_compression.py. Consumed by compress_context(), not the
+    # compressor, so it rides on the agent.
+    compression_in_place = is_truthy_value(
+        _compression_cfg.get("in_place"), default=False
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1515,6 +1566,7 @@ def init_agent(
             abort_on_summary_failure=compression_abort_on_summary_failure,
         )
     agent.compression_enabled = compression_enabled
+    agent.compression_in_place = compression_in_place
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

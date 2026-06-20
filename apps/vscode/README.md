@@ -23,6 +23,8 @@ This extension intentionally keeps the Hermes brain outside VS Code. It launches
 - **Markdown and code-block rendering** in chat, including copy buttons for assistant replies and fenced code blocks.
 - **Collapsible tool-event cards** for streaming ACP activity.
 - **Patch Review panel** with Preview, Apply, Copy, Discard, Run tests, and Revert actions after Hermes emits a unified diff.
+- **Context Inspector** that shows the active workspace/file, selected text size, diagnostics count, Git status file count, discovered instruction files, included context toggles, and context budget before sending.
+- **Patch metadata** showing changed files, hunk counts, and additions/deletions inside the review panel.
 - **Suggested starter prompts** in the empty state for diff review, file explanation, and test discovery.
 
 ## Requirements

@@ -1,15 +1,19 @@
-"""Curated Buidl Agent Harness capability registry.
+"""Curated Hermes Agent Harness capability registry.
 
 This package records a small, safe Hermes-native harness inspired by the public
-ECC repository audit. It is metadata and guard logic only. It does not install
-ECC, activate third-party hooks, enable MCPs, run providers, run prompts, or
-copy ECC files wholesale.
+ECC repository audit. The general layer is reusable across Buidl, Asvoria and
+future Niko projects. Buidl is represented as the first specialized skill pack.
+It is metadata and guard logic only. It does not install ECC, activate
+third-party hooks, enable MCPs, run providers, run prompts, or copy ECC files
+wholesale.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from .skills import ECC_SKILLS_INSPECTED, load_skill_registry
 
 CapabilityType = Literal["agent", "skill", "command", "hook", "rule", "memory", "scanner"]
 CapabilityStatus = Literal["disabled", "review", "approved", "active"]
@@ -60,7 +64,9 @@ def load_ecc_audit_inventory() -> dict[str, Any]:
     return {
         "commit": ECC_COMMIT_INSPECTED,
         "agents_available": 67,
-        "skills_available": 271,
+        "skills_available": ECC_SKILLS_INSPECTED,
+        "skills_metadata_represented": ECC_SKILLS_INSPECTED,
+        "skills_metadata_policy": "metadata only, no wholesale skill instructions copied or auto-activated",
         "commands_available": 92,
         "hooks_available": 4,
         "rules_available": 114,
@@ -98,12 +104,26 @@ def load_ecc_audit_inventory() -> dict[str, Any]:
             "full rules corpus auto-load",
             "language-specific reviewers unrelated to Buidl",
         ],
+        "architecture_layers": {
+            "general_layer": "Hermes Agent Harness",
+            "specialized_layer": "Buidl Skill Pack",
+            "future_specialized_layer": "Asvoria Skill Pack",
+        },
         "selected_capabilities": [
             "curated Buidl specialist agent metadata",
             "durable goal/card commands",
             "review-mode safety hooks",
             "sanitized lesson candidate flow",
             "context bloat guard",
+            "Buidl skill packs selected by goal type and agent role",
+        ],
+        "skill_packs": [
+            "Security and Safety Pack",
+            "Verification Pack",
+            "Memory and Learning Pack",
+            "Agentic Build Pack",
+            "Design Quality Pack",
+            "Buidl Skill Pack",
         ],
     }
 
@@ -184,6 +204,11 @@ def load_registry() -> CapabilityRegistry:
         _skill("verification-loop", "Use evidence loops before marking Buidl work complete.", ecc_reference="skills/verification-loop/SKILL.md"),
         _skill("context-budget", "Keep harness context bounded and avoid loading everything.", ecc_reference="skills/context-budget/SKILL.md"),
         _skill("agentic-os", "Use goal, card, blocker and verifier structure for agentic execution.", ecc_reference="skills/agentic-os/SKILL.md"),
+        _skill("design-quality-pack", "Activate curated design review skills for Buidl and generated website goals without loading all ECC skills.", ecc_reference="skills/design-quality/SKILL.md"),
+        _skill("security-safety-pack", "Activate curated safety skills for secrets, env redaction, provider gates and approval boundaries.", ecc_reference="skills/security-safety/SKILL.md"),
+        _skill("verification-pack", "Activate curated verifier skills for tests, CI, browser criteria and evidence-based done status.", ecc_reference="skills/verification/SKILL.md"),
+        _skill("memory-learning-pack", "Activate curated memory skills for sanitized lesson candidates and Obsidian-safe learning.", ecc_reference="skills/memory-learning/SKILL.md"),
+        _skill("agentic-build-pack", "Activate planner, builder, reviewer, verifier and Goal OS card skills by goal type.", ecc_reference="skills/agentic-build/SKILL.md"),
         _command("goal", "Create or inspect a durable Buidl goal."),
         _command("status", "Report active Buidl goals and next actions."),
         _command("blockers", "Report true blockers only."),
@@ -221,4 +246,5 @@ __all__ = [
     "CapabilityRegistry",
     "load_ecc_audit_inventory",
     "load_registry",
+    "load_skill_registry",
 ]

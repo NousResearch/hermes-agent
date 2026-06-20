@@ -132,6 +132,7 @@ class TaskCard:
     verification_commands: list[str] = field(default_factory=list)
     blocker_reason: str = ""
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    skill_packs: list[str] = field(default_factory=list)
     next_action: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,6 +152,7 @@ class TaskCard:
             verification_commands=[str(x) for x in data.get("verification_commands") or []],
             blocker_reason=str(data.get("blocker_reason") or ""),
             evidence=list(data.get("evidence") or []),
+            skill_packs=[str(x) for x in data.get("skill_packs") or []],
             next_action=str(data.get("next_action") or ""),
         )
 
@@ -384,6 +386,32 @@ class GoalOSManager:
         self.save_goal(goal)
         return goal
 
+    def _skill_packs_for_role(self, role: str, title: str) -> list[str]:
+        from hermes_cli.capabilities.skills import load_skill_registry
+
+        registry = load_skill_registry()
+        probes = (
+            ("Buidl generated website design quality", role),
+            ("security safety", role),
+            ("verification test build", role),
+            ("lesson memory", role),
+            ("Buidl agentic build", role),
+        )
+        packs: list[str] = []
+        role_lower = role.lower()
+        title_lower = title.lower()
+        for goal_type, agent_role in probes:
+            plan = registry.activate_pack_for_goal(goal_type, agent_role=agent_role)
+            if plan.skills and plan.pack_name not in packs:
+                if plan.pack_name == "Design Quality Pack" and role_lower not in {"product qa agent", "reviewer agent", "code reviewer agent", "verifier agent"}:
+                    continue
+                if plan.pack_name == "Security and Safety Pack" and "security" not in title_lower and "ops" not in role_lower:
+                    continue
+                if plan.pack_name == "Memory and Learning Pack" and "memory" not in role_lower:
+                    continue
+                packs.append(plan.pack_name)
+        return packs
+
     def _build_default_cards(self, goal_id: str, branch: str) -> list[TaskCard]:
         specs = [
             ("Clarify durable goal contract and task decomposition", "Clio Orchestrator", "ready"),
@@ -404,6 +432,7 @@ class GoalOSManager:
                 branch=branch,
                 acceptance_criteria=["Complete the role-specific card with evidence."],
                 verification_commands=list(DEFAULT_VERIFICATION_COMMANDS) if role == "Verifier Agent" else [],
+                skill_packs=self._skill_packs_for_role(role, title),
                 next_action=f"{role} takes the next safe step.",
             )
             for title, role, status in specs

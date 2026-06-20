@@ -337,25 +337,33 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, …) must be registered as standalone
-        slashes — this is the whole point of native-slashes parity.
-
-        Asserts the contract (aliases are surfaced as first-class slashes),
-        not a specific alias's survival of Slack's 50-slash clamp — which alias
-        lands last shifts whenever a canonical command is added. Only the
-        explicitly pinned ``_SLACK_PRIORITY_ALIASES`` are guaranteed slots;
-        every other alias (e.g. ``reset``) may be clamped once the registry
-        fills the cap — canonical commands win the contest, and clamped
-        aliases stay reachable via ``/hermes <alias>``.
-        """
+        """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
+        slashes, ahead of low-frequency Goal OS operations."""
         slashes = slack_native_slashes()
         names = {n for n, _d, _h in slashes}
-        # The pinned priority aliases are guaranteed to survive the clamp.
+
         assert "btw" in names
         assert "bg" in names
         # And at least one alias is surfaced as an alias entry (description
         # carries the "Alias for /…" marker), proving the alias pass ran.
         assert any(d.startswith("Alias for /") for _n, d, _h in slashes)
+
+    def test_goal_os_operational_commands_route_through_hermes_on_slack(self):
+        names = {n for n, _d, _h in slack_native_slashes()}
+        mapping = slack_subcommand_map()
+        operational = {
+            "blockers",
+            "plan",
+            "execute",
+            "review",
+            "verify",
+            "fix-ci",
+            "ship",
+            "learn",
+            "checkpoint",
+        }
+        assert operational.isdisjoint(names)
+        assert operational <= set(mapping)
 
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
@@ -379,8 +387,10 @@ class TestSlackNativeSlashes:
         slack_norm = {_norm(n) for n in slack_names}
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
+
         # Commands deliberately routed through /hermes <command> on Slack only
         # (Slack's 50-slash cap) are expected to be absent from native slashes.
+
         via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
         missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
         assert not missing, (

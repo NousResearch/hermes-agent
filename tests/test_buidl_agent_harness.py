@@ -83,6 +83,12 @@ def test_buidl_commands_exist_and_connect_to_goal_os():
 
     manager = GoalOSManager()
     manager.handle_command("goal", "Build harness")
+    goal = manager.get_goal()
+    assert goal is not None
+    product_card = next(card for card in goal.cards if card.owner_role == "Product QA Agent")
+    reviewer_card = next(card for card in goal.cards if card.owner_role == "Reviewer Agent")
+    assert "Design Quality Pack" in product_card.skill_packs
+    assert "Design Quality Pack" in reviewer_card.skill_packs
     for command in expected:
         report = manager.handle_command(command, "safe session summary" if command == "learn" else "")
         assert report.classification in {"GREEN", "RED", "NOISE"}
@@ -161,5 +167,11 @@ def test_ecc_audit_inventory_is_pinned_and_curated():
     inventory = load_ecc_audit_inventory()
     assert inventory["commit"] == "34faa39bd3cd496a0aece0245f2b7e38b7923abc"
     assert inventory["context_bloat_risks"]["skills"] >= 200
+    assert inventory["architecture_layers"] == {
+        "general_layer": "Hermes Agent Harness",
+        "specialized_layer": "Buidl Skill Pack",
+        "future_specialized_layer": "Asvoria Skill Pack",
+    }
+    assert "Buidl Skill Pack" in inventory["skill_packs"]
     assert "wholesale install" in inventory["rejected_for_buidl"]
     assert "hook review-mode pattern" in inventory["recommended_for_buidl"]

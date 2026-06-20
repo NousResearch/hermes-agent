@@ -191,6 +191,19 @@ class ProcessRegistry:
             lines.pop(0)
         return "\n".join(lines)
 
+    @staticmethod
+    def _clean_trailing_shell_noise(text: str) -> str:
+        """Strip shell shutdown warnings from the end of output.
+
+        Bash with ``-i`` emits ``tcsetattr`` errors during exit cleanup
+        when stdin is ``/dev/null``.  The noise appears at the *tail* of
+        the output buffer and is not caught by the leading-only cleaner.
+        """
+        lines = text.split("\n")
+        while lines and any(noise in lines[-1] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
+            lines.pop()
+        return "\n".join(lines)
+
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
 
@@ -598,7 +611,7 @@ class ProcessRegistry:
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lc", f"set +m; {command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -894,6 +907,7 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+            output_tail = self._clean_trailing_shell_noise(output_tail)
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,

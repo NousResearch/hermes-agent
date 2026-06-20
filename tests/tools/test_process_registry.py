@@ -1318,3 +1318,65 @@ class TestTerminateHostPidPosix:
         pr.ProcessRegistry._terminate_host_pid(12345)
 
         assert kill_calls == [(12345, signal.SIGTERM)]
+
+
+# =========================================================================
+# Shell noise cleaning
+# =========================================================================
+
+
+class TestCleanShellNoise:
+    """Tests for _clean_shell_noise (leading) and _clean_trailing_shell_noise."""
+
+    def test_clean_leading_tcsetattr(self):
+        out = "bash: [8493: 2 (255)] tcsetattr: Inappropriate ioctl for device\nactual output"
+        assert ProcessRegistry._clean_shell_noise(out) == "actual output"
+
+    def test_clean_leading_multiple_noise_lines(self):
+        out = (
+            "bash: cannot set terminal process group 1234\n"
+            "bash: no job control in this shell\n"
+            "real line 1\n"
+            "real line 2"
+        )
+        assert ProcessRegistry._clean_shell_noise(out) == "real line 1\nreal line 2"
+
+    def test_clean_leading_preserves_non_noise(self):
+        out = "hello world\nfoo bar"
+        assert ProcessRegistry._clean_shell_noise(out) == "hello world\nfoo bar"
+
+    def test_clean_trailing_tcsetattr(self):
+        out = "actual output\nbash: [8493: 2 (255)] tcsetattr: Inappropriate ioctl for device"
+        assert ProcessRegistry._clean_trailing_shell_noise(out) == "actual output"
+
+    def test_clean_trailing_multiple_noise_lines(self):
+        out = (
+            "real line 1\n"
+            "real line 2\n"
+            "no job control in this shell\n"
+            "bash: [8493: 2 (255)] tcsetattr: Inappropriate ioctl for device"
+        )
+        assert ProcessRegistry._clean_trailing_shell_noise(out) == "real line 1\nreal line 2"
+
+    def test_clean_trailing_preserves_non_noise(self):
+        out = "hello world\nfoo bar"
+        assert ProcessRegistry._clean_trailing_shell_noise(out) == "hello world\nfoo bar"
+
+    def test_clean_both_ends(self):
+        """Leading noise cleaned by _clean_shell_noise, trailing by _clean_trailing_shell_noise."""
+        out = (
+            "bash: no job control in this shell\n"
+            "real output\n"
+            "bash: [1: 3 (255)] tcsetattr: Inappropriate ioctl for device"
+        )
+        cleaned = ProcessRegistry._clean_shell_noise(out)
+        cleaned = ProcessRegistry._clean_trailing_shell_noise(cleaned)
+        assert cleaned == "real output"
+
+    def test_empty_string_stays_empty(self):
+        assert ProcessRegistry._clean_trailing_shell_noise("") == ""
+
+    def test_only_noise_becomes_empty(self):
+        out = "bash: cannot set terminal process group 42\ntcsetattr: Inappropriate ioctl for device"
+        assert ProcessRegistry._clean_shell_noise(out) == ""
+        assert ProcessRegistry._clean_trailing_shell_noise(out) == ""

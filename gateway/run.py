@@ -3930,6 +3930,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent is not _AGENT_PENDING_SENTINEL
         }
 
+    def _final_sentinel_running_agent_active(self, session_key: str) -> bool:
+        """Concrete running-agent state for adapter COMPLETE gating."""
+        return bool(session_key and session_key in self._running_agents)
+
+    def _final_sentinel_gateway_active_run(self, session_key: str) -> bool:
+        """Concrete gateway active-run state for adapter COMPLETE gating."""
+        return bool(session_key and session_key in self._active_session_leases)
+
+    def _wire_final_sentinel_lifecycle_checkers(self, adapter: Any) -> None:
+        """Expose runner lifecycle state to platform-level COMPLETE gating."""
+        if adapter is None:
+            return
+        try:
+            adapter._final_sentinel_running_agent_checker = self._final_sentinel_running_agent_active
+            adapter._final_sentinel_gateway_active_run_checker = self._final_sentinel_gateway_active_run
+        except Exception:
+            logger.debug("failed to wire final sentinel lifecycle checkers", exc_info=True)
+
     def _get_max_concurrent_sessions(self) -> Optional[int]:
         """Return the configured active chat session cap, if enabled."""
         try:
@@ -5417,6 +5435,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            self._wire_final_sentinel_lifecycle_checkers(adapter)
             adapter._busy_text_mode = self._busy_text_mode
             
             # Try to connect
@@ -6844,6 +6863,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            self._wire_final_sentinel_lifecycle_checkers(adapter)
             adapter._busy_text_mode = self._busy_text_mode
 
             try:

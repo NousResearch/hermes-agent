@@ -1890,6 +1890,8 @@ class BasePlatformAdapter(ABC):
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
+        self._final_sentinel_running_agent_checker: Optional[Callable[[str], bool]] = None
+        self._final_sentinel_gateway_active_run_checker: Optional[Callable[[str], bool]] = None
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
@@ -3388,14 +3390,25 @@ class BasePlatformAdapter(ABC):
         return task_pending or getattr(state, "event", None) is not None
 
     def _known_running_agent_active(self, session_key: str) -> bool:
-        """Call an optional runner-provided active-agent checker if present."""
-        checker = getattr(self, "_final_sentinel_running_agent_checker", None)
+        """Call the runner-provided active-agent checker if present."""
+        checker = self._final_sentinel_running_agent_checker
         if not callable(checker):
             return False
         try:
             return bool(checker(session_key))
         except Exception:
             # Unknown active-agent state is not safe enough for COMPLETE.
+            return True
+
+    def _known_gateway_active_run(self, session_key: str) -> bool:
+        """Call the runner-provided gateway-active-run checker if present."""
+        checker = self._final_sentinel_gateway_active_run_checker
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(session_key))
+        except Exception:
+            # Unknown gateway-run state is not safe enough for COMPLETE.
             return True
 
     def _final_sentinel_lifecycle_snapshot(
@@ -3422,7 +3435,7 @@ class BasePlatformAdapter(ABC):
             running_agent_active=self._known_running_agent_active(session_key),
             background_review_pending=post_delivery_callback_pending,
             final_report_pending=final_report_pending,
-            gateway_active_run=self._known_running_agent_active(session_key),
+            gateway_active_run=self._known_gateway_active_run(session_key),
         )
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
@@ -4218,6 +4231,7 @@ class BasePlatformAdapter(ABC):
         suppressed_or_stale_response = False
         drain_task_spawned = False
         post_delivery_callback_unresolved = False
+        final_report_pending = True
         _final_thread_metadata = _thread_metadata_for_source(
             event.source,
             _reply_anchor_for_event(event),
@@ -4756,10 +4770,12 @@ class BasePlatformAdapter(ABC):
                     del self._session_tasks[session_key]
                     self._release_session_guard(session_key, guard=interrupt_event)
 
+            final_report_pending = False
             lifecycle = self._final_sentinel_lifecycle_snapshot(
                 session_key,
                 drain_task_spawned=drain_task_spawned,
                 post_delivery_callback_pending=post_delivery_callback_unresolved,
+                final_report_pending=final_report_pending,
             )
             if should_send_final_sentinel(
                 platform=self.platform,

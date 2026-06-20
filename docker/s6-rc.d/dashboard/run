@@ -27,7 +27,14 @@ cd /opt/data
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
 
-dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+# Default to loopback. The bundled dashboard_auth providers register an
+# OAuth auth gate that engages on non-loopback binds; without a registered
+# provider, non-loopback binds fail closed with "Refusing to bind dashboard
+# to <host>". Operators who intentionally want a LAN/public bind (and have
+# configured an auth provider, or opted in via HERMES_DASHBOARD_INSECURE)
+# must set HERMES_DASHBOARD_HOST=0.0.0.0 explicitly — matching the
+# `hermes dashboard --host` CLI default in hermes_cli/subcommands/dashboard.py.
+dash_host="${HERMES_DASHBOARD_HOST:-127.0.0.1}"
 dash_port="${HERMES_DASHBOARD_PORT:-9119}"
 
 # `--insecure` is opt-in via HERMES_DASHBOARD_INSECURE. The dashboard's

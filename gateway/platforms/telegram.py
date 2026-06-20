@@ -16,6 +16,7 @@ import os
 import tempfile
 import html as _html
 import re
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -406,6 +407,13 @@ class TelegramAdapter(BasePlatformAdapter):
             value = min(value, max_value)
         return value
 
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return bool(default)
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
     @property
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
@@ -459,6 +467,20 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Telegram live locations and some mobile share-sheet automations can
+        # emit location updates every few seconds. Treat each chat/user burst as
+        # one intent, not a new prompt that interrupts the active turn.
+        self._ignore_locations: bool = self._env_bool(
+            "HERMES_TELEGRAM_IGNORE_LOCATIONS",
+            self._coerce_bool_extra("ignore_locations", False),
+        )
+        self._location_live_update_suppression_seconds = self._env_float_clamped(
+            "HERMES_TELEGRAM_LOCATION_LIVE_SUPPRESSION_SECONDS",
+            300.0,
+            min_value=5.0,
+            max_value=3600.0,
+        )
+        self._recent_live_locations: Dict[str, float] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
@@ -6002,15 +6024,71 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg:
             return
-        if not self._should_process_message(msg):
-            if self._should_observe_unmentioned_group_message(msg):
-                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+
+        # Location shares can be live-location streams rather than explicit
+        # requests for help.  When this is enabled, Telegram pins are treated as
+        # passive context and never start/interrupt an agent turn. Users can
+        # still ask in text: "find coffee near me" and include coordinates.
+        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        ignore_locations = bool(getattr(self, "_ignore_locations", False)) or bool(extra.get("ignore_locations", False))
+        if ignore_locations:
+            logger.info(
+                "[%s] Ignoring Telegram location message because telegram.extra.ignore_locations is enabled chat=%s message=%s update=%s",
+                self.name,
+                getattr(msg, "chat_id", getattr(getattr(msg, "chat", None), "id", "")),
+                getattr(msg, "message_id", ""),
+                getattr(update, "update_id", None),
+            )
             return
 
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
 
         if not location:
+            return
+
+        chat_id = str(
+            getattr(msg, "chat_id", "")
+            or getattr(getattr(msg, "chat", None), "id", "")
+        )
+        user_id = str(getattr(getattr(msg, "from_user", None), "id", ""))
+        message_id = str(getattr(msg, "message_id", ""))
+        burst_key = f"{chat_id}:{user_id}"
+        message_key = f"{burst_key}:{message_id}"
+        now = time.monotonic()
+        self._recent_live_locations = {
+            k: ts for k, ts in self._recent_live_locations.items()
+            if now - ts < self._location_live_update_suppression_seconds
+        }
+
+        live_period = getattr(location, "live_period", None)
+        is_edited_location_update = (
+            getattr(update, "edited_message", None) is not None
+            and getattr(update, "message", None) is None
+        )
+        is_repeated_location_burst = (
+            burst_key in self._recent_live_locations
+            or message_key in self._recent_live_locations
+        )
+        if is_edited_location_update or is_repeated_location_burst:
+            logger.info(
+                "[%s] Ignoring repeated Telegram location update chat=%s user=%s message=%s update=%s live=%s edited=%s",
+                self.name,
+                chat_id,
+                user_id,
+                message_id,
+                getattr(update, "update_id", None),
+                bool(live_period),
+                bool(is_edited_location_update),
+            )
+            return
+        self._recent_live_locations[burst_key] = now
+        if live_period:
+            self._recent_live_locations[message_key] = now
+
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
             return
 
         lat = getattr(location, "latitude", None)

@@ -3939,6 +3939,22 @@ class BasePlatformAdapter(ABC):
 
         coerce_plaintext_gateway_command(event)
 
+        event_platform = event.source.platform.value if hasattr(event.source.platform, "value") else str(event.source.platform)
+        event_text_lower = (event.text or "").lower()
+        if (
+            event_platform == "telegram"
+            and (
+                ("location" in event_text_lower and "pin" in event_text_lower)
+                or (
+                    "latitude" in event_text_lower
+                    and "longitude" in event_text_lower
+                    and "map" in event_text_lower
+                )
+            )
+        ):
+            logger.info("[%s] Dropping Telegram location-pin event before session dispatch", self.name)
+            return
+
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and
         # downstream delivery all agree on the same lane.

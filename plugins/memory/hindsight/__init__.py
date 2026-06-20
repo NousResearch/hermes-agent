@@ -491,6 +491,34 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 
+    # Vertex AI needs provider-specific settings in the standalone embedded
+    # daemon env. Without these, the daemon starts with only provider/model and
+    # fails before serving memory calls.
+    if str(daemon_provider).lower() == "vertexai":
+        vertex_project_id = (
+            config.get("vertexai_project_id")
+            or config.get("llm_vertexai_project_id")
+            or config.get("vertexai_project")
+            or os.environ.get("HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID", "")
+        )
+        vertex_region = (
+            config.get("vertexai_region")
+            or config.get("llm_vertexai_region")
+            or os.environ.get("HINDSIGHT_API_LLM_VERTEXAI_REGION", "")
+        )
+        vertex_service_account_key = (
+            config.get("vertexai_service_account_key")
+            or config.get("llm_vertexai_service_account_key")
+            or config.get("vertexai_credentials")
+            or os.environ.get("HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY", "")
+        )
+        if vertex_project_id:
+            env_values["HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID"] = str(vertex_project_id)
+        if vertex_region:
+            env_values["HINDSIGHT_API_LLM_VERTEXAI_REGION"] = str(vertex_region)
+        if vertex_service_account_key:
+            env_values["HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY"] = str(vertex_service_account_key)
+
     idle_timeout = (
         config.get("idle_timeout")
         if config.get("idle_timeout") is not None

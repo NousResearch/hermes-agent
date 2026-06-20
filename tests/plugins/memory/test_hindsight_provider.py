@@ -45,6 +45,9 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
         "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID",
+        "HINDSIGHT_API_LLM_VERTEXAI_REGION",
+        "HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -397,6 +400,51 @@ class TestConfig:
         assert cfg["apiKey"] == "env-key"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+
+    def test_embedded_profile_env_includes_vertexai_values_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "vertexai",
+            "llm_model": "gemini-2.5-flash",
+            "vertexai_project_id": "config-project",
+            "vertexai_region": "us-central1",
+            "vertexai_service_account_key": "/secure/vertex-sa.json",
+        })
+
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "vertexai"
+        assert env["HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID"] == "config-project"
+        assert env["HINDSIGHT_API_LLM_VERTEXAI_REGION"] == "us-central1"
+        assert env["HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY"] == "/secure/vertex-sa.json"
+
+    def test_embedded_profile_env_includes_vertexai_values_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID", "env-project")
+        monkeypatch.setenv("HINDSIGHT_API_LLM_VERTEXAI_REGION", "asia-southeast1")
+        monkeypatch.setenv("HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY", "/env/vertex-sa.json")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "vertexai",
+            "llm_model": "gemini-2.5-flash",
+        })
+
+        assert env["HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID"] == "env-project"
+        assert env["HINDSIGHT_API_LLM_VERTEXAI_REGION"] == "asia-southeast1"
+        assert env["HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY"] == "/env/vertex-sa.json"
+
+    def test_embedded_profile_env_omits_vertexai_values_for_non_vertex_providers(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID", "env-project")
+        monkeypatch.setenv("HINDSIGHT_API_LLM_VERTEXAI_REGION", "asia-southeast1")
+        monkeypatch.setenv("HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY", "/env/vertex-sa.json")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "vertexai_project_id": "config-project",
+            "vertexai_region": "us-central1",
+            "vertexai_service_account_key": "/secure/vertex-sa.json",
+        })
+
+        assert "HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID" not in env
+        assert "HINDSIGHT_API_LLM_VERTEXAI_REGION" not in env
+        assert "HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY" not in env
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({

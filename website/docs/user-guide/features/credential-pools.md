@@ -86,9 +86,10 @@ This shows your full pool status and offers a menu:
 What would you like to do?
   1. Add a credential
   2. Remove a credential
-  3. Reset cooldowns for a provider
-  4. Set rotation strategy for a provider
-  5. Exit
+  3. Switch active credential for a provider
+  4. Reset cooldowns for a provider
+  5. Set rotation strategy for a provider
+  6. Exit
 ```
 
 For providers that support both API keys and OAuth (Anthropic, Nous, Codex), the add flow asks which type:

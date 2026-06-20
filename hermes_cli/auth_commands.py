@@ -748,6 +748,7 @@ def _interactive_auth() -> None:
     choices = [
         "Add a credential",
         "Remove a credential",
+        "Switch active credential for a provider",
         "Reset cooldowns for a provider",
         "Set rotation strategy for a provider",
         "Exit",
@@ -769,8 +770,10 @@ def _interactive_auth() -> None:
     elif raw == "2":
         _interactive_remove()
     elif raw == "3":
-        _interactive_reset()
+        _interactive_switch()
     elif raw == "4":
+        _interactive_reset()
+    elif raw == "5":
         _interactive_strategy()
 
 
@@ -847,6 +850,29 @@ def _interactive_remove() -> None:
         return
 
     auth_remove_command(SimpleNamespace(provider=provider, target=raw))
+
+
+def _interactive_switch() -> None:
+    provider = _pick_provider("Provider to switch credential for")
+    pool = load_pool(provider)
+    if not pool.has_credentials():
+        print(f"No credentials for {provider}.")
+        return
+
+    current = pool.peek()
+    for i, e in enumerate(pool.entries(), 1):
+        marker = " ←" if current is not None and e.id == current.id else ""
+        exhausted = _format_exhausted_status(e)
+        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]{marker}")
+
+    try:
+        raw = input("Switch to #, id, or label (blank to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not raw:
+        return
+
+    auth_switch_command(SimpleNamespace(provider=provider, target=raw))
 
 
 def _interactive_reset() -> None:

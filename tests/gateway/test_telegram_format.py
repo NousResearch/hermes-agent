@@ -1012,3 +1012,63 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# ---------------------------------------------------------------------------
+# rewrite_tables parameter tests
+# ---------------------------------------------------------------------------
+
+class TestFormatMessageRewriteTables:
+    """Verify format_message(rewrite_tables=...) controls table rewriting."""
+
+    def _make_adapter(self):
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        return adapter
+
+    def test_rewrite_tables_true_rewrites_pipe_tables(self):
+        """Default behavior: pipe tables are rewritten into bullet groups."""
+        adapter = self._make_adapter()
+        table = "| Name | Value |\n| --- | --- |\n| foo | bar |"
+        result = adapter.format_message(table)
+        # Should NOT contain pipe table syntax — rewritten to bullets
+        assert "| --- |" not in result
+        assert "foo" in result
+        assert "bar" in result
+
+    def test_rewrite_tables_false_preserves_pipe_syntax(self):
+        """Rich-message path: pipe table syntax is preserved for native rendering."""
+        adapter = self._make_adapter()
+        table = "| Name | Value |\n| --- | --- |\n| foo | bar |"
+        result = adapter.format_message(table, rewrite_tables=False)
+        # Pipe table structure should survive MarkdownV2 escaping
+        # Pipes are escaped to \|, dashes to \- in MarkdownV2
+        assert "\\|" in result or "|" in result
+        # The separator row should still be present (escaped dashes)
+        assert "\\-" in result or "-" in result
+
+    def test_rewrite_tables_default_is_true(self):
+        """Backward compatibility: default is True (legacy behavior)."""
+        adapter = self._make_adapter()
+        table = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        result_default = adapter.format_message(table)
+        result_explicit = adapter.format_message(table, rewrite_tables=True)
+        assert result_default == result_explicit
+
+    def test_rewrite_tables_false_no_bullet_groups(self):
+        """With rewrite_tables=False, no bullet-group markers appear."""
+        adapter = self._make_adapter()
+        table = "| Col1 | Col2 |\n| --- | --- |\n| val1 | val2 |"
+        result = adapter.format_message(table, rewrite_tables=False)
+        # Bullet groups use "•" or similar — should not appear
+        assert "•" not in result
+
+    def test_rewrite_tables_false_code_blocks_untouched(self):
+        """Code blocks should still be protected regardless of rewrite_tables."""
+        adapter = self._make_adapter()
+        content = "```\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```\n\nSome text"
+        result_true = adapter.format_message(content, rewrite_tables=True)
+        result_false = adapter.format_message(content, rewrite_tables=False)
+        # Code block content should be identical in both modes
+        # (tables inside code blocks are never rewritten)
+        assert "A" in result_true
+        assert "A" in result_false

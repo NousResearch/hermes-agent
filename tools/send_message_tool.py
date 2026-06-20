@@ -977,11 +977,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             formatted = message
             send_parse_mode = ParseMode.HTML
         else:
-            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
+            # Reuse the gateway adapter's format_message for markdown→MarkdownV2.
+            # When rich messages are enabled, skip table rewriting — Telegram
+            # renders pipe tables natively via sendRichMessage; rewriting them
+            # into bullet groups would destroy the syntax.
+            _rewrite_tables = True
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config()
+                _tg_extra = (_cfg.get("platforms", {}).get("telegram", {})
+                             .get("extra", {}))
+                _rewrite_tables = not _tg_extra.get("rich_messages", False)
+            except Exception:
+                pass
             try:
                 from gateway.platforms.telegram import TelegramAdapter
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
-                formatted = _adapter.format_message(message)
+                formatted = _adapter.format_message(message, rewrite_tables=_rewrite_tables)
             except Exception:
                 # Fallback: send as-is if formatting unavailable
                 formatted = message

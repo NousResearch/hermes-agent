@@ -3122,14 +3122,29 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Note: root_id is the root message ID of a thread, NOT a thread identifier.
+        # Using root_id as thread_id fallback causes quoted replies in P2P to be
+        # routed to a new "thread" session incorrectly. Only thread_id is used for
+        # session routing. root_id is only used as reply_to_message_id fallback.
+        thread_id = getattr(message, "thread_id", None) or None
+        # Extract quote (reply-to) context from Feishu message
+        quote = getattr(message, "quote", None) or {}
+        quote_id = quote.get("id") or quote.get("message_id") or None
+        quote_text = quote.get("text") or None
+        reply_to_text = None
+
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None)
+            or quote_id
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+
+        # Use quote_text as fallback when parent_id/upper_message_id/root_id are empty
+        if not reply_to_text:
+            reply_to_text = quote_text
+        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else (reply_to_text or None)
 
         sender_primary = (
             getattr(sender_id, "open_id", None)

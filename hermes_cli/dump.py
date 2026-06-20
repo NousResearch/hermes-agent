@@ -206,7 +206,6 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("terminal", "backend"),
         ("terminal", "docker_image"),
         ("terminal", "persistent_shell"),
-        ("browser", "allow_private_urls"),
         ("compression", "enabled"),
         ("compression", "threshold"),
         ("display", "streaming"),
@@ -225,6 +224,26 @@ def _config_overrides(config: dict) -> dict[str, str]:
         user_val = user_section.get(key)
         if user_val is not None and user_val != default_val:
             overrides[f"{section}.{key}"] = str(user_val)
+
+    # Effective private-URL (SSRF) policy — mirror the runtime resolver's full
+    # precedence (HERMES_ALLOW_PRIVATE_URLS env > security.allow_private_urls >
+    # browser.allow_private_urls legacy) instead of only the legacy config key,
+    # so a relaxed SSRF posture set via the env var or the preferred config key
+    # is not hidden from the support summary.
+    try:
+        from tools.url_safety import (
+            _global_allow_private_urls,
+            _reset_allow_private_cache,
+        )
+
+        # One-shot CLI: read THIS process's config/env, not a stale cache.
+        _reset_allow_private_cache()
+        if _global_allow_private_urls():
+            overrides["security.allow_private_urls"] = (
+                "true (SSRF private-IP blocking DISABLED)"
+            )
+    except Exception:
+        pass
 
     # Toolsets (if different from default)
     default_toolsets = DEFAULT_CONFIG.get("toolsets", [])

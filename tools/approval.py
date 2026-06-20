@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import fnmatch
 import logging
 import os
 import re
@@ -842,6 +843,43 @@ def load_permanent(patterns: set):
         _permanent_approved.update(patterns)
 
 
+_ALLOWLIST_SHELL_OPERATOR_RE = re.compile(r"(?:\n|&&|\|\||[;&|<>`]|\$\()")
+
+
+def _has_allowlist_shell_operator(command: str) -> bool:
+    """Return True when a command is too compound for the allowlist shortcut."""
+    return bool(_ALLOWLIST_SHELL_OPERATOR_RE.search(command or ""))
+
+
+def _command_matches_permanent_allowlist(command: str) -> bool:
+    """Return True when command_allowlist contains this command or a glob.
+
+    Permanent approvals historically store dangerous-pattern keys such as
+    ``recursive delete``. Manual entries in ``command_allowlist`` are command
+    text, and may include shell-style wildcards like ``podman *``.
+    """
+    command = (command or "").strip()
+    if not command:
+        return False
+    if _has_allowlist_shell_operator(command):
+        return False
+
+    with _lock:
+        patterns = tuple(_permanent_approved)
+
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            continue
+        pattern = pattern.strip()
+        if not pattern:
+            continue
+        if command == pattern:
+            return True
+        if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern):
+            return True
+    return False
+
+
 
 # =========================================================================
 # Config persistence for permanent allowlist
@@ -1128,6 +1166,9 @@ def check_dangerous_command(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
+    if _command_matches_permanent_allowlist(command):
+        return {"approved": True, "message": None}
+
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
@@ -1368,6 +1409,9 @@ def check_all_command_guards(command: str, env_type: str,
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
+
+    if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
@@ -1806,6 +1850,93 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
 
     return {"approved": True, "message": None,
             "user_approved": True, "description": description}
+
+
+# =========================================================================
+# MCP elicitation entry point
+# =========================================================================
+
+def request_elicitation_consent(
+    message: str,
+    description: str,
+    *,
+    timeout_seconds: int | None = None,
+    surface: str = "mcp-elicitation",
+) -> str:
+    """Route an MCP elicitation request to whichever approval surface owns
+    the active session and return a normalized result.
+
+    Gateway sessions (Telegram, Slack, Discord, etc.) go through
+    ``_await_gateway_decision`` so the notify_cb posts a message and the
+    agent thread blocks until the user responds via the platform UI.
+    CLI/TUI sessions go through ``prompt_dangerous_approval``.
+
+    Always fails closed: missing notify_cb in a gateway session, timeouts,
+    and exceptions all map to ``"decline"`` so a server treats them as
+    "user did not approve" rather than retrying or hanging.
+
+    Returns one of ``"accept" | "decline" | "cancel"``.
+    """
+    try:
+        session_key = get_current_session_key()
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning("Elicitation consent: session lookup failed: %s", exc)
+        return "decline"
+
+    if _is_gateway_approval_context():
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+        if notify_cb is None:
+            logger.warning(
+                "Elicitation requested in gateway session %s but no "
+                "notify_cb is registered — failing closed",
+                session_key,
+            )
+            return "decline"
+
+        approval_data = {
+            "command": message,
+            "description": description,
+            "pattern_key": "mcp_elicitation",
+            "pattern_keys": ["mcp_elicitation"],
+        }
+        try:
+            decision = _await_gateway_decision(
+                session_key, notify_cb, approval_data, surface=surface,
+            )
+        except Exception as exc:
+            logger.error(
+                "Elicitation gateway dispatch failed: %s", exc, exc_info=True,
+            )
+            return "decline"
+
+        if decision.get("notify_failed"):
+            return "decline"
+        if not decision.get("resolved"):
+            return "cancel"
+        choice = decision.get("choice")
+        if choice in ("once", "session", "always"):
+            return "accept"
+        return "decline"
+
+    # CLI / TUI path. allow_permanent=False because elicitation is a
+    # per-call confirmation — there is no pattern to remember.
+    try:
+        choice = prompt_dangerous_approval(
+            message,
+            description,
+            timeout_seconds=timeout_seconds,
+            allow_permanent=False,
+        )
+    except Exception as exc:
+        logger.error(
+            "Elicitation CLI prompt failed: %s", exc, exc_info=True,
+        )
+        return "decline"
+
+    if choice in ("once", "session", "always"):
+        return "accept"
+    return "decline"
 
 
 # Load permanent allowlist from config on module import

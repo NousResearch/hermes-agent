@@ -156,7 +156,112 @@ _MARKDOWN_HINT_RE = re.compile(
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_RE = re.compile(
+    r"^(\|.*\|\n\|[-|: ]+\|\n(?:\|.*\|\n?)*)",
+    re.MULTILINE,
+)
+
+
+def _display_width(text: str) -> int:
+    """Estimate display width of a string (CJK=2, ASCII=1, emoji=2)."""
+    width = 0
+    for ch in text:
+        cp = ord(ch)
+        # CJK Unified Ideographs, Hangul, Hiragana, Katakana, etc.
+        if 0x4E00 <= cp <= 0x9FFF or 0x3040 <= cp <= 0x30FF or 0xAC00 <= cp <= 0xD7AF:
+            width += 2
+        # Emoji range (simplified)
+        elif cp > 0x2E80 or (0x1F000 <= cp <= 0x1FFFF):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, Any]]:
+    """Convert a Markdown table string to a Feishu interactive card JSON.
+
+    Returns None if the table cannot be parsed.
+    """
+    lines = table_text.strip().split("\n")
+    if len(lines) < 2:
+        return None
+
+    # Parse header
+    header_cells = [c.strip() for c in lines[0].strip().split("|")[1:-1]]
+    if not header_cells:
+        return None
+
+    # Skip separator line (line 1)
+    # Parse data rows
+    rows: list[Dict[str, str]] = []
+    for line in lines[2:]:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            break
+        cells = [c.strip() for c in stripped.split("|")[1:-1]]
+        if not cells or all(c == "" for c in cells):
+            continue
+        row_obj: Dict[str, str] = {}
+        for i, col_name in enumerate(header_cells):
+            row_obj[col_name] = cells[i] if i < len(cells) else ""
+        rows.append(row_obj)
+
+    if not rows:
+        return None
+
+    col_defs = [
+        {"name": c, "display_name": c, "data_type": "text", "width": "auto"}
+        for c in header_cells
+    ]
+
+    # Auto-size columns based on content length to reduce truncation
+    # Calculate display width per column (header + data rows)
+    # CJK chars ~18px, ASCII ~10px, emoji ~24px
+    num_cols = len(header_cells)
+    col_max: list[int] = [0] * num_cols
+    for col_name in header_cells:
+        col_max[header_cells.index(col_name)] = _display_width(col_name)
+    for row in rows:
+        for i, col_name in enumerate(header_cells):
+            dw = _display_width(row.get(col_name, ""))
+            if dw > col_max[i]:
+                col_max[i] = dw
+
+    # Convert display width to pixel width, clamp to [80, 350]
+    for i in range(num_cols):
+        px = max(80, min(350, col_max[i] * 8 + 20))
+        col_defs[i]["width"] = f"{px}px"
+
+    return {
+        "header": {
+            "template": "blue",
+            "title": {
+                "content": title,
+                "tag": "plain_text",
+            },
+        },
+        "elements": [
+            {
+                "tag": "table",
+                "page_size": min(len(rows), 50),
+                "row_height": "low",
+                "header_style": {
+                    "text_align": "left",
+                    "text_size": "normal",
+                    "background_style": "none",
+                    "text_color": "grey",
+                    "bold": True,
+                    "lines": 1,
+                },
+                "columns": col_defs,
+                "rows": rows,
+            }
+        ],
+    }
+
+
+_POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -1778,11 +1883,108 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send a Feishu message.
+
+        When the content contains a Markdown table, the table is automatically
+        converted to an interactive card (table component) and sent separately,
+        while the remaining text is sent through the normal pipeline.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+
+        # --- Auto-convert Markdown tables to interactive cards ---
+        # Extract ALL valid tables from content at once
+        all_tables: list[tuple[int, int, str]] = []  # (start, end, table_text)
+        for match in _MARKDOWN_TABLE_RE.finditer(formatted):
+            table_text = match.group(0)
+            if _markdown_table_to_card("test", table_text) is not None:
+                all_tables.append((match.start(), match.end(), table_text))
+
+        if all_tables:
+            # Send all tables as cards in parallel, then send remaining text
+            import asyncio
+
+            async def _send_one_card(idx: int) -> SendResult:
+                start, end, table_text = all_tables[idx]
+                before = formatted[:start].rstrip("\n")
+                title = "📊 表格"
+                if before:
+                    first_line = before.split("\n")[0].strip()
+                    title = first_line.lstrip("#").strip() or "📊 表格"
+                    if len(title) > 40:
+                        title = title[:37] + "..."
+                if len(all_tables) > 1:
+                    title = f"📊 表格 {idx+1}/{len(all_tables)}"
+                card = _markdown_table_to_card(title, table_text)
+                if not card:
+                    return SendResult(success=False, error="card parse failed")
+                return await self.send_interactive_card(
+                    chat_id=chat_id,
+                    card=card,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+
+            # Send all cards in parallel
+            card_results = await asyncio.gather(*[_send_one_card(i) for i in range(len(all_tables))])
+
+            # Collect reply_to from first successful card
+            last_response = None
+            for cr in card_results:
+                if cr.success and cr.raw_response:
+                    reply_to = self._extract_response_field(cr.raw_response, "message_id")
+                    last_response = cr
+
+            # Build remaining text (parts between/around tables)
+            text_parts: list[str] = []
+            prev_end = 0
+            for start, end, _ in all_tables:
+                part = formatted[prev_end:start].strip()
+                if part:
+                    text_parts.append(part)
+                prev_end = end
+            tail = formatted[prev_end:].strip()
+            if tail:
+                text_parts.append(tail)
+
+            # Send remaining text
+            remaining = "\n\n".join(text_parts)
+            if remaining:
+                chunks = self.truncate_message(remaining, self.MAX_MESSAGE_LENGTH)
+                try:
+                    for chunk in chunks:
+                        msg_type, payload = self._build_outbound_payload(chunk)
+                        try:
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type=msg_type,
+                                payload=payload,
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                        except Exception as exc:
+                            if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                                raise
+                            logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type="text",
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                        last_response = response
+                    return self._finalize_send_result(last_response, "send failed")
+                except Exception as exc:
+                    logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+                    return SendResult(success=False, error=str(exc))
+            else:
+                if last_response:
+                    return last_response
+
+        # --- Normal path (no Markdown table detected) ---
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1836,11 +2038,54 @@ class FeishuAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post message.
+
+        When finalizing and the content contains a Markdown table, send the
+        table as a separate interactive card instead of editing the text
+        message (cards cannot be created via edit).
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+
+        # On finalize, check for Markdown tables and send as card
+        if finalize:
+            table_match = _MARKDOWN_TABLE_RE.search(content)
+            if table_match:
+                before = content[: table_match.start()].strip()
+                table_text = table_match.group(1).strip()
+                after = content[table_match.end():].strip()
+
+                card = _markdown_table_to_card("表格", table_text)
+                if card:
+                    card_result = await self.send_interactive_card(
+                        chat_id=chat_id,
+                        card=card,
+                        reply_to=None,
+                    )
+                    if card_result.success:
+                        # Send remaining text as a follow-up if any
+                        remaining = "\n\n".join(filter(None, [before, after]))
+                        if remaining.strip():
+                            result = await self.edit_message(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                content=remaining,
+                                finalize=True,
+                            )
+                        else:
+                            # Update the original message to avoid redundancy
+                            result = await self.edit_message(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                content="📊 表格已转为卡片发送 ↑",
+                                finalize=True,
+                            )
+                        # Return card result as primary
+                        return card_result
+                    # Card failed, fall through to normal edit
+
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -2019,6 +2264,41 @@ class FeishuAdapter(BasePlatformAdapter):
                 },
             ],
         }
+
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card message to Feishu.
+
+        Args:
+            chat_id: The chat to send the card to.
+            card: The raw Feishu interactive card JSON (must contain header + elements).
+            reply_to: Optional message_id to reply to.
+            metadata: Optional metadata dict.
+
+        Returns:
+            SendResult indicating success/failure.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send_interactive_card failed")
+        except Exception as exc:
+            logger.error("[Feishu] send_interactive_card failed: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
 
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> Dict[str, Any]:

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from utils import safe_json_loads
+from agent.tool_guardrails import _output_indicates_task_failure
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -853,6 +854,11 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     tag like ``" [exit 1]"`` for terminal failures, ``" [full]"`` for memory
     overflow, or a trimmed error message (``" [File not found: foo.py]"``).
     On success returns ``(False, "")``.
+
+    In addition to structural failure signals (exit code != 0, status="error"),
+    also checks the output text of terminal and execute_code for task-level
+    failure patterns (HTTP errors, tracebacks, etc.) even when the tool
+    process itself succeeded.
     """
     if result is None:
         return False, ""
@@ -870,6 +876,26 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 if err_msg:
                     return True, f" [{_trim_error(str(err_msg))}]"
                 return True, f" [exit {exit_code}]"
+            # exit_code == 0 but output contains task-level failure
+            output = data.get("output", "")
+            if output and _output_indicates_task_failure(output):
+                return True, " [task_failure]"
+        return False, ""
+
+    # Execute code: status="error" is failure; also check output for task failure
+    if tool_name == "execute_code":
+        if isinstance(data, dict):
+            status = data.get("status")
+            if status == "error":
+                err_msg = data.get("error")
+                if err_msg:
+                    return True, f" [{_trim_error(str(err_msg))}]"
+                return True, " [error]"
+            # status == "success" but output contains task-level failure
+            if status == "success":
+                output = data.get("output", "")
+                if output and _output_indicates_task_failure(output):
+                    return True, " [task_failure]"
         return False, ""
 
     # Memory: distinguish "store full" from real errors.

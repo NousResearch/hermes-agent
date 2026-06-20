@@ -261,11 +261,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     share it. Only transport-specific code lives here.
     """
 
-    # Default bridge location relative to the hermes-agent install
-    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    # Default bridge location resolved via shared helper
+    _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
+        # Use shared helper for bridge directory resolution (handles read-only install tree)
+        if WhatsAppAdapter._DEFAULT_BRIDGE_DIR is None:
+            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+            WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
         self._bridge_script: Optional[str] = config.extra.get(

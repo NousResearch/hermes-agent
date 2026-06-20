@@ -151,18 +151,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*-+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\s*\|.+\|\s*$)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+_MARKDOWN_HR_RE = re.compile(r"^\s*---+\s*$")
+_MARKDOWN_HEADER_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_MARKDOWN_UL_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_MARKDOWN_OL_RE = re.compile(r"^(\s*)(\d+)\.\s+(.*)$")
+_MARKDOWN_BQ_RE = re.compile(r"^>\s?(.*)$")
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_LINE_RE = re.compile(r"^\s*\|.+\|\s*$")
+_MARKDOWN_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?[-]{3,}:?\s*(\|\s*:?[-]{3,}:?\s*)+\|?\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
-_POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect|invalid (post|card|interactive) content|invalid content format", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -560,53 +565,261 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
-def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
-    """Build Feishu post rows while isolating fenced code blocks.
+def _build_interactive_card_payload(content: str) -> str:
+    """Wrap markdown content in a Feishu interactive card v2.0.
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    The card body uses ``tag: "markdown"`` which is Feishu's full markdown
+    renderer — it supports real tables (with borders and column alignment),
+    fenced code blocks, lists, headings, bold, italic, links, and the rest
+    of the CommonMark surface. In contrast, the ``tag: "md"`` post element
+    only renders links and partial bold; the post element has no table
+    primitive and silently drops most other markdown.
+
+    Falls back to text-only when the content has no markdown so empty
+    cards aren't sent for plain strings.
+    """
+    card = {
+        "schema": "2.0",
+        "config": {"width_mode": "fill"},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _build_markdown_post_rows(content: str) -> List[List[Dict[str, Any]]]:
+    """Parse markdown into Feishu post rows.
+
+    Each row is a list of Feishu post elements. Multiple rows render as
+    multiple paragraphs in the client.
+
+    Uses Feishu's native post tags (``text`` with style, ``a``, ``code_block``,
+    ``hr``) instead of the ``md`` element because Feishu's markdown renderer
+    is incomplete — it renders ``**bold**`` but not lists, code, or blockquotes.
+    Native elements render reliably across all clients.
+
+    Block syntax supported:
+      * ``# ...`` / ``## ...`` — headers (rendered as bold text)
+      * ``- item`` / ``* item`` — unordered list (``• item``)
+      * ``1. item`` — ordered list (``1. item``)
+      * ``> quote`` — blockquote (``▎ quote``)
+      * ``---`` — horizontal rule (uses ``tag: hr``)
+      * ```` ``` `` fenced code block (uses ``tag: code_block``)
+
+    Inline syntax supported:
+      * ``**bold**`` — bold
+      * ``*italic*`` / ``_italic_`` — italic
+      * ``~~strike~~`` — strikethrough
+      * ``<u>underline</u>`` — underline
+      * ``[text](url)`` — link
+      * `` `inline code` `` — plain text (Feishu has no native inline code)
     """
     if not content:
-        return [[{"tag": "md", "text": ""}]]
-    if "```" not in content:
-        return [[{"tag": "md", "text": content}]]
+        return [[{"tag": "text", "text": ""}]]
 
-    rows: List[List[Dict[str, str]]] = []
-    current: List[str] = []
-    in_code_block = False
-
-    def _flush_current() -> None:
-        nonlocal current
-        if not current:
-            return
-        segment = "\n".join(current)
-        if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
-        current = []
-
-    for raw_line in content.splitlines():
-        stripped_line = raw_line.strip()
-        is_fence = bool(
-            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
-            if in_code_block
-            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
-        )
-
-        if is_fence:
-            if not in_code_block:
-                _flush_current()
-            current.append(raw_line)
-            in_code_block = not in_code_block
-            if not in_code_block:
-                _flush_current()
+    rows: List[List[Dict[str, Any]]] = []
+    lines = content.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        stripped = lines[i].strip()
+        if not stripped:
+            i += 1
             continue
 
-        current.append(raw_line)
+        # Fenced code block
+        m_fence = _MARKDOWN_FENCE_OPEN_RE.match(stripped)
+        if m_fence:
+            language = (m_fence.group(1) or "").strip()
+            code_lines: List[str] = []
+            i += 1
+            while i < n:
+                if _MARKDOWN_FENCE_CLOSE_RE.match(lines[i].strip()):
+                    i += 1
+                    break
+                code_lines.append(lines[i])
+                i += 1
+            rows.append([{
+                "tag": "code_block",
+                "language": _sanitize_fence_language(language) if language else "",
+                "text": "\n".join(code_lines),
+            }])
+            continue
 
-    _flush_current()
-    return rows or [[{"tag": "md", "text": content}]]
+        # Markdown table (header row + separator + body rows).
+        # Feishu has no native table primitive, so render as a code_block —
+        # monospace preserves the column alignment visually.
+        if (
+            _MARKDOWN_TABLE_LINE_RE.match(lines[i])
+            and i + 1 < n
+            and _MARKDOWN_TABLE_SEP_RE.match(lines[i + 1])
+        ):
+            table_lines: List[str] = [lines[i], lines[i + 1]]
+            i += 2
+            while i < n and _MARKDOWN_TABLE_LINE_RE.match(lines[i]):
+                table_lines.append(lines[i])
+                i += 1
+            rows.append([{
+                "tag": "code_block",
+                "language": "",
+                "text": "\n".join(table_lines),
+            }])
+            continue
+
+        # Horizontal rule
+        if _MARKDOWN_HR_RE.match(lines[i]):
+            rows.append([{"tag": "hr"}])
+            i += 1
+            continue
+
+        # Header (#, ##, ###, …)
+        m_h = _MARKDOWN_HEADER_RE.match(stripped)
+        if m_h:
+            elements = _parse_inline_to_post_elements(m_h.group(2).strip())
+            # Force bold for header text (Feishu has no header sizes).
+            for el in elements:
+                if el["tag"] == "text":
+                    style = el.get("style")
+                    if not style:
+                        el["style"] = ["bold"]
+                    elif "bold" not in style:
+                        el["style"] = list(style) + ["bold"]
+            rows.append(elements)
+            i += 1
+            continue
+
+        # Unordered list item
+        m_ul = _MARKDOWN_UL_RE.match(lines[i])
+        if m_ul:
+            indent = len(m_ul.group(1))
+            bullet = ("  " * (indent // 2)) + "• "
+            rows.append(_parse_inline_to_post_elements(bullet + m_ul.group(2)))
+            i += 1
+            continue
+
+        # Ordered list item
+        m_ol = _MARKDOWN_OL_RE.match(lines[i])
+        if m_ol:
+            indent = len(m_ol.group(1))
+            num = m_ol.group(2)
+            prefix = ("  " * (indent // 2)) + f"{num}. "
+            rows.append(_parse_inline_to_post_elements(prefix + m_ol.group(3)))
+            i += 1
+            continue
+
+        # Blockquote
+        m_bq = _MARKDOWN_BQ_RE.match(stripped)
+        if m_bq:
+            rows.append(_parse_inline_to_post_elements("▎ " + m_bq.group(1)))
+            i += 1
+            continue
+
+        # Plain paragraph (may span multiple lines until blank line or a
+        # recognised block-start line). Joined with newlines so multi-line
+        # paragraphs preserve line breaks as plain text within one row.
+        para_lines = [lines[i]]
+        i += 1
+        while i < n:
+            nxt = lines[i]
+            nxt_stripped = nxt.strip()
+            if not nxt_stripped:
+                break
+            if (
+                _MARKDOWN_FENCE_OPEN_RE.match(nxt_stripped)
+                or _MARKDOWN_HR_RE.match(nxt)
+                or _MARKDOWN_HEADER_RE.match(nxt_stripped)
+                or _MARKDOWN_UL_RE.match(nxt)
+                or _MARKDOWN_OL_RE.match(nxt)
+                or _MARKDOWN_BQ_RE.match(nxt_stripped)
+            ):
+                break
+            para_lines.append(nxt)
+            i += 1
+        rows.append(_parse_inline_to_post_elements("\n".join(para_lines)))
+
+    return rows if rows else [[{"tag": "text", "text": ""}]]
+
+
+# ---------------------------------------------------------------------------
+# Inline markdown → Feishu post element conversion
+# ---------------------------------------------------------------------------
+
+
+_INLINE_TOKEN_RE = re.compile(
+    r"\[([^\]\n]+)\]\(([^)\n]+)\)"   # [text](url) — link
+    r"|\*\*([^*\n]+?)\*\*"             # **bold**
+    r"|~~([^~\n]+?)~~"                 # ~~strikethrough~~
+    r"|<u>([^<\n]+?)</u>"              # <u>underline</u>
+    r"|`([^`\n]+?)`"                   # `inline code`
+    r"|(?<![\*_])\*([^*\n]+?)\*(?![\*_])"   # *italic* (single *)
+    r"|(?<![\w_])_([^_\n]+?)_(?!\w)"    # _italic_ (single _)
+)
+
+
+def _parse_inline_to_post_elements(text: str) -> List[Dict[str, Any]]:
+    """Parse inline markdown into a list of Feishu post elements.
+
+    Tokenises with priority order: link > bold > strikethrough > underline >
+    inline-code > italic. Plain text between tokens becomes ``tag: text``
+    elements. Consecutive plain text elements are coalesced.
+    """
+    if not text:
+        return [{"tag": "text", "text": ""}]
+
+    elements: List[Dict[str, Any]] = []
+    pos = 0
+    for m in _INLINE_TOKEN_RE.finditer(text):
+        start, end = m.span()
+        if start > pos:
+            elements.append({"tag": "text", "text": text[pos:start]})
+        if m.group(1) is not None:
+            # Link
+            elements.append({"tag": "a", "text": m.group(1), "href": m.group(2)})
+        elif m.group(3) is not None:
+            elements.append({"tag": "text", "text": m.group(3), "style": ["bold"]})
+        elif m.group(4) is not None:
+            elements.append({"tag": "text", "text": m.group(4), "style": ["lineThrough"]})
+        elif m.group(5) is not None:
+            elements.append({"tag": "text", "text": m.group(5), "style": ["underline"]})
+        elif m.group(6) is not None:
+            # Feishu post has no native inline code style. Wrap in literal
+            # backticks so the boundaries are visible, and mark the element
+            # so the coalescing pass below keeps it separate from adjacent
+            # plain text.
+            elements.append({"tag": "text", "text": f"`{m.group(6)}`", "_inline_code": True})
+        elif m.group(7) is not None:
+            elements.append({"tag": "text", "text": m.group(7), "style": ["italic"]})
+        elif m.group(8) is not None:
+            elements.append({"tag": "text", "text": m.group(8), "style": ["italic"]})
+        pos = end
+    if pos < len(text):
+        elements.append({"tag": "text", "text": text[pos:]})
+
+    # Coalesce consecutive plain text (no-style) elements so we don't emit
+    # adjacent runs that all render identically. Inline-code elements are
+    # never coalesced (they have backticks around the text that mark the
+    # boundary, and the marker is stripped at the end).
+    coalesced: List[Dict[str, Any]] = []
+    for el in elements:
+        if (
+            el["tag"] == "text"
+            and "_inline_code" not in el
+            and "style" not in el
+            and coalesced
+            and coalesced[-1]["tag"] == "text"
+            and "_inline_code" not in coalesced[-1]
+            and "style" not in coalesced[-1]
+        ):
+            coalesced[-1]["text"] += el["text"]
+        else:
+            coalesced.append(el)
+    # Strip the inline-code marker before returning (it's an internal flag).
+    for el in coalesced:
+        el.pop("_inline_code", None)
+    return [el for el in coalesced if el.get("text") != "" or el["tag"] != "text"]
 
 
 def parse_feishu_post_payload(
@@ -1798,9 +2011,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type not in ("post", "interactive") or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] Invalid %s payload rejected by API; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1809,7 +2022,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type in ("post", "interactive")
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
@@ -1847,8 +2060,8 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and msg_type in ("post", "interactive") and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                logger.warning("[Feishu] Invalid %s update payload rejected by API; falling back to plain text", msg_type)
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -4374,14 +4587,13 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Markdown content is sent as a Feishu interactive card (v2.0) using
+        # ``tag: "markdown"`` in the card body. The card's markdown renderer
+        # supports real tables (borders, column alignment), fenced code
+        # blocks, lists, headings, bold, italic, and links — none of which
+        # the older ``tag: "md"`` post element renders correctly.
         if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+            return "interactive", _build_interactive_card_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
@@ -4668,7 +4880,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                if msg_type in ("post", "interactive") and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise

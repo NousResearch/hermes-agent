@@ -15,8 +15,30 @@ permissions:
   id-token: write
 
 jobs:
+  # Gate the whole job on the API key being configured. secrets.* can't be used
+  # directly in a job-level `if:`, so surface it into an output first. Without
+  # this the action runs with an empty key and aborts with exit 1 — a red X on
+  # every PR/comment event. This turns "not configured" into a clean skip.
+  check-secret:
+    runs-on: ubuntu-latest
+    outputs:
+      has_key: ${{ steps.probe.outputs.has_key }}
+    steps:
+      - id: probe
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping Claude Code Review."
+          fi
+
   claude-review:
+    needs: check-secret
     if: |
+      needs.check-secret.outputs.has_key == 'true' &&
       github.actor != 'dependabot[bot]' &&
       github.actor != 'github-actions[bot]' &&
       github.actor != 'claude[bot]'

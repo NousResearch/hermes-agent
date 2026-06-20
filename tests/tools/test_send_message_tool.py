@@ -29,6 +29,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _send_dingtalk_via_adapter,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -589,6 +590,312 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+
+class TestSendMessageToolDingTalkMedia:
+    def test_parse_explicit_dingtalk_cid(self):
+        chat_id, thread_id, explicit = _parse_target_ref("dingtalk", "cidTESTConversationId==")
+
+        assert chat_id == "cidTESTConversationId=="
+        assert thread_id is None
+        assert explicit is True
+
+    def test_send_to_platform_routes_dingtalk_media_to_adapter(self, tmp_path):
+        file_path = tmp_path / "report.txt"
+        file_path.write_text("hello", encoding="utf-8")
+        helper = AsyncMock(return_value={"success": True, "platform": "dingtalk", "chat_id": "cid1"})
+        pconfig = SimpleNamespace(enabled=True, extra={})
+
+        with patch("tools.send_message_tool._send_dingtalk_via_adapter", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    pconfig,
+                    "cid1",
+                    "attached",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once_with(
+            pconfig,
+            "cid1",
+            "attached",
+            media_files=[(str(file_path), False)],
+        )
+
+    def test_send_to_platform_routes_dingtalk_media_only_to_adapter(self, tmp_path):
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        helper = AsyncMock(return_value={
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cid1",
+            "message_id": "image-1",
+        })
+        pconfig = SimpleNamespace(enabled=True, extra={})
+
+        with patch("tools.send_message_tool._send_dingtalk_via_adapter", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    pconfig,
+                    "cid1",
+                    "",
+                    media_files=[(str(image_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once_with(
+            pconfig,
+            "cid1",
+            "",
+            media_files=[(str(image_path), False)],
+        )
+
+    def test_send_message_tool_accepts_dingtalk_media_only(self, tmp_path):
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        pconfig = SimpleNamespace(enabled=True, extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DINGTALK: pconfig},
+            get_home_channel=lambda _platform: None,
+        )
+        send = AsyncMock(return_value={
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cidTESTConversationId==",
+            "message_id": "image-1",
+        })
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", send), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(send_message_tool({
+                "action": "send",
+                "target": "dingtalk:cidTESTConversationId==",
+                "message": f"MEDIA:{image_path}",
+            }))
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            Platform.DINGTALK,
+            pconfig,
+            "cidTESTConversationId==",
+            "",
+            thread_id=None,
+            media_files=[(str(image_path), False)],
+            force_document=False,
+        )
+
+    def test_send_message_tool_uses_current_dingtalk_session_without_home_channel(self, tmp_path):
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        pconfig = SimpleNamespace(enabled=True, extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DINGTALK: pconfig},
+            get_home_channel=lambda _platform: None,
+        )
+        send = AsyncMock(return_value={
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cidCurrentSession==",
+            "message_id": "image-1",
+        })
+
+        def fake_session_env(name, default=""):
+            values = {
+                "HERMES_SESSION_PLATFORM": "dingtalk",
+                "HERMES_SESSION_CHAT_ID": "cidCurrentSession==",
+                "HERMES_SESSION_THREAD_ID": "",
+                "HERMES_SESSION_USER_ID": "user-1",
+            }
+            return values.get(name, default)
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.session_context.get_session_env", side_effect=fake_session_env), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", send), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(send_message_tool({
+                "action": "send",
+                "target": "dingtalk",
+                "message": f"MEDIA:{image_path}",
+            }))
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            Platform.DINGTALK,
+            pconfig,
+            "cidCurrentSession==",
+            "",
+            thread_id=None,
+            media_files=[(str(image_path), False)],
+            force_document=False,
+        )
+
+    def test_send_to_platform_routes_dingtalk_text_to_adapter_when_direct_configured(self):
+        helper = AsyncMock(return_value={
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cid1",
+            "message_id": "text-1",
+        })
+        legacy = AsyncMock(side_effect=AssertionError("legacy webhook path should not be used"))
+        pconfig = SimpleNamespace(
+            enabled=True,
+            extra={"client_id": "client-1", "client_secret": "secret-1"},
+        )
+
+        with patch("tools.send_message_tool._send_dingtalk_via_adapter", helper), \
+             patch("tools.send_message_tool._send_dingtalk", legacy):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    pconfig,
+                    "cid1",
+                    "hello",
+                    media_files=[],
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once_with(
+            pconfig,
+            "cid1",
+            "hello",
+            media_files=[],
+        )
+        legacy.assert_not_awaited()
+
+    def test_send_to_platform_keeps_dingtalk_webhook_fallback_for_text(self):
+        helper = AsyncMock(side_effect=AssertionError("adapter path should not be used"))
+        legacy = AsyncMock(return_value={"success": True, "platform": "dingtalk", "chat_id": "cid1"})
+        pconfig = SimpleNamespace(enabled=True, extra={"webhook_url": "https://example.invalid/webhook"})
+
+        with patch("tools.send_message_tool._send_dingtalk_via_adapter", helper), \
+             patch("tools.send_message_tool._send_dingtalk", legacy):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    pconfig,
+                    "cid1",
+                    "hello",
+                    media_files=[],
+                )
+            )
+
+        assert result["success"] is True
+        legacy.assert_awaited_once_with(pconfig.extra, "cid1", "hello")
+        helper.assert_not_awaited()
+
+    def test_send_dingtalk_via_adapter_sends_document(self, tmp_path):
+        file_path = tmp_path / "report.txt"
+        file_path.write_text("hello", encoding="utf-8")
+        calls = []
+
+        class FakeDingTalkAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="text-1")
+
+            async def send_document(self, chat_id, file_path):
+                calls.append(("send_document", chat_id, file_path))
+                return SimpleNamespace(success=True, message_id="file-1")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(DingTalkAdapter=FakeDingTalkAdapter)
+
+        with patch.dict(sys.modules, {"gateway.platforms.dingtalk": fake_module}):
+            result = asyncio.run(
+                _send_dingtalk_via_adapter(
+                    SimpleNamespace(enabled=True, extra={}),
+                    "cid1",
+                    "attached",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cid1",
+            "message_id": "file-1",
+        }
+        assert calls == [
+            ("connect",),
+            ("send", "cid1", "attached"),
+            ("send_document", "cid1", str(file_path)),
+            ("disconnect",),
+        ]
+
+    def test_send_dingtalk_via_adapter_prefers_direct_init(self, tmp_path):
+        file_path = tmp_path / "report.txt"
+        file_path.write_text("hello", encoding="utf-8")
+        calls = []
+
+        class FakeDingTalkAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def init_direct_send(self):
+                calls.append(("init_direct_send",))
+                return True
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=False, error="no session webhook")
+
+            async def send_document(self, chat_id, file_path):
+                calls.append(("send_document", chat_id, file_path))
+                return SimpleNamespace(success=True, message_id="file-1")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(DingTalkAdapter=FakeDingTalkAdapter)
+
+        with patch.dict(sys.modules, {"gateway.platforms.dingtalk": fake_module}):
+            result = asyncio.run(
+                _send_dingtalk_via_adapter(
+                    SimpleNamespace(enabled=True, extra={}),
+                    "cid1",
+                    "attached",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cid1",
+            "message_id": "file-1",
+            "warnings": ["DingTalk text send failed: no session webhook"],
+        }
+        assert calls == [
+            ("init_direct_send",),
+            ("send", "cid1", "attached"),
+            ("send_document", "cid1", str(file_path)),
+            ("disconnect",),
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -287,6 +287,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
                 "name": _session_entry_name(origin),
                 "type": session.get("chat_type", "dm"),
                 "thread_id": origin.get("thread_id"),
+                "user_id_alt": origin.get("user_id_alt"),
             })
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
@@ -349,6 +350,16 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
             return ch["id"]
 
     query = _normalize_channel_query(name)
+
+    # DingTalk uses opaque cid... conversation IDs that are valid explicit
+    # targets. Keep this platform-scoped so case-sensitive IDs on Slack and
+    # peers still fall through to name matching when the raw exact ID did not
+    # match.
+    if platform_name == "dingtalk":
+        for ch in channels:
+            channel_id = str(ch.get("id", ""))
+            if channel_id and _normalize_channel_query(channel_id) == query:
+                return channel_id
 
     # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:

@@ -27,6 +27,7 @@ Configuration in config.yaml:
 """
 
 import asyncio
+import mimetypes
 import json
 import logging
 import os
@@ -34,6 +35,8 @@ import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from email.message import Message as EmailMessage
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -94,6 +97,10 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
+    cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,9 +112,22 @@ _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
-    "picture": "image",
-    "voice": "audio",
+    "picture": "image/jpeg",
+    "image": "image/jpeg",
+    "voice": "audio/amr",
+    "audio": "audio/mpeg",
+    "video": "video/mp4",
+    "file": "application/octet-stream",
 }
+
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".amr"}
+
+
+def _sanitize_dingtalk_error(exc: Exception) -> str:
+    text = str(exc)
+    return re.sub(r"([?&]access_token=)[^&#\s]+", r"\1***", text)
 
 
 def check_dingtalk_requirements() -> bool:
@@ -252,36 +272,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-            from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
-                timeout=30.0, limits=platform_httpx_limits(),
-            )
-
-            credential = dingtalk_stream.Credential(
-                self._client_id, self._client_secret
-            )
-            self._stream_client = dingtalk_stream.DingTalkStreamClient(credential)
-
-            # Initialize card SDK if available and configured
-            if CARD_SDK_AVAILABLE and self._card_template_id:
-                sdk_config = open_api_models.Config()
-                sdk_config.protocol = "https"
-                sdk_config.region_id = "central"
-                self._card_sdk = dingtalk_card_client.Client(sdk_config)
-                self._robot_sdk = dingtalk_robot_client.Client(sdk_config)
-                logger.info(
-                    "[%s] Card SDK initialized with template: %s",
-                    self.name,
-                    self._card_template_id,
-                )
-            elif CARD_SDK_AVAILABLE:
-                # Initialize robot SDK even without card template (for media download)
-                sdk_config = open_api_models.Config()
-                sdk_config.protocol = "https"
-                sdk_config.region_id = "central"
-                self._robot_sdk = dingtalk_robot_client.Client(sdk_config)
-                logger.info("[%s] Robot SDK initialized (media download)", self.name)
+            self._init_direct_clients()
 
             # Capture the current event loop for cross-thread dispatch
             loop = asyncio.get_running_loop()
@@ -296,6 +287,60 @@ class DingTalkAdapter(BasePlatformAdapter):
             return True
         except Exception as e:
             logger.error("[%s] Failed to connect: %s", self.name, e)
+            return False
+
+    def _init_direct_clients(self) -> None:
+        """Initialize HTTP, token, and OpenAPI clients without starting Stream."""
+        if not self._http_client:
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0, limits=platform_httpx_limits(),
+            )
+        if not self._stream_client:
+            credential = dingtalk_stream.Credential(
+                self._client_id, self._client_secret
+            )
+            self._stream_client = dingtalk_stream.DingTalkStreamClient(credential)
+
+        if CARD_SDK_AVAILABLE and not self._robot_sdk:
+            sdk_config = open_api_models.Config()
+            sdk_config.protocol = "https"
+            sdk_config.region_id = "central"
+            self._robot_sdk = dingtalk_robot_client.Client(sdk_config)
+            if self._card_template_id and not self._card_sdk:
+                self._card_sdk = dingtalk_card_client.Client(sdk_config)
+                logger.info(
+                    "[%s] Card SDK initialized with template: %s",
+                    self.name,
+                    self._card_template_id,
+                )
+            else:
+                logger.info("[%s] Robot SDK initialized (media download)", self.name)
+
+    async def init_direct_send(self) -> bool:
+        """Prepare DingTalk API clients for one-shot outbound sends."""
+        if not DINGTALK_STREAM_AVAILABLE:
+            logger.warning(
+                "[%s] dingtalk-stream not installed. Run: pip install 'dingtalk-stream>=0.20'",
+                self.name,
+            )
+            return False
+        if not HTTPX_AVAILABLE:
+            logger.warning(
+                "[%s] httpx not installed. Run: pip install httpx", self.name
+            )
+            return False
+        if not self._client_id or not self._client_secret:
+            logger.warning(
+                "[%s] DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET required", self.name
+            )
+            return False
+        try:
+            self._init_direct_clients()
+            return True
+        except Exception as e:
+            logger.error("[%s] Failed to initialize DingTalk direct send: %s", self.name, e)
             return False
 
     async def _run_stream(self) -> None:
@@ -649,7 +694,8 @@ class DingTalkAdapter(BasePlatformAdapter):
                 session_webhook_expired_time,
             )
 
-        # Resolve media download codes to URLs so vision tools can use them
+        # Resolve media download codes to local cache files so vision/document
+        # tools can still use them after DingTalk temporary URLs expire.
         await self._resolve_media_codes(message)
 
         # Extract text content
@@ -761,7 +807,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             download_code = getattr(image_content, "download_code", None)
             if download_code:
                 media_urls.append(download_code)
-                media_types.append("image")
+                media_types.append("image/jpeg")
                 msg_type = MessageType.PHOTO
 
         # Check for rich text with mixed content
@@ -774,18 +820,21 @@ class DingTalkAdapter(BasePlatformAdapter):
                 for item in rich_list:
                     if isinstance(item, dict):
                         dl_code = (
-                            item.get("downloadCode") or item.get("download_code") or ""
+                            item.get("downloadCode")
+                            or item.get("pictureDownloadCode")
+                            or item.get("download_code")
+                            or ""
                         )
                         item_type = item.get("type", "")
                         if dl_code:
-                            mapped = DINGTALK_TYPE_MAPPING.get(item_type, "file")
+                            mapped = DINGTALK_TYPE_MAPPING.get(item_type, "application/octet-stream")
                             media_urls.append(dl_code)
-                            if mapped == "image":
-                                media_types.append("image")
+                            if mapped.startswith("image/"):
+                                media_types.append(mapped)
                                 if msg_type == MessageType.TEXT:
                                     msg_type = MessageType.PHOTO
-                            elif mapped == "audio":
-                                media_types.append("audio")
+                            elif mapped.startswith("audio/"):
+                                media_types.append(mapped)
                                 if msg_type == MessageType.TEXT:
                                     # DingTalk's "voice" rich-text item is a
                                     # native voice note — route through STT.
@@ -795,12 +844,12 @@ class DingTalkAdapter(BasePlatformAdapter):
                                         msg_type = MessageType.VOICE
                                     else:
                                         msg_type = MessageType.AUDIO
-                            elif mapped == "video":
-                                media_types.append("video")
+                            elif mapped.startswith("video/"):
+                                media_types.append(mapped)
                                 if msg_type == MessageType.TEXT:
                                     msg_type = MessageType.VIDEO
                             else:
-                                media_types.append("application/octet-stream")
+                                media_types.append(mapped or "application/octet-stream")
                                 if msg_type == MessageType.TEXT:
                                     msg_type = MessageType.DOCUMENT
 
@@ -843,6 +892,13 @@ class DingTalkAdapter(BasePlatformAdapter):
                     "[%s] No valid session_webhook for chat_id=%s",
                     self.name, chat_id,
                 )
+                if self._http_client and self._client_id and self._client_secret:
+                    logger.info(
+                        "[%s] Falling back to DingTalk robot OpenAPI text send for chat_id=%s",
+                        self.name,
+                        chat_id,
+                    )
+                    return await self._send_robot_text(chat_id, content, metadata=metadata)
                 return SendResult(
                     success=False,
                     error="No valid session_webhook available. Reply must follow an incoming message.",
@@ -963,14 +1019,12 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local image files directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local image uploads. "
-                "Only markdown/text replies are supported without OpenAPI media upload."
-            ),
-        )
+        """Send a local image as a native DingTalk robot image message."""
+        if caption:
+            text_result = await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            if not text_result.success:
+                return text_result
+        return await self._send_robot_media(chat_id, image_path, "image", metadata=metadata)
 
     async def send_document(
         self,
@@ -982,14 +1036,242 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local file attachments directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local file attachments. "
-                "Only markdown/text replies are supported without OpenAPI message send."
-            ),
+        """Send a local file as a native DingTalk robot file message."""
+        if caption:
+            text_result = await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            if not text_result.success:
+                return text_result
+        return await self._send_robot_media(
+            chat_id,
+            file_path,
+            "file",
+            file_name=file_name,
+            metadata=metadata,
         )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local video as a native DingTalk file message."""
+        if caption:
+            text_result = await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            if not text_result.success:
+                return text_result
+        return await self._send_robot_media(chat_id, video_path, "file", metadata=metadata)
+
+    async def _send_robot_media(
+        self,
+        chat_id: str,
+        file_path: str,
+        media_kind: str,
+        *,
+        file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload a local file to DingTalk and send its media id via robot API."""
+        path = Path(file_path).expanduser()
+        if not path.exists():
+            return SendResult(success=False, error=f"Media file not found: {file_path}")
+        if not path.is_file():
+            return SendResult(success=False, error=f"Media path is not a file: {file_path}")
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="No access token")
+
+        media_type = "image" if media_kind == "image" else "file"
+        try:
+            media_id = await self._upload_robot_media(path, media_type, token)
+            return await self._send_robot_media_id(
+                chat_id,
+                media_id,
+                path,
+                media_type,
+                token,
+                file_name=file_name,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            return SendResult(
+                success=False,
+                error=f"DingTalk robot media send failed after upload: {_sanitize_dingtalk_error(exc)}",
+            )
+
+    async def _upload_robot_media(self, file_path: Path, media_type: str, token: str) -> str:
+        """Upload local media to DingTalk's oapi media endpoint."""
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized")
+        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        with file_path.open("rb") as file_obj:
+            files = {"media": (file_path.name, file_obj, mime_type)}
+            response = await self._http_client.post(
+                "https://oapi.dingtalk.com/media/upload",
+                params={"access_token": token, "type": media_type},
+                files=files,
+                timeout=30.0,
+            )
+        response.raise_for_status()
+        data = response.json()
+        media_id = data.get("media_id") or data.get("mediaId")
+        if not media_id:
+            raise RuntimeError(f"upload response missing media_id: {data}")
+        return media_id
+
+    async def _send_robot_media_id(
+        self,
+        chat_id: str,
+        media_id: str,
+        file_path: Path,
+        media_type: str,
+        token: str,
+        *,
+        file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an uploaded media id to the current DingTalk conversation."""
+        msg_params = self._media_msg_params(file_path, media_id, media_type, file_name=file_name)
+        return await self._send_robot_message(
+            chat_id,
+            msg_params,
+            token,
+            metadata=metadata,
+        )
+
+    async def _send_robot_text(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send text through DingTalk robot OpenAPI when no session webhook exists."""
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="No access token")
+        return await self._send_robot_message(
+            chat_id,
+            [("sampleText", {"content": content[: self.MAX_MESSAGE_LENGTH]})],
+            token,
+            metadata=metadata,
+        )
+
+    async def _send_robot_message(
+        self,
+        chat_id: str,
+        msg_params: List[tuple[str, Dict[str, str]]],
+        token: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send robot msgKey/msgParam payloads to a DingTalk group or DM."""
+        current_message = self._message_contexts.get(chat_id)
+        metadata = metadata or {}
+        directory_entry = self._lookup_channel_directory_entry(chat_id)
+        directory_type = str((directory_entry or {}).get("type") or "").lower()
+        conversation_type = str(
+            metadata.get("conversation_type")
+            or getattr(current_message, "conversation_type", "")
+            or self.config.extra.get("conversation_type", "")
+            or ""
+        )
+        sender_staff_id = (
+            metadata.get("sender_staff_id")
+            or getattr(current_message, "sender_staff_id", "")
+            or self.config.extra.get("sender_staff_id")
+            or (directory_entry or {}).get("user_id_alt")
+            or ""
+        )
+        robot_code = (
+            metadata.get("robot_code")
+            or getattr(current_message, "robot_code", "")
+            or self._robot_code
+            or self._client_id
+        )
+
+        headers = {"x-acs-dingtalk-access-token": token}
+        is_known_group = conversation_type == "2" or directory_type == "group"
+        is_known_dm = conversation_type == "1" or directory_type == "dm"
+
+        if is_known_dm and not is_known_group:
+            if not sender_staff_id:
+                return SendResult(
+                    success=False,
+                    error="Missing sender_staff_id for DingTalk one-to-one robot send",
+                )
+            endpoint = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+            recipient_source = "sender_staff_id"
+            base_payload = {"robotCode": robot_code, "userIds": [sender_staff_id]}
+            route = "oto"
+        else:
+            endpoint = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+            recipient_source = "openConversationId"
+            base_payload = {"robotCode": robot_code, "openConversationId": chat_id}
+            route = "group"
+
+        logger.info(
+            "[%s] Sending DingTalk robot message via %s API; recipient_source=%s",
+            self.name,
+            route,
+            recipient_source,
+        )
+        errors = []
+        for msg_key, msg_param in msg_params:
+            payload = {
+                **base_payload,
+                "msgKey": msg_key,
+                "msgParam": json.dumps(msg_param, ensure_ascii=False),
+            }
+            response = await self._http_client.post(endpoint, headers=headers, json=payload, timeout=30.0)
+            if response.status_code < 300:
+                data = response.json() if response.content else {}
+                return SendResult(
+                    success=True,
+                    message_id=data.get("processQueryKey") or data.get("messageId") or uuid.uuid4().hex[:12],
+                    raw_response=data,
+                )
+            errors.append(f"{msg_key} HTTP {response.status_code}: {response.text[:300]}")
+
+        return SendResult(success=False, error="; ".join(errors))
+
+    @staticmethod
+    def _lookup_channel_directory_entry(chat_id: str) -> Dict[str, Any]:
+        try:
+            from gateway.channel_directory import load_directory
+            channels = load_directory().get("platforms", {}).get("dingtalk", [])
+        except Exception:
+            return {}
+        for channel in channels:
+            if str(channel.get("id") or "") == str(chat_id):
+                return channel
+        return {}
+
+    @staticmethod
+    def _media_msg_params(
+        file_path: Path,
+        media_id: str,
+        media_type: str,
+        *,
+        file_name: Optional[str] = None,
+    ) -> List[tuple[str, Dict[str, str]]]:
+        if media_type == "image":
+            return [
+                ("sampleImageMsg", {"photoURL": media_id}),
+                ("sampleImageMsg", {"mediaId": media_id}),
+                ("sampleImage", {"mediaId": media_id}),
+            ]
+        display_name = file_name or file_path.name
+        return [
+            ("sampleFile", {"mediaId": media_id, "fileName": display_name}),
+            ("sampleFileMsg", {"mediaId": media_id, "fileName": display_name}),
+        ]
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
@@ -1292,7 +1574,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
     async def _resolve_media_codes(self, message: "ChatbotMessage") -> None:
-        """Resolve download codes in message to actual URLs."""
+        """Resolve download codes in a message to local cache file paths."""
         token = await self._get_access_token()
         if not token:
             return
@@ -1324,16 +1606,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         for obj, key in codes_to_resolve:
             code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
             if code:
-                tasks.append(
-                    self._fetch_download_url(code, robot_code, token, obj, key)
-                )
+                tasks.append(self._fetch_and_cache_media(code, robot_code, token, obj, key))
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _fetch_download_url(
+    async def _fetch_and_cache_media(
         self, code: str, robot_code: str, token: str, obj, key: str
     ) -> None:
-        """Fetch download URL for a single code using the robot SDK."""
+        """Fetch one DingTalk media download code and replace it with a cache path."""
         if not self._robot_sdk:
             logger.warning(
                 "[%s] Robot SDK not initialized, cannot resolve media code",
@@ -1356,10 +1636,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             if body:
                 url = getattr(body, "download_url", None)
                 if url:
+                    cached_path = await self._download_and_cache_media(url, obj)
                     if hasattr(obj, key):
-                        setattr(obj, key, url)
+                        setattr(obj, key, cached_path)
                     elif isinstance(obj, dict):
-                        obj[key] = url
+                        obj[key] = cached_path
             else:
                 logger.warning(
                     "[%s] Failed to download media: empty response for code %s",
@@ -1368,6 +1649,51 @@ class DingTalkAdapter(BasePlatformAdapter):
                 )
         except Exception as e:
             logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+
+    async def _download_and_cache_media(self, url: str, source_obj: Any) -> str:
+        """Download a DingTalk temporary media URL and store it in Hermes cache."""
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized")
+        response = await self._http_client.get(url, timeout=30.0)
+        response.raise_for_status()
+        data = response.content
+
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        filename = self._filename_from_response(response.headers) or self._filename_from_source(source_obj)
+        ext = Path(filename or "").suffix.lower()
+        if not ext and content_type:
+            ext = mimetypes.guess_extension(content_type) or ""
+
+        if content_type.startswith("image/") or ext in _IMAGE_EXTS:
+            return cache_image_from_bytes(data, ext or ".jpg")
+        if content_type.startswith("audio/") or ext in _AUDIO_EXTS:
+            return cache_audio_from_bytes(data, ext or ".amr")
+        if content_type.startswith("video/") or ext in _VIDEO_EXTS:
+            return cache_video_from_bytes(data, ext or ".mp4")
+        return cache_document_from_bytes(data, filename or f"dingtalk{ext or '.bin'}")
+
+    @staticmethod
+    def _filename_from_response(headers: Any) -> str:
+        content_disposition = headers.get("content-disposition", "") if headers else ""
+        if not content_disposition:
+            return ""
+        msg = EmailMessage()
+        msg["content-disposition"] = content_disposition
+        filename = msg.get_filename()
+        return Path(filename).name if filename else ""
+
+    @staticmethod
+    def _filename_from_source(source_obj: Any) -> str:
+        if isinstance(source_obj, dict):
+            for key in ("fileName", "filename", "name", "title"):
+                value = source_obj.get(key)
+                if value:
+                    return Path(str(value)).name
+        for key in ("file_name", "filename", "name", "title"):
+            value = getattr(source_obj, key, None)
+            if value:
+                return Path(str(value)).name
+        return ""
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:

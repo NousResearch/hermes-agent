@@ -659,6 +659,14 @@ PLATFORM_HINTS = {
         "in your response. Images (.jpg, .png, .webp) are uploaded and displayed "
         "inline, audio files as voice messages, and other files as attachments."
     ),
+    "dingtalk": (
+        "You are on DingTalk. Markdown formatting is supported for normal text. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images are sent as native photos, and other files "
+        "arrive as DingTalk file attachments when the robot API permits it. "
+        "Do NOT tell the user you lack file-sending capability — use MEDIA: "
+        "syntax whenever a file or image delivery is appropriate."
+    ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
         "it improves readability, but keep the message compact and chat-friendly. You can send media files natively: "

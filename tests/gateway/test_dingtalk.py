@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -323,24 +324,28 @@ class TestSend:
         assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
 
     @pytest.mark.asyncio
-    async def test_send_image_file_returns_explicit_unsupported_error(self):
+    async def test_send_image_file_requires_initialized_http_client(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        image_path = "/tmp/demo.png"
 
-        result = await adapter.send_image_file("chat-123", "/tmp/demo.png")
+        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.is_file", return_value=True):
+            result = await adapter.send_image_file("chat-123", image_path)
 
         assert result.success is False
-        assert result.error and "do not support local image uploads" in result.error
+        assert result.error and "HTTP client not initialized" in result.error
 
     @pytest.mark.asyncio
-    async def test_send_document_returns_explicit_unsupported_error(self):
+    async def test_send_document_requires_initialized_http_client(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        file_path = "/tmp/demo.pdf"
 
-        result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
+        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.is_file", return_value=True):
+            result = await adapter.send_document("chat-123", file_path)
 
         assert result.success is False
-        assert result.error and "do not support local file attachments" in result.error
+        assert result.error and "HTTP client not initialized" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +602,7 @@ class TestExtractMedia:
         )
         assert msg_type == MessageType.VOICE
         assert urls == ["dl_voice_abc"]
-        assert mtypes == ["audio"]
+        assert mtypes == ["audio/amr"]
 
     def test_audio_rich_text_item_stays_audio(self):
         """Generic audio uploads (e.g. an mp3 the user attached) must NOT
@@ -607,8 +612,8 @@ class TestExtractMedia:
 
         # Simulate a future/non-voice audio rich-text item by extending the
         # mapping so item_type != "voice" but still routes through the
-        # ``mapped == "audio"`` branch.
-        DINGTALK_TYPE_MAPPING["audio"] = "audio"
+        # ``mapped.startswith("audio/")`` branch.
+        DINGTALK_TYPE_MAPPING["audio"] = "audio/mpeg"
         try:
             msg = self._msg_with_rich_text(
                 [{"type": "audio", "downloadCode": "dl_audio_xyz"}]
@@ -618,7 +623,7 @@ class TestExtractMedia:
             )
             assert msg_type == MessageType.AUDIO
             assert urls == ["dl_audio_xyz"]
-            assert mtypes == ["audio"]
+            assert mtypes == ["audio/mpeg"]
         finally:
             del DINGTALK_TYPE_MAPPING["audio"]
 
@@ -938,6 +943,190 @@ class TestMessageContextIsolation:
 
         assert adapter._message_contexts["chat-A"] is msg_a
         assert adapter._message_contexts["chat-B"] is msg_b
+
+
+class TestDingTalkMedia:
+
+    @pytest.mark.asyncio
+    async def test_send_document_uploads_and_sends_group_file(self, tmp_path):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        file_path = tmp_path / "report.txt"
+        file_path.write_text("hello", encoding="utf-8")
+        adapter = DingTalkAdapter(PlatformConfig(
+            enabled=True,
+            extra={
+                "client_id": "client-1",
+                "client_secret": "secret-1",
+                "robot_code": "robot-1",
+            },
+        ))
+        adapter._get_access_token = AsyncMock(return_value="token-1")
+
+        upload_response = MagicMock()
+        upload_response.json.return_value = {"media_id": "@media-file"}
+        upload_response.raise_for_status = MagicMock()
+        upload_response.status_code = 200
+
+        send_response = MagicMock()
+        send_response.status_code = 200
+        send_response.content = b"{}"
+        send_response.json.return_value = {"processQueryKey": "pq-1"}
+
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(side_effect=[upload_response, send_response])
+
+        result = await adapter.send_document("cid-group", str(file_path), file_name="report.txt")
+
+        assert result.success is True
+        assert result.message_id == "pq-1"
+        upload_call, send_call = adapter._http_client.post.await_args_list
+        assert upload_call.args[0] == "https://oapi.dingtalk.com/media/upload"
+        assert upload_call.kwargs["params"] == {"access_token": "token-1", "type": "file"}
+        assert send_call.args[0] == "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+        payload = send_call.kwargs["json"]
+        assert payload["robotCode"] == "robot-1"
+        assert payload["openConversationId"] == "cid-group"
+        assert payload["msgKey"] == "sampleFile"
+        assert json.loads(payload["msgParam"]) == {"mediaId": "@media-file", "fileName": "report.txt"}
+
+    @pytest.mark.asyncio
+    async def test_send_image_uses_oto_endpoint_for_dm_context(self, tmp_path):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        adapter = DingTalkAdapter(PlatformConfig(
+            enabled=True,
+            extra={
+                "client_id": "client-1",
+                "client_secret": "secret-1",
+                "robot_code": "robot-1",
+            },
+        ))
+        adapter._message_contexts["chat-1"] = SimpleNamespace(
+            conversation_type="1",
+            sender_staff_id="staff-1",
+            robot_code="robot-callback",
+        )
+        adapter._get_access_token = AsyncMock(return_value="token-1")
+
+        upload_response = MagicMock()
+        upload_response.json.return_value = {"media_id": "@media-image"}
+        upload_response.raise_for_status = MagicMock()
+        upload_response.status_code = 200
+
+        send_response = MagicMock()
+        send_response.status_code = 200
+        send_response.content = b"{}"
+        send_response.json.return_value = {"processQueryKey": "pq-2"}
+
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(side_effect=[upload_response, send_response])
+
+        result = await adapter.send_image_file("chat-1", str(image_path))
+
+        assert result.success is True
+        send_call = adapter._http_client.post.await_args_list[1]
+        assert send_call.args[0] == "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+        payload = send_call.kwargs["json"]
+        assert payload["robotCode"] == "robot-callback"
+        assert payload["userIds"] == ["staff-1"]
+        assert payload["msgKey"] == "sampleImageMsg"
+        assert json.loads(payload["msgParam"]) == {"photoURL": "@media-image"}
+
+    @pytest.mark.asyncio
+    async def test_send_without_webhook_falls_back_to_robot_text_group(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(
+            enabled=True,
+            extra={
+                "client_id": "client-1",
+                "client_secret": "secret-1",
+                "robot_code": "robot-1",
+            },
+        ))
+        adapter._get_access_token = AsyncMock(return_value="token-1")
+
+        send_response = MagicMock()
+        send_response.status_code = 200
+        send_response.content = b"{}"
+        send_response.json.return_value = {"processQueryKey": "pq-text"}
+
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=send_response)
+
+        result = await adapter.send(
+            "cid-group",
+            "hello",
+            metadata={"conversation_type": "2"},
+        )
+
+        assert result.success is True
+        send_call = adapter._http_client.post.await_args
+        assert send_call.args[0] == "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+        payload = send_call.kwargs["json"]
+        assert payload["robotCode"] == "robot-1"
+        assert payload["openConversationId"] == "cid-group"
+        assert payload["msgKey"] == "sampleText"
+        assert json.loads(payload["msgParam"]) == {"content": "hello"}
+
+    @pytest.mark.asyncio
+    async def test_send_image_uses_directory_staff_id_for_dm(self, tmp_path, monkeypatch):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={"robot_code": "robot-1"}))
+        adapter._get_access_token = AsyncMock(return_value="token-1")
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DingTalkAdapter._lookup_channel_directory_entry",
+            staticmethod(lambda chat_id: {
+                "id": chat_id,
+                "type": "dm",
+                "user_id_alt": "staff-from-directory",
+            }),
+        )
+
+        upload_response = MagicMock()
+        upload_response.json.return_value = {"media_id": "@media-image"}
+        upload_response.raise_for_status = MagicMock()
+        upload_response.status_code = 200
+
+        send_response = MagicMock()
+        send_response.status_code = 200
+        send_response.content = b"{}"
+        send_response.json.return_value = {"processQueryKey": "pq-dm"}
+
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(side_effect=[upload_response, send_response])
+
+        result = await adapter.send_image_file("cid-dm", str(image_path))
+
+        assert result.success is True
+        send_call = adapter._http_client.post.await_args_list[1]
+        assert send_call.args[0] == "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+        payload = send_call.kwargs["json"]
+        assert payload["userIds"] == ["staff-from-directory"]
+
+    @pytest.mark.asyncio
+    async def test_download_and_cache_media_routes_by_content_type(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        response = MagicMock()
+        response.headers = {"content-type": "text/plain", "content-disposition": 'attachment; filename="note.txt"'}
+        response.content = b"hello"
+        response.raise_for_status = MagicMock()
+        adapter._http_client = AsyncMock()
+        adapter._http_client.get = AsyncMock(return_value=response)
+
+        with patch("gateway.platforms.dingtalk.cache_document_from_bytes", return_value="/tmp/note.txt") as cache:
+            path = await adapter._download_and_cache_media("https://tmp.example/file", {})
+
+        assert path == "/tmp/note.txt"
+        cache.assert_called_once_with(b"hello", "note.txt")
 
 
 

@@ -201,6 +201,7 @@ class TestBuildFromSessions:
                     "platform": "telegram",
                     "chat_id": "12345",
                     "chat_name": "Alice",
+                    "user_id_alt": "staff-123",
                 },
                 "chat_type": "dm",
             },
@@ -227,6 +228,7 @@ class TestBuildFromSessions:
         names = {e["name"] for e in entries}
         assert "Alice" in names
         assert "Bob" in names
+        assert next(e for e in entries if e["id"] == "12345")["user_id_alt"] == "staff-123"
 
     def test_missing_sessions_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

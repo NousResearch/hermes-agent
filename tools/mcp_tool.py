@@ -95,7 +95,7 @@ import sys
 import threading
 import time
 from typing import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -2008,8 +2008,8 @@ class MCPServerTask:
             _sse_kwargs: dict = {
                 "url": url,
                 "headers": headers or None,
-                "timeout": float(connect_timeout),
-                "sse_read_timeout": 300.0,
+                "timeout": timedelta(seconds=float(connect_timeout)),
+                "sse_read_timeout": timedelta(seconds=300.0),
             }
             if _oauth_auth is not None:
                 # Pass OAuth auth through to sse_client so SSE MCP servers
@@ -2114,7 +2114,7 @@ class MCPServerTask:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
             _http_kwargs: dict = {
                 "headers": headers,
-                "timeout": float(connect_timeout),
+                "timeout": timedelta(seconds=float(connect_timeout)),
                 "verify": ssl_verify,
             }
             if _oauth_auth is not None:

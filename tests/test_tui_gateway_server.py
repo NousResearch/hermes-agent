@@ -4434,6 +4434,33 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_omit_system_prompt_when_empty():
+    """system_prompt key should be omitted when _cached_system_prompt is empty/None."""
+    # Case 1: empty string
+    agent = types.SimpleNamespace(tools=[], model="", _cached_system_prompt="")
+    info = server._session_info(agent)
+    assert "system_prompt" not in info
+
+    # Case 2: None
+    agent = types.SimpleNamespace(tools=[], model="", _cached_system_prompt=None)
+    info = server._session_info(agent)
+    assert "system_prompt" not in info
+
+    # Case 3: attribute missing entirely
+    agent = types.SimpleNamespace(tools=[], model="")
+    info = server._session_info(agent)
+    assert "system_prompt" not in info
+
+
+def test_session_info_includes_system_prompt_when_present():
+    """system_prompt key should be present when _cached_system_prompt has content."""
+    agent = types.SimpleNamespace(
+        tools=[], model="", _cached_system_prompt="You are a helpful assistant."
+    )
+    info = server._session_info(agent)
+    assert info["system_prompt"] == "You are a helpful assistant."
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

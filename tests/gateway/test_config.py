@@ -816,6 +816,70 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
+    def test_bridges_feishu_group_rules_from_config_yaml_to_extra(self, tmp_path, monkeypatch):
+        """yaml feishu.group_rules must reach PlatformConfig.extra so the adapter sees it.
+
+        Regression test: before the bridge was added, FeishuAdapter._load_settings()
+        read group_rules from extra but config.yaml only forwarded allow_bots, so
+        per-group require_mention overrides were silently dropped (see feishu.py
+        L1473-1572 vs config.py L1116-1120).
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  group_rules:\n"
+            "    oc_test_chat_id_001:\n"
+            "      require_mention: false\n"
+            "    oc_test_chat_id_002:\n"
+            "      policy: allowlist\n"
+            "      allowlist: [user_a, user_b]\n"
+            "  admins: [admin_open_id]\n"
+            "  default_group_policy: open\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Force-enable feishu so the platform survives into PlatformConfig
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_test_app_id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "test_secret")
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.FEISHU].extra
+        assert extra["group_rules"] == {
+            "oc_test_chat_id_001": {"require_mention": False},
+            "oc_test_chat_id_002": {"policy": "allowlist", "allowlist": ["user_a", "user_b"]},
+        }
+        assert extra["admins"] == ["admin_open_id"]
+        assert extra["default_group_policy"] == "open"
+
+    def test_feishu_no_structured_fields_leaves_extra_clean(self, tmp_path, monkeypatch):
+        """When feishu yaml has no group_rules/admins/default_group_policy, the
+        bridge must NOT inject empty placeholder keys into extra (the adapter
+        treats presence as meaningful and an empty dict is observably different
+        from 'no key set')."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n  allow_bots: mentions\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_test_app_id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "test_secret")
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.FEISHU].extra
+        assert "group_rules" not in extra
+        assert "admins" not in extra
+        assert "default_group_policy" not in extra
+
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

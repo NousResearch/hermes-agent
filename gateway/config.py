@@ -1293,6 +1293,19 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(feishu_cfg, dict):
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+                # Feishu-specific structured fields → adapter extra.
+                # The shared loop above bridges generic keys like require_mention,
+                # but these structured dicts are feishu-only and must be forwarded
+                # explicitly so FeishuAdapter._load_settings() can read them from
+                # extra (see gateway/platforms/feishu.py L1473-1572).
+                _fs_structured_keys = ("group_rules", "admins", "default_group_policy")
+                if any(k in feishu_cfg for k in _fs_structured_keys):
+                    _, _fs_extra = _ensure_platform_extra_dict(
+                        platforms_data, Platform.FEISHU.value
+                    )
+                    for _k in _fs_structured_keys:
+                        if _k in feishu_cfg:
+                            _fs_extra[_k] = feishu_cfg[_k]
 
     except Exception as e:
         logger.warning(

@@ -8492,6 +8492,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
+    ("/editor", "Open VS Code/default editor; saved text becomes the prompt", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     (
         "/mouse",
@@ -9491,6 +9492,11 @@ def _(rid, params: dict) -> dict:
                 "text": "/details",
                 "display": "/details",
                 "meta": "Control agent detail visibility",
+            },
+            {
+                "text": "/editor",
+                "display": "/editor",
+                "meta": "Open VS Code/default editor; saved text becomes the prompt",
             },
             {
                 "text": "/logs",

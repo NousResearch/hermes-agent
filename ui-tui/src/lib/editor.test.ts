@@ -35,6 +35,12 @@ describe('resolveEditor', () => {
     expect(resolveEditor({ PATH: dir, VISUAL: 'emacsclient -t' })).toEqual(['emacsclient', '-t'])
   })
 
+  it('adds --wait to explicit VS Code editor commands so Hermes sees the saved prompt', () => {
+    expect(resolveEditor({ EDITOR: 'code', PATH: dir })).toEqual(['code', '--wait'])
+    expect(resolveEditor({ EDITOR: 'code --reuse-window', PATH: dir })).toEqual(['code', '--reuse-window', '--wait'])
+    expect(resolveEditor({ EDITOR: 'code-insiders --wait', PATH: dir })).toEqual(['code-insiders', '--wait'])
+  })
+
   it('ignores whitespace-only env vars', () => {
     const expected = exe(dir, 'editor')
 
@@ -47,6 +53,13 @@ describe('resolveEditor', () => {
     const expected = exe(dir, 'editor')
 
     expect(resolveEditor({ PATH: dir })).toEqual([expected])
+  })
+
+  it('uses VS Code with --wait as the default fallback when code is on $PATH', () => {
+    const expected = exe(dir, 'code')
+    exe(dir, 'editor')
+
+    expect(resolveEditor({ PATH: dir })).toEqual([expected, '--wait'])
   })
 
   it('falls back to nano before vi when both exist', () => {

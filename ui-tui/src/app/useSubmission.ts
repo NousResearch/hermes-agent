@@ -24,6 +24,16 @@ const SESSION_BUSY_RE = /session busy|waiting for model response/i
 
 const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
+export const submittedValueCanUseComposerCompletion = ({
+  completionCount,
+  composerInput,
+  value
+}: {
+  completionCount: number
+  composerInput: string
+  value: string
+}): boolean => completionCount > 0 && value === composerInput
+
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
 
@@ -352,7 +362,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const submit = useCallback(
     (value: string) => {
-      if (composerState.completions.length) {
+      if (
+        submittedValueCanUseComposerCompletion({
+          completionCount: composerState.completions.length,
+          composerInput: composerState.input,
+          value
+        })
+      ) {
         const row = composerState.completions[composerState.compIdx]
         const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
 

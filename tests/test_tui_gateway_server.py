@@ -3006,6 +3006,24 @@ def test_complete_slash_includes_tui_mouse_command():
     assert any(item["text"] == "/mouse" for item in resp["result"]["items"])
 
 
+def test_complete_slash_includes_tui_editor_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/edi"}}
+    )
+    assert isinstance(resp, dict)
+    result = resp.get("result") or {}
+
+    assert any(item["text"] == "/editor" for item in result.get("items", []))
+
+
+def test_commands_catalog_includes_tui_editor_command():
+    resp = server.handle_request({"id": "1", "method": "commands.catalog", "params": {}})
+    assert isinstance(resp, dict)
+    result = resp.get("result") or {}
+
+    assert ["/editor", "Open VS Code/default editor; saved text becomes the prompt"] in result.get("pairs", [])
+
+
 def test_complete_slash_details_args():
     resp_root = server.handle_request(
         {"id": "0", "method": "complete.slash", "params": {"text": "/details"}}

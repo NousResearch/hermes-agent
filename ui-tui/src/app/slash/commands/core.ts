@@ -219,6 +219,17 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['edit'],
+    help: 'open VS Code/default editor; saved text becomes the prompt',
+    name: 'editor',
+    run: (arg, ctx) => {
+      ctx.composer.openEditor(arg.trim()).catch((err: unknown) => {
+        ctx.transcript.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+      })
+    }
+  },
+
+  {
     help: 'show live session info',
     name: 'status',
     run: (_arg, ctx) => {

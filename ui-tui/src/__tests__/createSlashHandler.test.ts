@@ -77,6 +77,22 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('opens the local editor for /editor without slash worker fallback', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/editor')).toBe(true)
+    expect(ctx.composer.openEditor).toHaveBeenCalledWith('')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('opens the local editor for /edit with draft text prefilled', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/edit make this the prompt')).toBe(true)
+    expect(ctx.composer.openEditor).toHaveBeenCalledWith('make this the prompt')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('exits locally for /quit', () => {
     const ctx = buildCtx()
 
@@ -875,6 +891,7 @@ const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
 const buildComposer = () => ({
   enqueue: vi.fn(),
   hasSelection: false,
+  openEditor: vi.fn(() => Promise.resolve()),
   paste: vi.fn(),
   queueRef: { current: [] as string[] },
   selection: { copySelection: vi.fn(async () => '') },

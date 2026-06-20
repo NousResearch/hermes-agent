@@ -976,6 +976,9 @@ async def vision_analyze_tool(
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
             response = await async_call_llm(**call_kwargs)
+        # On failure (SSL, timeout, etc.), try the configured fallback_chain
+        # before giving up. Useful when the primary provider is blocked (e.g.
+        # Gemini behind GFW) and local/cloud fallbacks are configured.
         except Exception as _api_err:
             if (_is_image_size_error(_api_err)
                     and len(image_data_url) > _RESIZE_TARGET_BYTES):
@@ -990,7 +993,28 @@ async def vision_analyze_tool(
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
                 response = await async_call_llm(**call_kwargs)
             else:
-                raise
+                # Primary failed — try configured fallback_chain
+                try:
+                    import agent.auxiliary_client as _aux
+                    import importlib
+                    importlib.reload(_aux)
+                    from agent.auxiliary_client import _try_configured_fallback_chain as _fb
+                    _fb_client, _fb_model, _fb_label = _fb("vision", "auto", reason="primary failed")
+                    if _fb_client is not None:
+                        logger.warning(
+                            "Primary vision provider failed, using fallback %s", _fb_label)
+                        call_kwargs["model"] = _fb_model or call_kwargs.get("model")
+                        response = _fb_client.chat.completions.create(
+                            model=call_kwargs["model"],
+                            messages=call_kwargs["messages"],
+                            max_tokens=call_kwargs.get("max_tokens", 512),
+                            temperature=0.0,
+                        )
+                        logger.info("Primary vision fallback (%s) succeeded", _fb_label)
+                    else:
+                        raise
+                except Exception as _fb_err:
+                    raise _api_err from _fb_err
         
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)

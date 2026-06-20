@@ -1101,42 +1101,42 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         cached_path = await cache_image_from_url(url, ext=".jpg")
                         cached_urls.append(cached_path)
                         media_types.append("image/jpeg")
-                        print(f"[{self.name}] Cached user image: {cached_path}", flush=True)
+                        logger.debug("[%s] Cached user image: %s", self.name, cached_path)
                     except Exception as e:
-                        print(f"[{self.name}] Failed to cache image: {e}", flush=True)
+                        logger.debug("[%s] Failed to cache image: %s", self.name, e)
                         cached_urls.append(url)
                         media_types.append("image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
                     # Local file path — bridge already downloaded the image
                     cached_urls.append(url)
                     media_types.append("image/jpeg")
-                    print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    logger.debug("[%s] Using bridge-cached image: %s", self.name, url)
                 elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
                         cached_urls.append(cached_path)
                         media_types.append("audio/ogg")
-                        print(f"[{self.name}] Cached user voice: {cached_path}", flush=True)
+                        logger.debug("[%s] Cached user voice: %s", self.name, cached_path)
                     except Exception as e:
-                        print(f"[{self.name}] Failed to cache voice: {e}", flush=True)
+                        logger.debug("[%s] Failed to cache voice: %s", self.name, e)
                         cached_urls.append(url)
                         media_types.append("audio/ogg")
                 elif msg_type == MessageType.VOICE and os.path.isabs(url):
                     # Local file path — bridge already downloaded the audio
                     cached_urls.append(url)
                     media_types.append("audio/ogg")
-                    print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    logger.debug("[%s] Using bridge-cached audio: %s", self.name, url)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
                     # Local file path — bridge already downloaded the document
                     cached_urls.append(url)
                     ext = Path(url).suffix.lower()
                     mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
                     media_types.append(mime)
-                    print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    logger.debug("[%s] Using bridge-cached document: %s", self.name, url)
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):
                     cached_urls.append(url)
                     media_types.append("video/mp4")
-                    print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    logger.debug("[%s] Using bridge-cached video: %s", self.name, url)
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")

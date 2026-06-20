@@ -177,14 +177,38 @@ class _Handler(BaseHTTPRequestHandler):
         return obj
 
     def do_GET(self):  # noqa: N802
-        if self.path.rstrip("/") == "/org/ping":
+        path = self.path.split("?", 1)[0].rstrip("/")
+        if path == "/org/ping":
             if not self._gate():
                 return
             self._send_json(200, {"ok": True, "uid": _self_uid()})
             return
+        # A2A Agent Card(同团队 token 才给 —— 卡片含能力简介,门控)。两个路径名都认(新/旧 A2A)。
+        if path in ("/.well-known/agent-card.json", "/.well-known/agent.json"):
+            if not self._gate():
+                return
+            from hermes_cli import a2a_context  # noqa: PLC0415
+
+            host = self.headers.get("Host") or ""
+            self._send_json(200, a2a_context.build_agent_card(f"http://{host}" if host else ""))
+            return
         self._send_json(404, {"error": "未知端点"})
 
     def do_POST(self):  # noqa: N802
+        path = self.path.split("?", 1)[0].rstrip("/")
+        # A2A 多轮对话(message/send,A2A-shaped JSON-RPC)。门控后交 a2a_context 处理。
+        if path == "/a2a":
+            if not self._gate():
+                return
+            body = self._read_json()
+            if body is None:
+                return
+            from hermes_cli import a2a_context  # noqa: PLC0415
+
+            # v1 信任边界:token+私网 = 同团队;caller 身份取请求里的 callerUid。
+            # Phase 3 上主签票后,改成把验过的 caller_uid 经 caller_uid_override 传入。
+            self._send_json(200, a2a_context.handle_a2a_request(body))
+            return
         if self.path.rstrip("/") == "/kb/ingest":
             if not self._gate():
                 return

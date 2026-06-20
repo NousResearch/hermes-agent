@@ -533,6 +533,39 @@ export function getCronJob(jobId: string): Promise<CronJob> {
   })
 }
 
+// --- A2A 子agent(局域网下级)对话 ---
+export interface SubAgentPeer {
+  uid: string
+  name?: string
+  ip?: string
+  port?: number
+  org_port?: number
+  last_seen?: number
+}
+
+export interface SubAgentChatResult {
+  ok: boolean
+  answer?: string
+  context_id?: string
+  error?: string
+}
+
+/** 局域网自发现到的在线下级节点(每个可发起多轮对话)。 */
+export async function listSubAgents(): Promise<SubAgentPeer[]> {
+  const { peers } = await window.hermesDesktop.api<{ peers: SubAgentPeer[] }>({ path: '/api/kari/peers' })
+
+  return peers ?? []
+}
+
+/** LAN 直连某下级多轮对话。把上次返回的 contextId 带回来即可续聊。 */
+export function chatWithSubAgent(targetUid: string, message: string, contextId = ''): Promise<SubAgentChatResult> {
+  return window.hermesDesktop.api<SubAgentChatResult>({
+    path: '/api/kari/org/chat',
+    method: 'POST',
+    body: { target_uid: targetUid, message, context_id: contextId }
+  })
+}
+
 export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
   const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`

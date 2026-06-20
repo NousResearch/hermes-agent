@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -281,6 +282,69 @@ def lan_kb_ingest(kb_name: str, files: list, target_uid: Optional[str] = None, t
         return r.json()
     except Exception:  # noqa: BLE001
         return {"ok": False, "error": "主返回非 JSON"}
+
+
+# --------------------------- LAN 直连多轮对话:主→子(A2A-shaped message/send)---------------------------
+def lan_agent_chat(target_uid: str, message: str, context_id: str = "", timeout: float = 180.0) -> dict:
+    """主账号 LAN 直连某下级子爱马仕**多轮对话**(对应子侧 org_lan_server 的 ``/a2a``)。
+
+    与云端 ``delegate_to``(单次、经云中继)不同:这里走局域网直连、保持会话——把上次返回的
+    ``context_id`` 带回来即可续聊(下级按它续 SessionDB 会话)。返回
+    ``{ok, answer, context_id}`` 或 ``{ok:False,error}``。对方不在局域网/未配 LAN 令牌 → ok=False。
+    线格式照 A2A ``message/send``;身份(callerUid)v1 = 本机 uid(Phase 3 换主签票)。
+    """
+    target_uid = str(target_uid or "").strip()
+    if not (target_uid and (message or "").strip()):
+        return {"ok": False, "error": "需要 target_uid 和非空 message"}
+    addr = _peer_addr(target_uid)
+    if not addr:
+        return {"ok": False, "error": f"发现表里没有 {target_uid[:8]} 的在线地址(对方在同一局域网?)"}
+    ip, port = addr
+    try:
+        from hermes_cli import org_lan_server  # noqa: PLC0415
+
+        tok = org_lan_server._lan_token()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        tok = ""
+    if not tok:
+        return {"ok": False, "error": "本机未配置 kari.lan_token,无法直连"}
+    message_obj: dict = {
+        "role": "user",
+        "messageId": uuid.uuid4().hex,
+        "parts": [{"kind": "text", "text": str(message)}],
+    }
+    if context_id:
+        message_obj["contextId"] = context_id
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/send",
+        "params": {"message": message_obj, "callerUid": self_user_id() or ""},
+    }
+    try:
+        import httpx  # noqa: PLC0415
+
+        r = httpx.post(
+            f"http://{ip}:{port}/a2a",
+            json=body,
+            headers={"X-Kari-LAN-Token": tok, "content-type": "application/json"},
+            timeout=timeout,
+        )
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"连下级 {ip}:{port} 失败:{e}"}
+    if r.status_code != 200:
+        return {"ok": False, "error": f"下级返回 {r.status_code}:{r.text[:200]}"}
+    try:
+        data = r.json()
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": "下级返回非 JSON"}
+    if data.get("error"):
+        err = data["error"]
+        return {"ok": False, "error": str(err.get("message") if isinstance(err, dict) else err)}
+    result = data.get("result") or {}
+    parts = result.get("parts") or []
+    answer = "\n".join(str(p.get("text") or "") for p in parts if isinstance(p, dict)).strip()
+    return {"ok": True, "answer": answer, "context_id": str(result.get("contextId") or context_id or "")}
 
 
 # --------------------------- 知识库目录采集 + 上报(子侧,Phase 1c)---------------------------

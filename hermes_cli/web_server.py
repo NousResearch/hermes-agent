@@ -2012,6 +2012,12 @@ class KariGrantBody(BaseModel):
     resource_id: str
 
 
+class KariOrgChatBody(BaseModel):
+    target_uid: str
+    message: str
+    context_id: str = ""
+
+
 @app.get("/api/kari/grants")
 def kari_grants_list(role: Optional[str] = None, node_uid: Optional[str] = None, kind: Optional[str] = None):
     """读主本地授权策略(角色→资源),团队角色面板据此回显勾选。Phase 2a。"""
@@ -2122,6 +2128,18 @@ def kari_lan_peers():
         return {"peers": lan_discovery.peers()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"读取 LAN peers 失败:{e}")
+
+
+@app.post("/api/kari/org/chat")
+def kari_org_chat(body: KariOrgChatBody, request: Request):
+    """桌面端「子agent对话」入口:LAN 直连某下级子爱马仕多轮对话。
+
+    返回 {ok, answer, context_id};把 context_id 下一轮带回来即可续聊(下级保持会话记忆)。
+    对方不在同一局域网 / 未配 LAN 令牌 → ok=False。"""
+    _require_token(request)
+    from hermes_cli import org_client
+
+    return org_client.lan_agent_chat(body.target_uid, body.message, body.context_id)
 
 
 def _safe_call(mod, fn_name: str, default):

@@ -364,6 +364,27 @@ def is_user_granted(target_user_id: str, node_uid: str, kind: str, resource_id: 
         return row is not None
 
 
+def is_callable(caller_user_id: str, role: str, node_uid: str, kind: str, resource_id: str) -> bool:
+    """slice C 运行时鉴权:调用方能否用这条资源(F5)。
+
+    = (``is_granted(role)`` ∪ ``is_user_granted(caller)``) **AND 资源当前在注册表里存活**。
+    并集 = 角色授权或按账号直授其一即可;再 AND 资源存活,避免授权还在但资源已删/下线时误放行
+    (与 list_authorized_resources 的 join 语义一致)。A2A agent 对话:kind="agent"、node_uid=子 uid、
+    resource_id="agent"。
+    """
+    if not (
+        is_granted(role, node_uid, kind, resource_id)
+        or is_user_granted(caller_user_id, node_uid, kind, resource_id)
+    ):
+        return False
+    with closing(_conn()) as c:
+        row = c.execute(
+            "SELECT 1 FROM resource WHERE node_uid=? AND kind=? AND resource_id=? LIMIT 1",
+            (str(node_uid or "").strip(), str(kind or "").strip(), str(resource_id or "").strip()),
+        ).fetchone()
+        return row is not None
+
+
 def remove_user_grants(target_user_id: str) -> int:
     """清空某账号的全部直授(账号被删/退出时调)。返回删除条数。"""
     with closing(_conn()) as c:

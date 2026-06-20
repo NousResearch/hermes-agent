@@ -56,6 +56,17 @@ async def delegate_task(target_user_id: str, task: str, wait_seconds: float = 60
     return await asyncio.to_thread(org_client.delegate_to, target_user_id, task, wait_seconds)
 
 
+@mcp.tool()
+async def converse_with_subordinate(target_user_id: str, message: str, context_id: str = "") -> dict:
+    """跟某个下级子爱马仕**多轮对话**(LAN 直连,有上下文记忆)。
+
+    与 delegate_task(云端、单次、无记忆)不同:这里走局域网直连且**保持会话**——把上一轮返回的
+    context_id 原样带回来即可续聊(下级记得之前说过什么)。先用 list_subordinate_capabilities 看有哪些下级、
+    挑一个 user_id。返回 {ok, answer, context_id};**把 context_id 存下来,下一轮传进来继续对话**。
+    对方不在同一局域网 / 未配 LAN 令牌 → ok=False(那时可改用 delegate_task 走云端单次委派)。"""
+    return await asyncio.to_thread(org_client.lan_agent_chat, target_user_id, message, context_id)
+
+
 # --------------------------- 本机知识源管理(让会话自己也能维护知识库)---------------------------
 # 操作的是和桌面端「知识库」页**同一份状态**(knowledge_sources.json + 本机 langflow KB):
 # UI 改了会话看得到、会话改了 UI 刷新也看得到;改完即时刷新协同注册表(团队面板秒同步)。

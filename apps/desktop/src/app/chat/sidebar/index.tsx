@@ -108,6 +108,7 @@ import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
+import { SidebarSubAgentsSection } from './sub-agents-section'
 import { resolveManualSessionOrderIds } from './order'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
@@ -1097,6 +1098,8 @@ export function ChatSidebar({
                 open={cronOpen}
               />
             )}
+
+            {!trimmedQuery && <SidebarSubAgentsSection />}
           </div>
         )}
 

@@ -188,7 +188,7 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     return script_path, calls
 
 
-def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypatch):
+def test_gateway_cmd_script_uses_start_b_without_replace_churn(monkeypatch):
     """Scheduled Task wrapper should launch pythonw once and avoid replace loops."""
     monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: exe.replace("python.exe", "pythonw.exe"))
 
@@ -202,7 +202,18 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
     assert "pythonw.exe" in content
     assert "gateway run" in content
     assert "--replace" not in content
-    assert "start \"\"" not in content
+    # The cmd.exe wrapper now uses `start "" /B` to prevent a lingering
+    # empty console window on double-click.  pythonw.exe is a GUI-subsystem
+    # executable so `start` does not create a second window; it merely lets
+    # the wrapper exit immediately instead of blocking on the long-running
+    # gateway process.  The /B flag reuses the existing console (no-op when
+    # there is no console, e.g. Scheduled Task).
+    assert "start \"\" /B" in content
+    # stdout/stderr are redirected to a log file so that print() or native
+    # stderr output doesn't trigger a visible console on the detached process.
+    assert ">>" in content
+    assert "2>&1" in content
+    assert "mkdir" in content
     assert "exit /b 0" in content
 
 

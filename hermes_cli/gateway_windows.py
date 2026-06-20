@@ -363,18 +363,59 @@ def _build_gateway_cmd_script(
     venv_dir = str(Path(python_path).resolve().parent.parent)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
 
+    # uv-created venv launchers are special: ``pythonw.exe`` starts hidden
+    # but then respawns the base interpreter as console ``python.exe``, which
+    # opens a visible Windows Terminal tab (see _resolve_detached_python).
+    # Use the base ``pythonw.exe`` directly and add the venv site-packages
+    # and the project root to PYTHONPATH so imports still resolve without
+    # the venv launcher.
     pythonw_path = _derive_venv_pythonw(python_path)
+    cfg = _read_pyvenv_cfg(Path(python_path).resolve().parent.parent)
+    home = cfg.get("home", "")
+    if "uv" in cfg and home:
+        base_pythonw = Path(home) / "pythonw.exe"
+        site_packages = Path(python_path).resolve().parent.parent / "Lib" / "site-packages"
+        if base_pythonw.exists() and site_packages.exists():
+            pythonw_path = str(base_pythonw)
+            # PYTHONPATH must include both the project root (where
+            # `hermes_cli/` lives) and the venv site-packages (for
+            # third-party deps).  Without the project root the base
+            # interpreter cannot resolve `-m hermes_cli.main` because
+            # the cwd is the profile home, not the repo checkout.
+            from hermes_cli.gateway import PROJECT_ROOT
+            lines.append(
+                f'set "PYTHONPATH={PROJECT_ROOT}{os.pathsep}'
+                f'{site_packages}{os.pathsep}%PYTHONPATH%"'
+            )
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
-    # `pythonw.exe` is a GUI-subsystem executable: cmd.exe launches it and
-    # returns immediately, so the Scheduled Task action finishes without a
-    # visible console window. Do NOT use `start` here; that creates an extra
-    # wrapper process and made gateway lifecycle/status harder to reason about.
+    # `pythonw.exe` is a GUI-subsystem executable that cmd.exe does NOT
+    # wait for (CreateProcess returns immediately for /SUBSYSTEM:WINDOWS).
+    # However, when a user double-clicks the .cmd file, cmd.exe itself
+    # keeps the console window open until the script exits — and because
+    # pythonw.exe keeps running (gateway), the window stays visible as an
+    # empty, logless box.  Using `start "" /B` makes the cmd wrapper return
+    # instantly so the console window disappears regardless of launch path
+    # (Scheduled Task, double-click, or manual invocation).  The /B flag
+    # reuses the same console (no new window), which is a no-op when there
+    # is no console (Scheduled Task) and harmless otherwise.
+    #
+    # IMPORTANT: ``start "" /B`` detaches the child from cmd.exe's console.
+    # Without an inherited console, any stdout/stderr write from pythonw.exe
+    # triggers Windows to create a transient visible console.  Redirect both
+    # streams so print() / native stderr don't flash a window.  This matches
+    # what _spawn_detached does with stdout=log_fh.
     # Do NOT use `--replace` for service-managed starts; repeated /Run calls
     # should be idempotent, not churn parent/child takeover loops.
-    lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
+    stray_log = f"{hermes_home}\\logs\\gateway-stdio.log"
+    lines.append(f'if not exist "{hermes_home}\\logs" mkdir "{hermes_home}\\logs"')
+    lines.append(
+        "start \"\" /B "
+        + " ".join(_quote_cmd_script_arg(a) for a in prog_args)
+        + f" >> \"{stray_log}\" 2>&1"
+    )
     lines.append("exit /b 0")
     return "\r\n".join(lines) + "\r\n"
 

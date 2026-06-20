@@ -151,12 +151,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^^\s*[-*]\s)|(^^\s*\d+\.\s)|(^^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([)]+\))|(^\>\s)|(^\\|.*\\|\r?\n\\|[-|: ]+\|)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -454,7 +451,49 @@ def _sender_identity(sender: Any) -> frozenset:
 
 
 def _escape_markdown_text(text: str) -> str:
-    return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
+    """Escape markdown special chars, but preserve pipe symbols in markdown tables.
+    
+    Tables are detected as lines containing | that look like table rows.
+    Skip escaping | in table context to avoid breaking table rendering.
+    """
+    # Fast path: if no pipe chars, use original fast path
+    if '|' not in text:
+        return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
+    
+    # Handle both LF and CRLF line endings
+    lines = re.split(r'\r?\n', text)
+    escaped_lines = []
+    
+    for line in lines:
+        # Check if this line looks like a markdown table row
+        # Table rows: contains | and has proper table structure
+        is_table_row = False
+        
+        # Count pipe characters in the line
+        pipe_count = line.count('|')
+        
+        # Table rows typically have multiple pipes (at least 2 for: col | col | col)
+        # and are not code fences
+        if pipe_count >= 2 and '```' not in line:
+            # Additional check: table rows usually have content around pipes
+            # (not just stray pipes in regular text)
+            # Pattern: | content | or | content|
+            if re.search(r'\|[^|]+?\|', line):
+                is_table_row = True
+        
+        if is_table_row:
+            # For table rows, DON'T escape content inside cells
+            # Only ensure pipe characters are preserved (they already are since we split on them)
+            # Markdown syntax inside table cells should work: **bold**, `code`, etc.
+            escaped_lines.append(line)
+        else:
+            # Normal line: escape everything including pipes
+            escaped_line = _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", line)
+            escaped_lines.append(escaped_line)
+    
+    # Preserve original line ending style
+    # Use \n if input was LF, or \r\n if input was CRLF
+    return '\n'.join(escaped_lines) if '\r\n' not in text else '\r\n'.join(escaped_lines)
 
 
 def _to_boolean(value: Any) -> bool:
@@ -4374,12 +4413,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # NOTE (2026-05-24): Previous code forced text mode for markdown tables
+        # based on the assumption that post+md would render tables as blank.
+        # Tested and proven WRONG — Feishu post+md renders tables correctly.
+        # Lark CLI --markdown uses post+md and tables render fine.
+        # Removed the _MARKDOWN_TABLE_RE downgrade to fix table rendering.
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

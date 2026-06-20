@@ -328,6 +328,10 @@ function describeCronExpression(
   }
 
   if (!domAll && dowAll) {
+    // A comma-list day-of-month (e.g. "1,15") would parseInt to just the first
+    // value and silently drop the rest — bail to the raw-string fallback, the
+    // same way multi-value minute/hour fields above do.
+    if (domField.includes(",")) return null;
     const dom = parseInt(domField, 10);
     if (!Number.isFinite(dom) || dom < 1 || dom > 31) return null;
     return strings.monthlyAt

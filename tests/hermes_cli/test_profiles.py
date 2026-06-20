@@ -184,8 +184,10 @@ class TestCreateProfile:
             line.startswith("#") or not line.strip()
             for line in content.splitlines()
         )
+        import sys
         mode = stat.S_IMODE(env_path.stat().st_mode)
-        assert mode == 0o600
+        if sys.platform != "win32":
+            assert mode == 0o600
 
     def test_seeded_env_does_not_clobber_cloned_env(self, profile_env):
         tmp_path = profile_env
@@ -539,9 +541,11 @@ class TestBackfillProfileEnvs:
         backfilled = backfill_profile_envs(quiet=True)
 
         assert sorted(backfilled) == ["old1", "old2"]
+        import sys
         for p in (p1, p2):
             assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
-            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+            if sys.platform != "win32":
+                assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
     def test_never_overwrites_existing_profile_env(self, profile_env):
         tmp_path = profile_env

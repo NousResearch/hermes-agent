@@ -204,6 +204,10 @@ class LSPService:
         enabled = bool(lsp_cfg.get("enabled", True))
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
+        try:
+            idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
+        except (TypeError, ValueError):
+            idle_timeout = DEFAULT_IDLE_TIMEOUT
         install_strategy = lsp_cfg.get("install_strategy", "auto")
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
@@ -235,6 +239,7 @@ class LSPService:
             env_overrides=env_overrides,
             init_overrides=init_overrides,
             disabled_servers=disabled,
+            idle_timeout=idle_timeout,
         )
 
     # ------------------------------------------------------------------
@@ -485,6 +490,8 @@ class LSPService:
         return list(client.diagnostics_for(file_path))
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
+        await self._reap_idle_clients_async()
+
         srv = find_server_for_file(file_path)
         if srv is None:
             return None
@@ -565,6 +572,43 @@ class LSPService:
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)
+
+    async def _reap_idle_clients_async(self, *, now: float | None = None) -> None:
+        """Shutdown LSP clients that have been idle longer than the timeout.
+
+        The service keeps one language server per ``(server_id, workspace)``.
+        Long-lived gateway/cron processes can touch many temporary worktrees over
+        time, so stale clients must be reaped or their stdio pipes accumulate
+        until the process hits RLIMIT_NOFILE.
+        """
+        if self._idle_timeout <= 0:
+            return
+
+        cutoff = (time.time() if now is None else now) - self._idle_timeout
+        stale_clients: list[LSPClient] = []
+
+        with self._state_lock:
+            stale_keys = [
+                key
+                for key, last_used in list(self._last_used.items())
+                if last_used < cutoff and key in self._clients and key not in self._spawning
+            ]
+            for key in stale_keys:
+                client = self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+                if client is not None:
+                    stale_clients.append(client)
+
+        if not stale_clients:
+            return
+
+        results = await asyncio.gather(
+            *(client.shutdown() for client in stale_clients),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.debug("LSP idle client shutdown failed: %s", result)
 
     async def _shutdown_async(self) -> None:
         with self._state_lock:

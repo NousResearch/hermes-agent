@@ -65,6 +65,34 @@ import os
 import sys
 
 
+def _raise_nofile_limit() -> None:
+    """Best-effort raise of RLIMIT_NOFILE for long-running Hermes processes.
+
+    macOS shells and LaunchAgents can inherit a soft limit as low as 256. Hermes
+    gateways, cron workers, MCP servers, browser sessions, and LSP subprocesses
+    can exceed that during normal operation. If the hard limit permits it, raise
+    the soft limit early so later session/kanban/tmp-file writes do not fail with
+    ``OSError: [Errno 24] Too many open files``.
+    """
+    if os.name != "posix":
+        return
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = 65536
+        if hard != resource.RLIM_INFINITY:
+            target = min(target, hard)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except Exception:
+        # Non-fatal: some locked-down environments forbid raising limits.
+        pass
+
+
+_raise_nofile_limit()
+
+
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.

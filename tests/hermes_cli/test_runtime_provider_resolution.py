@@ -3,6 +3,44 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_get_model_config_auto_detects_ipv6_loopback_local_model(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {"model": {"base_url": "http://[::1]:11434/v1", "default": ""}},
+    )
+    called = []
+    monkeypatch.setattr(
+        rp,
+        "_auto_detect_local_model",
+        lambda base_url: called.append(base_url) or "llama3",
+    )
+
+    resolved = rp._get_model_config()
+
+    assert resolved["default"] == "llama3"
+    assert called == ["http://[::1]:11434/v1"]
+
+
+def test_get_model_config_auto_detects_zero_bind_local_model(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {"model": {"base_url": "http://0.0.0.0:5000/v1", "default": ""}},
+    )
+    called = []
+    monkeypatch.setattr(
+        rp,
+        "_auto_detect_local_model",
+        lambda base_url: called.append(base_url) or "qwen-local",
+    )
+
+    resolved = rp._get_model_config()
+
+    assert resolved["default"] == "qwen-local"
+    assert called == ["http://0.0.0.0:5000/v1"]
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"

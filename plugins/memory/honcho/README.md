@@ -324,9 +324,7 @@ Presets:
 | `HONCHO_OAUTH_DASHBOARD` | OAuth authorize origin (default: cloud dashboard; local-dev `localhost:3000`) |
 | `HONCHO_OAUTH_AUTHORIZE_URL` | Full authorize URL (overrides the dashboard origin) |
 | `HONCHO_OAUTH_TOKEN_URL` | Token endpoint (default: cloud API; local-dev `localhost:8000`) |
-| `HONCHO_OAUTH_CLIENT_ID` | OAuth client override for every surface (per-surface defaults: CLI `hermes-agent`, desktop `hermes-desktop`) |
-| `HONCHO_OAUTH_CLIENT_ID_CLI` | OAuth client for the CLI surface only (wins over the generic override) |
-| `HONCHO_OAUTH_CLIENT_ID_DESKTOP` | OAuth client for the desktop surface only (wins over the generic override) |
+| `HONCHO_OAUTH_CLIENT_ID` | OAuth client (default `hermes-agent`) |
 | `HONCHO_OAUTH_SCOPE` | Requested scope (default `write`) |
 
 ## CLI Commands

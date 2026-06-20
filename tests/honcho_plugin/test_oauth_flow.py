@@ -164,32 +164,18 @@ def test_source_tags_the_authorize_link(fake_as):
     assert "source=" not in untagged
 
 
-def test_client_id_splits_by_surface(monkeypatch):
-    # No env override: the CLI is a distinct registered client from the desktop.
-    for var in ("HONCHO_OAUTH_CLIENT_ID", "HONCHO_OAUTH_CLIENT_ID_CLI", "HONCHO_OAUTH_CLIENT_ID_DESKTOP"):
-        monkeypatch.delenv(var, raising=False)
+def test_client_id_defaults_to_hermes_agent(monkeypatch):
+    # One client for every surface; the env var overrides for unusual deployments.
+    monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID", raising=False)
     common = {"environment": "production", "base_url": "https://api.honcho.dev"}
-    assert oauth_flow.resolve_endpoints(**common, source="hermes-cli").client_id == "hermes-agent"
-    assert oauth_flow.resolve_endpoints(**common, source="hermes-desktop").client_id == "hermes-desktop"
-    assert oauth_flow.resolve_endpoints(**common).client_id == "hermes-desktop"
+    assert oauth_flow.resolve_endpoints(**common).client_id == "hermes-agent"
+    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID", "custom-id")
+    assert oauth_flow.resolve_endpoints(**common).client_id == "custom-id"
 
 
-def test_client_id_env_overrides(monkeypatch):
-    # Surface-specific env wins; generic falls back across every surface.
-    common = {"environment": "production", "base_url": "https://api.honcho.dev"}
-    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID", "generic-id")
-    monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID_CLI", raising=False)
-    monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID_DESKTOP", raising=False)
-    assert oauth_flow.resolve_endpoints(**common, source="hermes-cli").client_id == "generic-id"
-    assert oauth_flow.resolve_endpoints(**common, source="hermes-desktop").client_id == "generic-id"
-    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID_CLI", "cli-only")
-    assert oauth_flow.resolve_endpoints(**common, source="hermes-cli").client_id == "cli-only"
-    assert oauth_flow.resolve_endpoints(**common, source="hermes-desktop").client_id == "generic-id"
-
-
-def test_cli_grant_persists_hermes_agent_client_id(tmp_path, fake_as, monkeypatch):
-    # Drop the fixture's generic override so the surface default takes effect;
-    # the CLI grant must store client_id=hermes-agent so refresh reuses it.
+def test_grant_persists_default_client_id(tmp_path, fake_as, monkeypatch):
+    # Drop the fixture's override so the default takes effect; the grant must
+    # store client_id=hermes-agent so refresh reuses the right client.
     monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID", raising=False)
     config_path = tmp_path / "honcho.json"
     config_path.write_text(json.dumps({"hosts": {}}))

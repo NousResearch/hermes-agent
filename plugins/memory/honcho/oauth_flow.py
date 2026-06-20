@@ -70,30 +70,10 @@ _CLOUD_TOKEN_URL = "https://api.honcho.dev/oauth/token"
 _LOCAL_DASHBOARD = "http://localhost:3000"
 _LOCAL_TOKEN_URL = "http://localhost:8000/oauth/token"
 
-# The CLI and desktop are distinct registered OAuth clients so consent branding,
-# token attribution, and revocation stay separate; the client_id is chosen by
-# the initiating surface and persisted into the grant (refresh reuses it).
-_DEFAULT_CLIENT_ID = "hermes-desktop"
-_CLIENT_ID_BY_SOURCE = {"hermes-cli": "hermes-agent", "hermes-desktop": "hermes-desktop"}
-_CLIENT_ID_ENV_BY_SOURCE = {
-    "hermes-cli": "HONCHO_OAUTH_CLIENT_ID_CLI",
-    "hermes-desktop": "HONCHO_OAUTH_CLIENT_ID_DESKTOP",
-}
-
-
-def _resolve_client_id(source: str | None) -> str:
-    """Pick the client_id for the initiating surface.
-
-    Precedence: surface-specific env (``HONCHO_OAUTH_CLIENT_ID_CLI`` /
-    ``_DESKTOP``) → generic ``HONCHO_OAUTH_CLIENT_ID`` (deployment escape hatch,
-    overrides every surface) → the per-surface default.
-    """
-    surface_env = _CLIENT_ID_ENV_BY_SOURCE.get(source or "")
-    if surface_env and os.environ.get(surface_env):
-        return os.environ[surface_env]
-    return os.environ.get(
-        "HONCHO_OAUTH_CLIENT_ID", _CLIENT_ID_BY_SOURCE.get(source or "", _DEFAULT_CLIENT_ID)
-    )
+# One OAuth client for every surface. Consent branding/UI adapt via the
+# ``source`` query param (not a separate client_id), so there's a single grant
+# identity to refresh — no clientId-vs-refresh-token desync to revoke the grant.
+_DEFAULT_CLIENT_ID = "hermes-agent"
 
 
 def _is_loopback_url(url: str | None) -> bool:
@@ -101,17 +81,13 @@ def _is_loopback_url(url: str | None) -> bool:
 
 
 def resolve_endpoints(
-    environment: str | None = None,
-    base_url: str | None = None,
-    *,
-    source: str | None = None,
+    environment: str | None = None, base_url: str | None = None
 ) -> OAuthEndpoints:
     """Resolve OAuth endpoints, zero-config by default.
 
     Keys off the host's honcho ``environment`` (production → cloud, local →
     localhost); a self-hosted ``base_url`` derives the token endpoint from the
-    API host. ``source`` selects the per-surface client_id (CLI vs desktop).
-    Env vars override every field for unusual deployments.
+    API host. Env vars override every field for unusual deployments.
     """
     if environment is None or base_url is None:
         try:
@@ -134,7 +110,7 @@ def resolve_endpoints(
     return OAuthEndpoints(
         authorize_url=os.environ.get("HONCHO_OAUTH_AUTHORIZE_URL", f"{dashboard}/authorize"),
         token_url=os.environ.get("HONCHO_OAUTH_TOKEN_URL", default_token),
-        client_id=_resolve_client_id(source),
+        client_id=os.environ.get("HONCHO_OAUTH_CLIENT_ID", _DEFAULT_CLIENT_ID),
         scope=os.environ.get("HONCHO_OAUTH_SCOPE", "write"),
     )
 
@@ -347,7 +323,7 @@ def authorize_via_loopback(
     server, captured = _bind_loopback_server()
     redirect_uri = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/callback"
 
-    endpoints = resolve_endpoints(source=source)
+    endpoints = resolve_endpoints()
     path = config_path or resolve_config_path()
     authorize_url, state = begin_authorization(
         endpoints, redirect_uri, source=source, config_path=_display_config_path(path)

@@ -95,7 +95,7 @@ import sys
 import threading
 import time
 from typing import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -277,6 +277,21 @@ if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
 _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
+
+
+def _as_timeout_timedelta(value) -> timedelta:
+    """Coerce a config timeout (seconds, int/float) to a ``timedelta``.
+
+    The mcp SDK's ``streamablehttp_client`` — in particular the deprecated
+    pre-1.24.0 API — expects ``timeout``/``sse_read_timeout`` as ``timedelta``
+    and does ``.seconds`` on them internally. Passing a raw float/int crashes
+    every ``url:`` (HTTP) MCP connection with
+    ``'float' object has no attribute 'seconds'`` (#49629). Idempotent for
+    values that are already ``timedelta``.
+    """
+    if isinstance(value, timedelta):
+        return value
+    return timedelta(seconds=float(value))
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
@@ -2112,9 +2127,12 @@ class MCPServerTask:
                             )
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
+            # This SDK expects ``timeout`` as a timedelta; a raw float raises
+            # "'float' object has no attribute 'seconds'" and breaks every
+            # HTTP MCP connection (#49629).
             _http_kwargs: dict = {
                 "headers": headers,
-                "timeout": float(connect_timeout),
+                "timeout": _as_timeout_timedelta(connect_timeout),
                 "verify": ssl_verify,
             }
             if _oauth_auth is not None:

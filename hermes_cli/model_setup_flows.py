@@ -123,6 +123,9 @@ def _model_flow_openrouter(config, current_model=""):
         model["provider"] = "openrouter"
         model["base_url"] = OPENROUTER_BASE_URL
         model["api_mode"] = "chat_completions"
+        # Clear any api_key written by a previous custom-provider setup so
+        # the stale credential does not override OpenRouter's key resolution.
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
@@ -338,6 +341,13 @@ def _model_flow_nous(config, current_model="", args=None):
             model_cfg["base_url"] = inference_url.rstrip("/")
         else:
             model_cfg.pop("base_url", None)
+        # Clear stale api_key/api_mode left over from a previous custom
+        # provider.  _update_config_for_provider() already removed them from
+        # the on-disk file, but the in-memory ``config`` dict (passed in by
+        # the caller) still carries the old values.  Without this pop the
+        # subsequent save_config(config) would reinstate them.
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api_mode", None)
         config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
@@ -2563,6 +2573,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        # Clear any api_key written by a previous custom-provider setup so
+        # the stale credential does not override this provider's key
+        # resolution (which reads from .env, not config.yaml).
+        model.pop("api_key", None)
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:

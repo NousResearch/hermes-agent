@@ -10,13 +10,14 @@ Covers:
 
 import asyncio
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
+from gateway.config import PlatformConfig, Platform
 from gateway.platforms.api_server import (
     APIServerAdapter,
     cors_middleware,
@@ -49,6 +50,15 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
+    return app
+
+
+def _create_debug_app(adapter: APIServerAdapter) -> web.Application:
+    """Create an aiohttp app with the local active-wake smoke route."""
+    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws)
+    app["api_server_adapter"] = adapter
+    app.router.add_post("/api/debug/active-wake-smoke", adapter._handle_active_wake_smoke)
     return app
 
 
@@ -527,3 +537,80 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+class _FakeWakeAdapter:
+    def __init__(self):
+        self.sent = []
+        self.events = []
+
+    async def send(self, *, chat_id, content, metadata=None):
+        self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return SimpleNamespace(success=True, message_id="msg-smoke-1", error=None)
+
+    async def handle_message(self, event):
+        self.events.append(event)
+
+
+class TestActiveWakeSmoke:
+    @pytest.mark.asyncio
+    async def test_smoke_sends_and_schedules_internal_event(self, auth_adapter):
+        app = _create_debug_app(auth_adapter)
+        fake_adapter = _FakeWakeAdapter()
+        fake_runner = SimpleNamespace(adapters={Platform.DISCORD: fake_adapter})
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.run._gateway_runner_ref", return_value=fake_runner):
+                resp = await cli.post(
+                    "/api/debug/active-wake-smoke",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "target": "discord:12345",
+                        "nonce": "AW-TEST",
+                        "correlation_id": "corr-test",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["success"] is True
+        assert data["message_id"] == "msg-smoke-1"
+        assert data["receipt_correlation"] == "corr-test"
+        assert data["triggered_agent"] is True
+        assert fake_adapter.sent[0]["chat_id"] == "12345"
+        await asyncio.sleep(0)
+        assert len(fake_adapter.events) == 1
+        event = fake_adapter.events[0]
+        assert event.internal is True
+        assert event.source.chat_id == "12345"
+        assert "SMOKE_ACK AW-TEST" in event.text
+
+    @pytest.mark.asyncio
+    async def test_smoke_reports_not_wired_without_live_runner(self, auth_adapter):
+        app = _create_debug_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.run._gateway_runner_ref", return_value=None):
+                resp = await cli.post(
+                    "/api/debug/active-wake-smoke",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"target": "discord:12345", "correlation_id": "corr-nowire"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "success": False,
+            "receipt_correlation": "corr-nowire",
+            "triggered_agent": False,
+            "trigger_error": "NOT_WIRED",
+        }
+
+    @pytest.mark.asyncio
+    async def test_smoke_requires_auth(self, auth_adapter):
+        app = _create_debug_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/debug/active-wake-smoke",
+                json={"target": "discord:12345"},
+            )
+        assert resp.status == 401

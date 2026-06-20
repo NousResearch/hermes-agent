@@ -1118,6 +1118,169 @@ class APIServerAdapter(BasePlatformAdapter):
             "pid": os.getpid(),
         })
 
+    def _is_loopback_request(self, request: "web.Request") -> bool:
+        """Return True only for direct localhost requests."""
+        candidates = {"127.0.0.1", "::1", "localhost"}
+        remote = getattr(request, "remote", "") or ""
+        if remote in candidates:
+            return True
+        try:
+            peer = request.transport.get_extra_info("peername") if request.transport else None
+            if isinstance(peer, (tuple, list)) and peer and str(peer[0]) in candidates:
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _handle_active_wake_smoke(self, request: "web.Request") -> "web.Response":
+        """POST /api/debug/active-wake-smoke — gateway-in-process wake smoke.
+
+        Narrow localhost-only debug hook for proving the live gateway boundary
+        that standalone CLI/cron calls cannot prove: visible send followed by a
+        synthetic internal MessageEvent scheduled on the target adapter.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._is_loopback_request(request):
+            return web.json_response(
+                {"error": {"message": "active_wake smoke is loopback-only", "code": "loopback_only"}},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        target = str(payload.get("target") or "").strip()
+        if not target or ":" not in target:
+            return web.json_response(
+                {"error": {"message": "target is required, e.g. discord:<channel_id>", "code": "missing_target"}},
+                status=400,
+            )
+        platform_name, target_ref = target.split(":", 1)
+        platform_name = platform_name.strip().lower()
+        target_ref = target_ref.strip()
+
+        try:
+            from gateway.config import Platform
+            platform = Platform(platform_name)
+        except Exception:
+            return web.json_response(
+                {"error": {"message": f"unknown platform: {platform_name}", "code": "unknown_platform"}},
+                status=400,
+            )
+
+        try:
+            from tools.send_message_tool import (
+                _parse_target_ref,
+                _sanitize_active_wake_text,
+                _sanitize_error_text,
+            )
+        except Exception as exc:
+            return web.json_response(
+                {"success": False, "triggered_agent": False, "trigger_error": f"IMPORT_FAILED:{type(exc).__name__}"},
+                status=500,
+            )
+
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        if not chat_id or not is_explicit:
+            return web.json_response(
+                {"error": {"message": "target must be an explicit platform id", "code": "non_explicit_target"}},
+                status=400,
+            )
+
+        nonce = str(payload.get("nonce") or f"AW-{int(time.time())}").strip()[:120]
+        correlation_id = str(payload.get("correlation_id") or f"activewake-smoke-{nonce}").strip()[:200]
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            message = (
+                "@agent ACTIVE_WAKE_SMOKE\n"
+                f"Nonce: {nonce}\n"
+                "Task: If this message arrived through active_wake synthetic inbound, "
+                "reply in this channel with exactly one line:\n\n"
+                f"SMOKE_ACK {nonce}\n\n"
+                "No research, no routing, no follow-up work."
+            )
+
+        try:
+            from gateway.run import _gateway_runner_ref
+            runner = _gateway_runner_ref()
+        except Exception:
+            runner = None
+        adapter = None
+        if runner is not None:
+            try:
+                adapter = runner.adapters.get(platform)
+            except Exception:
+                adapter = None
+        if runner is None or adapter is None:
+            return web.json_response({
+                "success": False,
+                "receipt_correlation": correlation_id,
+                "triggered_agent": False,
+                "trigger_error": "NOT_WIRED",
+            })
+
+        try:
+            metadata = {"thread_id": thread_id} if thread_id else None
+            send_result = await adapter.send(chat_id=str(chat_id), content=message, metadata=metadata)
+        except Exception as exc:
+            return web.json_response({
+                "success": False,
+                "receipt_correlation": correlation_id,
+                "triggered_agent": False,
+                "trigger_error": _sanitize_error_text(str(exc)) or "SEND_FAILED",
+            })
+
+        receipt = {
+            "success": bool(getattr(send_result, "success", False)),
+            "message_id": getattr(send_result, "message_id", None),
+            "receipt_correlation": correlation_id,
+        }
+        if not receipt["success"]:
+            receipt.update({
+                "triggered_agent": False,
+                "trigger_error": _sanitize_error_text(str(getattr(send_result, "error", ""))) or "SEND_FAILED",
+            })
+            return web.json_response(receipt)
+
+        try:
+            from gateway.session import SessionSource
+            from gateway.platforms.base import MessageEvent, MessageType
+
+            wake_text = _sanitize_active_wake_text(message)
+            source = SessionSource(
+                platform=platform,
+                chat_id=str(chat_id),
+                chat_type="group",
+                thread_id=str(thread_id) if thread_id else None,
+                user_id="hermes-active-wake-smoke",
+                user_name="Hermes Active Wake Smoke",
+                is_bot=False,
+                message_id=None,
+            )
+            wake_event = MessageEvent(
+                text=wake_text,
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+            task = asyncio.create_task(adapter.handle_message(wake_event))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            receipt["triggered_agent"] = True
+            return web.json_response(receipt)
+        except Exception as exc:
+            receipt.update({
+                "triggered_agent": False,
+                "trigger_error": _sanitize_error_text(str(exc)) or "ACTIVE_WAKE_FAILED",
+            })
+            return web.json_response(receipt)
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
         auth_err = self._check_auth(request)
@@ -4247,6 +4410,7 @@ class APIServerAdapter(BasePlatformAdapter):
             assert self._app is not None
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
+            self._app.router.add_post("/api/debug/active-wake-smoke", self._handle_active_wake_smoke)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)

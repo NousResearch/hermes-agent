@@ -8,6 +8,7 @@ import { $uiSessionId, $uiTheme, $uiState } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
+import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -31,6 +32,21 @@ export function PromptZone({
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.billing) {
+    const current = overlay.billing
+
+    const onPatch = (next: Partial<typeof current>) =>
+      patchOverlayState(prev => (prev.billing ? { ...prev, billing: { ...prev.billing, ...next } } : prev))
+
+    const onClose = () => patchOverlayState({ billing: null })
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <BillingOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
       </Box>
     )
   }

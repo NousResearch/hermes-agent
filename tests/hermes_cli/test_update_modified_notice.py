@@ -32,19 +32,22 @@ def test_every_user_modified_notice_points_at_list_modified():
     lines = _source_lines()
     count_sites = [i for i, ln in enumerate(lines) if _COUNT_RE.search(ln)]
 
-    # There are at least two such notices today; the bug was that only one of
-    # them carried the discovery hint. Assert each is followed (within a small
-    # window — the count print + the hint print) by the list-modified pointer.
-    assert len(count_sites) >= 2, (
-        "expected at least two 'user-modified (kept)' notices in main.py; "
-        f"found {len(count_sites)}"
+    # The notice must exist somewhere (guard against it being deleted outright),
+    # but we deliberately do NOT assert a fixed *count* of sites: consolidating
+    # the duplicated print paths into a shared helper is a welcome refactor and
+    # must not fail this test. The invariant is per-site, not how many sites.
+    assert count_sites, (
+        "no 'user-modified (kept)' notice found in main.py — the update "
+        "summary that surfaces kept user edits appears to have been removed"
     )
 
     for idx in count_sites:
+        # The count print and its discovery hint sit on adjacent lines; allow a
+        # small window so wording/formatting tweaks don't break the check.
         window = "\n".join(lines[idx : idx + 5])
         assert _HINT_RE.search(window), (
             "a 'user-modified (kept)' notice near line "
             f"{idx + 1} of main.py does not point users at "
             "`hermes skills list-modified` within the following lines — the "
-            "two update paths have drifted apart again:\n" + window
+            "update paths have drifted apart again:\n" + window
         )

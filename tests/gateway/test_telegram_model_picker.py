@@ -136,6 +136,40 @@ class TestTelegramModelPicker:
         assert "`gpt-5`" in edit_kwargs["text"]
         assert "12345" not in adapter._model_picker_state
 
+    def test_provider_keyboard_preserves_mixed_case_custom_provider_slug(self, monkeypatch):
+        """Custom providers with mixed-case slugs still render in /model.
+
+        group_providers() lowercases ungrouped slug rows for canonical matching;
+        the Telegram keyboard must still resolve that row back to the original
+        provider entry so the picker shows the provider and preserves the
+        configured slug in callback_data.
+        """
+        import gateway.platforms.telegram as tg
+
+        built: list = []
+
+        class _RecordingButton:
+            def __init__(self, text, callback_data=None, **kw):
+                self.text = text
+                self.callback_data = callback_data
+                built.append(callback_data)
+
+        class _RecordingMarkup:
+            def __init__(self, rows):
+                self.inline_keyboard = rows
+
+        monkeypatch.setattr(tg, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(tg, "InlineKeyboardMarkup", _RecordingMarkup)
+
+        adapter = _make_adapter()
+
+        adapter._build_provider_keyboard([
+            {"slug": "BitFun", "name": "BitFun", "total_models": 2},
+        ])
+
+        assert "mp:BitFun" in built
+        assert "mx" in built
+
     @pytest.mark.asyncio
     async def test_provider_group_folds_and_drills_down(self, monkeypatch):
         """A provider family (e.g. MiniMax) collapses to one mpg: button at

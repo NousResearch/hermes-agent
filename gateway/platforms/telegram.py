@@ -3560,7 +3560,11 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             group_providers = None
 
-        by_slug = {p.get("slug"): p for p in providers}
+        by_slug = {
+            str(p.get("slug") or "").strip().lower(): p
+            for p in providers
+            if str(p.get("slug") or "").strip()
+        }
 
         def _provider_button(p):
             count = p.get("total_models", len(p.get("models", [])))

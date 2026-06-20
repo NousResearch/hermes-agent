@@ -2489,7 +2489,18 @@ def terminal_tool(
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+    """Check if all requirements for the terminal tool are met.
+
+    Intentionally silent — this function is registered as the terminal
+    tool's ``check_fn`` and called via ``_check_fn_cached()`` on every
+    ``get_definitions()`` pass (i.e. every LLM tool-use call, with a
+    30 s TTL cache).  Logging ERROR/WARNING here floods logs every
+    cache cycle for any user whose backend deps are missing.  The
+    caller in ``tools/registry.py`` already emits a DEBUG line when
+    the check fails, and ``hermes status`` shows the backend state.
+    This matches the convention used by every other tool check_fn
+    (browser, tts, vision, session_search, etc.).
+    """
     try:
         config = _get_env_config()
         env_type = config["env_type"]
@@ -2501,7 +2512,6 @@ def check_terminal_requirements() -> bool:
             from tools.environments.docker import find_docker
             docker = find_docker()
             if not docker:
-                logger.error("Docker executable not found in PATH or common install locations")
                 return False
             result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
             return result.returncode == 0
@@ -2515,10 +2525,6 @@ def check_terminal_requirements() -> bool:
 
         elif env_type == "ssh":
             if not config.get("ssh_host") or not config.get("ssh_user"):
-                logger.error(
-                    "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER "
-                    "are not both set. Configure both or switch TERMINAL_ENV to 'local'."
-                )
                 return False
             return True
 
@@ -2528,56 +2534,9 @@ def check_terminal_requirements() -> bool:
                 return True
 
             if modal_state["selected_backend"] != "direct":
-                if modal_state["managed_mode_blocked"]:
-                    logger.error(
-                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
-                        "Nous Tool Gateway access is not currently available and no direct "
-                        "Modal credentials/config were found. %s Choose "
-                        "TERMINAL_MODAL_MODE=direct/auto to use direct Modal credentials.",
-                        nous_tool_gateway_unavailable_message(
-                            "managed Modal execution",
-                        ),
-                    )
-                    return False
-                if modal_state["mode"] == "managed":
-                    logger.error(
-                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
-                        "tool gateway is unavailable. %s",
-                        nous_tool_gateway_unavailable_message(
-                            "managed Modal execution",
-                        ),
-                    )
-                    return False
-                elif modal_state["mode"] == "direct":
-                    if managed_nous_tools_enabled():
-                        logger.error(
-                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
-                            "Modal credentials/config were found. Configure Modal or choose "
-                            "TERMINAL_MODAL_MODE=managed/auto."
-                        )
-                    else:
-                        logger.error(
-                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
-                            "Modal credentials/config were found. Configure Modal or choose "
-                            "TERMINAL_MODAL_MODE=auto."
-                        )
-                    return False
-                else:
-                    if managed_nous_tools_enabled():
-                        logger.error(
-                            "Modal backend selected but no direct Modal credentials/config or managed "
-                            "tool gateway was found. Configure Modal, set up the managed gateway, "
-                            "or choose a different TERMINAL_ENV."
-                        )
-                    else:
-                        logger.error(
-                            "Modal backend selected but no direct Modal credentials/config was found. "
-                            "Configure Modal or choose a different TERMINAL_ENV."
-                        )
-                    return False
+                return False
 
             if importlib.util.find_spec("modal") is None:
-                logger.error("modal is required for direct modal terminal backend: pip install modal")
                 return False
 
             return True
@@ -2587,14 +2546,8 @@ def check_terminal_requirements() -> bool:
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:
-            logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
-                env_type,
-            )
             return False
-    except Exception as e:
-        logger.error("Terminal requirements check failed: %s", e, exc_info=True)
+    except Exception:
         return False
 
 

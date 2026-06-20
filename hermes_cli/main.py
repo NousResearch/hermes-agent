@@ -5093,17 +5093,21 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
+    # Pick the winner first, then verify completeness of *its* directory — the
+    # candidates can live in different dirs, so validating existing[0] while
+    # returning a newer exe elsewhere would check the wrong tree.
+    chosen = max(existing, key=lambda p: p.stat().st_mtime)
     # Verify build completeness: check for sentinel files alongside the exe.
     # An interrupted pack can leave the exe staged but resources missing.
     # Only apply this check if other files exist in the directory (real builds
     # have ~20+ files; test fixtures may only create the exe).
-    exe_parent = existing[0].parent
+    exe_parent = chosen.parent
     sibling_files = list(exe_parent.iterdir())
     if len(sibling_files) > 5:
         sentinels = [exe_parent / "icudtl.dat", exe_parent / "resources.pak"]
         if not any(s.exists() for s in sentinels):
             return None  # incomplete build -> treat as build-needed
-    return max(existing, key=lambda p: p.stat().st_mtime)
+    return chosen
 
 
 def _electron_download_cache_dirs() -> list[Path]:
@@ -5449,6 +5453,22 @@ def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
     return True
 
 
+def _desktop_linux_sandbox_ok(packaged_executable: Path) -> bool:
+    """True when the Linux sandbox helper already has the required root-owned
+    SUID bits, so no sudo fixup is needed. Non-Linux is always 'ok'. This is a
+    read-only check (no sudo) used to decide whether a fixup must be attempted
+    at all — e.g. to avoid a sudo password prompt during an unattended update.
+    """
+    if sys.platform != "linux":
+        return True
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        st = sandbox.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_uid == 0 and stat.S_IMODE(st.st_mode) == 0o4755
+
+
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
     if sys.platform != "linux":
@@ -5658,10 +5678,21 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
-            # Apply Linux sandbox fixup in build-only mode too, so auto-updated
-            # apps can launch without a separate interactive fixup step.
-            if not _desktop_linux_sandbox_fixup(packaged_executable):
-                print("  ⚠ Linux sandbox fixup failed; run 'hermes desktop' interactively to fix.")
+            # Apply the Linux sandbox fixup in build-only mode too, so an
+            # auto-updated app can launch without a separate interactive step.
+            # The fixup needs sudo only when the SUID bit is missing — never
+            # prompt in an unattended update (no TTY), since sudo would block;
+            # surface a clear, actionable warning instead.
+            if not _desktop_linux_sandbox_ok(packaged_executable):
+                interactive = bool(getattr(sys.stdin, "isatty", lambda: False)())
+                if interactive:
+                    if not _desktop_linux_sandbox_fixup(packaged_executable):
+                        print("  ⚠ Linux sandbox fixup failed; run 'hermes desktop' interactively to fix.")
+                else:
+                    print(
+                        "  ⚠ Linux sandbox helper needs configuration (sudo). "
+                        "Run 'hermes desktop' once interactively before launching the updated app."
+                    )
         return
 
     if source_mode:

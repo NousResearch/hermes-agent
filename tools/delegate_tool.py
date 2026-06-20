@@ -2552,6 +2552,28 @@ def delegate_task(
         except Exception:
             logger.debug("Subagent cost rollup failed", exc_info=True)
 
+        # Persist the subagent cost delta to the state DB so
+        # hermes insights and the sessions.estimated_cost_usd
+        # column stay accurate.  update_token_counts() uses
+        # additive mode (COALESCE + delta), so this correctly
+        # accumulates on top of the parent's own API call costs
+        # that are already in the DB from conversation_loop.py.
+        # Port of Kilo-Org/kilocode#9448 + follow-up fix for
+        # NousResearch/hermes-agent#32220.
+        try:
+            _session_db = getattr(parent_agent, "_session_db", None)
+            if _session_db is not None:
+                _session_db.update_token_counts(
+                    parent_agent.session_id,
+                    estimated_cost_usd=float(_children_cost_total),
+                    cost_status="estimated",
+                    cost_source="subagent",
+                )
+        except Exception:
+            logger.debug(
+                "Subagent cost DB persistence failed", exc_info=True
+            )
+
     total_duration = round(time.monotonic() - overall_start, 2)
 
     return json.dumps(

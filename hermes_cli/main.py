@@ -6845,25 +6845,30 @@ def _is_windows() -> bool:
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv.
 
-    Checks ``venv/`` first (the canonical Hermes install layout), then
-    ``.venv/`` (common when users create the venv manually with
-    ``python -m venv .venv``).  Falls back to ``sys.prefix`` so that any
-    non-standard venv location is covered when Hermes is actually running
-    inside it.
+    Prefers ``sys.prefix`` first — when hermes.exe is running, it is the
+    authoritative answer for where the currently-loaded executable lives,
+    and it must agree with the ``VIRTUAL_ENV`` we pass to uv.  Falls back
+    to probing ``venv/`` then ``.venv/`` for call-sites where hermes is
+    not running (e.g. pip install orchestrated from outside the venv).
     """
+    # sys.prefix is the authoritative venv root when hermes is running
+    # inside it.  Only trust it when it is under PROJECT_ROOT — otherwise
+    # it may be a system Python that happens to have a Scripts/ dir.
+    sp = Path(sys.prefix)
+    try:
+        sp.relative_to(PROJECT_ROOT)
+    except ValueError:
+        pass  # sys.prefix is outside PROJECT_ROOT — probe directories instead
+    else:
+        scripts = sp / ("Scripts" if _is_windows() else "bin")
+        if scripts.is_dir():
+            return scripts
+
     for candidate in (PROJECT_ROOT / "venv", PROJECT_ROOT / ".venv"):
         if candidate.is_dir():
             scripts = candidate / ("Scripts" if _is_windows() else "bin")
             if scripts.is_dir():
                 return scripts
-    # Fall back to sys.prefix — covers venvs at non-standard paths and
-    # ensures quarantine / concurrent-instance detection works regardless
-    # of how the venv was named or placed.
-    sp = Path(sys.prefix)
-    if sp != Path("/") and sp.is_dir():
-        scripts = sp / ("Scripts" if _is_windows() else "bin")
-        if scripts.is_dir():
-            return scripts
     return None
 
 

@@ -622,3 +622,129 @@ def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
 
     # When --force is set, we should not have even consulted psutil.
     detect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _venv_scripts_dir
+# ---------------------------------------------------------------------------
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_scripts_dir_sys_prefix_when_under_project_root(
+    _winp, tmp_path, monkeypatch
+):
+    """sys.prefix is authoritative when it is inside PROJECT_ROOT."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # sys.prefix points INSIDE repo (e.g. a venv at repo/.venv)
+    dot_venv = repo / ".venv"
+    scripts = dot_venv / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "hermes.exe").write_bytes(b"")
+
+    monkeypatch.setattr(sys, "prefix", str(dot_venv))
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+
+    result = cli_main._venv_scripts_dir()
+    assert result == scripts
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_scripts_dir_dot_venv_when_venv_missing(
+    _winp, tmp_path, monkeypatch
+):
+    """When only .venv/ exists, return .venv/Scripts."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    dot_venv = repo / ".venv"
+    scripts = dot_venv / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "hermes.exe").write_bytes(b"")
+    # venv/ does NOT exist
+
+    # sys.prefix points somewhere outside the repo so the
+    # relative_to(PROJECT_ROOT) check fails → falls through to probing.
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "somewhere_else"))
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+
+    result = cli_main._venv_scripts_dir()
+    assert result == scripts
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_scripts_dir_venv_first_when_no_sys_prefix_match(
+    _winp, tmp_path, monkeypatch
+):
+    """When sys.prefix is outside PROJECT_ROOT, probe venv/ first."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    venv_scripts = repo / "venv" / "Scripts"
+    venv_scripts.mkdir(parents=True)
+    (venv_scripts / "hermes.exe").write_bytes(b"")
+    dot_venv_scripts = repo / ".venv" / "Scripts"
+    dot_venv_scripts.mkdir(parents=True)
+    (dot_venv_scripts / "hermes.exe").write_bytes(b"")
+
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "outside"))
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+
+    result = cli_main._venv_scripts_dir()
+    # Both exist; venv/ is probed first.
+    assert result == venv_scripts
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_scripts_dir_sys_prefix_wins_over_probe(
+    _winp, tmp_path, monkeypatch
+):
+    """sys.prefix (pointing at .venv/) wins even when venv/ also exists."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # Both directories exist
+    venv_scripts = repo / "venv" / "Scripts"
+    venv_scripts.mkdir(parents=True)
+    dot_venv = repo / ".venv"
+    dot_venv_scripts = dot_venv / "Scripts"
+    dot_venv_scripts.mkdir(parents=True)
+
+    # sys.prefix points at .venv (under PROJECT_ROOT)
+    monkeypatch.setattr(sys, "prefix", str(dot_venv))
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+
+    result = cli_main._venv_scripts_dir()
+    # sys.prefix is authoritative — it must agree with the VIRTUAL_ENV
+    # we pass to uv, so it wins over directory probing.
+    assert result == dot_venv_scripts
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_scripts_dir_returns_none_when_nothing_found(
+    _winp, tmp_path, monkeypatch
+):
+    """No venv, no .venv, sys.prefix outside PROJECT_ROOT → None."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "outside"))
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+
+    result = cli_main._venv_scripts_dir()
+    assert result is None
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_venv_scripts_dir_still_works_off_windows(
+    _winp, tmp_path, monkeypatch
+):
+    """On non-Windows, bin/ is used instead of Scripts/."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    dot_venv = repo / ".venv"
+    scripts = dot_venv / "bin"
+    scripts.mkdir(parents=True)
+
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "outside"))
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+
+    result = cli_main._venv_scripts_dir()
+    assert result == scripts

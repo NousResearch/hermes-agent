@@ -128,6 +128,89 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
     assert ["git", "fetch", "origin", "--quiet"] not in calls
 
 
+def test_check_via_local_git_detached_latest_tag_is_up_to_date(tmp_path):
+    """Detached HEAD at the newest release tag should not compare to origin/main.
+
+    Regression for #39771: stable release tags can be far behind main while
+    still being the latest user-facing release.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "repo"
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("0123456789abcdef\n")
+
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd == ["git", "fetch", "origin", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "describe", "--tags", "--exact-match", "HEAD"]:
+            return MagicMock(returncode=0, stdout="v2026.5.29.2\n")
+        if cmd == ["git", "tag", "--list", "v*", "--sort=-version:refname"]:
+            return MagicMock(returncode=0, stdout="v2026.5.29.2\nv2026.5.29\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 0
+    assert ["git", "rev-list", "--count", "HEAD..origin/main"] not in commands
+
+
+def test_check_via_local_git_detached_old_tag_reports_update_available(tmp_path):
+    """Older detached release tags report an update without a misleading main count."""
+    import hermes_cli.banner as banner
+    from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT
+
+    repo_dir = tmp_path / "repo"
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("0123456789abcdef\n")
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "origin", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "describe", "--tags", "--exact-match", "HEAD"]:
+            return MagicMock(returncode=0, stdout="v2026.5.29\n")
+        if cmd == ["git", "tag", "--list", "v*", "--sort=-version:refname"]:
+            return MagicMock(returncode=0, stdout="v2026.5.29.2\nv2026.5.29\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == UPDATE_AVAILABLE_NO_COUNT
+
+
+def test_check_via_local_git_attached_branch_keeps_origin_main_count(tmp_path):
+    """Attached branches still use the existing origin/main commit-count path."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "repo"
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd == ["git", "fetch", "origin", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/main"]:
+            return MagicMock(returncode=0, stdout="5\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 5
+    assert ["git", "rev-list", "--count", "HEAD..origin/main"] in commands
+
+
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     """Falls back to PyPI check when .git directory doesn't exist anywhere."""
     import hermes_cli.banner as banner

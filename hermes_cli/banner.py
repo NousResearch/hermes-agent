@@ -192,6 +192,73 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _git_head_file(repo_dir: Path) -> Optional[Path]:
+    """Return the checkout's HEAD file, including linked worktree gitdirs."""
+    dotgit = repo_dir / ".git"
+    if dotgit.is_dir():
+        return dotgit / "HEAD"
+    if not dotgit.is_file():
+        return None
+    try:
+        text = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = dotgit.parent / gitdir
+    return gitdir / "HEAD"
+
+
+def _detached_tag_update_status(repo_dir: Path) -> Optional[int]:
+    """Return update status for detached release-tag checkouts.
+
+    A user on the latest release tag is not meaningfully "behind" the
+    development branch even though ``HEAD..origin/main`` may contain many
+    commits.  Only override the normal branch comparison when HEAD is detached
+    and exactly matches the newest local ``v*`` tag.
+    """
+    head_file = _git_head_file(repo_dir)
+    if head_file is None:
+        return None
+    try:
+        head_text = head_file.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not head_text or head_text.startswith("ref:"):
+        return None
+
+    try:
+        current = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if current.returncode != 0:
+        return None
+    current_tag = (current.stdout or "").strip()
+    if not current_tag:
+        return None
+
+    try:
+        latest = subprocess.run(
+            ["git", "tag", "--list", "v*", "--sort=-version:refname"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if latest.returncode != 0:
+        return None
+    tags = [line.strip() for line in (latest.stdout or "").splitlines() if line.strip()]
+    if not tags:
+        return None
+    return 0 if current_tag == tags[0] else UPDATE_AVAILABLE_NO_COUNT
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
@@ -207,6 +274,10 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
+
+    tagged_status = _detached_tag_update_status(repo_dir)
+    if tagged_status is not None:
+        return tagged_status
 
     try:
         result = subprocess.run(

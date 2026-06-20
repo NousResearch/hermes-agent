@@ -510,6 +510,21 @@ class MemoryStore:
             raw = path.read_text(encoding="utf-8")
         except (OSError, IOError):
             return []
+        except UnicodeDecodeError:
+            # Non-UTF-8 bytes (e.g. GBK/CP936/Latin-1 on non-English Windows
+            # systems) must not crash the memory tool (issue #49508).
+            # Decode with replacement so ingestion degrades gracefully
+            # instead of raising, and log so the corruption is visible
+            # rather than silently swallowed.
+            logger.warning(
+                "[memory] %s is not valid UTF-8; reading with errors='replace'. "
+                "Some characters may be lost.",
+                path,
+            )
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, IOError):
+                return []
 
         if not raw.strip():
             return []
@@ -550,6 +565,16 @@ class MemoryStore:
             raw = path.read_text(encoding="utf-8")
         except (OSError, IOError):
             return None
+        except UnicodeDecodeError:
+            logger.warning(
+                "[memory] %s is not valid UTF-8 during drift check; "
+                "reading with errors='replace'.",
+                path,
+            )
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, IOError):
+                return None
         if not raw.strip():
             return None
 

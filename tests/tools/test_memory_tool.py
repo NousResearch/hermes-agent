@@ -650,3 +650,37 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+    def test_read_file_handles_non_utf8_bytes(self, tmp_path, monkeypatch):
+        """A memory file containing non-UTF-8 bytes (e.g. GBK on non-English
+        Windows systems) must not crash _read_file with an uncaught
+        UnicodeDecodeError (issue #49508). It should decode with replacement
+        and return a usable (if partially lossy) result instead.
+        """
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        bad_file = tmp_path / "MEMORY.md"
+        bad_file.write_bytes("中文测试".encode("gbk"))
+
+        result = MemoryStore._read_file(bad_file)
+        assert isinstance(result, list)
+        # Should not raise, and should produce some (possibly lossy) content
+        # rather than silently returning an empty list.
+        assert len(result) >= 1
+
+    def test_load_from_disk_survives_non_utf8_memory_file(self, tmp_path, monkeypatch):
+        """End-to-end: a non-UTF-8 MEMORY.md must not crash load_from_disk()."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_bytes("legacy GBK content 中文".encode("gbk"))
+        s = MemoryStore()
+        # Must not raise UnicodeDecodeError.
+        s.load_from_disk()
+
+    def test_detect_external_drift_handles_non_utf8_bytes(self, tmp_path, monkeypatch):
+        """_detect_external_drift must not crash on non-UTF-8 file content."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore()
+        target = "memory"
+        path = s._path_for(target)
+        path.write_bytes("legacy GBK content 中文".encode("gbk"))
+        # Must not raise UnicodeDecodeError.
+        s._detect_external_drift(target)

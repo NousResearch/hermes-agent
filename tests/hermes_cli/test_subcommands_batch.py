@@ -16,6 +16,7 @@ import pytest
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.context import build_context_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -32,6 +33,7 @@ from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 from hermes_cli.subcommands.slack import build_slack_parser
+from hermes_cli.subcommands.smoke import build_smoke_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.update import build_update_parser
@@ -67,12 +69,14 @@ SINGLE_HANDLER_CASES = [
     ("backup", build_backup_parser, "cmd_backup", ["backup"]),
     ("import", build_import_cmd_parser, "cmd_import", ["import", "/tmp/x.zip"]),
     ("config", build_config_parser, "cmd_config", ["config"]),
+    ("context", build_context_parser, "cmd_context", ["context", "audit"]),
     ("version", build_version_parser, "cmd_version", ["version"]),
     ("update", build_update_parser, "cmd_update", ["update"]),
     ("uninstall", build_uninstall_parser, "cmd_uninstall", ["uninstall"]),
     ("gui", build_gui_parser, "cmd_gui", ["gui"]),
     ("logs", build_logs_parser, "cmd_logs", ["logs"]),
     ("prompt-size", build_prompt_size_parser, "cmd_prompt_size", ["prompt-size"]),
+    ("smoke", build_smoke_parser, "cmd_smoke", ["smoke", "--skip-chat"]),
 ]
 
 

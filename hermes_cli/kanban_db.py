@@ -6700,39 +6700,50 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
-def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
-    """True if the bundled ``kanban-worker`` skill resolves for the home the
-    spawned worker will run under.
+def _skill_available_for_home(skill_name: str, hermes_home: Optional[str]) -> bool:
+    """True if ``skill_name`` resolves under the worker's ``HERMES_HOME``.
 
-    The dispatcher injects ``--skills kanban-worker`` into every worker. When
-    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
-    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
-    the bundled skill (it ships in the *default* root home, not every
-    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
-    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
-    worker before the agent loop runs. Gate the flag on actual resolvability;
-    the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
-    omitting the flag only drops the supplementary pattern library.
+    Preloading a missing skill via ``--skills <name>`` is fatal at CLI startup
+    (``ValueError: Unknown skill(s): <name>``), aborting the worker before the
+    agent loop runs. When a worker activates a profile (``hermes -p <name>``)
+    its ``SKILLS_DIR`` becomes ``<profile_home>/skills`` — which may not
+    contain skills that exist in the *default* root home. Gate every
+    ``--skills`` injection on actual resolvability instead of trusting the
+    caller; dropping a missing flag is safer than crash-looping the worker
+    until the watchdog auto-blocks it.
+
+    Used for both the bundled ``kanban-worker`` skill (always injected) and
+    per-task ``task.skills`` overrides.
     """
     from pathlib import Path as _Path
 
+    if not skill_name:
+        return False
     # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
+    # home (``~/.hermes``), which ships the bundled skill set.
     base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
     skills_root = base / "skills"
     if not skills_root.is_dir():
         return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
+    # Bounded rglob covers nested categories (devops/, mlops/, etc.) without
+    # caller needing to know the category layout. Cheap on typical skill
+    # trees (a few dozen entries); short-circuits on first match.
     try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
+        for skill_md in skills_root.rglob(f"{skill_name}/SKILL.md"):
             if skill_md.is_file():
                 return True
     except OSError:
         pass
     return False
+
+
+def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
+    """Back-compat shim: ``--skills kanban-worker`` resolvability check.
+
+    Retained as a named entry point because the bundled-worker case is
+    referenced in inline comments below; delegates to the generic helper.
+    """
+    return _skill_available_for_home("kanban-worker", hermes_home)
 
 
 def _worker_terminal_timeout_env(
@@ -6926,10 +6937,30 @@ def _default_spawn(
     # quoting ambiguity if a skill name ever contains unusual chars.
     # Dedupe against the built-in so we don't double-load kanban-worker
     # if a task author asks for it explicitly.
+    #
+    # Gate each name on resolvability under the worker's HERMES_HOME
+    # for the same reason kanban-worker is gated above: preloading a
+    # missing skill is fatal at CLI startup. Without this filter, a
+    # ``task.skills`` entry that exists in the root home but not in
+    # the profile-scoped skills dir crash-loops the worker (often
+    # 100+ respawns before the watchdog auto-blocks) instead of just
+    # running without the supplementary context. A skipped skill is
+    # logged to stderr so operators see why the worker did not get
+    # the requested skill loaded; the task still proceeds.
     if task.skills:
+        worker_home = env.get("HERMES_HOME")
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
+            if not sk or sk == "kanban-worker":
+                continue
+            if _skill_available_for_home(sk, worker_home):
                 cmd.extend(["--skills", sk])
+            else:
+                sys.stderr.write(
+                    f"kanban: task {task.id} requested skill "
+                    f"{sk!r} but it does not resolve under "
+                    f"{worker_home or '~/.hermes'}/skills — "
+                    f"dropping flag, worker will start without it\n"
+                )
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))

@@ -1449,6 +1449,63 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     return t
 
 
+def _inject_aliases_into_rows(results: List[dict]) -> None:
+    """Surface user-defined model aliases in the picker rows in place.
+
+    Aliases (``config.yaml`` ``model_aliases:``) are otherwise CLI-only —
+    invisible in the gateway/desktop picker, which renders these rows
+    verbatim. Crucially, aggregator rows (e.g. ``openrouter``) show a curated
+    subset, so an alias targeting an off-curation model is unreachable in the
+    GUI even though the alias works from the CLI.
+
+    For each alias, attach it to the row whose ``slug`` matches the alias's
+    target provider (covering canonical, user-defined and custom rows
+    uniformly):
+
+    - Prepend the alias's *resolved model id* onto ``models`` when the row's
+      curated/live list omits it, so it becomes selectable. Prepending (vs.
+      appending) keeps it visible above a large catalog that ``max_models``
+      may otherwise truncate. Selecting the real id routes directly — no
+      alias resolution required — and lets pricing/capabilities lookups hit.
+    - Record the alias name in a per-row ``aliases`` map keyed by model id, so
+      the UI can label the entry (e.g. ``qwen27b (qwen/qwen3.6-27b)``). The
+      label is recorded even when the model was already in the curated list.
+
+    Aliases whose target provider has no row (provider not configured /
+    authenticated) are skipped — there is no section to attach them to.
+    """
+    try:
+        _ensure_direct_aliases()
+        if not DIRECT_ALIASES:
+            return
+        rows_by_slug: dict = {}
+        for row in results:
+            slug = str(row.get("slug", "")).lower()
+            if slug and slug not in rows_by_slug:
+                rows_by_slug[slug] = row
+        for alias_name, alias in DIRECT_ALIASES.items():
+            row = rows_by_slug.get(str(alias.provider or "").lower())
+            if row is None:
+                continue
+            model_id = str(alias.model or "").strip()
+            if not model_id:
+                continue
+            models = row.get("models")
+            if not isinstance(models, list):
+                continue
+            # Label the entry regardless of whether the model is already
+            # listed; first alias wins if several map to the same model.
+            labels = row.setdefault("aliases", {})
+            labels.setdefault(model_id, alias_name)
+            # Surface the model itself only when the curated/live list omits it.
+            if any(model_id.lower() == str(m).lower() for m in models):
+                continue
+            models.insert(0, model_id)
+            row["total_models"] = row.get("total_models", len(models) - 1) + 1
+    except Exception:
+        pass
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2373,6 +2430,9 @@ def list_authenticated_providers(
                 _row["models"] = [current_model, *_models]
                 _row["total_models"] = _row.get("total_models", len(_models)) + 1
             break
+
+    # Surface user-defined model aliases in the picker (see the helper).
+    _inject_aliases_into_rows(results)
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

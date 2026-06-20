@@ -172,6 +172,7 @@ function ModelResults({
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
     model.toLowerCase().includes(q) ||
+    (provider.aliases?.[model]?.toLowerCase().includes(q) ?? false) ||
     provider.name.toLowerCase().includes(q) ||
     provider.slug.toLowerCase().includes(q)
 
@@ -205,6 +206,7 @@ function ModelResults({
               const isCurrent = model === currentModel && provider.slug === currentProvider
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              const aliasName = provider.aliases?.[model]
 
               return (
                 <CommandItem
@@ -223,7 +225,15 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">{model}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {aliasName ? (
+                      <>
+                        {aliasName} <span className="text-muted-foreground">({model})</span>
+                      </>
+                    ) : (
+                      model
+                    )}
+                  </span>
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}

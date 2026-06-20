@@ -273,6 +273,10 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** Alias name keyed by resolved model id, for models surfaced from the
+   *  user's `model_aliases:` (e.g. `{ "qwen/qwen3.6-27b": "qwen27b" }`). Lets
+   *  the picker label an entry as `qwen27b (qwen/qwen3.6-27b)`. */
+  aliases?: Record<string, string>
 }
 
 export interface ModelCapabilities {

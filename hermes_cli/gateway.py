@@ -78,8 +78,19 @@ class ProfileGatewayProcess:
     pid: int
 
 
-def _get_service_pids() -> set:
+def _gateway_service_unit_matches_current_profile(unit: str) -> bool:
+    """Return True when a systemd unit name belongs to this Hermes profile."""
+    return unit == f"{get_service_name()}.service"
+
+
+def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
+
+    By default this is scoped to the current Hermes profile's service unit so
+    ``gateway status`` and ``cron status`` do not count another profile's
+    service as the current profile's gateway.  Pass ``all_profiles=True`` for
+    global operations such as update/restart sweeps that intentionally need to
+    protect every service-managed gateway PID.
 
     Used to avoid killing freshly-restarted service processes when sweeping
     for stale manual gateway processes after a service restart.  Relies on the
@@ -110,6 +121,11 @@ def _get_service_pids() -> set:
                     if not parts or not parts[0].endswith(".service"):
                         continue
                     svc = parts[0]
+                    if (
+                        not all_profiles
+                        and not _gateway_service_unit_matches_current_profile(svc)
+                    ):
+                        continue
                     try:
                         show = subprocess.run(
                             scope_args + ["show", svc, "--property=MainPID", "--value"],
@@ -564,7 +580,7 @@ def find_gateway_pids(
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
+    for pid in _get_service_pids(all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)

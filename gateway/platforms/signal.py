@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -304,9 +305,15 @@ class SignalAdapter(BasePlatformAdapter):
         self._account_normalized = self.account.strip()
 
         # Track recently sent message timestamps to prevent echo-back loops
-        # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds).
-        self._recent_sent_timestamps: set = set()
-        self._max_recent_timestamps = 50
+        # in Note to Self / self-chat mode and linked-device group sync-sents.
+        # OrderedDict[timestamp_ms -> insertion_monotonic_seconds] gives us
+        # LRU eviction (popitem(last=False) drops oldest) plus a TTL so that
+        # under chatty groups a still-pending echo cannot be evicted just
+        # because >50 outbounds happened. With a 5-minute TTL the cap only
+        # matters for runaway producers, not normal traffic bursts.
+        self._recent_sent_timestamps: "OrderedDict[int, float]" = OrderedDict()
+        self._max_recent_timestamps = 512
+        self._recent_sent_ttl_seconds = 300.0
         # Keep a separate bounded cache of outbound Signal message timestamps.
         # Signal quote.id is the timestamp of the quoted message, so this lets
         # inbound replies identify that the user replied to a message sent by
@@ -536,8 +543,7 @@ class SignalAdapter(BasePlatformAdapter):
                     sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
                     if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
-                        if sent_ts and sent_ts in self._recent_sent_timestamps:
-                            self._recent_sent_timestamps.discard(sent_ts)
+                        if self._consume_sent_timestamp(sent_ts):
                             return
                         # Genuine user Note to Self — promote to dataMessage
                         is_note_to_self = True
@@ -1076,10 +1082,29 @@ class SignalAdapter(BasePlatformAdapter):
         """Record outbound message timestamp for echo-back filtering."""
         ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
         if ts:
-            self._recent_sent_timestamps.add(ts)
             self._remember_sent_message_timestamp(ts)
-            if len(self._recent_sent_timestamps) > self._max_recent_timestamps:
-                self._recent_sent_timestamps.pop()
+            now = time.monotonic()
+            # Re-insert to mark as most-recently-used.
+            self._recent_sent_timestamps.pop(ts, None)
+            self._recent_sent_timestamps[ts] = now
+            # Drop entries older than TTL first (cheap O(k) where k=expired).
+            cutoff = now - self._recent_sent_ttl_seconds
+            while self._recent_sent_timestamps:
+                oldest_ts, oldest_at = next(iter(self._recent_sent_timestamps.items()))
+                if oldest_at < cutoff:
+                    self._recent_sent_timestamps.popitem(last=False)
+                else:
+                    break
+            # Hard cap as a last-resort guard against runaway producers.
+            while len(self._recent_sent_timestamps) > self._max_recent_timestamps:
+                self._recent_sent_timestamps.popitem(last=False)
+
+    def _consume_sent_timestamp(self, ts) -> bool:
+        """Pop a timestamp if it matches one we sent. Returns True on echo."""
+        if ts and ts in self._recent_sent_timestamps:
+            self._recent_sent_timestamps.pop(ts, None)
+            return True
+        return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator.

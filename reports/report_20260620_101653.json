@@ -1,0 +1,63 @@
+{
+  "generated_at": "2026-06-20T10:16:53.756491",
+  "providers": [
+    {
+      "name": "Apimart",
+      "label": "中转站 Apimart",
+      "category": "aggregator",
+      "base_url": "https://api.apib.ai/api/v1",
+      "api_key": "sk-G***N9ci",
+      "models": [
+        "gpt-5.5",
+        "deepseek-v4-pro"
+      ],
+      "headers": {},
+      "timeout": 60.0,
+      "note": "价格计算模糊, 了解实际使用计费方式"
+    }
+  ],
+  "results": [
+    {
+      "probe": "connectivity",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "hello 调用失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620101653531212106n7jejDOz)', 'param': '', 'type': 'apimart_error'}}",
+      "metrics": [
+        {
+          "name": "hello_latency_ms",
+          "value": 60.9,
+          "unit": "ms",
+          "note": ""
+        }
+      ],
+      "findings": [],
+      "warnings": [
+        "/v1/models 不可用: not_found — Error code: 404 - {'error': {'message': 'Invalid URL (GET /api/v1/models)', 'type': 'invalid_request_error', 'param': ''"
+      ],
+      "raw": {
+        "hello_error": "auth"
+      }
+    },
+    {
+      "probe": "connectivity",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "hello 调用失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620101653733942706AjnLXYL1)', 'param': '', 'type': 'apimart_error'}}",
+      "metrics": [
+        {
+          "name": "hello_latency_ms",
+          "value": 62.4,
+          "unit": "ms",
+          "note": ""
+        }
+      ],
+      "findings": [],
+      "warnings": [
+        "/v1/models 不可用: not_found — Error code: 404 - {'error': {'message': 'Invalid URL (GET /api/v1/models)', 'type': 'invalid_request_error', 'param': ''"
+      ],
+      "raw": {
+        "hello_error": "auth"
+      }
+    }
+  ]
+}

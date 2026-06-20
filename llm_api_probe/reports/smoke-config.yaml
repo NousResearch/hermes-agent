@@ -1,0 +1,7 @@
+providers:
+  - name: mock-provider
+    label: 本地 mock
+    category: self_hosted
+    base_url: http://127.0.0.1:18080/v1
+    api_key: test
+    models: [mock-1]

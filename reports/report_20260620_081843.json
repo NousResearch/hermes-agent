@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-06-20T08:18:43.066575",
+  "providers": [
+    {
+      "name": "Apimart",
+      "label": "中转站 Apimart",
+      "category": "aggregator",
+      "base_url": "https://api.apib.ai/v1",
+      "api_key": "sk-N***zrgP",
+      "models": [
+        "deepseek-v4-flash"
+      ],
+      "headers": {},
+      "timeout": 60.0,
+      "note": "价格计算模糊, 了解实际使用计费方式"
+    }
+  ],
+  "results": [
+    {
+      "probe": "context",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "无法确定 context 上限 (可能限流或网络不稳)",
+      "metrics": [],
+      "findings": [],
+      "warnings": [],
+      "raw": {}
+    },
+    {
+      "probe": "security",
+      "provider": "Apimart",
+      "ok": true,
+      "error": null,
+      "metrics": [],
+      "findings": [],
+      "warnings": [
+        "canary 测试本身失败: auth"
+      ],
+      "raw": {}
+    }
+  ]
+}

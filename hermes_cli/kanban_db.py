@@ -6735,6 +6735,166 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     return False
 
 
+def _skill_slug(name: str) -> str:
+    """Return the slash-command-style slug for a skill display name."""
+    slug = str(name or "").lower().replace(" ", "-").replace("_", "-")
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug
+
+
+def _extract_skill_frontmatter_name(skill_md: Path) -> Optional[str]:
+    """Best-effort frontmatter ``name:`` extraction without importing YAML."""
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    for line in text.splitlines()[1:80]:
+        if line.strip() == "---":
+            break
+        if line.startswith("name:"):
+            return line.split(":", 1)[1].strip().strip("'\"") or None
+    return None
+
+
+def _profile_skill_roots(hermes_home: Optional[str]) -> list[Path]:
+    """Return skill roots visible to a worker running under ``hermes_home``."""
+    base = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
+    roots: list[Path] = [base / "skills"]
+
+    # Mirror agent.skill_utils.get_external_skills_dirs() just enough for
+    # dispatcher preflight.  Importing the live helper here would read the
+    # dispatcher's already-imported HERMES_HOME, not necessarily the child
+    # profile home we are about to spawn.
+    cfg_path = base / "config.yaml"
+    try:
+        import yaml  # type: ignore
+
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        external = ((cfg.get("skills") or {}).get("external_dirs") or [])
+        for raw in external:
+            if not raw:
+                continue
+            expanded = os.path.expandvars(str(raw))
+            roots.append(Path(expanded).expanduser())
+    except Exception:
+        pass
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            key = str(root.resolve())
+        except OSError:
+            key = str(root)
+        if key in seen or not root.is_dir():
+            continue
+        seen.add(key)
+        out.append(root)
+    return out
+
+
+def _skill_available_for_home(skill_name: str, hermes_home: Optional[str]) -> bool:
+    """True if ``skill_name`` should load under the worker profile home."""
+    wanted = str(skill_name or "").strip()
+    if not wanted:
+        return False
+    wanted_slug = _skill_slug(wanted)
+    for root in _profile_skill_roots(hermes_home):
+        for candidate in (
+            root / wanted / "SKILL.md",
+            root / wanted_slug / "SKILL.md",
+        ):
+            if candidate.is_file():
+                return True
+        try:
+            for skill_md in root.rglob("SKILL.md"):
+                parent_name = skill_md.parent.name
+                try:
+                    rel_parent = str(skill_md.parent.relative_to(root))
+                except ValueError:
+                    rel_parent = parent_name
+                if wanted in {parent_name, rel_parent}:
+                    return True
+                frontmatter_name = _extract_skill_frontmatter_name(skill_md)
+                if frontmatter_name and (
+                    frontmatter_name == wanted
+                    or _skill_slug(frontmatter_name) == wanted_slug
+                ):
+                    return True
+                if _skill_slug(parent_name) == wanted_slug:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _filter_task_skills_for_spawn(
+    task: Task,
+    hermes_home: Optional[str],
+    *,
+    board: Optional[str] = None,
+) -> list[str]:
+    """Drop force-loaded skills that would make worker CLI startup abort.
+
+    ``hermes --skills missing`` raises ``ValueError: Unknown skill(s): ...``
+    before the agent loop starts.  A kanban task with one bad forced skill can
+    therefore burn the dispatcher's retry budget without the worker ever
+    getting a chance to call ``kanban_block``.  Validate against the assignee's
+    profile home immediately before spawn; persist the sanitized list and leave
+    an audit comment so legacy/bad rows self-heal instead of crash-looping.
+    """
+    if not task.skills:
+        return []
+
+    valid: list[str] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for raw in task.skills:
+        name = str(raw or "").strip()
+        if not name or name in seen or name == "kanban-worker":
+            continue
+        seen.add(name)
+        if _skill_available_for_home(name, hermes_home):
+            valid.append(name)
+        else:
+            invalid.append(name)
+
+    if invalid:
+        task.skills = valid
+        try:
+            conn = connect(board=board)
+            try:
+                with write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET skills = ? WHERE id = ?",
+                        (json.dumps(valid) if valid else None, task.id),
+                    )
+                add_comment(
+                    conn,
+                    task.id,
+                    author="kanban-dispatcher",
+                    body=(
+                        "Dropped unavailable force-loaded skill(s) before spawn: "
+                        f"{', '.join(invalid)}. Assignee `{task.assignee}` can load "
+                        f"remaining skills: {', '.join(valid) if valid else '(none)'}. "
+                        "This prevents `Unknown skill(s)` CLI startup crashes; "
+                        "install the missing skill on the assignee profile or "
+                        "omit it from `skills` when creating the task."
+                    ),
+                )
+            finally:
+                conn.close()
+        except Exception:
+            _log.exception(
+                "failed to persist sanitized skills for task %s; using sanitized argv anyway",
+                task.id,
+            )
+    return valid
+
+
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -6917,8 +7077,14 @@ def _default_spawn(
     # profile-scoped skills dirs, and preloading a missing skill is
     # fatal at CLI startup. Omitting it is safe — the lifecycle
     # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
+    worker_hermes_home = env.get("HERMES_HOME")
+    if _kanban_worker_skill_available(worker_hermes_home):
         cmd.extend(["--skills", "kanban-worker"])
+    spawn_skills = _filter_task_skills_for_spawn(
+        task,
+        worker_hermes_home,
+        board=board,
+    )
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but
@@ -6926,8 +7092,8 @@ def _default_spawn(
     # quoting ambiguity if a skill name ever contains unusual chars.
     # Dedupe against the built-in so we don't double-load kanban-worker
     # if a task author asks for it explicitly.
-    if task.skills:
-        for sk in task.skills:
+    if spawn_skills:
+        for sk in spawn_skills:
             if sk and sk != "kanban-worker":
                 cmd.extend(["--skills", sk])
     if task.model_override:

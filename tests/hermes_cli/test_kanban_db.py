@@ -2723,6 +2723,101 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 
+    def test_dispatcher_drops_unknown_task_skills_before_spawn(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "infrastructure"
+        skill_dir = profile_home / "skills" / "github" / "github-repo-management"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: github-repo-management\ndescription: ok\n---\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda profile: str(profile_home),
+        )
+        monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda home: False)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        kb.init_db()
+        with kb.connect() as conn:
+            tid = kb.create_task(
+                conn,
+                title="cleanup",
+                assignee="infrastructure",
+                skills=["cloudflare", "github-repo-management"],
+            )
+            task = kb.get_task(conn, tid)
+        assert task is not None
+
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        assert "--skills" in captured["cmd"]
+        assert "github-repo-management" in captured["cmd"]
+        assert "cloudflare" not in captured["cmd"]
+        with kb.connect() as conn:
+            task_after = kb.get_task(conn, tid)
+            comments = kb.list_comments(conn, tid)
+        assert task_after.skills == ["github-repo-management"]
+        assert any(
+            c.author == "kanban-dispatcher"
+            and "Dropped unavailable force-loaded skill(s)" in c.body
+            and "cloudflare" in c.body
+            for c in comments
+        )
+
+    def test_dispatcher_spawn_omits_all_unknown_task_skills(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "infrastructure"
+        (profile_home / "skills").mkdir(parents=True)
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda profile: str(profile_home),
+        )
+        monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda home: False)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        kb.init_db()
+        with kb.connect() as conn:
+            tid = kb.create_task(
+                conn,
+                title="cleanup",
+                assignee="infrastructure",
+                skills=["cloudflare"],
+            )
+            task = kb.get_task(conn, tid)
+        assert task is not None
+
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        assert "--skills" not in captured["cmd"]
+        with kb.connect() as conn:
+            task_after = kb.get_task(conn, tid)
+            comments = kb.list_comments(conn, tid)
+        assert task_after.skills is None
+        assert any("cloudflare" in c.body for c in comments)
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

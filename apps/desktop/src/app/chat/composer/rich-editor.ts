@@ -144,9 +144,10 @@ function composerSelectionRange(editor: HTMLElement) {
   return { range, selection }
 }
 
-/** Insert plain text at the caret (replacing any selection). Pastes use this
- *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
- *  ~O(n²) on large multiline blobs. */
+/** Insert plain text at the caret (replacing any selection). Bypasses
+ *  Chromium's editing pipeline so it never produces an undo entry — use
+ *  `pastePlainTextIntoEditor` from the paste path so the browser records an
+ *  undo step the user can Cmd+Z back through. */
 export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
@@ -170,6 +171,34 @@ export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
     selection?.removeAllRanges()
     selection?.addRange(caret)
   }
+}
+
+/** Pastes larger than this bypass Chromium's editing pipeline and fall back to
+ *  the direct DOM-mutation path (`insertPlainTextAtCaret`). The pipeline is
+ *  ~O(n²) on multiline blobs — PR #45812 profiled 47 KB / 122 paragraphs at
+ *  4474 ms through `execCommand('insertText')` vs 13 ms through the bypass.
+ *  Picking the slow path here would restore Cmd+Z for the paste at the cost of
+ *  re-freezing the composer on pathological pastes. The trade-off is intentional. */
+export const LARGE_PASTE_THRESHOLD_CHARS = 4096
+
+/** Paste plain text into the editor at the caret. For typical pastes we route
+ *  through `document.execCommand('insertText')` so Chromium's editing pipeline
+ *  records an undo entry — Cmd+Z then reverts the paste instead of skipping
+ *  over it and unwinding the keystrokes the user typed before it. For very
+ *  large pastes we fall back to `insertPlainTextAtCaret` to avoid the O(n²)
+ *  freeze and accept the lost undo entry. */
+export function pastePlainTextIntoEditor(editor: HTMLElement, text: string) {
+  if (document.activeElement === editor && text.length <= LARGE_PASTE_THRESHOLD_CHARS) {
+    // execCommand('insertText') is the only path that goes through Blink's
+    // editing pipeline from a paste handler after we've called
+    // preventDefault. It fires the InputEvent `handleEditorInput` is listening
+    // for AND pushes an entry onto the contentEditable undo stack.
+    document.execCommand('insertText', false, text)
+
+    return
+  }
+
+  insertPlainTextAtCaret(editor, text)
 }
 
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND

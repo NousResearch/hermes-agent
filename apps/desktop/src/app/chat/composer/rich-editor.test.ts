@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
   composerPlainText,
   deleteSelectionInEditor,
   insertPlainTextAtCaret,
+  LARGE_PASTE_THRESHOLD_CHARS,
   normalizeComposerEditorDom,
+  pastePlainTextIntoEditor,
   refChipElement,
   renderComposerContents,
   RICH_INPUT_SLOT
@@ -128,6 +130,88 @@ describe('deleteSelectionInEditor', () => {
     expect(composerPlainText(editor)).toBe('')
     expect(selection.getRangeAt(0).collapsed).toBe(true)
     expect(deleteSelectionInEditor(editor)).toBe(false)
+
+    editor.remove()
+  })
+})
+
+describe('pastePlainTextIntoEditor', () => {
+  type ExecCommandFn = (command: string, showUi?: boolean, value?: string) => boolean
+
+  const installExecStub = (impl?: ExecCommandFn): ExecCommandFn => {
+    const fn = vi.fn(impl ?? (() => true)) as unknown as ExecCommandFn
+
+    // jsdom doesn't define document.execCommand; install a stub so the
+    // production code path is reachable from tests. vi.spyOn requires the
+    // property to already exist on the target, so use direct assignment.
+    ;(document as unknown as { execCommand: ExecCommandFn }).execCommand = fn
+
+    return fn
+  }
+
+  const focusEditor = (editor: HTMLElement) => {
+    editor.tabIndex = 0
+    editor.focus()
+  }
+
+  afterEach(() => {
+    delete (document as unknown as { execCommand?: unknown }).execCommand
+  })
+
+  it('routes a small paste through execCommand when the editor is focused (undo fidelity)', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    focusEditor(editor)
+
+    const execStub = installExecStub((command, _showUi, value) => {
+      // Simulate Chromium writing the inserted text into the editor's DOM.
+      if (command === 'insertText' && typeof value === 'string') {
+        editor.append(value)
+      }
+
+      return true
+    })
+
+    pastePlainTextIntoEditor(editor, 'hello world')
+
+    expect(execStub).toHaveBeenCalledWith('insertText', false, 'hello world')
+    expect(composerPlainText(editor)).toBe('hello world')
+
+    editor.remove()
+  })
+
+  it('falls back to insertPlainTextAtCaret when the editor is not focused', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    // Intentionally no .focus() — execCommand would operate on whatever
+    // selection lives elsewhere on the page, so we must use the direct path.
+
+    const execStub = installExecStub()
+    pastePlainTextIntoEditor(editor, 'orphan paste')
+
+    expect(execStub).not.toHaveBeenCalled()
+    expect(composerPlainText(editor)).toBe('orphan paste')
+
+    editor.remove()
+  })
+
+  it('falls back to insertPlainTextAtCaret for pastes above the threshold (perf)', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    focusEditor(editor)
+
+    const bigBlob = 'x'.repeat(LARGE_PASTE_THRESHOLD_CHARS + 1)
+    const execStub = installExecStub()
+
+    pastePlainTextIntoEditor(editor, bigBlob)
+
+    // Direct path bypasses execCommand — Chromium's O(n²) freeze is the reason
+    // this branch exists; we accept the lost undo entry for pathological pastes.
+    expect(execStub).not.toHaveBeenCalled()
+    expect(composerPlainText(editor)).toBe(bigBlob)
 
     editor.remove()
   })

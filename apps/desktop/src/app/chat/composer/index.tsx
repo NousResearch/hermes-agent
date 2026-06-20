@@ -47,9 +47,13 @@ import {
   composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
-  insertPlainTextAtCaret,
   normalizeComposerEditorDom,
-  RICH_INPUT_SLOT
+  pastePlainTextIntoEditor,
+  placeCaretEnd,
+  refChipElement,
+  renderComposerContents,
+  RICH_INPUT_SLOT,
+  slashChipElement
 } from './rich-editor'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
@@ -357,8 +361,157 @@ export function ChatBar({
     }
 
     event.preventDefault()
-    insertPlainTextAtCaret(event.currentTarget, pastedText)
-    scheduleFlushEditorToDraft(event.currentTarget)
+    // Route through the helper so typical pastes go via execCommand and
+    // participate in Chromium's contentEditable undo stack — Cmd+Z then reverts
+    // the paste instead of skipping over it. See rich-editor.ts for the
+    // threshold rationale (PR #45812).
+    pastePlainTextIntoEditor(event.currentTarget, pastedText)
+    flushEditorToDraft(event.currentTarget)
+  }
+
+  const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
+
+  // Suppress the "No matches" empty state once a slash command is past its name:
+  // a no-arg command has nothing to offer, and a fully-typed arg commits on
+  // Space/Tab — neither should dead-end on a popover.
+  const argStageEmpty =
+    trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+
+  const closeTrigger = () => {
+    setTrigger(null)
+    setTriggerItems([])
+    setTriggerActive(0)
+  }
+
+  useEffect(() => {
+    setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
+  }, [triggerItems.length])
+
+  // Commit the literally-typed `/command arg` as a directive chip — used when
+  // the completion list is empty because the arg is already fully typed (the
+  // backend completer drops exact matches). Reuses the chip path via a
+  // synthetic item whose serialized form is the verbatim text.
+  const commitTypedSlashDirective = () => {
+    if (trigger?.kind !== '/') {
+      return
+    }
+
+    const text = `/${trigger.query.trimEnd()}`
+
+    replaceTriggerWithChip({
+      id: text,
+      type: 'slash',
+      label: text.slice(1),
+      metadata: { command: slashCommandToken(trigger.query), display: text, meta: '', group: '', action: '', rawText: text }
+    })
+  }
+
+  const replaceTriggerWithChip = (item: Unstable_TriggerItem) => {
+    const editor = editorRef.current
+
+    if (!editor || !trigger) {
+      return
+    }
+
+    // Action items (e.g. "Browse all sessions…") run a side effect instead of
+    // inserting a chip: strip the typed trigger token, then fire the action.
+    const completionAction = (item.metadata as { action?: unknown } | undefined)?.action
+    const runAction = typeof completionAction === 'string' ? COMPLETION_ACTIONS[completionAction] : undefined
+
+    if (runAction) {
+      const current = composerPlainText(editor)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      renderComposerContents(editor, prefix)
+      placeCaretEnd(editor)
+      draftRef.current = composerPlainText(editor)
+      aui.composer().setText(draftRef.current)
+      closeTrigger()
+      runAction()
+      requestMainFocus()
+
+      return
+    }
+
+    const serialized = hermesDirectiveFormatter.serialize(item)
+    const starter = serialized.endsWith(':')
+
+    // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
+    // it — expand to its options step so the popover shows the inline list, just
+    // as typing `/personality ` by hand would. A serialized value with a space is
+    // already an arg pick (`/personality alice`), so it commits normally.
+    const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
+
+    const expandsToArgs = trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+
+    const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
+    const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
+    // No pill while expanding — the bare command stays plain text until an arg
+    // is picked, at which point a single pill is emitted for the full command.
+    const slashKind = !expandsToArgs && trigger.kind === '/' ? slashChipKindForItem(item) : null
+    const keepTriggerOpen = starter || expandsToArgs
+
+    const finish = () => {
+      draftRef.current = composerPlainText(editor)
+      aui.composer().setText(draftRef.current)
+      requestMainFocus()
+      keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
+    }
+
+    const sel = window.getSelection()
+    const range = sel?.rangeCount ? sel.getRangeAt(0) : null
+    const node = range?.startContainer
+    const offset = range?.startOffset ?? 0
+
+    if (!sel || !range || node?.nodeType !== Node.TEXT_NODE || offset < trigger.tokenLength) {
+      const current = composerPlainText(editor)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      if (slashKind) {
+        // Two-step arg picks (e.g. `/handoff` pill already inserted, now picking
+        // the platform) land here because the caret sits past a contenteditable
+        // chip. Rebuild the prefix and re-emit a single pill for the full command.
+        renderComposerContents(editor, prefix)
+        editor.append(slashChipElement(serialized, slashKind), document.createTextNode(' '))
+        placeCaretEnd(editor)
+
+        return finish()
+      }
+
+      renderComposerContents(editor, `${prefix}${text}`)
+      placeCaretEnd(editor)
+
+      return finish()
+    }
+
+    const replaceRange = document.createRange()
+    replaceRange.setStart(node, offset - trigger.tokenLength)
+    replaceRange.setEnd(node, offset)
+    replaceRange.deleteContents()
+
+    const chip = slashKind
+      ? slashChipElement(serialized, slashKind)
+      : directive
+        ? refChipElement(directive[1], directive[2])
+        : null
+
+    if (chip) {
+      const space = document.createTextNode(' ')
+      const fragment = document.createDocumentFragment()
+      fragment.append(chip, space)
+      replaceRange.insertNode(fragment)
+
+      const caret = document.createRange()
+      caret.setStart(space, 1)
+      caret.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(caret)
+
+      return finish()
+    }
+
+    document.execCommand('insertText', false, text)
+    finish()
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

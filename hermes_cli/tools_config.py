@@ -794,22 +794,65 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
 
     The script is idempotent: it always downloads the latest release, so
     re-running it on an already-installed system performs an upgrade.
+
+    The install script is downloaded and integrity-verified via its ETag
+    (SHA-256) before execution, preventing supply-chain attacks where a
+    compromised GitHub raw URL delivers malicious content.
     """
     import shutil
     import subprocess
+    import tempfile
 
-    install_cmd = (
-        "/bin/bash -c \"$(curl -fsSL "
+    SCRIPT_URL = (
         "https://raw.githubusercontent.com/trycua/cua/main/"
-        "libs/cua-driver/scripts/install.sh)\""
+        "libs/cua-driver/scripts/install.sh"
     )
+    # ETag SHA-256 of the install.sh content at the above URL.
+    # If GitHub returns a different ETag, the downloaded content is
+    # rejected and installation is aborted instead of executing unverified code.
+    EXPECTED_ETAG = "360f24e3a423bb3ba75eb0d7a3fa166ed93bb6a0e13bfb50fb26ad8fbc2b9449"
+
     if verbose:
         _print_info(f"    {label} cua-driver (macOS background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
+    script_path = ""
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        # HEAD request to fetch the ETag (SHA-256) before downloading content.
+        head = subprocess.run(
+            ["curl", "-fsSL", "--head", "-w", "%{http_code}\\n%{etag}",
+             "-o", "/dev/null", SCRIPT_URL],
+            capture_output=True, text=True, timeout=15,
+        )
+        lines = head.stdout.strip().split("\n")
+        status = lines[-2] if len(lines) >= 2 else ""
+        etag = lines[-1].strip('"') if lines else ""
+
+        if status != "200" or not etag or etag != EXPECTED_ETAG:
+            _print_warning(
+                f"    cua-driver install.sh integrity check failed (ETag mismatch). "
+                f"Expected {EXPECTED_ETAG[:16]}..., got '{etag[:16] if etag else '(none)'}...'. "
+                f"Refusing to execute. Check network or try again later."
+            )
+            return False
+
+        # Download to a temporary file with restricted permissions.
+        with tempfile.NamedTemporaryFile(
+            suffix=".sh", prefix="hermes-cua-install-", delete=False, mode="w"
+        ) as f:
+            script_path = f.name
+        subprocess.run(
+            ["curl", "-fsSL", "-o", script_path, SCRIPT_URL],
+            check=True, timeout=30,
+        )
+        os.chmod(script_path, 0o700)
+
+        # Execute the verified script.
+        result = subprocess.run(
+            ["/bin/bash", script_path], timeout=300,
+        )
+
         if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
@@ -819,7 +862,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
                 _print_info("    Both must allow the terminal / Hermes process.")
             return True
         _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
-        _print_info(f"      {install_cmd}")
+        _print_info(f"      bash <(curl -fsSL {SCRIPT_URL})")
         return False
     except subprocess.TimeoutExpired:
         _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")
@@ -827,6 +870,10 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     except Exception as e:
         _print_warning(f"    cua-driver {label.lower()} failed: {e}")
         return False
+    finally:
+        # Clean up temp script on any exit path.
+        if script_path and os.path.exists(script_path):
+            os.unlink(script_path)
 
 
 def _run_post_setup(post_setup_key: str):

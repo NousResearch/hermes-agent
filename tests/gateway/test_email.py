@@ -335,7 +335,8 @@ class TestDispatchMessage(unittest.TestCase):
         asyncio.run(adapter._dispatch_message(msg_data))
         self.assertEqual(len(captured_events), 1)
         self.assertNotIn("[Subject:", captured_events[0].text)
-        self.assertEqual(captured_events[0].text, "Thanks for the help!")
+        self.assertIn("<untrusted_email source=\"user@test.com\">", captured_events[0].text)
+        self.assertIn("Thanks for the help!", captured_events[0].text)
 
     def test_empty_body_handled(self):
         """Email with no body should dispatch '(empty email)'."""

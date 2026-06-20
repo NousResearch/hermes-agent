@@ -121,10 +121,17 @@ def finalize_turn(
                     exc_info=True,
                 )
 
-    # Determine if conversation completed successfully
+    # Determine if conversation completed successfully.
+    #
+    # A healthy final assistant message can arrive on the last permitted API
+    # iteration (for example cron jobs with max_iterations=4: three tool turns
+    # plus one final text turn).  Treat that as complete when the loop exited via
+    # an actual text response; otherwise budget-exhaustion paths that synthesize
+    # a summary at the limit remain incomplete.
+    _normal_text_exit = str(_turn_exit_reason).startswith("text_response")
     completed = (
         final_response is not None
-        and api_call_count < agent.max_iterations
+        and (api_call_count < agent.max_iterations or _normal_text_exit)
         and not failed
     )
 

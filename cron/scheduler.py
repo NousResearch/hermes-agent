@@ -1794,8 +1794,13 @@ def _run_job_unscoped(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations.  Job-level max_turns lets high-frequency cron jobs
+        # stay bounded without changing the interactive agent defaults.
+        max_iterations = job.get("max_turns") or _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        try:
+            max_iterations = int(max_iterations)
+        except (TypeError, ValueError):
+            max_iterations = 90
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})

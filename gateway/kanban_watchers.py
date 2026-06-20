@@ -695,7 +695,7 @@ class TaskLoopEngine:
                         # Find todo children of this blocked task.
                         orphan_rows = conn.execute(
                             "SELECT t.id FROM tasks t "
-                            "JOIN task_edges e ON e.child_id = t.id "
+                            "JOIN task_links e ON e.child_id = t.id "
                             "WHERE e.parent_id = ? AND t.status = 'todo'",
                             (bt.id,),
                         ).fetchall()
@@ -703,8 +703,8 @@ class TaskLoopEngine:
                             orphan_id = orow[0]
                             # Try re-parenting to grandparent (done tasks only).
                             gp_row = conn.execute(
-                                "SELECT e2.parent_id, t2.status FROM task_edges e "
-                                "JOIN task_edges e2 ON e2.child_id = e.parent_id "
+                                "SELECT e2.parent_id, t2.status FROM task_links e "
+                                "JOIN task_links e2 ON e2.child_id = e.parent_id "
                                 "JOIN tasks t2 ON t2.id = e2.parent_id "
                                 "WHERE e.child_id = ?",
                                 (orphan_id,),
@@ -712,11 +712,11 @@ class TaskLoopEngine:
                             if gp_row and gp_row[0] and gp_row[1] == "done":
                                 # Grandparent exists and is done — re-parent.
                                 conn.execute(
-                                    "DELETE FROM task_edges WHERE parent_id=? AND child_id=?",
+                                    "DELETE FROM task_links WHERE parent_id=? AND child_id=?",
                                     (bt.id, orphan_id),
                                 )
                                 conn.execute(
-                                    "INSERT OR IGNORE INTO task_edges(parent_id, child_id) VALUES(?,?)",
+                                    "INSERT OR IGNORE INTO task_links(parent_id, child_id) VALUES(?,?)",
                                     (gp_row[0], orphan_id),
                                 )
                                 logger.info(
@@ -727,7 +727,7 @@ class TaskLoopEngine:
                             else:
                                 # No suitable grandparent — detach entirely.
                                 conn.execute(
-                                    "DELETE FROM task_edges WHERE parent_id=? AND child_id=?",
+                                    "DELETE FROM task_links WHERE parent_id=? AND child_id=?",
                                     (bt.id, orphan_id),
                                 )
                                 logger.info(
@@ -1999,6 +1999,78 @@ class GatewayKanbanWatchersMixin:
             )
             return None
 
+    def _convergence_already_notified(self, board_slug: str) -> bool:
+        """True iff a convergence summary was already injected for *board_slug*
+        AND no task_events have arrived since.
+
+        Anchored on the most recent ``task_loop_closed`` event: if any
+        non-closed event exists past it, the board saw fresh activity and a
+        future re-convergence is a legitimately new notification. Returns
+        ``False`` on any DB error so a transient glitch never permanently
+        silences a converged board.
+        """
+        try:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=board_slug)
+            try:
+                row = conn.execute(
+                    "SELECT MAX(id) AS m FROM task_events "
+                    "WHERE kind = 'task_loop_closed'"
+                ).fetchone()
+                closed_id = row["m"] if row else None
+                if not closed_id:
+                    return False
+                after = conn.execute(
+                    "SELECT COUNT(*) AS n FROM task_events "
+                    "WHERE id > ? AND kind != 'task_loop_closed'",
+                    (closed_id,),
+                ).fetchone()
+                return int(after["n"]) == 0
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug(
+                "kanban task_loop convergence dedup probe failed for %s: %s",
+                board_slug, exc,
+            )
+            return False
+
+    def _mark_convergence_notified(
+        self, board_slug: str, metrics: dict, stats: dict
+    ) -> None:
+        """Write a ``task_loop_closed`` event anchoring the convergence notice.
+
+        Anchored on the board's most recently active task so the event has a
+        valid ``task_id`` (``task_events.task_id`` is NOT NULL). The dedup
+        guard reads this row back on the next tick.
+        """
+        from hermes_cli import kanban_db as _kb
+        try:
+            conn = _kb.connect(board=board_slug)
+            try:
+                row = conn.execute(
+                    "SELECT id FROM tasks "
+                    "ORDER BY COALESCE(completed_at, started_at, created_at) DESC "
+                    "LIMIT 1"
+                ).fetchone()
+                if not row:
+                    return
+                record_task_loop_closed(
+                    conn,
+                    row["id"],
+                    metrics=metrics,
+                    loop_depth=max(0, int(stats.get("current_loop", 0)) - 1),
+                    duration_seconds=0,
+                    task_loop_id=f"{board_slug}:conv",
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug(
+                "kanban task_loop: convergence mark failed for %s: %s",
+                board_slug, exc,
+            )
+
     def _failing_task_ids(self, board_slug: str, threshold: int) -> list:
         """Return ids of non-terminal tasks with
         ``consecutive_failures >= threshold``, sorted by failure count
@@ -2041,7 +2113,7 @@ class GatewayKanbanWatchersMixin:
             try:
                 rows = conn.execute(
                     "SELECT e.parent_id, t.status "
-                    "FROM task_edges e "
+                    "FROM task_links e "
                     "JOIN tasks t ON t.id = e.parent_id "
                     "WHERE t.status NOT IN ('done','archived','blocked')"
                 ).fetchall()
@@ -2053,7 +2125,7 @@ class GatewayKanbanWatchersMixin:
                     seen.add(parent_id)
                     kids = conn.execute(
                         "SELECT t.status FROM tasks t "
-                        "JOIN task_edges e ON e.child_id = t.id "
+                        "JOIN task_links e ON e.child_id = t.id "
                         "WHERE e.parent_id = ?",
                         (parent_id,),
                     ).fetchall()
@@ -2340,6 +2412,15 @@ class GatewayKanbanWatchersMixin:
             # work that would never come.  Convergence → inject.
             conv_metrics = self._board_converged(slug)
             if conv_metrics is not None:
+                # De-dup: if we already injected a convergence summary for
+                # this board and nothing has happened since (no new
+                # task_events after the last task_loop_closed marker), do
+                # NOT re-inject — the board is still quiescent and the
+                # orchestrator has already been told to wrap up. Only a fresh
+                # burst of activity (which writes events past the last
+                # task_loop_closed) re-arms the convergence notification.
+                if self._convergence_already_notified(slug):
+                    continue
                 # Build a minimal stats dict if _detect_task_loop skipped
                 # this board (the all-done quiescent case).
                 if stats is None:
@@ -2379,6 +2460,11 @@ class GatewayKanbanWatchersMixin:
                 _coro_or_call = self._inject_task_loop(msg_text, slug, stats)
                 if asyncio.iscoroutine(_coro_or_call):
                     asyncio.ensure_future(_coro_or_call)
+                # Persist a task_loop_closed marker so the dedup guard above
+                # suppresses re-injection on subsequent ticks while the board
+                # stays quiescent (honours the "notify once on convergence"
+                # intent without re-firing every tick).
+                self._mark_convergence_notified(slug, conv_metrics, stats)
                 # Update cursor + cooldown so we don't re-fire on the
                 # same convergence.  Continue to the next slug.
                 self.task_loop_engine._last_event_id[slug] = max(

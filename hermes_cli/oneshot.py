@@ -242,6 +242,54 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _register_oneshot_memory_cleanup(agent: object) -> None:
+    """Register an ``atexit`` hook that tears down ``agent``'s memory provider.
+
+    Oneshot bypasses the interactive CLI's ``atexit``/``_run_cleanup`` wiring,
+    so memory providers (e.g. Honcho) whose daemon worker threads are still
+    blocked in HTTP recv at interpreter exit never get ``shutdown()`` called.
+    CPython then forcibly kills those threads at ``Py_FinalizeEx`` via
+    ``PyThread_exit_thread`` -> ``__pthread_unwind`` -> ``abort()``, producing
+    SIGABRT (exit 134) with no Python traceback. The hook tears the provider
+    down cleanly before finalize, then exits directly to bypass finalization.
+    """
+    import atexit
+    import os
+    import sys
+
+    def _shutdown_oneshot_and_exit() -> None:
+        # Best-effort graceful teardown of the memory provider's background
+        # threads (joins + httpx client close; see HonchoMemoryProvider.shutdown).
+        try:
+            if hasattr(agent, "shutdown_memory_provider"):
+                # Forward the agent's own transcript so providers'
+                # ``on_session_end`` hooks see the real conversation instead of
+                # an empty list (#15165), mirroring the interactive CLI's
+                # ``_run_cleanup``. Fall back to no-arg when the attribute is
+                # missing (test stubs / partially-initialised agents).
+                session_msgs = getattr(agent, "_session_messages", None)
+                if isinstance(session_msgs, list):
+                    agent.shutdown_memory_provider(session_msgs)
+                else:
+                    agent.shutdown_memory_provider()
+        except Exception:
+            pass
+        # Some providers (Honcho, cloud-browser sessions) leave daemon worker
+        # threads blocked in C-level I/O that can't always be interrupted —
+        # notably when another async provider is also active — and CPython
+        # then aborts at Py_FinalizeEx (SIGABRT, exit 134). The oneshot has
+        # already emitted its output, so flush and exit directly to bypass
+        # interpreter finalization entirely (the OS reclaims the threads).
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+        os._exit(0)
+
+    atexit.register(_shutdown_oneshot_and_exit)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -365,38 +413,8 @@ def _run_agent(
     agent.tool_gen_callback = None
 
     # Oneshot bypasses the interactive CLI's atexit/_run_cleanup wiring, so
-    # memory providers (e.g. Honcho) whose daemon worker threads are still
-    # blocked in HTTP recv at interpreter exit never get shutdown() called.
-    # CPython then forcibly kills those threads at Py_FinalizeEx via
-    # PyThread_exit_thread -> __pthread_unwind -> abort(), producing SIGABRT
-    # (exit 134) with no Python traceback. Register a direct atexit hook here
-    # so the memory provider is torn down cleanly before finalize.
-    import atexit as _atexit
-    import os as _os
-    import sys as _sys
-
-    def _shutdown_oneshot_and_exit() -> None:
-        # Best-effort graceful teardown of the memory provider's background
-        # threads (joins + httpx client close; see HonchoMemoryProvider.shutdown).
-        try:
-            if hasattr(agent, "shutdown_memory_provider"):
-                agent.shutdown_memory_provider()
-        except Exception:
-            pass
-        # Some providers (Honcho, cloud-browser sessions) leave daemon worker
-        # threads blocked in C-level I/O that can't always be interrupted —
-        # notably when another async provider is also active — and CPython
-        # then aborts at Py_FinalizeEx (SIGABRT, exit 134). The oneshot has
-        # already emitted its output, so flush and exit directly to bypass
-        # interpreter finalization entirely (the OS reclaims the threads).
-        for _stream in (_sys.stdout, _sys.stderr):
-            try:
-                _stream.flush()
-            except Exception:
-                pass
-        _os._exit(0)
-
-    _atexit.register(_shutdown_oneshot_and_exit)
+    # register an equivalent memory-provider teardown hook directly.
+    _register_oneshot_memory_cleanup(agent)
 
     return agent.chat(prompt) or ""
 

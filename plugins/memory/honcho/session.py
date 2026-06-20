@@ -560,7 +560,14 @@ class HonchoSessionManager:
         for t in self._context_prefetch_threads:
             if t.is_alive():
                 t.join(timeout=5.0)
-        self._context_prefetch_threads.clear()
+        # Retain any thread still alive after the timed join. The provider's
+        # shutdown() closes the httpx client and then calls this again to
+        # unblock workers stuck in recv; clearing unconditionally would drop
+        # those references and leave the threads alive until interpreter
+        # teardown — the original SIGABRT failure mode.
+        self._context_prefetch_threads = [
+            t for t in self._context_prefetch_threads if t.is_alive()
+        ]
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -686,7 +693,12 @@ class HonchoSessionManager:
                 self.set_context_result(session_key, result)
 
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
-        # Track so shutdown() can join it before interpreter teardown.
+        # Track so shutdown() can join it before interpreter teardown. Prune
+        # already-finished threads first so the list stays bounded over a
+        # long-lived session instead of growing once per prefetch.
+        self._context_prefetch_threads = [
+            existing for existing in self._context_prefetch_threads if existing.is_alive()
+        ]
         self._context_prefetch_threads.append(t)
         t.start()
 

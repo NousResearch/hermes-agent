@@ -13945,7 +13945,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                     _buffer_only = False
-                    if source.platform == Platform.MATRIX:
+                    # Matrix clients and iMessage (Photon) render the
+                    # streaming cursor as a visible tofu/white-box
+                    # artifact.  Suppress the cursor and use buffer-only
+                    # mode so only the final plain-text message is sent.
+                    if source.platform == Platform.MATRIX or getattr(source.platform, "value", "") == "photon":
                         _effective_cursor = ""
                         _buffer_only = True
                     # Fresh-final applies to Telegram only — other
@@ -15112,7 +15116,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.
                         _buffer_only = False
-                        if source.platform == Platform.MATRIX:
+                        # Matrix clients and iMessage (Photon) render the
+                        # streaming cursor as a visible tofu/white-box
+                        # artifact.  Suppress the cursor and use buffer-only
+                        # mode so only the final plain-text message is sent.
+                        if source.platform == Platform.MATRIX or getattr(source.platform, "value", "") == "photon":
                             _effective_cursor = ""
                             _buffer_only = True
                         # Fresh-final applies to Telegram only — other

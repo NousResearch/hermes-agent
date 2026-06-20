@@ -943,6 +943,39 @@ async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
     assert any("Continuing to refine:" in text for text in all_text)
 
 
+@pytest.mark.asyncio
+async def test_run_agent_photon_streaming_buffer_only(monkeypatch, tmp_path):
+    """Photon (iMessage) must use buffer_only mode to prevent the
+    streaming cursor from rendering as a white-square/tofu artifact.
+
+    Regression: #49793 -- streaming cursor was visible in iMessage bubbles
+    because Photon was not included in the buffer_only platform check.
+    """
+    photon_platform = Platform("photon")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-photon-buffer-only",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=photon_platform,
+        chat_id="user-123",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result.get("already_sent") is True
+    all_text = [call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits]
+    assert all_text, "expected streamed Photon content to be sent"
+    # Buffer-only mode: no streaming cursor artifact
+    assert all("\u2589" not in text for text in all_text)
+    # Buffer-only mode: no intermediate edits (only final send)
+    assert len(adapter.edits) == 0, f"expected no edits in buffer_only mode, got {len(adapter.edits)}"
+
+
 class TransformedStreamAgent:
     """Streams a response, then signals the gateway that a plugin hook
     (``transform_llm_output``) modified the final text after streaming

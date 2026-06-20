@@ -210,6 +210,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
       <Button asChild className={className} size="icon-titlebar" variant="ghost">
         <a
           aria-label={tool.label}
+          data-titlebar-tool={tool.id}
           href={tool.href}
           onPointerDown={event => event.stopPropagation()}
           rel="noreferrer"
@@ -226,6 +227,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
     <Button
       aria-label={tool.label}
       aria-pressed={tool.active ?? undefined}
+      data-titlebar-tool={tool.id}
       className={className}
       disabled={tool.disabled}
       onClick={() => {

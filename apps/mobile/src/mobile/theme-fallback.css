@@ -144,6 +144,13 @@ body {
   display: none !important;
 }
 
+/* The titlebar "keyboard shortcuts" (⌨) button is the only entry point to the
+   keybinds panel — and shortcuts are meaningless on a touchscreen. Hide it so the
+   panel can't be opened on mobile. */
+[data-titlebar-tool='keybinds'] {
+  display: none !important;
+}
+
 /*
  * Overlay screens (Settings / Skills / Profiles …) — native mobile master-detail.
  * The desktop two-pane split would cram both panes on a phone, so instead:

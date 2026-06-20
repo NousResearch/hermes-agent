@@ -691,6 +691,12 @@ class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
+    # The microsoft-teams SDK send() returns Bot Framework activity ids that
+    # this adapter cannot edit in place (no edit_message override), so editing
+    # is unsupported.  Declaring this False makes the gateway skip streaming on
+    # the non-editable path instead of sending an un-editable partial preview
+    # followed by a duplicate final message with a stuck cursor.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
@@ -1156,7 +1162,11 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted)
+        # Chunk at the advertised Teams limit, not the base 4096 default.
+        # truncate_message is a @staticmethod whose default max_length is
+        # 4096; subclassing does not rebind it to MAX_MESSAGE_LENGTH, so the
+        # limit must be passed explicitly (matching slack/discord/mattermost).
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_message_id = None
 
         for chunk in chunks:

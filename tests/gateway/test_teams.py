@@ -498,6 +498,90 @@ class TestTeamsSend:
         call_args = mock_app.send.call_args
         assert call_args[0][0] == "conv-id"
 
+    @pytest.mark.anyio
+    async def test_send_chunks_at_advertised_limit_not_base_default(self):
+        """Regression: send() must chunk at MAX_MESSAGE_LENGTH (28000), not the
+        base truncate_message default of 4096.  A ~10 KB response that Teams
+        accepts whole was being fragmented into multiple (1/N) messages because
+        the limit was never passed to the @staticmethod."""
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        sent = []
+
+        async def _capture(conversation_id, activity):
+            sent.append(activity)
+            result = MagicMock()
+            result.id = "msg-1"
+            return result
+
+        mock_app = MagicMock()
+        mock_app.send = AsyncMock(side_effect=_capture)
+        adapter._app = mock_app
+
+        # Between the base default (4096) and the Teams limit (28000): fits in
+        # a single Teams message but would split under the wrong default.
+        result = await adapter.send("conv-id", "x" * 10000)
+
+        assert result.success is True
+        # One chunk -> one platform message, no (1/N) continuation tags.
+        assert len(sent) == 1
+        assert mock_app.send.await_count == 1
+        assert "(1/" not in sent[0]
+
+    @pytest.mark.anyio
+    async def test_send_still_chunks_beyond_teams_limit(self):
+        """Content larger than MAX_MESSAGE_LENGTH must still be split, so the
+        explicit limit is honoured (not effectively disabled)."""
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        sent = []
+
+        async def _capture(conversation_id, activity):
+            sent.append(activity)
+            result = MagicMock()
+            result.id = "msg-1"
+            return result
+
+        mock_app = MagicMock()
+        mock_app.send = AsyncMock(side_effect=_capture)
+        adapter._app = mock_app
+
+        result = await adapter.send("conv-id", "y" * 60000)
+
+        assert result.success is True
+        assert len(sent) > 1
+
+
+class TestTeamsStreamingEditSupport:
+    def test_does_not_advertise_message_editing(self):
+        """Regression: TeamsAdapter must declare SUPPORTS_MESSAGE_EDITING=False.
+
+        The adapter implements no edit_message override, so the base returns
+        SendResult(success=False, error='Not supported').  Without this flag the
+        gateway defaults the capability to True, streams an un-editable partial
+        preview, then falls back to a duplicate final message with a stuck
+        cursor.  Declaring it False makes the gateway skip streaming on the
+        non-editable path."""
+        assert TeamsAdapter.SUPPORTS_MESSAGE_EDITING is False
+        # The gateway reads the attribute via getattr(..., True); confirm an
+        # instance resolves it to False rather than the permissive default.
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        assert getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) is False
+
+    @pytest.mark.anyio
+    async def test_edit_message_is_not_supported(self):
+        """The base edit_message contract still reports unsupported, matching the
+        SUPPORTS_MESSAGE_EDITING=False declaration (no in-place edit override)."""
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        result = await adapter.edit_message("conv-id", "msg-1", "updated")
+        assert result.success is False
+
 
 def _make_summary_payload():
     return TeamsMeetingSummaryPayload(

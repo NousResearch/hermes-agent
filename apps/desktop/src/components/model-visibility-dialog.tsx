@@ -16,6 +16,7 @@ import {
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
   isProviderSentinel,
+  type ModelFamily,
   modelVisibilityKey,
   setVisibleModels
 } from '@/store/model-visibility'
@@ -82,6 +83,30 @@ export function ModelVisibilityDialog({
     setVisibleModels(next)
   }
 
+  const toggleProvider = (provider: ModelOptionProvider, models: ModelFamily[]) => {
+    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
+    const sentinel = emptyProviderSentinelKey(provider.slug)
+
+    // Check if every model in the given (search-filtered) set is currently visible.
+    const allVisible = models.every(family => next.has(modelVisibilityKey(provider.slug, family.id)))
+
+    if (allVisible) {
+      // Hide all in the set: remove each model key and store the sentinel.
+      for (const family of models) {
+        next.delete(modelVisibilityKey(provider.slug, family.id))
+      }
+      next.add(sentinel)
+    } else {
+      // Show all in the set: add each model key and clear the sentinel.
+      next.delete(sentinel)
+      for (const family of models) {
+        next.add(modelVisibilityKey(provider.slug, family.id))
+      }
+    }
+
+    setVisibleModels(next)
+  }
+
   const q = search.trim().toLowerCase()
 
   const matches = (provider: ModelOptionProvider, model: string) =>
@@ -120,8 +145,18 @@ export function ModelVisibilityDialog({
 
               return (
                 <div className="py-0.5" key={provider.slug}>
-                  <div className="px-3 pb-0.5 pt-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-                    {provider.name}
+                  <div className="flex items-center gap-2 px-3 pb-0.5 pt-1">
+                    <span className="min-w-0 flex-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+                      {provider.name}
+                    </span>
+                    <Switch
+                      aria-label={`${provider.name} all models`}
+                      checked={models.every(family =>
+                        visible.has(modelVisibilityKey(provider.slug, family.id))
+                      )}
+                      onCheckedChange={() => toggleProvider(provider, models)}
+                      size="xs"
+                    />
                   </div>
                   {models.map(family => {
                     const { name, tag } = modelDisplayParts(family.id)

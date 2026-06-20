@@ -1913,6 +1913,11 @@ _CONTROL_INTERRUPT_MESSAGES = frozenset(
     }
 )
 
+# Universal interrupt keywords — plain-text messages that interrupt the
+# current session regardless of busy_input_mode.  These work on every
+# gateway platform without requiring platform-specific slash command support.
+_INTERRUPT_KEYWORDS = frozenset({"stop", "interrupt", "cancel", "abort", "halt"})
+
 
 def _is_control_interrupt_message(message: Optional[str]) -> bool:
     """Return True when an interrupt message is internal control flow."""
@@ -4162,6 +4167,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 metadata=thread_meta,
             )
+            return True
+
+        # --- Universal interrupt keywords ---
+        # These work regardless of busy_input_mode, giving users on any
+        # gateway platform a reliable escape hatch from runaway agents.
+        text = (event.text or "").strip()
+        normalized = text.lower().lstrip("/").rstrip(".,!?;:")
+        if normalized in _INTERRUPT_KEYWORDS:
+            await self._interrupt_and_clear_session(
+                session_key=session_key,
+                source=event.source,
+                interrupt_reason="User requested interrupt",
+                invalidation_reason="User requested interrupt",
+            )
+            if not event.source:
+                return True
+            adapter = self.adapters.get(event.source.platform)
+            if adapter:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content="🛑 Interrupted — what would you like to do next?",
+                    reply_to=(
+                        None
+                        if event.source.platform == Platform.TELEGRAM
+                        and event.source.thread_id
+                        else event.message_id
+                    ),
+                )
             return True
 
         # Normal busy case (agent actively running a task)

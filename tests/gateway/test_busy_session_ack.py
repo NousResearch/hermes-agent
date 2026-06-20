@@ -81,6 +81,10 @@ def _make_runner():
 def _make_adapter(platform_val="telegram"):
     """Build a minimal adapter mock."""
     adapter = MagicMock()
+    # Remove interrupt_session_activity so hasattr check in
+    # _interrupt_and_clear_session returns False (MagicMock auto-creates attrs)
+    if hasattr(adapter, 'interrupt_session_activity'):
+        del adapter.interrupt_session_activity
     adapter._pending_messages = {}
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()
@@ -669,3 +673,128 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+class TestUniversalInterruptKeywords:
+    """Tests for _INTERRUPT_KEYWORDS universal interrupt mechanism."""
+
+    @pytest.mark.asyncio
+    async def test_exact_match_interrupts(self, tmp_path, monkeypatch):
+        """Standalone 'stop' message interrupts regardless of mode."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        # Remove interrupt_session_activity to test the hasattr guard
+        if hasattr(adapter, 'interrupt_session_activity'):
+            del adapter.interrupt_session_activity
+
+        event = _make_event(text="stop")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.interrupt = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("User requested interrupt")
+        mock_merge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_leading_slash_matches(self, tmp_path, monkeypatch):
+        """/stop also matches (lstrip('/') normalization)."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="/stop")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.interrupt = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event"):
+            result = await runner._handle_active_session_busy_message(event, sk)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_punctuation_stripped(self, tmp_path, monkeypatch):
+        """stop!, cancel., halt? also match."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        for text in ["stop!", "cancel.", "halt?", "interrupt!"]:
+            event = _make_event(text=text)
+            sk = build_session_key(event.source)
+            runner.adapters[event.source.platform] = adapter
+            agent = MagicMock()
+            agent.interrupt = MagicMock()
+            runner._running_agents[sk] = agent
+
+            with patch("gateway.run.merge_pending_message_event"):
+                result = await runner._handle_active_session_busy_message(event, sk)
+            assert result is True, f"Punctuation-stripped {text!r} should match"
+
+    @pytest.mark.asyncio
+    async def test_non_keyword_falls_through(self, tmp_path, monkeypatch):
+        """Normal message does NOT interrupt - falls through."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="hello, can you continue?")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+        mock_merge.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_interrupt_sends_acknowledgment(self, tmp_path, monkeypatch):
+        """Interrupt sends acknowledgment to user."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="abort")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.interrupt = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Interrupted" in content

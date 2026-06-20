@@ -148,17 +148,34 @@ from hermes_cli.colors import Colors, color
 
 
 def print_header(title: str):
-    """Print a section header."""
+    """Print a section header (auto-translated via i18n)."""
     print()
-    print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+    print(color(f"◆ {_t(title)}", Colors.CYAN, Colors.BOLD))
 
 
 from hermes_cli.cli_output import (  # noqa: E402
-    print_error,
-    print_info,
-    print_success,
-    print_warning,
+    print_error as _orig_print_error,
+    print_info as _orig_print_info,
+    print_success as _orig_print_success,
+    print_warning as _orig_print_warning,
 )
+
+
+# ── i18n: auto-translate all user-facing strings ─────────────────────
+from hermes_cli.i18n import _ as _t
+
+def print_info(text: str) -> None:
+    _orig_print_info(_t(text))
+
+def print_success(text: str) -> None:
+    _orig_print_success(_t(text))
+
+def print_warning(text: str) -> None:
+    _orig_print_warning(_t(text))
+
+def print_error(text: str) -> None:
+    _orig_print_error(_t(text))
+# ──────────────────────────────────────────────────────────────────────
 from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: E402
 
 
@@ -176,7 +193,7 @@ def is_interactive_stdin() -> bool:
 def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     """Print guidance for headless/non-interactive setup flows."""
     print()
-    print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
+    print(color(_t("⚕ Hermes Setup — Non-interactive mode"), Colors.CYAN, Colors.BOLD))
     print()
     if reason:
         print_info(reason)
@@ -193,7 +210,8 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
 
 
 def prompt(question: str, default: str = None, password: bool = False) -> str:
-    """Prompt for input with optional default."""
+    """Prompt for input with optional default (auto-translated)."""
+    question = _t(question)
     if default:
         display = f"{question} [{default}]: "
     else:
@@ -244,7 +262,7 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
         print()
         return idx
 
-    print(color(question, Colors.YELLOW))
+    print(color(_t(question), Colors.YELLOW))
     for i, choice in enumerate(choices):
         marker = "●" if i == default else "○"
         if i == default:

@@ -613,6 +613,25 @@ def compress_context(
             # refresh the stored system prompt and reset the flush cursor so the
             # next turn re-bases its append diff.
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+
+            # Goal state is keyed by ``goal:<session_id>``.  When compression
+            # rotates the physical session id, copy unfinished /goal state so the
+            # child session keeps judging and /goal status remains accurate.  In
+            # in-place compaction there is no new key to migrate to.  See #33618.
+            try:
+                _goal_old_sid = locals().get("old_session_id")
+                if _goal_old_sid:
+                    from hermes_cli.goals import migrate_goal
+
+                    if migrate_goal(_goal_old_sid, agent.session_id):
+                        logger.info(
+                            "Migrated /goal state after compression: %s -> %s",
+                            _goal_old_sid,
+                            agent.session_id,
+                        )
+            except Exception as goal_err:
+                logger.debug("goal migration on compression failed: %s", goal_err)
+
             agent._last_flushed_db_idx = 0
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)

@@ -279,6 +279,46 @@ def clear_goal(session_id: str) -> None:
     save_goal(session_id, state)
 
 
+def migrate_goal(old_session_id: str, new_session_id: str) -> bool:
+    """Copy unfinished /goal state across a compression session rotation.
+
+    Goal state is keyed by ``goal:<session_id>``.  Context compression ends
+    the physical parent session and continues the same logical conversation on
+    a child ``session_id``.  Without copying this row, ``GoalManager`` bound to
+    the child sees no active goal and the continuation loop silently stops.
+
+    This helper is deliberately conservative and fail-soft:
+    - only active/paused goals migrate;
+    - an existing non-cleared destination goal is never overwritten;
+    - missing/empty/identical ids are no-ops;
+    - persistence errors are logged and reported as ``False``.
+    """
+    old_session_id = (old_session_id or "").strip()
+    new_session_id = (new_session_id or "").strip()
+    if not old_session_id or not new_session_id or old_session_id == new_session_id:
+        return False
+
+    try:
+        state = load_goal(old_session_id)
+        if state is None or state.status not in {"active", "paused"}:
+            return False
+
+        existing = load_goal(new_session_id)
+        if existing is not None and existing.status != "cleared":
+            return False
+
+        save_goal(new_session_id, state)
+        return True
+    except Exception as exc:
+        logger.debug(
+            "GoalManager: migrate_goal(%s -> %s) failed: %s",
+            old_session_id,
+            new_session_id,
+            exc,
+        )
+        return False
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Judge
 # ──────────────────────────────────────────────────────────────────────
@@ -907,6 +947,7 @@ __all__ = [
     "load_goal",
     "save_goal",
     "clear_goal",
+    "migrate_goal",
     "judge_goal",
     "run_kanban_goal_loop",
 ]

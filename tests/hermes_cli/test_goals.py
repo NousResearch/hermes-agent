@@ -252,6 +252,48 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_migrate_goal_preserves_unfinished_goal_after_compression_split(self, hermes_home):
+        """Regression guard for #33618: /goal survives session_id rotation."""
+        from hermes_cli.goals import GoalManager, migrate_goal
+
+        old_sid = "compress-parent-sid"
+        new_sid = "compress-child-sid"
+
+        old_mgr = GoalManager(session_id=old_sid, default_max_turns=99)
+        old_mgr.set("ship the feature")
+        old_mgr.evaluate_after_turn("progress", user_initiated=True)
+        old_mgr.pause(reason="waiting for input")
+
+        assert migrate_goal(old_sid, new_sid) is True
+
+        new_mgr = GoalManager(session_id=new_sid)
+        assert new_mgr.state is not None
+        assert new_mgr.state.goal == "ship the feature"
+        assert new_mgr.state.status == "paused"
+        assert new_mgr.state.turns_used == 1
+        assert new_mgr.state.max_turns == 99
+        assert new_mgr.state.paused_reason == "waiting for input"
+        assert new_mgr.has_goal()
+
+    def test_migrate_goal_noops_for_terminal_or_existing_destination(self, hermes_home):
+        from hermes_cli.goals import GoalManager, migrate_goal
+
+        done_mgr = GoalManager(session_id="done-parent")
+        done_mgr.set("already done")
+        done_mgr.mark_done("finished")
+        assert migrate_goal("done-parent", "done-child") is False
+        assert GoalManager(session_id="done-child").state is None
+
+        source_mgr = GoalManager(session_id="source-parent")
+        source_mgr.set("source goal")
+        dest_mgr = GoalManager(session_id="existing-child")
+        dest_mgr.set("existing goal")
+
+        assert migrate_goal("source-parent", "existing-child") is False
+        preserved = GoalManager(session_id="existing-child").state
+        assert preserved is not None
+        assert preserved.goal == "existing goal"
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals

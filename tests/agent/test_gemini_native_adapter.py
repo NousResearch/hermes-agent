@@ -19,6 +19,19 @@ class DummyResponse:
         return self._payload
 
 
+def test_native_base_url_detection_accepts_opencode_zen_google_endpoint():
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://opencode.ai/zen/v1")
+    assert is_native_gemini_base_url("https://opencode.ai/zen/v1/")
+
+
+def test_native_base_url_detection_rejects_opencode_go_openai_endpoint():
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert not is_native_gemini_base_url("https://opencode.ai/zen/go/v1")
+
+
 def test_build_native_request_preserves_thought_signature_on_tool_replay():
     from agent.gemini_native_adapter import build_gemini_request
 

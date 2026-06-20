@@ -24,6 +24,7 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -56,9 +57,17 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
-    if "generativelanguage.googleapis.com" not in normalized:
-        return False
-    return not normalized.endswith("/openai")
+    if "generativelanguage.googleapis.com" in normalized:
+        return not normalized.endswith("/openai")
+
+    parsed = urlparse(normalized)
+    if parsed.netloc == "opencode.ai" and parsed.path.rstrip("/") == "/zen/v1":
+        # OpenCode Zen exposes Gemini models through the native Google API
+        # shape (/models/<model>:generateContent) while other Zen families use
+        # OpenAI, Anthropic, or Responses-compatible endpoints.
+        return True
+
+    return False
 
 
 def probe_gemini_tier(

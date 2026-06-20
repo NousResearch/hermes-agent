@@ -3,7 +3,9 @@
 import json
 import os
 import stat
+import subprocess
 import sys
+import textwrap
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 
@@ -108,6 +110,70 @@ class TestHermesTokenStorage:
 
         client_path = tmp_path / "mcp-tokens" / "test-server.client.json"
         assert client_path.exists()
+
+    def test_cached_storage_readable_without_optional_sdk_types(self, tmp_path):
+        """Cached token/client JSON stays readable when MCP OAuth types are absent."""
+        script = textwrap.dedent(
+            """
+            import asyncio
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            class BlockMcpImports:
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname == "mcp" or fullname.startswith("mcp."):
+                        raise ImportError(f"blocked optional MCP SDK import: {fullname}")
+                    return None
+
+            sys.meta_path.insert(0, BlockMcpImports())
+
+            from tools.mcp_oauth import HermesTokenStorage, _OAUTH_AVAILABLE, build_oauth_auth
+
+            assert _OAUTH_AVAILABLE is False
+            token_dir = Path(os.environ["HERMES_HOME"]) / "mcp-tokens"
+            token_dir.mkdir(parents=True)
+            (token_dir / "cached.json").write_text(json.dumps({
+                "access_token": "cached-access",
+                "token_type": "Bearer",
+                "refresh_token": "cached-refresh",
+                "expires_in": 3600,
+            }))
+            (token_dir / "cached.client.json").write_text(json.dumps({
+                "client_id": "cached-client",
+                "client_secret": "cached-secret",
+                "token_endpoint_auth_method": "client_secret_post",
+                "redirect_uris": ["http://127.0.0.1:54321/callback"],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+            }))
+
+            storage = HermesTokenStorage("cached")
+            tokens = asyncio.run(storage.get_tokens())
+            client_info = asyncio.run(storage.get_client_info())
+
+            assert tokens.access_token == "cached-access"
+            assert tokens.model_dump(exclude_none=True)["refresh_token"] == "cached-refresh"
+            assert client_info.client_id == "cached-client"
+            assert client_info.token_endpoint_auth_method == "client_secret_post"
+            assert build_oauth_auth("cached", "https://example.com/mcp") is None
+            """
+        )
+
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(tmp_path)
+        env["PYTHONPATH"] = os.getcwd()
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=os.getcwd(),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
     def test_remove_cleans_up(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -101,3 +101,38 @@ def test_list_authorized_resources_kind_filter(reg):
 
     assert {r["resource_id"] for r in reg.list_authorized_resources("研发")} == {"kb_a", "wf_a"}
     assert [r["resource_id"] for r in reg.list_authorized_resources("研发", kind="workflow")] == ["wf_a"]
+
+
+# --------------------------- 按账号微调直授(grant_user,slice B)---------------------------
+def test_user_grant_add_list_is_granted_and_independent(reg):
+    assert reg.add_user_grant("subA", "child-1", "workflow", "flow_a") is True
+    assert reg.add_user_grant("subA", "child-1", "workflow", "flow_a") is True  # 幂等
+    assert reg.add_user_grant("subB", "child-1", "workflow", "flow_a") is True  # 同资源不同账号 → PK 区分
+    assert reg.add_user_grant("", "child-1", "workflow", "flow_a") is False  # 空 user
+    assert reg.add_user_grant("subA", "child-1", "bogus", "flow_a") is False  # 非法 kind
+
+    assert reg.is_user_granted("subA", "child-1", "workflow", "flow_a") is True
+    assert reg.is_user_granted("subC", "child-1", "workflow", "flow_a") is False
+
+    a = reg.list_user_grants(target_user_id="subA")
+    assert [g["user_id"] for g in a] == ["subA"] and a[0]["resource_id"] == "flow_a"
+    assert len(reg.list_user_grants(node_uid="child-1")) == 2  # subA + subB
+
+    # grant_user 与 grant_policy 两张表互不影响。
+    reg.add_grant("财务", "child-1", "workflow", "flow_a")
+    assert len(reg.list_grants()) == 1 and len(reg.list_user_grants()) == 2
+
+
+def test_user_grant_remove_and_account_purge(reg):
+    reg.add_user_grant("subA", "child-1", "workflow", "flow_a")
+    reg.add_user_grant("subA", "child-1", "workflow", "flow_b")
+    reg.add_user_grant("subB", "child-2", "workflow", "flow_c")
+
+    assert reg.remove_user_grant("subA", "child-1", "workflow", "flow_a") is True
+    assert reg.remove_user_grant("subA", "child-1", "workflow", "flow_a") is False  # 已不在
+    assert {g["resource_id"] for g in reg.list_user_grants(target_user_id="subA")} == {"flow_b"}
+
+    # 账号退出 → 清其全部直授,不动别的账号。
+    assert reg.remove_user_grants("subA") == 1  # flow_b
+    assert reg.list_user_grants(target_user_id="subA") == []
+    assert {g["resource_id"] for g in reg.list_user_grants(target_user_id="subB")} == {"flow_c"}

@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils'
 
 import { TeamCanvas } from './team-canvas'
 import { PermissionsPanel, RolesPanel } from './team-roles'
-import type { TeamGrant, TeamResource } from './team-types'
+import type { TeamGrant, TeamResource, TeamUserGrant } from './team-types'
 
 const DEFAULT_CLOUD_URL =
   (import.meta.env?.VITE_KARI_CLOUD_URL as string | undefined)?.trim() || 'https://flow.karivibe.com'
@@ -108,6 +108,10 @@ function accountBridge() {
 
 function sameGrant(a: TeamGrant, b: TeamGrant) {
   return a.role === b.role && a.node_uid === b.node_uid && a.kind === b.kind && a.resource_id === b.resource_id
+}
+
+function sameUserGrant(a: TeamUserGrant, b: TeamUserGrant) {
+  return a.user_id === b.user_id && a.node_uid === b.node_uid && a.kind === b.kind && a.resource_id === b.resource_id
 }
 
 export function AccountManagementView() {
@@ -988,6 +992,7 @@ export function RolesSection() {
 export function PermissionsSection() {
   const [roles, setRoles] = useState<string[]>([])
   const [grants, setGrants] = useState<TeamGrant[]>([])
+  const [userGrants, setUserGrants] = useState<TeamUserGrant[]>([])
   const [resourcesByNode, setResourcesByNode] = useState<Record<string, TeamResource[]>>({})
   const [nodes, setNodes] = useState<DesktopAccountTreeNode[]>([])
   const [langflowCapable, setLangflowCapable] = useState(true)
@@ -1004,19 +1009,22 @@ export function PermissionsSection() {
 
       // 资源注册表 + 授权策略都从**本地**后端读(authoritative 副本在主本地,非云端)。
       try {
-        const [res, grantRes] = await Promise.all([
+        const [res, grantRes, userGrantRes] = await Promise.all([
           window.hermesDesktop?.api?.<{ by_node?: Record<string, TeamResource[]>; langflow_capable?: boolean }>({
             path: '/api/kari/resources'
           }),
-          window.hermesDesktop?.api?.<{ grants?: TeamGrant[] }>({ path: '/api/kari/grants' })
+          window.hermesDesktop?.api?.<{ grants?: TeamGrant[] }>({ path: '/api/kari/grants' }),
+          window.hermesDesktop?.api?.<{ grants?: TeamUserGrant[] }>({ path: '/api/kari/grants/user' })
         ])
 
         setResourcesByNode(res?.by_node ?? {})
         setGrants(grantRes?.grants ?? [])
+        setUserGrants(userGrantRes?.grants ?? [])
         setLangflowCapable(res?.langflow_capable ?? true)
       } catch {
         setResourcesByNode({})
         setGrants([])
+        setUserGrants([])
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1050,11 +1058,34 @@ export function PermissionsSection() {
     }
   }, [])
 
+  // 按账号微调(grant_user)同样走主本地 api(),乐观更新 + 失败回滚。
+  const grantUserResource = useCallback(async (grant: TeamUserGrant) => {
+    setUserGrants(cur => (cur.some(g => sameUserGrant(g, grant)) ? cur : [...cur, grant]))
+
+    try {
+      await window.hermesDesktop?.api?.({ body: grant, method: 'POST', path: '/api/kari/grants/user' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setUserGrants(cur => cur.filter(g => !sameUserGrant(g, grant)))
+    }
+  }, [])
+
+  const revokeUserResource = useCallback(async (grant: TeamUserGrant) => {
+    setUserGrants(cur => cur.filter(g => !sameUserGrant(g, grant)))
+
+    try {
+      await window.hermesDesktop?.api?.({ body: grant, method: 'POST', path: '/api/kari/grants/user/delete' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setUserGrants(cur => (cur.some(g => sameUserGrant(g, grant)) ? cur : [...cur, grant]))
+    }
+  }, [])
+
   return (
     <div className="max-w-3xl">
       <Panel>
         <SectionHeader
-          description="点一个角色 → 勾选它可用的工作流(MCP)。下级向上借能力统一走工作流授权;智能体委派默认开、知识库走查询工作流,均不在此单独授权。"
+          description="给角色(批量)或具体下级账号(微调)勾选可用的工作流(MCP)。下级向上借能力统一走工作流授权;智能体委派默认开、知识库走查询工作流,均不在此单独授权。"
           title="权限管理"
         />
         <div className="mt-4">
@@ -1063,9 +1094,12 @@ export function PermissionsSection() {
             langflowCapable={langflowCapable}
             nodes={nodes}
             onGrant={grant => void grantResource(grant)}
+            onGrantUser={grant => void grantUserResource(grant)}
             onRevoke={grant => void revokeResource(grant)}
+            onRevokeUser={grant => void revokeUserResource(grant)}
             resourcesByNode={resourcesByNode}
             roles={roles}
+            userGrants={userGrants}
           />
         </div>
         {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}

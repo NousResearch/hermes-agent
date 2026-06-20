@@ -21,6 +21,14 @@ export interface TeamGrant {
   resource_id: string
 }
 
+// 一条「按账号微调」的直授(某下级账号 → 某节点上的某资源;slice B)。
+export interface TeamUserGrant {
+  user_id: string
+  node_uid: string
+  kind: string
+  resource_id: string
+}
+
 // (node_uid, kind, resource_id) → 资源在某角色授权集合里的稳定 key。
 export function resourceKey(r: { node_uid: string; kind: string; resource_id: string }): string {
   return `${r.node_uid}|${r.kind}|${r.resource_id}`

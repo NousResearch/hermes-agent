@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import type { DesktopAccountTreeNode } from '@/global'
 import { cn } from '@/lib/utils'
 
-import { KIND_LABEL, resourceKey, type TeamGrant, type TeamResource } from './team-types'
+import { KIND_LABEL, resourceKey, type TeamGrant, type TeamResource, type TeamUserGrant } from './team-types'
 
 // 角色管理 + 权限管理:从团队画布的小弹窗里**拿出来**,做成团队账号页的常驻面板。
 //   - 角色管理(RolesPanel):定义组织角色集(加/删);把角色**分配**给具体子账号在画布卡片上做。
@@ -75,39 +75,52 @@ export function RolesPanel({
 export function PermissionsPanel({
   roles,
   grants,
+  userGrants,
   nodes,
   resourcesByNode,
   langflowCapable = true,
   onGrant,
-  onRevoke
+  onRevoke,
+  onGrantUser,
+  onRevokeUser
 }: {
   roles: string[]
   grants: TeamGrant[]
+  userGrants: TeamUserGrant[]
   nodes: DesktopAccountTreeNode[]
   resourcesByNode: Record<string, TeamResource[]>
   // 本账号是否「能力承载节点」(有 langflow)。否则不显示配 MCP —— 它没工作流可发。
   langflowCapable?: boolean
   onGrant: (grant: TeamGrant) => void
   onRevoke: (grant: TeamGrant) => void
+  onGrantUser: (grant: TeamUserGrant) => void
+  onRevokeUser: (grant: TeamUserGrant) => void
 }) {
-  const [picked, setPicked] = useState<string | null>(null)
-  // 选中的角色被删了 → 当作未选(派生,不留悬空选中)。
-  const activeRole = picked && roles.includes(picked) ? picked : null
+  // 按角色(批量)/ 按账号(个别微调)两种主体;各记各的选中,切模式不串。
+  const [mode, setMode] = useState<'role' | 'account'>('role')
+  const [pickedRole, setPickedRole] = useState<string | null>(null)
+  const [pickedAccount, setPickedAccount] = useState<string | null>(null)
 
-  // 选中角色已授权的资源 key(O(1) 回显勾选)。
-  const grantedKeys = useMemo(() => {
-    const set = new Set<string>()
+  // 下级账号(有 parent_id)= 「按账号微调」的可选目标。
+  const subAccounts = useMemo(() => nodes.filter(n => n.parent_id), [nodes])
 
-    for (const g of grants) {
-      if (g.role === activeRole) {
-        set.add(resourceKey(g))
-      }
-    }
+  // 当前模式的主体列表 + 选中项(派生:主体没了就当未选,不留悬空)。
+  const subjects = useMemo(
+    () =>
+      mode === 'role'
+        ? roles.map(r => ({ id: r, label: r }))
+        : subAccounts.map(n => ({ id: n.user_id, label: n.name || n.email })),
+    [mode, roles, subAccounts]
+  )
 
-    return set
-  }, [grants, activeRole])
+  const active = useMemo(() => {
+    const ids = new Set(subjects.map(s => s.id))
+    const picked = mode === 'role' ? pickedRole : pickedAccount
 
-  // 现存的**可授权工作流(MCP)** key —— 只 kind=workflow(智能体默认开、知识库走 query flow,均不在此授权)。
+    return picked && ids.has(picked) ? picked : null
+  }, [subjects, mode, pickedRole, pickedAccount])
+
+  // 现存可授权工作流(MCP)key —— 只 kind=workflow(智能体默认开、知识库走 query flow,均不在此授权);
   // 把"失效授权"从徽标计数里排除,对齐后端 list_authorized_resources。
   const existingResourceKeys = useMemo(() => {
     const set = new Set<string>()
@@ -123,18 +136,44 @@ export function PermissionsPanel({
     return set
   }, [resourcesByNode])
 
-  // 每个角色「实际可用」资源数(grant ∩ 现存)→ 角色 chip 徽标。
-  const authorizedCountByRole = useMemo(() => {
+  // 选中主体已授权的资源 key(回显勾选)——角色看 grants、账号看 userGrants。
+  const grantedKeys = useMemo(() => {
+    const set = new Set<string>()
+
+    if (mode === 'role') {
+      for (const g of grants) {
+        if (g.role === active) {
+          set.add(resourceKey(g))
+        }
+      }
+    } else {
+      for (const g of userGrants) {
+        if (g.user_id === active) {
+          set.add(resourceKey(g))
+        }
+      }
+    }
+
+    return set
+  }, [mode, grants, userGrants, active])
+
+  // 每个主体「实际可用」资源数(grant ∩ 现存)→ chip 徽标。
+  const countBySubject = useMemo(() => {
     const counts = new Map<string, number>()
 
-    for (const g of grants) {
-      if (existingResourceKeys.has(resourceKey(g))) {
-        counts.set(g.role, (counts.get(g.role) ?? 0) + 1)
+    const src =
+      mode === 'role'
+        ? grants.map(g => ({ id: g.role, key: resourceKey(g) }))
+        : userGrants.map(g => ({ id: g.user_id, key: resourceKey(g) }))
+
+    for (const { id, key } of src) {
+      if (existingResourceKeys.has(key)) {
+        counts.set(id, (counts.get(id) ?? 0) + 1)
       }
     }
 
     return counts
-  }, [grants, existingResourceKeys])
+  }, [mode, grants, userGrants, existingResourceKeys])
 
   // 可授权的工作流(MCP):按节点(自己 + 下级)分组,只取 kind=workflow,带节点展示名。
   const grantableNodes = useMemo(
@@ -145,10 +184,30 @@ export function PermissionsPanel({
     [nodes, resourcesByNode]
   )
 
+  const pick = (id: string) =>
+    mode === 'role' ? setPickedRole(c => (c === id ? null : id)) : setPickedAccount(c => (c === id ? null : id))
+
+  // 勾/取消:角色模式写 grant_policy,账号模式写 grant_user。
+  const toggle = (resource: TeamResource, granted: boolean) => {
+    if (!active) {
+      return
+    }
+
+    const base = { node_uid: resource.node_uid, kind: resource.kind, resource_id: resource.resource_id }
+
+    if (mode === 'role') {
+      ;(granted ? onRevoke : onGrant)({ role: active, ...base })
+    } else {
+      ;(granted ? onRevokeUser : onGrantUser)({ user_id: active, ...base })
+    }
+  }
+
+  const activeLabel = subjects.find(s => s.id === active)?.label ?? active
+
   return (
     <div className={PANEL}>
       <div className="text-xs font-semibold">
-        权限管理 <span className="font-normal text-(--ui-text-tertiary)">· 点角色 → 勾选它可用的工作流(MCP)</span>
+        权限管理 <span className="font-normal text-(--ui-text-tertiary)">· 给角色或具体账号配可用的工作流(MCP)</span>
       </div>
       {!langflowCapable ? (
         <p className="text-[0.6875rem] leading-5 text-(--ui-text-tertiary)">
@@ -156,93 +215,105 @@ export function PermissionsPanel({
         </p>
       ) : (
         <>
-          {roles.length ? (
-        <div className="flex flex-wrap gap-1.5">
-          {roles.map(r => (
-            <button
-              className={cn(
-                'flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6875rem]',
-                activeRole === r
-                  ? 'bg-(--ui-accent,#7c83ff) text-[#0b0b14]'
-                  : 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)'
-              )}
-              key={r}
-              onClick={() => setPicked(cur => (cur === r ? null : r))}
-              title={`配置「${r}」可用的工作流`}
-              type="button"
-            >
-              <span className="max-w-[9rem] truncate">{r}</span>
-              {authorizedCountByRole.get(r) ? (
-                <span
-                  className={cn(
-                    'shrink-0 rounded-full px-1 text-[0.5625rem] tabular-nums',
-                    activeRole === r ? 'bg-[#0b0b14]/15' : 'bg-(--ui-bg-elevated) text-(--ui-text-tertiary)'
-                  )}
-                >
-                  {authorizedCountByRole.get(r)}
-                </span>
-              ) : null}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <p className="text-[0.6875rem] text-(--ui-text-tertiary)">先在「角色管理」里加角色。</p>
-      )}
-
-      {activeRole ? (
-        <div className="grid gap-1.5 border-t border-(--ui-stroke-tertiary) pt-2">
-          <div className="text-[0.6875rem] text-(--ui-text-secondary)">
-            「<span className="font-medium">{activeRole}</span>」可用的工作流(MCP)
+          {/* 模式:按角色(批量)/ 按账号(个别微调) */}
+          <div className="flex gap-1 text-[0.6875rem]">
+            {(['role', 'account'] as const).map(m => (
+              <button
+                className={cn(
+                  'rounded px-2 py-0.5',
+                  mode === m ? 'bg-(--ui-accent,#7c83ff) text-[#0b0b14]' : 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)'
+                )}
+                key={m}
+                onClick={() => setMode(m)}
+                type="button"
+              >
+                {m === 'role' ? '按角色' : '按账号微调'}
+              </button>
+            ))}
           </div>
-          {grantableNodes.length ? (
-            <div className="grid max-h-56 gap-2 overflow-y-auto pr-1">
-              {grantableNodes.map(({ node, resources }) => (
-                <div className="grid gap-1" key={node.user_id}>
-                  <div className="truncate text-[0.625rem] font-medium text-(--ui-text-tertiary)">
-                    {node.name || node.email}
-                  </div>
-                  {resources.map(resource => {
-                    const granted = grantedKeys.has(resourceKey(resource))
 
-                    const target: TeamGrant = {
-                      role: activeRole,
-                      node_uid: resource.node_uid,
-                      kind: resource.kind,
-                      resource_id: resource.resource_id
-                    }
-
-                    return (
-                      <label
-                        className="flex cursor-pointer items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)"
-                        key={resourceKey(resource)}
-                      >
-                        <input
-                          checked={granted}
-                          className="accent-(--ui-accent,#7c83ff)"
-                          onChange={() => (granted ? onRevoke : onGrant)(target)}
-                          type="checkbox"
-                        />
-                        <span className="truncate" title={resource.name}>
-                          {resource.name}
-                        </span>
-                        <span className="ml-auto shrink-0 rounded bg-(--ui-bg-tertiary) px-1 text-[0.5625rem] text-(--ui-text-tertiary)">
-                          {KIND_LABEL[resource.kind] ?? resource.kind}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
+          {subjects.length ? (
+            <div className="flex flex-wrap gap-1.5">
+              {subjects.map(s => (
+                <button
+                  className={cn(
+                    'flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6875rem]',
+                    active === s.id ? 'bg-(--ui-accent,#7c83ff) text-[#0b0b14]' : 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)'
+                  )}
+                  key={s.id}
+                  onClick={() => pick(s.id)}
+                  title={`配置「${s.label}」可用的工作流`}
+                  type="button"
+                >
+                  <span className="max-w-[9rem] truncate">{s.label}</span>
+                  {countBySubject.get(s.id) ? (
+                    <span
+                      className={cn(
+                        'shrink-0 rounded-full px-1 text-[0.5625rem] tabular-nums',
+                        active === s.id ? 'bg-[#0b0b14]/15' : 'bg-(--ui-bg-elevated) text-(--ui-text-tertiary)'
+                      )}
+                    >
+                      {countBySubject.get(s.id)}
+                    </span>
+                  ) : null}
+                </button>
               ))}
             </div>
           ) : (
-            <p className="text-[0.625rem] leading-5 text-(--ui-text-tertiary)">
-              还没有可授权的工作流(MCP) —— 去「工作流」建一个 ChatInput + ChatOutput 对话流,它会出现在这里供你授权。
+            <p className="text-[0.6875rem] text-(--ui-text-tertiary)">
+              {mode === 'role' ? '先在「角色管理」里加角色。' : '还没有下级账号 —— 去「团队账号」创建子账号。'}
             </p>
           )}
-        </div>
-      ) : roles.length ? (
-        <p className="text-[0.625rem] text-(--ui-text-tertiary)">点上面的角色 → 勾选它可用的工作流(MCP)。</p>
-      ) : null}
+
+          {active ? (
+            <div className="grid gap-1.5 border-t border-(--ui-stroke-tertiary) pt-2">
+              <div className="text-[0.6875rem] text-(--ui-text-secondary)">
+                「<span className="font-medium">{activeLabel}</span>」可用的工作流(MCP)
+              </div>
+              {grantableNodes.length ? (
+                <div className="grid max-h-56 gap-2 overflow-y-auto pr-1">
+                  {grantableNodes.map(({ node, resources }) => (
+                    <div className="grid gap-1" key={node.user_id}>
+                      <div className="truncate text-[0.625rem] font-medium text-(--ui-text-tertiary)">
+                        {node.name || node.email}
+                      </div>
+                      {resources.map(resource => {
+                        const granted = grantedKeys.has(resourceKey(resource))
+
+                        return (
+                          <label
+                            className="flex cursor-pointer items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)"
+                            key={resourceKey(resource)}
+                          >
+                            <input
+                              checked={granted}
+                              className="accent-(--ui-accent,#7c83ff)"
+                              onChange={() => toggle(resource, granted)}
+                              type="checkbox"
+                            />
+                            <span className="truncate" title={resource.name}>
+                              {resource.name}
+                            </span>
+                            <span className="ml-auto shrink-0 rounded bg-(--ui-bg-tertiary) px-1 text-[0.5625rem] text-(--ui-text-tertiary)">
+                              {KIND_LABEL[resource.kind] ?? resource.kind}
+                            </span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[0.625rem] leading-5 text-(--ui-text-tertiary)">
+                  还没有可授权的工作流(MCP) —— 去「工作流」建一个 ChatInput + ChatOutput 对话流,它会出现在这里供你授权。
+                </p>
+              )}
+            </div>
+          ) : subjects.length ? (
+            <p className="text-[0.625rem] text-(--ui-text-tertiary)">
+              点上面的{mode === 'role' ? '角色' : '账号'} → 勾选它可用的工作流(MCP)。
+            </p>
+          ) : null}
         </>
       )}
     </div>

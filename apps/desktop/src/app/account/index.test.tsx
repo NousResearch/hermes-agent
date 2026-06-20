@@ -189,4 +189,56 @@ describe('AccountManagementView', () => {
     expect(await screen.findByText(/不能配 MCP 给下级/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: '财务' })).toBeNull()
   })
+
+  it('grants a workflow to a specific sub-account in 按账号微调 mode', async () => {
+    const api = vi.fn(async (req: { path: string; method?: string; body?: unknown }) => {
+      if (req.path === '/api/kari/resources') {
+        return {
+          langflow_capable: true,
+          by_node: { 'child-1': [{ node_uid: 'child-1', kind: 'workflow', resource_id: 'flow_a', name: '财务流程' }] }
+        }
+      }
+
+      if ((req.path === '/api/kari/grants' || req.path === '/api/kari/grants/user') && (!req.method || req.method === 'GET')) {
+        return { grants: [] }
+      }
+
+      return { ok: true }
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        account: {
+          status: vi.fn(async () => ({ loggedIn: true, username: 'Alice', email: 'a@b.com', balance: 0 })),
+          subtree: vi.fn(async () => ({
+            root: 'root-1',
+            nodes: [
+              { user_id: 'root-1', email: 'a@b.com', name: 'Alice' },
+              { user_id: 'child-1', email: 'child@example.com', name: '子A', parent_id: 'root-1' }
+            ],
+            edges: []
+          })),
+          roles: vi.fn(async () => ({ roles: ['财务'] }))
+        },
+        api
+      }
+    })
+
+    renderAccount('/account?section=permissions')
+    await waitFor(() => expect(api).toHaveBeenCalledWith({ path: '/api/kari/grants/user' }))
+
+    // 切到「按账号微调」→ 点下级账号 子A → 勾工作流 → 写 grant_user(不是 grant_policy)。
+    fireEvent.click(screen.getByRole('button', { name: '按账号微调' }))
+    fireEvent.click(await screen.findByRole('button', { name: '子A' }))
+    fireEvent.click(await screen.findByRole('checkbox'))
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith({
+        body: { user_id: 'child-1', node_uid: 'child-1', kind: 'workflow', resource_id: 'flow_a' },
+        method: 'POST',
+        path: '/api/kari/grants/user'
+      })
+    )
+  })
 })

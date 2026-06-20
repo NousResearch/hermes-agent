@@ -2058,6 +2058,46 @@ def kari_grants_clear_role(body: KariRoleBody, request: Request):
     return {"ok": True, "cleared": kari_resources.remove_role_grants(body.role)}
 
 
+class KariUserGrantBody(BaseModel):
+    user_id: str
+    node_uid: str
+    kind: str
+    resource_id: str
+
+
+@app.get("/api/kari/grants/user")
+def kari_user_grants_list(user_id: Optional[str] = None, node_uid: Optional[str] = None, kind: Optional[str] = None):
+    """读「按账号微调」的直授(角色授权之外,直接授某个下级账号)。面板回显。slice B。"""
+    try:
+        from tools import kari_resources
+
+        grants = kari_resources.list_user_grants(target_user_id=user_id, node_uid=node_uid, kind=kind)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取账号授权失败:{e}")
+    return {"grants": grants}
+
+
+@app.post("/api/kari/grants/user")
+def kari_user_grants_add(body: KariUserGrantBody, request: Request):
+    """直接授权某个下级账号可用某资源(角色授权之外的微调,要 session token)。slice B。"""
+    _require_token(request)
+    from tools import kari_resources
+
+    if not kari_resources.add_user_grant(body.user_id, body.node_uid, body.kind, body.resource_id):
+        raise HTTPException(status_code=400, detail="授权参数无效(user_id / node_uid / kind / resource_id 必填且 kind 合法)")
+    return {"ok": True}
+
+
+@app.post("/api/kari/grants/user/delete")
+def kari_user_grants_delete(body: KariUserGrantBody, request: Request):
+    """撤销账号直授(要 session token)。slice B。"""
+    _require_token(request)
+    from tools import kari_resources
+
+    removed = kari_resources.remove_user_grant(body.user_id, body.node_uid, body.kind, body.resource_id)
+    return {"ok": True, "removed": removed}
+
+
 @app.get("/api/kari/authorized")
 def kari_authorized_resources(role: str, kind: Optional[str] = None):
     """解析某角色「实际可用」的资源(grant ∩ 当前注册表,排除失效授权)。鉴权过滤产出,Phase 3a。

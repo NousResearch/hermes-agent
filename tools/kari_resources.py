@@ -59,6 +59,15 @@ def _conn() -> sqlite3.Connection:
         "PRIMARY KEY (role, node_uid, kind, resource_id))"
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_grant_role ON grant_policy (role)")
+    # 按具体下级账号微调的直授(slice B):在角色授权之外,把某资源直接授权给某个账号。
+    # 与 grant_policy 并存(role 一张、account 一张),解析时取并集;PK 各自独立避免迁移角色表。
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS grant_user ("
+        "target_user_id TEXT NOT NULL, node_uid TEXT NOT NULL, kind TEXT NOT NULL, resource_id TEXT NOT NULL, "
+        "created_ts REAL NOT NULL, "
+        "PRIMARY KEY (target_user_id, node_uid, kind, resource_id))"
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_grant_user ON grant_user (target_user_id)")
     return c
 
 
@@ -275,5 +284,89 @@ def remove_role_grants(role: str) -> int:
     """清空某角色的全部授权(角色被删除时调用)。返回删除条数。"""
     with closing(_conn()) as c:
         cur = c.execute("DELETE FROM grant_policy WHERE role=?", (str(role or "").strip(),))
+        c.commit()
+        return cur.rowcount
+
+
+# --------------------------- 按具体下级账号微调授权(grant_user,slice B)---------------------------
+def add_user_grant(target_user_id: str, node_uid: str, kind: str, resource_id: str) -> bool:
+    """直接授权某个下级账号可用某资源(角色授权之外的追加/微调)。幂等。非法入参返回 False。"""
+    target_user_id = str(target_user_id or "").strip()
+    node_uid = str(node_uid or "").strip()
+    kind = str(kind or "").strip()
+    resource_id = str(resource_id or "").strip()
+    if not (target_user_id and node_uid and kind in KINDS and resource_id):
+        return False
+    with closing(_conn()) as c:
+        c.execute(
+            "INSERT INTO grant_user (target_user_id, node_uid, kind, resource_id, created_ts) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(target_user_id, node_uid, kind, resource_id) DO NOTHING",
+            (target_user_id, node_uid, kind, resource_id, time.time()),
+        )
+        c.commit()
+    return True
+
+
+def remove_user_grant(target_user_id: str, node_uid: str, kind: str, resource_id: str) -> bool:
+    """撤销一条账号直授。返回是否确实删到一条。"""
+    with closing(_conn()) as c:
+        cur = c.execute(
+            "DELETE FROM grant_user WHERE target_user_id=? AND node_uid=? AND kind=? AND resource_id=?",
+            (
+                str(target_user_id or "").strip(),
+                str(node_uid or "").strip(),
+                str(kind or "").strip(),
+                str(resource_id or "").strip(),
+            ),
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
+def list_user_grants(
+    target_user_id: str | None = None, node_uid: str | None = None, kind: str | None = None
+) -> list[dict]:
+    """列出账号直授,可按 user / node / kind 过滤(面板回显、slice C 鉴权用)。返回里键为 user_id。"""
+    where: list[str] = []
+    args: list[str] = []
+    if target_user_id:
+        where.append("target_user_id=?")
+        args.append(str(target_user_id))
+    if node_uid:
+        where.append("node_uid=?")
+        args.append(str(node_uid))
+    if kind:
+        where.append("kind=?")
+        args.append(str(kind))
+    sql = "SELECT target_user_id, node_uid, kind, resource_id, created_ts FROM grant_user"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY target_user_id, node_uid, kind, resource_id"
+    with closing(_conn()) as c:
+        return [
+            {"user_id": r[0], "node_uid": r[1], "kind": r[2], "resource_id": r[3], "created_ts": r[4]}
+            for r in c.execute(sql, args).fetchall()
+        ]
+
+
+def is_user_granted(target_user_id: str, node_uid: str, kind: str, resource_id: str) -> bool:
+    """该账号是否被**直接**授权可用这条资源(角色授权另算;slice C 解析器取两者并集)。"""
+    with closing(_conn()) as c:
+        row = c.execute(
+            "SELECT 1 FROM grant_user WHERE target_user_id=? AND node_uid=? AND kind=? AND resource_id=? LIMIT 1",
+            (
+                str(target_user_id or "").strip(),
+                str(node_uid or "").strip(),
+                str(kind or "").strip(),
+                str(resource_id or "").strip(),
+            ),
+        ).fetchone()
+        return row is not None
+
+
+def remove_user_grants(target_user_id: str) -> int:
+    """清空某账号的全部直授(账号被删/退出时调)。返回删除条数。"""
+    with closing(_conn()) as c:
+        cur = c.execute("DELETE FROM grant_user WHERE target_user_id=?", (str(target_user_id or "").strip(),))
         c.commit()
         return cur.rowcount

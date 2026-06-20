@@ -702,6 +702,18 @@ class TestSendMethods(unittest.TestCase):
             mock_server.send_message.assert_called_once()
             mock_server.quit.assert_called_once()
 
+    def test_no_reply_token_suppresses_outbound_email(self):
+        """Exact __NO_REPLY__ means the gateway should not send email."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        with patch.object(adapter, "_send_email") as mock_send_email:
+            result = asyncio.run(adapter.send("user@test.com", "__NO_REPLY__"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "")
+        mock_send_email.assert_not_called()
+
     def test_send_failure_returns_error(self):
         """SMTP failure should return SendResult with error."""
         import asyncio

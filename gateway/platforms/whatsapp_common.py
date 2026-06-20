@@ -35,10 +35,85 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 
 logger = logging.getLogger(__name__)
+
+
+# Files that make up the Baileys bridge source (everything except the installed
+# ``node_modules`` and the install stamp). Used to mirror the bridge into a
+# writable location when the install tree is read-only.
+_BRIDGE_SOURCE_GLOBS = ("*.js", "*.mjs", "*.json")
+
+
+def bridge_source_dir() -> Path:
+    """Directory where the Baileys WhatsApp bridge source ships in the install."""
+    return Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+
+
+def _dir_is_writable(path: Path) -> bool:
+    """True when ``npm install`` could create ``node_modules`` inside ``path``.
+
+    Checks ``path`` itself when it exists, otherwise the nearest existing parent
+    (npm would create the leaf dir). Used to detect read-only install trees such
+    as ``/opt/hermes`` in container images.
+    """
+    try:
+        probe = path
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        return os.access(probe, os.W_OK)
+    except OSError:
+        return False
+
+
+def _sync_bridge_source(source_dir: Path, target_dir: Path) -> None:
+    """Mirror bridge source files into ``target_dir`` when missing or changed.
+
+    Leaves an existing ``node_modules`` in ``target_dir`` untouched; only source
+    files are refreshed so an updated ``package.json`` (e.g. after ``hermes
+    update``) propagates and the adapter's dependency-refresh stamp reinstalls.
+    """
+    import shutil
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Could not create WhatsApp bridge dir %s: %s", target_dir, exc)
+        return
+
+    for pattern in _BRIDGE_SOURCE_GLOBS:
+        for src in source_dir.glob(pattern):
+            dst = target_dir / src.name
+            try:
+                if not dst.exists() or src.read_bytes() != dst.read_bytes():
+                    shutil.copy2(src, dst)
+            except OSError as exc:
+                logger.warning("Could not copy bridge file %s -> %s: %s", src, dst, exc)
+                continue
+
+
+def resolve_whatsapp_bridge_dir() -> Path:
+    """Return a writable WhatsApp bridge directory, mirroring source if needed.
+
+    The bridge source ships under ``<install>/scripts/whatsapp-bridge`` and npm
+    must create ``node_modules`` inside the bridge dir. In container images the
+    install tree (e.g. ``/opt/hermes``) is read-only for the runtime user, so
+    ``npm install`` fails with ``EACCES`` (issue #49561). When the install dir
+    is not writable, mirror the bridge source into a writable ``HERMES_HOME``
+    location and use that instead. Writable installs are unaffected.
+    """
+    from hermes_constants import get_hermes_home
+
+    source_dir = bridge_source_dir()
+    if _dir_is_writable(source_dir):
+        return source_dir
+
+    target_dir = get_hermes_home() / "scripts" / "whatsapp-bridge"
+    _sync_bridge_source(source_dir, target_dir)
+    return target_dir
 
 
 class WhatsAppBehaviorMixin:

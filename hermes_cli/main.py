@@ -2466,8 +2466,10 @@ def cmd_whatsapp(args):
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
-    project_root = Path(__file__).resolve().parents[1]
-    bridge_dir = project_root / "scripts" / "whatsapp-bridge"
+    # Resolve a writable bridge dir: in Docker the install tree (/opt/hermes)
+    # is read-only, so npm install must run from a HERMES_HOME copy — see #49561.
+    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
 
     if not bridge_script.exists():

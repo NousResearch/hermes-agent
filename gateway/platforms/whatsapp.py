@@ -181,7 +181,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import (
+    WhatsAppBehaviorMixin,
+    resolve_whatsapp_bridge_dir,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -261,7 +264,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     share it. Only transport-specific code lives here.
     """
 
-    # Default bridge location relative to the hermes-agent install
+    # Default bridge location relative to the hermes-agent install. The actual
+    # directory used for npm install / spawning is resolved per-instance via
+    # ``resolve_whatsapp_bridge_dir()`` so read-only install trees (Docker
+    # ``/opt/hermes``) fall back to a writable HERMES_HOME copy — see #49561.
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
 
     def __init__(self, config: PlatformConfig):
@@ -270,7 +276,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
-            str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
+            str(resolve_whatsapp_bridge_dir() / "bridge.js"),
         )
         self._session_path: Path = Path(config.extra.get(
             "session_path",

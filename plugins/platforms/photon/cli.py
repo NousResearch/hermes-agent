@@ -164,16 +164,14 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print("could not resolve a Photon project id", file=sys.stderr)
         return 1
 
-    # 3. Enable Spectrum, fetch the spectrum project id, rotate the secret,
-    #    and persist both (runtime creds -> ~/.hermes/.env, ids -> auth.json).
+    # 3. Rotate the project secret and persist creds (runtime -> ~/.hermes/.env,
+    #    ids -> auth.json). Spectrum is always enabled and provisioned at
+    #    create-time, and the dashboard project id *is* the Spectrum project id
+    #    (ids unified), so there's nothing to enable — the id we already have is
+    #    the Spectrum id.
     try:
-        print("[3/5] Enabling Spectrum and provisioning credentials...")
-        proj = photon_auth.ensure_spectrum_enabled(token, dashboard_id)
-        spectrum_id = proj.get("spectrumProjectId")
-        if not spectrum_id:
-            print("spectrum provisioning failed: no spectrum project id", file=sys.stderr)
-            return 1
-        spectrum_id = str(spectrum_id)
+        print("[3/5] Provisioning Spectrum credentials...")
+        spectrum_id = dashboard_id
         secret = photon_auth.regenerate_project_secret(token, dashboard_id)
         photon_auth.store_project_credentials(
             spectrum_project_id=spectrum_id,
@@ -182,7 +180,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             name=name,
         )
         # spectrum_id is an opaque non-secret id; safe to show.
-        print(f"  ✓ Spectrum enabled (project id {spectrum_id}) — secret saved")
+        print(f"  ✓ Spectrum ready (project id {spectrum_id}) — secret saved")
     except Exception as e:
         print(f"spectrum provisioning failed: {e}", file=sys.stderr)
         return 1
@@ -274,7 +272,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     print()
     print("✓ Photon setup complete.")
-    print("  Start the gateway:  hermes gateway start --platform photon")
+    print("  Start the gateway:  hermes gateway start")
     return 0
 
 

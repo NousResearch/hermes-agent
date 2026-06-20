@@ -384,14 +384,12 @@ class TestBackendSelection:
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
-    def test_fallback_no_keys_defaults_to_parallel(self):
-        """No credentials, no config → 'parallel' (free Search MCP works
-        keyless). Selection is purely credential-based."""
+    def test_fallback_no_keys_defaults_to_firecrawl(self):
+        """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("tools.web_tools._ddgs_package_importable", return_value=False):
-            assert _get_backend() == "parallel"
+            assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
         """web.backend=invalid → ignored, uses key-based fallback."""
@@ -626,73 +624,9 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_no_keys_usable_via_free_parallel(self):
-        """No credentials → check_web_api_key True: selection resolves to the
-        keyless Parallel free MCP, which genuinely services calls (web works out
-        of the box). check_web_api_key is a usability probe, not a key check."""
+    def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch.dict(os.environ, {}, clear=False):
-            for k in ("PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
-                      "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
-                os.environ.pop(k, None)
-            assert check_web_api_key() is True
-
-    def test_typo_extract_backend_not_masked_by_parallel(self):
-        """A typo'd per-capability backend is honored (so dispatch errors)
-        rather than silently falling through to keyless Parallel."""
-        from tools.web_tools import _get_extract_backend, check_web_api_key
-        with patch("tools.web_tools._load_web_config",
-                   return_value={"extract_backend": "parrallel"}):
-            assert _get_extract_backend() == "parrallel"   # not "parallel"
-            assert check_web_api_key() is False            # unknown → unusable
-
-    def test_keyless_parallel_unusable_when_provider_disabled(self):
-        """If the bundled web-parallel provider is disabled/unregistered, the
-        keyless free-MCP path must NOT report web as usable — otherwise setup is
-        skipped but web tools fail at runtime with no provider."""
-        from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._parallel_provider_registered", return_value=False), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch.dict(os.environ, {}, clear=False):
-            for var in (
-                "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
-                "TAVILY_API_KEY", "EXA_API_KEY", "BRAVE_SEARCH_API_KEY", "SEARXNG_URL",
-            ):
-                os.environ.pop(var, None)
-            assert check_web_api_key() is False
-
-    def test_extract_autodetect_skips_search_only_for_keyless_parallel(self):
-        """A search-only env credential (SEARXNG_URL) must not shadow the keyless
-        Parallel free-MCP extract fallback: extract auto-detect skips search-only
-        backends, so _get_extract_backend resolves to parallel (which can fetch),
-        while search auto-detect still prefers the configured searxng."""
-        from tools.web_tools import _get_extract_backend, _get_search_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {}, clear=False):
-            for var in (
-                "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
-                "TAVILY_API_KEY", "EXA_API_KEY", "BRAVE_SEARCH_API_KEY",
-            ):
-                os.environ.pop(var, None)
-            os.environ["SEARXNG_URL"] = "http://localhost:8080"
-            with patch("tools.web_tools._is_tool_gateway_ready", return_value=False):
-                assert _get_search_backend() == "searxng"
-                assert _get_extract_backend() == "parallel"
-
-    def test_configured_but_unavailable_backend_reports_unusable(self):
-        """An explicitly configured backend with no creds (exa, no key) →
-        check_web_api_key False so diagnostics flag the misconfiguration —
-        even though the tools stay registered."""
-        from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("EXA_API_KEY", None)
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
             assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
@@ -756,18 +690,12 @@ class TestCheckWebApiKey:
 
         assert refresh_calls == []
 
-    def test_web_tools_registered_even_when_configured_backend_unavailable(self):
-        # Registration is unconditional (web_tools_registered) so an explicitly
-        # configured but unavailable backend (exa without EXA_API_KEY) keeps the
-        # tools registered to surface exa's setup error at call time — while the
-        # readiness probe (check_web_api_key) honestly reports not-configured.
-        from tools.web_tools import web_tools_registered, check_web_api_key
-        assert web_tools_registered() is True
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("EXA_API_KEY", None)
-            assert web_tools_registered() is True
-            assert check_web_api_key() is False
+    def test_configured_backend_must_match_available_provider(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
+            with patch("tools.web_tools._read_nous_access_token", return_value="nous-token"):
+                with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
+                    from tools.web_tools import check_web_api_key
+                    assert check_web_api_key() is False
 
     def test_configured_firecrawl_backend_accepts_managed_gateway(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):

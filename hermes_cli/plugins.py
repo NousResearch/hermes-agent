@@ -1124,6 +1124,14 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
+        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
+        # with all customizations disabled. Skip plugin discovery entirely so
+        # no third-party code (hooks, tools, platforms) loads. Mark as
+        # discovered so callers see a clean empty registry, not a retry loop.
+        if env_var_enabled("HERMES_SAFE_MODE"):
+            logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
+            self._discovered = True
+            return
         if force:
             self._plugins.clear()
             self._hooks.clear()

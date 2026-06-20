@@ -57,6 +57,7 @@ class TestUnifiedDashboardRouting:
         assert opened == ["http://127.0.0.1:9119/?profile=worker_x"]
 
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
@@ -79,8 +80,46 @@ class TestUnifiedDashboardRouting:
         assert "-p" in argv and argv[argv.index("-p") + 1] == "default"
         assert "--open-profile" in argv
         assert argv[argv.index("--open-profile") + 1] == "worker_x"
-        # Profile HERMES_HOME dropped so the child binds the machine root.
-        assert "HERMES_HOME" not in env
+        # The child is pinned to the machine ROOT, not the launching profile's
+        # HERMES_HOME.  For a standard install (HERMES_HOME unset) that root is
+        # the platform-native default (~/.hermes), NOT dropped — see the Docker
+        # test below for why we resolve explicitly instead of popping.
+        from hermes_constants import get_default_hermes_root
+        assert env.get("HERMES_HOME") == str(get_default_hermes_root())
+
+    def test_reexec_pins_docker_machine_root(self, main_mod, monkeypatch):
+        """In the Docker layout (HERMES_HOME=/opt/data, profiles under
+        /opt/data/profiles/<name>) the reroute must pin the child to the
+        machine root /opt/data — NOT drop HERMES_HOME.
+
+        Dropping it makes the child fall back to $HOME/.hermes
+        (= /opt/data/.hermes), an empty auto-seeded home, so the dashboard
+        shows only the default profile and the .install_method stamp is
+        missing (which also misfires the Docker update-button guard).
+        Regression test for the support report.
+        """
+        monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/oracle")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "oracle"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        execs = []
+
+        def fake_exec(exe, argv, env):
+            execs.append((exe, argv, env))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+
+        with pytest.raises(SystemExit):
+            main_mod.cmd_dashboard(_args())
+
+        assert len(execs) == 1
+        _exe, _argv, env = execs[0]
+        # get_default_hermes_root() strips the trailing profiles/<name>, so the
+        # child binds /opt/data — where the real default/oracle/saga profiles
+        # and the .install_method stamp actually live.
+        assert env.get("HERMES_HOME") == "/opt/data"
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT

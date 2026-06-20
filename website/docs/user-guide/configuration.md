@@ -59,6 +59,12 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+:::tip Org deployments
+An administrator can pin specific config and secret values that a standard user
+cannot override, via a system-level managed directory. See
+[Managed Scope](/user-guide/managed-scope).
+:::
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:
@@ -109,6 +115,7 @@ terminal:
   backend: local    # local | docker | ssh | modal | daytona | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
+  home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
@@ -135,6 +142,54 @@ The default. Commands run directly on your machine with no isolation. No special
 ```yaml
 terminal:
   backend: local
+```
+
+By default, local tool subprocesses keep your real OS-user `HOME`. This lets
+external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex
+find the credentials and config they already use in your normal shell. Hermes
+state is still profile-scoped through `HERMES_HOME`; `HOME` is not how profiles
+select config, memory, sessions, or skills.
+
+Hermes does **not** change your system-wide `HOME`, your shell startup files, or
+the operating system account home. This setting only controls the environment
+passed to subprocesses that Hermes launches through tools such as `terminal`,
+background terminal processes, `execute_code`, and ACP helper processes.
+
+#### `terminal.home_mode`
+
+| Mode | Host installs | Containers | Tradeoff |
+|---|---|---|---|
+| `auto` | Keep the real OS-user `HOME` | Use `{HERMES_HOME}/home` | Recommended default. Host CLIs keep working; container state persists. |
+| `real` | Force the real OS-user `HOME` | Force the real OS-user `HOME` if visible | Useful if a parent process accidentally started with `HOME` pointed at a profile home. |
+| `profile` | Use `{HERMES_HOME}/home` when it exists | Use `{HERMES_HOME}/home` when it exists | Strict per-profile CLI config isolation, but normal `~/.ssh`, `~/.gitconfig`, `~/.azure`, `~/.config/gh`, Claude/Codex auth, npm state, etc. will not be visible unless you initialize or link them inside the profile home. |
+
+The downside of the default is that host profiles share the same normal
+user-level CLI credentials/config under `~`. If you need a profile with a
+separate git identity, SSH keys, GitHub CLI login, npm config, or cloud CLI
+login, use `home_mode: profile` and initialize those tools inside that profile
+home deliberately.
+
+If you intentionally want strict per-profile tool-config isolation, set:
+
+```yaml
+terminal:
+  home_mode: profile
+```
+
+In that mode tool subprocesses use `{HERMES_HOME}/home` as `HOME`. Hermes also
+sets `HERMES_REAL_HOME` so scripts can still locate the actual user home when
+they need it. Container backends keep using `{HERMES_HOME}/home` in `auto` mode
+because that directory lives on the persistent Hermes data volume.
+
+Scripts that need to distinguish profile state from the real user home should
+prefer `HERMES_HOME` for Hermes data and `HERMES_REAL_HOME` for the account home:
+
+```python
+from pathlib import Path
+import os
+
+hermes_home = Path(os.environ["HERMES_HOME"])
+real_home = Path(os.environ.get("HERMES_REAL_HOME", os.environ["HOME"]))
 ```
 
 :::warning
@@ -557,6 +612,20 @@ memory:
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
+## Context File Truncation
+
+Controls how much content Hermes loads from each automatic context file before applying head/tail truncation. This applies to files injected into the system prompt such as `SOUL.md`, `.hermes.md`, `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`. It does **not** affect the `read_file` tool.
+
+```yaml
+context_file_max_chars: 20000  # default
+```
+
+Raise it when you intentionally keep larger identity or project-context files and run models with enough context window to carry them:
+
+```yaml
+context_file_max_chars: 25000
+```
+
 ## File Read Safety
 
 Controls how much content a single `read_file` call can return. Reads that exceed the limit are rejected with an error telling the agent to use `offset` and `limit` for a smaller range. This prevents a single read of a minified JS bundle or large data file from flooding the context window.
@@ -937,6 +1006,16 @@ auxiliary:
   # Context compression timeout (separate from compression.* config)
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
+
+  # Auto-generated session titles. Empty language follows the conversation;
+  # set e.g. "English" or "Japanese" to pin titles to one language.
+  title_generation:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+    language: ""
 
   # Skills hub — skill matching and search
   skills_hub:
@@ -1437,7 +1516,7 @@ streaming:
   edit_interval: 0.3      # Seconds between message edits
   buffer_threshold: 40    # Characters before forcing an edit flush
   cursor: " ▉"            # Cursor shown during streaming
-  fresh_final_after_seconds: 60   # Send fresh final (Telegram) when preview is this old; 0 = always edit in place
+  fresh_final_after_seconds: 0    # Opt in to fresh final (Telegram) when preview is this old
 ```
 
 When enabled, the bot sends a message on the first token, then progressively edits it as more tokens arrive. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
@@ -1446,7 +1525,7 @@ For separate natural mid-turn assistant updates without progressive token editin
 
 **Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
 
-**Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. When `fresh_final_after_seconds > 0` (default `60`), the completed reply is delivered as a brand-new message (with the stale preview best-effort deleted) so Telegram's visible timestamp reflects completion time. Short previews still finalize in place. Set to `0` to always edit in place.
+**Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. Set `fresh_final_after_seconds > 0` to opt in to delivering old previews as brand-new final messages with best-effort preview deletion. The default is `0`, which always finalizes streamed replies in place and avoids the brief duplicate-message/delete sequence on clients that show both operations.
 
 :::note Per-platform streaming defaults
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
@@ -1790,7 +1869,7 @@ Hermes uses two different context scopes:
 - **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
-- All loaded context files are capped at 20,000 characters with smart truncation.
+- All loaded context files are capped at `context_file_max_chars` characters (default 20,000) with smart truncation.
 
 See also:
 - [Personality & SOUL.md](/user-guide/features/personality)

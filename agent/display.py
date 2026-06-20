@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
+from typing import Any
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
@@ -168,6 +169,27 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
+def _truncate_preview(text: str, max_len: int | None) -> str:
+    if max_len and max_len > 0 and len(text) > max_len:
+        if max_len <= 3:
+            return "." * max_len
+        return text[:max_len - 3] + "..."
+    return text
+
+
+def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
+    if not isinstance(tasks, list):
+        return 0, []
+    goals: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        raw_goal = task.get("goal")
+        goal = "?" if raw_goal is None else _oneline(str(raw_goal))
+        goals.append(_truncate_preview(goal or "?", per_goal_len))
+    return len(goals), goals
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -190,6 +212,22 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "execute_code": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
+
+    # delegate_task: show goal (single) or individual task goals (batch)
+    if tool_name == "delegate_task":
+        tasks = args.get("tasks")
+        if tasks and isinstance(tasks, list):
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=40)
+            preview = (
+                f"{task_count} tasks: " + " | ".join(goals)
+                if goals else f"{len(tasks)} parallel tasks"
+            )
+            return _truncate_preview(preview, max_len)
+        goal = args.get("goal", "")
+        if goal is None:
+            return None
+        preview = _oneline(str(goal))
+        return _truncate_preview(preview, max_len) if preview else None
 
     if tool_name == "process":
         action = args.get("action", "")
@@ -858,20 +896,6 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     return False, ""
 
 
-def _used_free_parallel(result: str | None) -> bool:
-    """True when a web result came from Parallel's free Search MCP.
-
-    Only the keyless Parallel path tags its result with ``provider="parallel"``;
-    the paid REST path and every other provider omit it. Used to label the tool
-    line "Parallel search" / "Parallel fetch" exactly when the free MCP served
-    the call.
-    """
-    if not isinstance(result, str) or '"provider"' not in result:
-        return False
-    data = safe_json_loads(result)
-    return isinstance(data, dict) and str(data.get("provider", "")).lower() == "parallel"
-
-
 def get_cute_tool_message(
     tool_name: str, args: dict, duration: float, result: str | None = None,
 ) -> str:
@@ -909,17 +933,15 @@ def get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        verb = "Parallel search" if _used_free_parallel(result) else "search"
-        return _wrap(f"┊ 🔍 {verb:<9} {_trunc(args.get('query', ''), 42)}  {dur}")
+        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
     if tool_name == "web_extract":
-        verb = "Parallel fetch" if _used_free_parallel(result) else "fetch"
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
-            return _wrap(f"┊ 📄 {verb:<9} {_trunc(domain, 35)}{extra}  {dur}")
-        return _wrap(f"┊ 📄 {verb:<9} pages  {dur}")
+            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ 📄 fetch     pages  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":
@@ -1035,7 +1057,10 @@ def get_cute_tool_message(
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
-            return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
+            detail = " | ".join(goals) if goals else "parallel"
+            count_label = task_count or len(tasks)
+            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
         return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""

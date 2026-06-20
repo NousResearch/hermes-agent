@@ -227,11 +227,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _inject_context_hermes_home(sanitized)
 
-    # Per-profile HOME isolation for background processes (same as _make_run_env).
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        sanitized["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(sanitized)
 
     return sanitized
 
@@ -387,13 +384,8 @@ def _make_run_env(env: dict) -> dict:
 
     _inject_context_hermes_home(run_env)
 
-    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
-    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
-    # subprocess sees the override — the Python process keeps the real HOME.
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        run_env["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(run_env)
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.

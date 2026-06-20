@@ -45,7 +45,7 @@ import tempfile
 import time
 import threading
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -87,6 +87,19 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     except OSError:
         # cwd was unlinked out from under us — nothing meaningful to record.
         return None
+
+
+def _session_source_for_agent(platform: Optional[str]) -> str:
+    try:
+        from gateway.session_context import get_session_env
+
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+    except Exception:
+        source = os.environ.get("HERMES_SESSION_SOURCE", "")
+    source = str(source or "").strip()
+    if source:
+        return source
+    return platform or "cli"
 
 
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
@@ -196,7 +209,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, is_truthy_value, model_forces_max_completion_tokens
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
 
 
 
@@ -384,6 +397,7 @@ class AIAgent:
         status_callback: callable = None,
         notice_callback: callable = None,
         notice_clear_callback: callable = None,
+        event_callback: Optional[Callable[[str, dict], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -458,6 +472,7 @@ class AIAgent:
             status_callback=status_callback,
             notice_callback=notice_callback,
             notice_clear_callback=notice_clear_callback,
+            event_callback=event_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
@@ -510,7 +525,7 @@ class AIAgent:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
-        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        source = _session_source_for_agent(self.platform)
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
@@ -576,7 +591,7 @@ class AIAgent:
             start_context = {
                 "old_session_id": old_session_id,
                 "carry_over_context": carry_over_context,
-                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "platform": _session_source_for_agent(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""),
                 "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None),
@@ -1094,7 +1109,7 @@ class AIAgent:
         cfg = get_provider_request_timeout(self.provider, self.model)
         if cfg is not None:
             return cfg
-        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        return env_float("HERMES_API_TIMEOUT", 1800.0)
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.
@@ -1411,10 +1426,15 @@ class AIAgent:
     def _summarize_background_review_actions(
         review_messages: List[Dict],
         prior_snapshot: List[Dict],
+        notification_mode: str = "on",
     ) -> List[str]:
         """Forwarder — see ``agent.background_review.summarize_background_review_actions``."""
         from agent.background_review import summarize_background_review_actions
-        return summarize_background_review_actions(review_messages, prior_snapshot)
+        return summarize_background_review_actions(
+            review_messages,
+            prior_snapshot,
+            notification_mode=notification_mode,
+        )
 
     def _spawn_background_review(
         self,
@@ -1465,16 +1485,29 @@ class AIAgent:
         that synthetic text leak into persisted transcripts or resumed session
         history. When an override is configured for the active turn, mutate the
         in-memory messages list in place so both persistence and returned
-        history stay clean.
+        history stay clean.  A paired timestamp override preserves the platform
+        event time as message metadata, rather than embedding it in content.
         """
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
-        if override is None or idx is None:
+        timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        if idx is None or (override is None and timestamp is None):
             return
         if 0 <= idx < len(messages):
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
-                msg["content"] = override
+                # Text-only call paths may pass a synthetic API-facing prompt
+                # and a cleaner transcript string separately. Multimodal
+                # turns, however, keep image/audio blocks in the live
+                # messages list that is still used for the API request after
+                # early crash-resilience persistence. Do not replace those
+                # blocks with the text-only persistence override before the
+                # model call is built. The paired timestamp override still
+                # applies — it is metadata, not content.
+                if override is not None and not isinstance(msg.get("content"), list):
+                    msg["content"] = override
+                if timestamp is not None:
+                    msg["timestamp"] = timestamp
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -1495,7 +1528,7 @@ class AIAgent:
         a raw ``tool`` message and the next user turn lands as
         ``...tool, user, user`` — a protocol-invalid sequence that most
         providers silently reject (returns empty content), causing the
-        empty-retry loop to fire forever. See #<TBD>.
+        empty-retry loop to fire forever. (issue number to be backfilled once filed)
         """
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
@@ -1548,9 +1581,10 @@ class AIAgent:
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
-        Uses _last_flushed_db_idx to track which messages have already been
-        written, so repeated calls (from multiple exit paths) only write
-        truly new messages — preventing the duplicate-write bug (#860).
+        Uses per-session message identity tracking so repeated calls (from
+        multiple exit paths) only write truly new messages — preventing the
+        duplicate-write bug (#860) without relying on positional slices that
+        can drift after message-sequence repair.
         """
         if not self._session_db:
             return
@@ -1559,14 +1593,41 @@ class AIAgent:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
                 self._ensure_db_session()
-            start_idx = len(conversation_history) if conversation_history else 0
-            # Guard against the flush cursor overshooting the message list.
-            # This can happen when repair_message_sequence compacts the list
-            # (merging consecutive users, dropping stray tools) after the
-            # cursor was set.  Fall back to start_idx so we don't skip
-            # persisting the assistant/tool chain (#44837).
-            flush_from = max(start_idx, min(self._last_flushed_db_idx, len(messages)))
-            for msg in messages[flush_from:]:
+            # Positional flushing used to slice at
+            # max(len(conversation_history), _last_flushed_db_idx). That
+            # assumes the live `messages` list is the original history plus a
+            # new tail. repair_message_sequence can shrink/merge the history
+            # copy before the final flush, making len(conversation_history)
+            # larger than len(messages); the slice is then empty and delivered
+            # assistant responses never reach state.db (#46053).
+            #
+            # Track object identities instead. `messages` is a shallow copy of
+            # `conversation_history`, so history dicts are skipped by identity,
+            # and new dicts appended during this turn are written once even if
+            # repair compacts the list around them.
+            current_session_id = getattr(self, "session_id", None)
+            flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
+            if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
+                self._flushed_db_message_ids = set()
+                self._flushed_db_message_session_id = current_session_id
+            flushed_ids = getattr(self, "_flushed_db_message_ids", None)
+            if not isinstance(flushed_ids, set):
+                flushed_ids = set()
+                self._flushed_db_message_ids = flushed_ids
+            history_ids = {
+                id(item) for item in (conversation_history or [])
+                if isinstance(item, dict)
+            }
+
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                msg_id = id(msg)
+                if msg_id in flushed_ids:
+                    continue
+                if msg_id in history_ids:
+                    flushed_ids.add(msg_id)
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 # Persist multimodal tool results as their text summary only —
@@ -1604,7 +1665,9 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    timestamp=msg.get("timestamp"),
                 )
+                flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
@@ -1791,6 +1854,35 @@ class AIAgent:
         return f"{detail}{hint}"
 
     @staticmethod
+    def _coerce_api_error_detail(value: Any) -> str:
+        """Return a display-safe string for structured provider error fields."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            for key in ("message", "detail", "error", "code", "type"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested.strip():
+                    return nested
+            for key in ("message", "detail", "error", "code", "type"):
+                if key in value:
+                    nested_detail = AIAgent._coerce_api_error_detail(value[key])
+                    if nested_detail:
+                        return nested_detail
+            try:
+                return json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except TypeError:
+                return str(value)
+        if isinstance(value, (list, tuple)):
+            parts = [
+                AIAgent._coerce_api_error_detail(item)
+                for item in value
+            ]
+            return "; ".join(part for part in parts if part)
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -1829,6 +1921,7 @@ class AIAgent:
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
+                msg = AIAgent._coerce_api_error_detail(msg)
                 return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
@@ -2941,8 +3034,8 @@ class AIAgent:
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
@@ -3246,7 +3339,11 @@ class AIAgent:
         return sanitize_api_messages(messages)
 
     @staticmethod
-    def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
+    def _is_thinking_only_assistant(
+        msg: Dict[str, Any],
+        *,
+        drop_codex_reasoning_items: bool = True,
+    ) -> bool:
         """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
 
         "Thinking-only" means the model emitted reasoning (``reasoning`` or
@@ -3297,15 +3394,30 @@ class AIAgent:
         rd = msg.get("reasoning_details")
         if isinstance(rd, list) and rd:
             return True
+        # Codex Responses stores encrypted reasoning state under a separate
+        # assistant-message key. Treat only real reasoning items as
+        # thinking-only; empty/junk lists should fall through to the generic
+        # empty-turn handling instead of being dropped here.
+        codex_items = msg.get("codex_reasoning_items")
+        if drop_codex_reasoning_items and isinstance(codex_items, list):
+            return any(
+                isinstance(item, dict) and item.get("type") == "reasoning"
+                for item in codex_items
+            )
         return False
 
     @staticmethod
     def _drop_thinking_only_and_merge_users(
         messages: List[Dict[str, Any]],
+        *,
+        drop_codex_reasoning_items: bool = True,
     ) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
         from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
-        return drop_thinking_only_and_merge_users(messages)
+        return drop_thinking_only_and_merge_users(
+            messages,
+            drop_codex_reasoning_items=drop_codex_reasoning_items,
+        )
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
@@ -3727,7 +3839,7 @@ class AIAgent:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
                 force_refresh=force,
             )
         except Exception as exc:
@@ -3977,11 +4089,13 @@ class AIAgent:
         # Defensive: strip Responses-only kwargs that can leak in under an
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
-        from agent.anthropic_adapter import sanitize_anthropic_kwargs
-        sanitize_anthropic_kwargs(
-            api_kwargs, log_prefix=getattr(self, "log_prefix", "")
+        from agent.anthropic_adapter import create_anthropic_message
+        return create_anthropic_message(
+            self._anthropic_client,
+            api_kwargs,
+            log_prefix=getattr(self, "log_prefix", ""),
+            prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
         )
-        return self._anthropic_client.messages.create(**api_kwargs)
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.
@@ -4534,10 +4648,18 @@ class AIAgent:
         )
         return summary
 
-    def _try_shrink_image_parts_in_messages(self, api_messages: list) -> bool:
+    def _try_shrink_image_parts_in_messages(
+        self,
+        api_messages: list,
+        *,
+        max_dimension: int = 8000,
+    ) -> bool:
         """Forwarder — see ``agent.conversation_compression.try_shrink_image_parts_in_messages``."""
         from agent.conversation_compression import try_shrink_image_parts_in_messages
-        return try_shrink_image_parts_in_messages(api_messages)
+        return try_shrink_image_parts_in_messages(
+            api_messages,
+            max_dimension=max_dimension,
+        )
 
     def _try_strip_image_parts_from_tool_messages(self, api_messages: list) -> bool:
         """Downgrade list-type tool messages to text summaries in-place.
@@ -5084,6 +5206,7 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
+            background=function_args.get("background"),
             parent_agent=self,
         )
 
@@ -5154,10 +5277,20 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        persist_user_timestamp: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+        return run_conversation(
+            self,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp,
+        )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

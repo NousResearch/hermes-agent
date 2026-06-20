@@ -17,6 +17,7 @@ import type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  MemoryProviderConfig,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -71,6 +72,7 @@ export type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  MemoryProviderConfig,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -210,6 +212,19 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
   })
 }
 
+// Resolves a single session row by id on one backend (the active profile, or
+// the given `profile`). The backend resolves exact ids and unique prefixes and
+// 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
+// cross-profile list scan when locating an unknown id's owner.
+export function getSession(id: string, profile?: string | null): Promise<SessionInfo> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
+  return window.hermesDesktop.api<SessionInfo>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
+  })
+}
+
 // Reads another profile's transcript. For a remote profile Electron reroutes
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for
@@ -326,6 +341,23 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
   })
 }
 
+export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
+  return window.hermesDesktop.api<MemoryProviderConfig>({
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`
+  })
+}
+
+export function saveMemoryProviderConfig(
+  provider: string,
+  values: Record<string, string>
+): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    method: 'PUT',
+    body: { values }
+  })
+}
+
 export function getEnvVars(): Promise<Record<string, EnvVarInfo>> {
   return window.hermesDesktop.api<Record<string, EnvVarInfo>>({
     ...profileScoped(),
@@ -377,6 +409,14 @@ export function listOAuthProviders(): Promise<OAuthProvidersResponse> {
   return window.hermesDesktop.api<OAuthProvidersResponse>({
     ...profileScoped(),
     path: '/api/providers/oauth'
+  })
+}
+
+export function disconnectOAuthProvider(providerId: string): Promise<{ ok: boolean; provider: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; provider: string }>({
+    ...profileScoped(),
+    path: `/api/providers/oauth/${encodeURIComponent(providerId)}`,
+    method: 'DELETE'
   })
 }
 
@@ -620,10 +660,10 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   })
 }
 
-export function getGlobalModelOptions(): Promise<ModelOptionsResponse> {
+export function getGlobalModelOptions(opts?: { refresh?: boolean }): Promise<ModelOptionsResponse> {
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
-    path: '/api/model/options'
+    path: opts?.refresh ? '/api/model/options?refresh=1' : '/api/model/options'
   })
 }
 

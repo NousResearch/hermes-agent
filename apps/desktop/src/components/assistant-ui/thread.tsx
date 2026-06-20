@@ -63,15 +63,14 @@ import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
-import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
+import { ThreadMessageList } from '@/components/assistant-ui/thread-list'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { GeneratedImageProvider, useGeneratedImageContext } from '@/components/chat/generated-image-context'
-import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-placeholder'
+import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
@@ -92,14 +91,16 @@ import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runti
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
-import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
+import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { $compactionActive } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
+import { notifyThreadEditClose, notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -168,6 +169,7 @@ export const Thread: FC<{
   loading?: ThreadLoadingState
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => Promise<void> | void
+  onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
@@ -179,18 +181,19 @@ export const Thread: FC<{
   loading,
   onBranchInNewChat,
   onCancel,
+  onDismissError,
   onRestoreToMessage,
   sessionId = null,
   sessionKey
 }) => {
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
+      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />,
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
       UserMessage: () => <UserMessage onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, onRestoreToMessage, sessionId]
+    [cwd, gateway, onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, sessionId]
   )
 
   const emptyPlaceholder = intro ? (
@@ -200,18 +203,16 @@ export const Thread: FC<{
   ) : undefined
 
   return (
-    <GeneratedImageProvider>
-      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
-        <VirtualizedThread
-          clampToComposer={clampToComposer}
-          components={messageComponents}
-          emptyPlaceholder={emptyPlaceholder}
-          loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : null}
-          sessionKey={sessionKey}
-        />
-        {loading === 'session' && <CenteredThreadSpinner />}
-      </div>
-    </GeneratedImageProvider>
+    <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+      <ThreadMessageList
+        clampToComposer={clampToComposer}
+        components={messageComponents}
+        emptyPlaceholder={emptyPlaceholder}
+        loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : null}
+        sessionKey={sessionKey}
+      />
+      {loading === 'session' && <CenteredThreadSpinner />}
+    </div>
   )
 }
 
@@ -246,9 +247,13 @@ const CenteredThreadSpinner: FC = () => {
   )
 }
 
-const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
+const AssistantMessage: FC<{
+  onBranchInNewChat?: (messageId: string) => void
+  onDismissError?: (messageId: string) => void
+}> = ({ onBranchInNewChat, onDismissError }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
+  const { t } = useI18n()
 
   // PERF: this component must NOT subscribe to the streaming text. Every
   // selector here returns a value that stays referentially stable across
@@ -275,10 +280,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
     return pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
   }, [completedText])
 
-  const getMessageText = useCallback(
-    () => messageContentText(messageRuntime.getState().content),
-    [messageRuntime]
-  )
+  const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
 
   const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
 
@@ -310,10 +312,20 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
         )}
         <MessagePrimitive.Error>
           <ErrorPrimitive.Root
-            className="mt-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
+            className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
             role="alert"
           >
-            <ErrorPrimitive.Message />
+            <ErrorPrimitive.Message className="min-w-0 flex-1" />
+            {onDismissError && (
+              <TooltipIconButton
+                className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
+                onClick={() => onDismissError(messageId)}
+                side="top"
+                tooltip={t.assistant.thread.dismissError}
+              >
+                <XIcon className="size-3.5" />
+              </TooltipIconButton>
+            )}
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
@@ -341,13 +353,25 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
   </div>
 )
 
+// Fixed label while auto-compaction runs — decoupled from backend status text.
+const COMPACTION_LABEL = 'Summarizing thread'
+
+const CompactionHint: FC = () => (
+  <span className="shimmer min-w-0 truncate text-muted-foreground/55">{COMPACTION_LABEL}</span>
+)
+
 const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
   const elapsed = useElapsedSeconds()
+  const compacting = useStore($compactionActive)
 
   return (
-    <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>
+    <StatusRow
+      data-slot="aui_response-loading"
+      label={compacting ? COMPACTION_LABEL : t.assistant.thread.loadingResponse}
+    >
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      {compacting && <CompactionHint />}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )
@@ -382,6 +406,7 @@ const StreamStallIndicator: FC = () => {
   })
 
   const [stalled, setStalled] = useState(false)
+  const compacting = useStore($compactionActive)
 
   useEffect(() => {
     setStalled(false)
@@ -390,35 +415,32 @@ const StreamStallIndicator: FC = () => {
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const elapsed = useElapsedSeconds(stalled)
+  const active = stalled || compacting
+  const elapsed = useElapsedSeconds(active)
 
-  if (!stalled) {
+  if (!active) {
     return null
   }
 
   return (
-    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
+    <StatusRow
+      className="mt-1.5"
+      data-slot="aui_stream-stall"
+      label={compacting ? COMPACTION_LABEL : 'Hermes is thinking'}
+    >
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      {compacting && <CompactionHint />}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )
 }
 
-const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ result }) => {
-  const generatedImage = useGeneratedImageContext()
-  const running = result === undefined
-
-  useEffect(() => {
-    generatedImage?.setPending(running)
-  }, [generatedImage, running])
-
-  if (!running) {
-    return null
-  }
+const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
+  const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
 
   return (
     <div className="mt-1.5">
-      <ImageGenerationPlaceholder />
+      <GeneratedImage aspectRatio={aspectRatio} result={result} />
     </div>
   )
 }
@@ -582,10 +604,7 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
 
   return (
     <MarkdownTextContent
-      containerClassName={cn(
-        'text-xs leading-snug text-muted-foreground/85',
-        isRunning && 'shimmer text-muted-foreground/55'
-      )}
+      containerClassName="text-xs leading-snug text-muted-foreground/85"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       isRunning={isRunning}
       text={displayText}
@@ -808,7 +827,7 @@ function StickyHumanMessageContainer({ attachments, children }: { attachments?: 
 // so without the carve-out, clicking a stuck bubble drags the window instead of
 // opening the edit composer.
 const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-y-auto rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
   'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
@@ -840,7 +859,10 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
           <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
             output
           </summary>
-          <pre className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55">
+          <pre
+            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
+            data-selectable-text="true"
+          >
             {detail}
           </pre>
         </details>
@@ -956,7 +978,10 @@ const UserMessage: FC<{
     // backtick `code` and ``` fenced ``` blocks, with directive chips
     // (`@file:` etc.) still resolved inside the plain-text spans.
     <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
-      <div ref={clampInnerRef}>
+      {/* Match the edit composer's collapsed line box (min-h-[1.25rem]) so
+          clicking to edit can't grow the bubble by a sub-pixel and reflow the
+          turn 1px. */}
+      <div className="min-h-[1.25rem]" ref={clampInnerRef}>
         <UserMessageText className="wrap-anywhere" text={messageText} />
       </div>
     </div>
@@ -986,6 +1011,7 @@ const UserMessage: FC<{
                   aria-label={copy.editMessage}
                   className={bubbleClassName}
                   onClick={() => triggerHaptic('selection')}
+                  onPointerDown={() => notifyThreadEditOpen()}
                   title={copy.editMessage}
                   type="button"
                 >
@@ -1174,6 +1200,8 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
   const slash = useSlashCompletions({ gateway })
+
+  useEffect(() => () => notifyThreadEditClose(), [])
 
   const focusEditor = useCallback(() => {
     const editor = editorRef.current
@@ -1700,9 +1728,8 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               aria-label={copy.editMessage}
               autoCapitalize="off"
               autoCorrect="off"
-              autoFocus
               className={cn(
-                'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
+                'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'

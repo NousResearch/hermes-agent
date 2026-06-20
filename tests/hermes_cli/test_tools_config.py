@@ -87,10 +87,6 @@ def test_gui_toolset_label_strips_leading_emoji():
     assert gui_toolset_label("Terminal & Processes") == "Terminal & Processes"
 
 
-def test_configurable_toolsets_include_messaging():
-    assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
-
-
 def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
@@ -128,12 +124,6 @@ def test_get_platform_tools_context_engine_respects_explicit_empty_selection():
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
     assert "context_engine" not in enabled
-
-
-def test_get_platform_tools_default_telegram_includes_messaging():
-    enabled = _get_platform_tools({}, "telegram")
-
-    assert "messaging" in enabled
 
 
 def test_get_platform_tools_default_whatsapp_includes_web():
@@ -973,19 +963,6 @@ def test_toolset_has_keys_treats_no_key_providers_as_configured():
     config = {}
 
     assert _toolset_has_keys("computer_use", config) is True
-
-
-def test_web_no_prompt_when_usable_keyless():
-    """Fresh install: web works via the free Parallel MCP, so enabling the web
-    toolset should not force provider setup."""
-    with patch("tools.web_tools.check_web_api_key", return_value=True):
-        assert _toolset_needs_configuration_prompt("web", {}) is False
-
-
-def test_web_no_prompt_when_extract_backend_is_extract_capable():
-    with patch("tools.web_tools.check_web_api_key", return_value=True):
-        cfg = {"web": {"extract_backend": "parallel"}}
-        assert _toolset_needs_configuration_prompt("web", cfg) is False
 
 
 def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():

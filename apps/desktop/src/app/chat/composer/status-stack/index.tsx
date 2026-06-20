@@ -12,6 +12,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $statusItemsBySession,
+  clearFinishedBackgroundProcesses,
   type ComposerStatusItem,
   dismissBackgroundProcess,
   groupStatusItems,
@@ -98,6 +99,16 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
               variant="text"
             >
               {t.statusStack.agents}
+            </Button>
+          ) : group.type === 'background' && group.items.some(i => i.state !== 'running') ? (
+            <Button
+              className="text-muted-foreground/75 hover:text-foreground/90"
+              onClick={() => sessionId && clearFinishedBackgroundProcesses(sessionId)}
+              size="micro"
+              type="button"
+              variant="text"
+            >
+              {t.statusStack.clearFinished}
             </Button>
           ) : undefined
         }

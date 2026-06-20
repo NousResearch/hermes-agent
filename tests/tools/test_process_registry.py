@@ -1318,3 +1318,122 @@ class TestTerminateHostPidPosix:
         pr.ProcessRegistry._terminate_host_pid(12345)
 
         assert kill_calls == [(12345, signal.SIGTERM)]
+
+
+class TestProcessRegistryREAP:
+    """Tests for remove() and clear_finished() reaping methods."""
+
+    def test_remove_evicts_finished_session(self, registry):
+        """remove() deletes a finished session from _finished."""
+        s = _make_session(sid="fin1", exited=True, exit_code=0)
+        registry._finished["fin1"] = s
+        registry._write_checkpoint = MagicMock()
+
+        result = registry.remove("fin1")
+
+        assert result == {"status": "removed", "session_id": "fin1"}
+        assert "fin1" not in registry._finished
+        registry._write_checkpoint.assert_called_once()
+
+    def test_remove_refuses_running_process(self, registry):
+        """remove() returns an error if the session is still running."""
+        s = _make_session(sid="run1", exited=False)
+        registry._running["run1"] = s
+
+        result = registry.remove("run1")
+
+        assert result["status"] == "running"
+        assert "is still running" in result["error"]
+        assert "run1" in registry._running
+
+    def test_remove_idempotent_not_found(self, registry):
+        """remove() on a non-existent session returns not_found."""
+        result = registry.remove("ghost")
+
+        assert result == {"status": "not_found", "session_id": "ghost"}
+
+    def test_remove_clears_completion_consumed(self, registry):
+        """remove() discards the session from _completion_consumed."""
+        s = _make_session(sid="done1", exited=True, exit_code=0)
+        registry._finished["done1"] = s
+        registry._completion_consumed.add("done1")
+        registry._write_checkpoint = MagicMock()
+
+        registry.remove("done1")
+
+        assert "done1" not in registry._completion_consumed
+
+    def test_clear_finished_removes_all(self, registry):
+        """clear_finished() removes all finished sessions."""
+        s1 = _make_session(sid="f1", task_id="t1", exited=True, exit_code=0)
+        s2 = _make_session(sid="f2", task_id="t1", exited=True, exit_code=1)
+        registry._finished["f1"] = s1
+        registry._finished["f2"] = s2
+        registry._write_checkpoint = MagicMock()
+
+        result = registry.clear_finished()
+
+        assert result["status"] == "ok"
+        assert result["removed"] == 2
+        assert set(result["session_ids"]) == {"f1", "f2"}
+        assert len(registry._finished) == 0
+        registry._write_checkpoint.assert_called_once()
+
+    def test_clear_finished_scoped_by_task_id(self, registry):
+        """clear_finished(task_id=...) only removes matching finished sessions."""
+        s1 = _make_session(sid="f1", task_id="t1", exited=True)
+        s2 = _make_session(sid="f2", task_id="t2", exited=True)
+        registry._finished["f1"] = s1
+        registry._finished["f2"] = s2
+        registry._write_checkpoint = MagicMock()
+
+        result = registry.clear_finished(task_id="t1")
+
+        assert result["removed"] == 1
+        assert result["session_ids"] == ["f1"]
+        assert "f1" not in registry._finished
+        assert "f2" in registry._finished
+
+    def test_clear_finished_scoped_by_session_key(self, registry):
+        """clear_finished(session_key=...) only removes matching sessions."""
+        s1 = _make_session(sid="f1", exited=True)
+        s1.session_key = "key-a"
+        s2 = _make_session(sid="f2", exited=True)
+        s2.session_key = "key-b"
+        registry._finished["f1"] = s1
+        registry._finished["f2"] = s2
+        registry._write_checkpoint = MagicMock()
+
+        result = registry.clear_finished(session_key="key-a")
+
+        assert result["removed"] == 1
+        assert "f1" not in registry._finished
+        assert "f2" in registry._finished
+
+    def test_clear_finished_leaves_running_alone(self, registry):
+        """clear_finished() does NOT remove running sessions."""
+        s_run = _make_session(sid="run", exited=False)
+        s_fin = _make_session(sid="fin", exited=True, exit_code=0)
+        registry._running["run"] = s_run
+        registry._finished["fin"] = s_fin
+        registry._write_checkpoint = MagicMock()
+
+        result = registry.clear_finished()
+
+        assert result["removed"] == 1
+        assert "run" in registry._running
+        assert "fin" not in registry._finished
+
+    def test_clear_finished_no_matching_sessions(self, registry):
+        """clear_finished() returns removed=0 when no sessions match."""
+        s = _make_session(sid="f1", task_id="t1", exited=True)
+        registry._finished["f1"] = s
+        registry._write_checkpoint = MagicMock()
+
+        result = registry.clear_finished(task_id="no-such-task")
+
+        assert result == {"status": "ok", "removed": 0, "session_ids": []}
+        assert "f1" in registry._finished
+        # _write_checkpoint should NOT be called when nothing was removed
+        registry._write_checkpoint.assert_not_called()
+

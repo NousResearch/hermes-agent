@@ -9,7 +9,7 @@ import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
 
 /** Composer status stack feed — merged todos, subagents, background per session. */
-export type StatusItemState = 'done' | 'failed' | 'running'
+export type StatusItemState = 'done' | 'failed' | 'running' | 'stopped'
 export type StatusItemType = 'background' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
@@ -133,15 +133,24 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
   const exited = proc.status === 'exited'
   const exitCode = typeof proc.exit_code === 'number' ? proc.exit_code : undefined
 
+  const state: StatusItemState = !exited ? 'running'
+    : exitCode === undefined || exitCode === 0 ? 'done'
+    : exitCode < 0 ? 'stopped'
+    : 'failed'
+
   return {
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
-    state: exited ? (exitCode ? 'failed' : 'done') : 'running',
+    state,
     title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
     type: 'background'
   }
 }
+
+const SIGNAL_NAMES: Record<number, string> = { 2: 'SIGINT', 9: 'SIGKILL', 15: 'SIGTERM' }
+export const exitCodeLabel = (code: number): { signal: boolean; text: string } =>
+  code < 0 ? { signal: true, text: SIGNAL_NAMES[-code] ?? `signal ${-code}` } : { signal: false, text: String(code) }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
   a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
@@ -231,12 +240,24 @@ export function dismissBackgroundProcess(sid: string, id: string) {
   dismissed.add(id)
   dismissedBySession.set(sid, dismissed)
 
+  void $gateway.get()?.request('process.remove', { process_id: id, session_id: sid }).catch(() => undefined)
+
   const list = $backgroundStatusBySession.get()[sid] ?? []
 
   writeBackground(
     sid,
     list.filter(item => item.id !== id)
   )
+}
+
+export function clearFinishedBackgroundProcesses(sid: string) {
+  if (!sid) return
+  void $gateway.get()?.request('process.clear_finished', { session_id: sid }).catch(() => undefined)
+  const list = $backgroundStatusBySession.get()[sid] ?? []
+  const dismissed = dismissedBySession.get(sid) ?? new Set<string>()
+  for (const item of list) { if (item.state !== 'running') dismissed.add(item.id) }
+  dismissedBySession.set(sid, dismissed)
+  writeBackground(sid, list.filter(item => item.state === 'running'))
 }
 
 /** X on a running row: kill the process for real, then drop the row. */

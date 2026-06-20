@@ -1472,6 +1472,8 @@ export const ja = defineLocale({
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',
+    stopped: '停止しました',
+    clearFinished: '完了分をクリア',
     exit: code => `終了コード ${code}`
   },
 

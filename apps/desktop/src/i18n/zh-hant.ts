@@ -1425,6 +1425,8 @@ export const zhHant = defineLocale({
     running: '執行中',
     stop: '停止',
     dismiss: '關閉',
+    stopped: '已停止',
+    clearFinished: '清除已完成',
     exit: code => `結束碼 ${code}`
   },
 

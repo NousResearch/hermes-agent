@@ -12,6 +12,7 @@ import {
   sortProviders
 } from '@/components/desktop-onboarding-overlay'
 import { Button } from '@/components/ui/button'
+import { SearchField } from '@/components/ui/search-field'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
@@ -45,8 +46,17 @@ export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
 // Group the env catalog by provider — one ListRow per vendor plus optional
-// advanced overrides (base URL, region, etc.). Groups without a key field and
-// the "Other" bucket are skipped.
+// advanced overrides (base URL, region, etc.). Groups without a key field are
+// skipped.
+//
+// Grouping key precedence:
+//   1. Backend `provider_label` / `provider` (from the unified provider catalog
+//      in hermes_cli/provider_catalog.py) — the SAME provider identity
+//      `hermes model` uses. This is authoritative: a provider tagged by the
+//      backend always renders a card, even with no PROVIDER_GROUPS row.
+//   2. Desktop prefix match (`providerGroup`) — legacy fallback for provider
+//      env vars that predate the backend tagging.
+// Only entries that resolve to neither (the "Other" bucket) are skipped.
 function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGroup[] {
   const buckets = new Map<string, [string, EnvVarInfo][]>()
 
@@ -55,7 +65,9 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
-    const name = providerGroup(key)
+    // Prefer the backend-supplied provider label/id so the Keys tab groups by
+    // the same identity the CLI picker uses; fall back to the prefix guess.
+    const name = info.provider_label?.trim() || info.provider?.trim() || providerGroup(key)
 
     if (name === 'Other') {
       continue
@@ -73,6 +85,9 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
+    // Presentation overlay (priority, blurb, docs) is keyed by the prefix-based
+    // group name; when the backend introduced this provider it may have no
+    // overlay entry, so fall back to the backend/env metadata for display.
     const meta = providerMeta(name)
 
     groups.push({
@@ -131,6 +146,7 @@ function OAuthPicker({
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
   // Keep connected accounts grouped and always visible; only the unconnected
   // providers hide behind the disclosure, so the page leads with what's set up.
+  // Both lists preserve `sortProviders` order (curated priority, then name).
   const connected = rest.filter(p => p.status?.logged_in)
   const others = rest.filter(p => !p.status?.logged_in)
   const collapsible = others.length > 0
@@ -284,6 +300,8 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
+  // Free-text filter for the API-keys view (provider name / env-var key / desc).
+  const [keyQuery, setKeyQuery] = useState('')
   // The onboarding overlay owns the OAuth flow. Watch its `manual` flag so we
   // re-read connection state when the user finishes (or dismisses) a sign-in
   // they launched from this page — otherwise the cards keep their stale status.
@@ -372,20 +390,49 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const keyGroups = buildProviderKeyGroups(vars)
 
   if (showApiKeys) {
+    const q = keyQuery.trim().toLowerCase()
+    const visibleGroups = q
+      ? keyGroups.filter(group => {
+          const haystack = [
+            group.name,
+            group.description ?? '',
+            group.primary[0],
+            ...group.advanced.map(([k]) => k)
+          ]
+
+          return haystack.some(s => s.toLowerCase().includes(q))
+        })
+      : keyGroups
+
     return (
       <SettingsContent>
         {keyGroups.length > 0 ? (
-          <div className="grid gap-2">
-            {keyGroups.map(group => (
-              <ProviderKeyRows
-                expanded={openProvider === group.name}
-                group={group}
-                key={group.name}
-                onExpand={() => setOpenProvider(group.name)}
-                onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                rowProps={rowProps}
-              />
-            ))}
+          <div className="grid gap-3">
+            <SearchField
+              aria-label={t.settings.providers.searchKeys}
+              containerClassName="w-full"
+              onChange={setKeyQuery}
+              placeholder={t.settings.providers.searchKeys}
+              value={keyQuery}
+            />
+            {visibleGroups.length > 0 ? (
+              <div className="grid gap-2">
+                {visibleGroups.map(group => (
+                  <ProviderKeyRows
+                    expanded={openProvider === group.name}
+                    group={group}
+                    key={group.name}
+                    onExpand={() => setOpenProvider(group.name)}
+                    onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                    rowProps={rowProps}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+                {t.settings.providers.noKeysMatch}
+              </div>
+            )}
           </div>
         ) : (
           <NoProviderKeys />

@@ -5703,7 +5703,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "id": "claude-code",
         "name": "Anthropic OAuth: Required Extra Usage Credits to Use Subscription",
         "flow": "external",
-        "cli_command": "claude setup-token",
+        "cli_command": "claude logout",
         "docs_url": "https://docs.claude.com/en/docs/claude-code",
         "status_fn": _claude_code_only_status,
     },

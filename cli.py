@@ -6927,6 +6927,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"  ✗ {result.error_message}")
             return
 
+        if self.agent is not None:
+            try:
+                from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+
+                merge_preflight_compression_warning(
+                    result,
+                    agent=self.agent,
+                    messages=list(self.conversation_history or []),
+                    config_context_length=getattr(self.agent, "_config_context_length", None),
+                )
+            except Exception:
+                pass
+
         old_model = self.model
         self.model = result.new_model
         self.provider = result.target_provider
@@ -7192,6 +7205,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return
+
+        if self.agent is not None:
+            try:
+                from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+
+                merge_preflight_compression_warning(
+                    result,
+                    agent=self.agent,
+                    messages=list(self.conversation_history or []),
+                    config_context_length=getattr(self.agent, "_config_context_length", None),
+                )
+            except Exception:
+                pass
 
         if not self._confirm_expensive_model_switch(result):
             _cprint("  Model switch cancelled.")

@@ -2469,7 +2469,7 @@ class FeishuAdapter(BasePlatformAdapter):
         logging, and reaction.  Scheduling follows the same
         ``run_coroutine_threadsafe`` pattern used by ``_on_message_event``.
         """
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
 
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
@@ -2482,7 +2482,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _on_meeting_invited_event(self, data: Any) -> None:
         """Handle VC bot meeting invitation notification (vc.bot.meeting_invited_v1)."""
-        from gateway.platforms.feishu_meeting_invite import handle_meeting_invited_event
+        from plugins.platforms.feishu.feishu_meeting_invite import handle_meeting_invited_event
 
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
@@ -5211,3 +5211,301 @@ def _qr_register_inner(
         result["bot_open_id"] = None
 
     return result
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the Feishu adapter (+ its feishu_comment / feishu_comment_rules /
+# feishu_meeting_invite satellites) moved from gateway/platforms/ into this
+# bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a
+# register(ctx) entry point plus hook implementations that replace the
+# per-platform core touchpoints (the Platform.FEISHU elif in gateway/run.py,
+# the feishu_cfg YAML→env block + _PLATFORM_CONNECTED_CHECKERS entry in
+# gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"] static
+# dict in hermes_cli/gateway.py, and the _send_feishu dispatch in
+# tools/send_message_tool.py).
+# ──────────────────────────────────────────────────────────────────────────
+
+_MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
+_MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+_MIGRATION_VOICE_EXTS = {".ogg", ".opus"}
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process Feishu/Lark delivery via the adapter's send pipeline.
+
+    Implements the standalone_sender_fn contract so deliver=feishu cron jobs
+    succeed when cron runs separately from the gateway. Builds a transient
+    FeishuAdapter, hydrates its lark client, and sends text + native media
+    (images, video, voice, documents). Replaces the legacy _send_feishu helper.
+    """
+    if not FEISHU_AVAILABLE:
+        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+
+    media_files = media_files or []
+    try:
+        adapter = FeishuAdapter(pconfig)
+        domain_name = getattr(adapter, "_domain_name", "feishu")
+        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
+        adapter._client = adapter._build_lark_client(domain)
+        metadata = {"thread_id": thread_id} if thread_id else None
+
+        last_result = None
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return {"error": f"Feishu send failed: {last_result.error}"}
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return {"error": f"Media file not found: {media_path}"}
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _MIGRATION_IMAGE_EXTS:
+                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+            elif ext in _MIGRATION_VIDEO_EXTS:
+                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+            elif ext in _MIGRATION_VOICE_EXTS and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            elif ext in _MIGRATION_AUDIO_EXTS:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+            if not last_result.success:
+                return {"error": f"Feishu media send failed: {last_result.error}"}
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+        return {
+            "success": True,
+            "platform": "feishu",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id,
+        }
+    except Exception as e:
+        return {"error": f"Feishu send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Interactive setup for Feishu / Lark — scan-to-create or manual creds.
+
+    Replaces the central _setup_feishu in hermes_cli/gateway.py and the static
+    _PLATFORMS["feishu"] dict. CLI helpers are lazy-imported.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.setup import prompt_choice
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+        print_error,
+    )
+
+    print_header("Feishu / Lark")
+    existing_app_id = get_env_value("FEISHU_APP_ID")
+    existing_secret = get_env_value("FEISHU_APP_SECRET")
+    if existing_app_id and existing_secret:
+        print_success("Feishu / Lark is already configured.")
+        if not prompt_yes_no("Reconfigure Feishu / Lark?", False):
+            return
+
+    method_idx = prompt_choice(
+        "How would you like to set up Feishu / Lark?",
+        [
+            "Scan QR code to create a new bot automatically (recommended)",
+            "Enter existing App ID and App Secret manually",
+        ],
+        0,
+    )
+
+    credentials = None
+    used_qr = False
+
+    if method_idx == 0:
+        try:
+            credentials = qr_register()
+        except KeyboardInterrupt:
+            print_warning("Feishu / Lark setup cancelled.")
+            return
+        except Exception as exc:
+            print_warning(f"QR registration failed: {exc}")
+        if credentials:
+            used_qr = True
+        else:
+            print_info("QR setup did not complete. Continuing with manual input.")
+
+    if not credentials:
+        print_info("Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)")
+        print_info("Create an app, enable the Bot capability, and copy the credentials.")
+        app_id = prompt("App ID", password=False)
+        if not app_id:
+            print_warning("Skipped — Feishu / Lark won't work without an App ID.")
+            return
+        app_secret = prompt("App Secret", password=True)
+        if not app_secret:
+            print_warning("Skipped — Feishu / Lark won't work without an App Secret.")
+            return
+        domain_idx = prompt_choice("Domain", ["feishu (China)", "lark (International)"], 0)
+        domain = "lark" if domain_idx == 1 else "feishu"
+
+        bot_name = None
+        try:
+            bot_info = probe_bot(app_id, app_secret, domain)
+            if bot_info:
+                bot_name = bot_info.get("bot_name")
+                print_success(f"Credentials verified — bot: {bot_name or 'unnamed'}")
+            else:
+                print_warning("Could not verify bot connection. Credentials saved anyway.")
+        except Exception as exc:
+            print_warning(f"Credential verification skipped: {exc}")
+
+        credentials = {
+            "app_id": app_id,
+            "app_secret": app_secret,
+            "domain": domain,
+            "open_id": None,
+            "bot_name": bot_name,
+        }
+
+    app_id = credentials["app_id"]
+    app_secret = credentials["app_secret"]
+    domain = credentials.get("domain", "feishu")
+    open_id = credentials.get("open_id")
+    bot_name = credentials.get("bot_name")
+
+    save_env_value("FEISHU_APP_ID", app_id)
+    save_env_value("FEISHU_APP_SECRET", app_secret)
+    save_env_value("FEISHU_DOMAIN", domain)
+
+    if used_qr:
+        connection_mode = "websocket"
+    else:
+        mode_idx = prompt_choice(
+            "Connection mode",
+            [
+                "WebSocket (recommended — no public URL needed)",
+                "Webhook (requires a reachable HTTP endpoint)",
+            ],
+            0,
+        )
+        connection_mode = "webhook" if mode_idx == 1 else "websocket"
+        if connection_mode == "webhook":
+            print_info("Webhook defaults: 127.0.0.1:8765/feishu/webhook")
+            print_info("Override with FEISHU_WEBHOOK_HOST / FEISHU_WEBHOOK_PORT / FEISHU_WEBHOOK_PATH")
+            print_info("For signature verification, set FEISHU_ENCRYPT_KEY and FEISHU_VERIFICATION_TOKEN")
+    save_env_value("FEISHU_CONNECTION_MODE", connection_mode)
+
+    if bot_name:
+        print_success(f"Bot created: {bot_name}")
+
+    access_idx = prompt_choice(
+        "How should direct messages be authorized?",
+        [
+            "Use DM pairing approval (recommended)",
+            "Allow all direct messages",
+            "Only allow listed user IDs",
+        ],
+        0,
+    )
+    if access_idx == 0:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
+        save_env_value("FEISHU_ALLOWED_USERS", "")
+        print_success("DM pairing enabled.")
+        print_info("Unknown users can request access; approve with `hermes pairing approve`.")
+    elif access_idx == 1:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
+        save_env_value("FEISHU_ALLOWED_USERS", "")
+        print_warning("Open DM access enabled for Feishu / Lark.")
+    else:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
+        default_allow = open_id or ""
+        allowlist = prompt(
+            "Allowed user IDs (comma-separated)", default_allow, password=False
+        ).replace(" ", "")
+        save_env_value("FEISHU_ALLOWED_USERS", allowlist)
+        print_success("Allowlist saved.")
+
+    group_idx = prompt_choice(
+        "How should group chats be handled?",
+        [
+            "Respond only when @mentioned in groups (recommended)",
+            "Disable group chats",
+        ],
+        0,
+    )
+    if group_idx == 0:
+        save_env_value("FEISHU_GROUP_POLICY", "open")
+        print_info("Group chats enabled (bot must be @mentioned).")
+    else:
+        save_env_value("FEISHU_GROUP_POLICY", "disabled")
+        print_info("Group chats disabled.")
+
+    home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False)
+    if home_channel:
+        save_env_value("FEISHU_HOME_CHANNEL", home_channel)
+        print_success(f"Home channel set to {home_channel}")
+
+    print_success("🪽 Feishu / Lark configured!")
+    print_info(f"App ID: {app_id}")
+    print_info(f"Domain: {domain}")
+    if bot_name:
+        print_info(f"Bot: {bot_name}")
+
+
+def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
+    """Translate config.yaml feishu: keys into FEISHU_* env vars.
+
+    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
+    feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
+    Env vars take precedence over YAML. Returns None — flows through env.
+    """
+    if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
+        os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+    return None
+
+
+def _is_connected(config) -> bool:
+    """Feishu is connected when app_id is configured. Mirrors the legacy
+    _PLATFORM_CONNECTED_CHECKERS[Platform.FEISHU] = lambda cfg: bool(app_id)."""
+    extra = getattr(config, "extra", {}) or {}
+    return bool(extra.get("app_id"))
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs FeishuAdapter from a PlatformConfig."""
+    return FeishuAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="feishu",
+        label="Feishu / Lark",
+        adapter_factory=_build_adapter,
+        check_fn=check_feishu_requirements,
+        is_connected=_is_connected,
+        validate_config=_is_connected,
+        required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
+        install_hint="pip install 'hermes-agent[feishu]'",
+        setup_fn=interactive_setup,
+        apply_yaml_config_fn=_apply_yaml_config,
+        allowed_users_env="FEISHU_ALLOWED_USERS",
+        allow_all_env="FEISHU_ALLOW_ALL_USERS",
+        cron_deliver_env_var="FEISHU_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=8000,
+        emoji="🪽",
+        allow_update_command=True,
+    )

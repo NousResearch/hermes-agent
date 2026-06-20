@@ -150,7 +150,8 @@ class TestHelperFunctions(unittest.TestCase):
             "dkim=pass header.d=example.com; dmarc=pass header.from=example.com"
         )
 
-        self.assertTrue(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
+        with patch.dict(os.environ, {"EMAIL_TRUSTED_AUTHSERV_ID": "mx.example.net"}):
+            self.assertTrue(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
 
     def test_dmarc_aligned_from_rejects_wrong_domain(self):
         from gateway.platforms.email import _dmarc_aligned_from_passed
@@ -162,23 +163,41 @@ class TestHelperFunctions(unittest.TestCase):
             "dkim=pass header.d=evil.com; dmarc=pass header.from=evil.com"
         )
 
-        self.assertFalse(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
+        with patch.dict(os.environ, {"EMAIL_TRUSTED_AUTHSERV_ID": "mx.example.net"}):
+            self.assertFalse(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
 
-    def test_dmarc_alignment_only_trusts_topmost_authentication_results(self):
+    def test_dmarc_alignment_requires_trusted_authserv_id(self):
+        """A forged topmost Authentication-Results must never satisfy DMARC
+        alignment when no trusted authserv-id is configured."""
         from gateway.platforms.email import _dmarc_aligned_from_passed
 
         msg = MIMEText("hello", "plain", "utf-8")
         msg["From"] = "Allowed User <allowed@example.com>"
+        # Attacker-supplied topmost header claiming a passing aligned result.
         msg["Authentication-Results"] = (
-            "mx.example.net; spf=fail smtp.mailfrom=evil.com; "
-            "dmarc=fail header.from=example.com"
+            "attacker-chosen; spf=pass smtp.mailfrom=attacker@evil.com; "
+            "dmarc=pass header.from=example.com"
         )
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("EMAIL_TRUSTED_AUTHSERV_ID", None)
+            self.assertFalse(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
+
+    def test_dmarc_alignment_ignores_untrusted_authserv_id(self):
+        """An aligned dmarc=pass stamped by an authserv-id we do not trust is
+        ignored, even though it is the topmost Authentication-Results header."""
+        from gateway.platforms.email import _dmarc_aligned_from_passed
+
+        msg = MIMEText("hello", "plain", "utf-8")
+        msg["From"] = "Allowed User <allowed@example.com>"
+        # Forged result from an authserv-id outside the operator's trust anchor.
         msg["Authentication-Results"] = (
             "forged.example; spf=pass smtp.mailfrom=evil.com; "
             "dkim=pass header.d=example.com; dmarc=pass header.from=example.com"
         )
 
-        self.assertFalse(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
+        with patch.dict(os.environ, {"EMAIL_TRUSTED_AUTHSERV_ID": "mx.example.net"}):
+            self.assertFalse(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
 
     def test_strip_html_basic(self):
         from gateway.platforms.email import _strip_html

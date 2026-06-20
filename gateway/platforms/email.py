@@ -265,31 +265,63 @@ def _email_domain(address: str) -> str:
     return address.rsplit("@", 1)[1].strip().lower()
 
 
+def _authserv_id(authentication_results: str) -> str:
+    """Return the lowercased authserv-id of an ``Authentication-Results`` value.
+
+    Per RFC 8601 the authserv-id is the first token of the field, optionally
+    followed by a version number, before the first semicolon.
+    """
+    first_field = authentication_results.split(";", 1)[0].strip()
+    if not first_field:
+        return ""
+    return first_field.split()[0].lower()
+
+
+def _trusted_authserv_ids() -> set:
+    """Authserv-ids of the receiving MTA(s) the operator trusts for DMARC.
+
+    Configured via ``EMAIL_TRUSTED_AUTHSERV_ID`` (comma separated).  When unset,
+    the DMARC compatibility path is disabled: an ``Authentication-Results``
+    header cannot be distinguished from a sender-forged one without a trust
+    anchor identifying our own receiving mail system.
+    """
+    raw = os.getenv("EMAIL_TRUSTED_AUTHSERV_ID", "").strip()
+    return {token.strip().lower() for token in raw.split(",") if token.strip()}
+
+
 def _dmarc_aligned_from_passed(msg: email_lib.message.Message, sender_addr: str) -> bool:
-    """Whether the receiving MTA reported DMARC pass aligned to ``From``.
+    """Whether our receiving MTA reported DMARC pass aligned to ``From``.
 
     Relays commonly set a bounce ``Return-Path`` that differs from the human
     ``From`` address.  A DMARC pass with ``header.from`` matching the visible
-    sender's domain is the narrow compatibility path that still proves the
-    visible sender domain was authenticated by the receiving mail system.
+    sender's domain proves the visible sender domain was authenticated.
+
+    ``Authentication-Results`` headers are part of the inbound message and are
+    therefore attacker controllable.  Only a result stamped by our own
+    receiving MTA — identified by a configured trusted authserv-id — can be
+    relied upon; per RFC 8601 the receiver strips inbound forgeries bearing its
+    own authserv-id.  Results from any other (or forged) authserv-id are
+    ignored, and without a configured trust anchor the path stays disabled.
     """
     sender_domain = _email_domain(sender_addr)
     if not sender_domain:
         return False
 
-    raw_headers = msg.get_all("Authentication-Results", [])
-    if not raw_headers:
+    trusted_ids = _trusted_authserv_ids()
+    if not trusted_ids:
         return False
 
-    # Only trust the topmost Authentication-Results field. Receiving MTAs
-    # prepend their result; scanning older values would let a forged lower
-    # header override the receiver's verdict.
-    header = _decode_header_value(raw_headers[0]).lower()
-    if "dmarc=pass" not in header:
-        return False
-
-    matches = re.findall(r"header\.from\s*=\s*([a-z0-9._%+-]+(?:@[a-z0-9.-]+)?|[a-z0-9.-]+)", header)
-    return any(_email_domain(match) == sender_domain or match.strip().lower() == sender_domain for match in matches)
+    for raw_header in msg.get_all("Authentication-Results", []):
+        header = _decode_header_value(raw_header)
+        if _authserv_id(header) not in trusted_ids:
+            continue
+        lowered = header.lower()
+        if "dmarc=pass" not in lowered:
+            continue
+        matches = re.findall(r"header\.from\s*=\s*([a-z0-9._%+-]+(?:@[a-z0-9.-]+)?|[a-z0-9.-]+)", lowered)
+        if any(_email_domain(match) == sender_domain or match.strip().lower() == sender_domain for match in matches):
+            return True
+    return False
 
 
 def _extract_attachments(

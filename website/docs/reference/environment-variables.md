@@ -342,6 +342,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `EMAIL_SMTP_HOST` | SMTP hostname for the email adapter |
 | `EMAIL_SMTP_PORT` | SMTP port |
 | `EMAIL_ALLOWED_USERS` | Comma-separated email addresses allowed to message the bot |
+| `EMAIL_TRUSTED_AUTHSERV_ID` | Comma-separated authserv-id(s) of your receiving MTA. Only when set will a relay's DMARC-pass result (Return-Path differing from From) satisfy the allowlist; unset ignores all (attacker-controllable) `Authentication-Results` headers |
 | `EMAIL_HOME_ADDRESS` | Default recipient for proactive email delivery |
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |

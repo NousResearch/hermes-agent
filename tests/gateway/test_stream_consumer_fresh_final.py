@@ -642,16 +642,28 @@ class TestStreamingConfigFreshFinalField:
         assert restored.fresh_final_after_seconds == 90.0
 
 
-class TestTelegramAdapterDeleteMessage:
-    """Contract: Telegram adapter implements ``delete_message``."""
+class TestPlatformDeleteMessageContracts:
+    """Contract: adapters used for cleanup implement ``delete_message``."""
 
-    def test_delete_message_method_exists(self):
+    def test_telegram_delete_message_method_exists(self):
         telegram = pytest.importorskip("gateway.platforms.telegram")
         import inspect
         cls = telegram.TelegramAdapter
         assert hasattr(cls, "delete_message"), (
             "TelegramAdapter.delete_message is required for the fresh-final "
             "cleanup path (openclaw/openclaw#72038 port)."
+        )
+        sig = inspect.signature(cls.delete_message)
+        params = list(sig.parameters)
+        assert params[:3] == ["self", "chat_id", "message_id"]
+
+    def test_discord_delete_message_method_exists(self):
+        discord_adapter = pytest.importorskip("plugins.platforms.discord.adapter")
+        import inspect
+        cls = discord_adapter.DiscordAdapter
+        assert hasattr(cls, "delete_message"), (
+            "DiscordAdapter.delete_message is required for temporary tool-progress "
+            "cleanup when display.platforms.discord.cleanup_progress is enabled."
         )
         sig = inspect.signature(cls.delete_message)
         params = list(sig.parameters)

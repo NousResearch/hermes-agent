@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { openAccountDialog } from '@/store/account'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleKeybindPanel } from '@/store/keybinds'
 import {
@@ -17,10 +18,13 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { $workflowCopilotOpen, toggleWorkflowCopilotOpen } from '@/store/workflow'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
+
+const SIGNED_OUT_LABEL = '登录 / 注册'
 
 export interface TitlebarTool {
   id: string
@@ -32,6 +36,7 @@ export interface TitlebarTool {
   href?: string
   icon: ReactNode
   onSelect?: () => void
+  text?: string
   title?: string
   to?: string
 }
@@ -53,6 +58,46 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
+  const workflowCopilotOpen = useStore($workflowCopilotOpen)
+  const currentView = appViewForPath(location.pathname)
+  const [accountLabel, setAccountLabel] = useState(SIGNED_OUT_LABEL)
+  const signedOut = accountLabel === SIGNED_OUT_LABEL
+
+  useEffect(() => {
+    let cancelled = false
+
+    const refreshAccount = () => {
+      const account = window.hermesDesktop?.account
+
+      if (!account?.status) {
+        setAccountLabel(SIGNED_OUT_LABEL)
+
+        return
+      }
+
+      void account
+        .status()
+        .then(status => {
+          if (cancelled) {
+            return
+          }
+
+          setAccountLabel(status.loggedIn ? status.username || status.email || '账号' : SIGNED_OUT_LABEL)
+        })
+        .catch(() => {
+          // Keep the last known label on a transient status error — don't flash
+          // back to "登录" while the user is actually signed in.
+        })
+    }
+
+    refreshAccount()
+    window.addEventListener('hermes-account-changed', refreshAccount)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener('hermes-account-changed', refreshAccount)
+    }
+  }, [])
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -98,15 +143,28 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     ...leftTools
   ]
 
-  const rightSidebarTool: TitlebarTool = {
-    icon: <Codicon name="layout-sidebar-right" />,
-    id: 'right-sidebar',
-    label: rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar,
-    onSelect: () => {
-      triggerHaptic('tap')
-      rightEdge.toggle()
-    }
-  }
+  const rightSidebarTool: TitlebarTool =
+    currentView === 'workflow'
+      ? {
+          active: workflowCopilotOpen,
+          icon: <Codicon name="comment-discussion" />,
+          id: 'workflow-copilot',
+          label: workflowCopilotOpen ? '收回爱马仕 Copilot' : '弹出爱马仕 Copilot',
+          onSelect: () => {
+            triggerHaptic('tap')
+            toggleWorkflowCopilotOpen()
+          },
+          title: workflowCopilotOpen ? '收回爱马仕 Copilot' : '弹出爱马仕 Copilot'
+        }
+      : {
+          icon: <Codicon name="layout-sidebar-right" />,
+          id: 'right-sidebar',
+          label: rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar,
+          onSelect: () => {
+            triggerHaptic('tap')
+            rightEdge.toggle()
+          }
+        }
 
   // Static system tools — always pinned to the screen's right edge.
   const systemTools: TitlebarTool[] = [
@@ -127,6 +185,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     },
     {
+      icon: null,
+      id: 'account',
+      label: accountLabel,
+      text: accountLabel,
+      title: signedOut ? '登录 / 注册 EasyHermes' : '账号 · 余额 · 消费明细',
+      onSelect: () => {
+        triggerHaptic('open')
+        openAccountDialog()
+      }
+    },
+    {
       icon: <Codicon name="settings-gear" />,
       id: 'settings',
       label: t.titlebar.openSettings,
@@ -141,7 +210,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // visually own the window. These control clusters are `fixed` at a higher
   // z-index than the overlay card, so they'd otherwise bleed over it — hide them
   // and let the overlay's own chrome (close button, drag region) take over.
-  if (isOverlayView(appViewForPath(location.pathname))) {
+  if (isOverlayView(currentView)) {
     return null
   }
 
@@ -201,10 +270,15 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
   // for a11y.
   const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
+  const size = tool.text ? ('sm' as const) : ('icon-titlebar' as const)
+
+  const textClassName = tool.text
+    ? 'h-(--titlebar-control-height) rounded-[4px] px-2 text-[0.75rem] leading-none'
+    : ''
 
   if (tool.href) {
     return (
-      <Button asChild className={className} size="icon-titlebar" variant="ghost">
+      <Button asChild className={cn(className, textClassName)} size={size} variant="ghost">
         <a
           aria-label={tool.label}
           href={tool.href}
@@ -223,7 +297,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
     <Button
       aria-label={tool.label}
       aria-pressed={tool.active ?? undefined}
-      className={className}
+      className={cn(className, textClassName)}
       disabled={tool.disabled}
       onClick={() => {
         if (tool.to) {
@@ -233,12 +307,13 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         tool.onSelect?.()
       }}
       onPointerDown={event => event.stopPropagation()}
-      size="icon-titlebar"
+      size={size}
       title={tool.title ?? tool.label}
       type="button"
       variant="ghost"
     >
       {tool.icon}
+      {tool.text ? <span className="max-w-24 truncate">{tool.text}</span> : null}
     </Button>
   )
 }

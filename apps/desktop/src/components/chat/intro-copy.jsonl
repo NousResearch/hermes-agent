@@ -68,8 +68,8 @@
 {"personality":"hype","headline":"New session, infinite W's","body":"Bring the gnarliest bug you've got. I'll read, patch, test, commit like my life depends on it. LET'S GO."}
 {"personality":"hype","headline":"ABSOLUTELY DIALED IN","body":"Describe the task. I'll blitz through files, crush failing tests, and leave a commit that SLAPS. Go go go."}
 {"personality":"hype","headline":"Ready. So ready. Too ready.","body":"Tiny typo or huge refactor - doesn't matter. I'm shipping clean code today. Name the task and let's WORK."}
-{"personality":"none","headline":"Hermes Agent is ready.","body":"Ask a question, paste an error, or point me at a repo. I can read code, run tools, and help you ship."}
-{"personality":"none","headline":"What are we building today?","body":"Describe the task in your own words. I'll pick the right tools, explain my plan, and check in before risky steps."}
-{"personality":"none","headline":"Start anywhere.","body":"Drop a file path, a traceback, or a rough idea. I'll investigate, suggest next steps, and keep things reversible."}
-{"personality":"none","headline":"Your workspace, one prompt away.","body":"Search the repo, edit files, run tests, open PRs. Tell me the goal and I'll handle the mechanical parts."}
-{"personality":"none","headline":"Ready when you are.","body":"Type a task, question, or snippet. I remember the session, cite my sources, and stop to ask when I'm unsure."}
+{"personality":"none","headline":"EasyHermes 已就绪。","body":"提出问题、粘贴报错，或指给我一个仓库。我能读代码、调用工具，帮你把东西做出来。"}
+{"personality":"none","headline":"今天我们要做点什么？","body":"用你自己的话描述任务即可。我会挑选合适的工具、说明我的计划，并在有风险的步骤前与你确认。"}
+{"personality":"none","headline":"从任何地方开始都行。","body":"丢给我一个文件路径、一段报错堆栈，或一个粗略的想法。我会去排查、给出下一步建议，并尽量让操作可回退。"}
+{"personality":"none","headline":"你的工作区，一句话即达。","body":"搜索仓库、编辑文件、运行测试、提交 PR。告诉我目标，繁琐的部分交给我。"}
+{"personality":"none","headline":"随时待命。","body":"输入一个任务、问题或代码片段。我会记住会话、标注来源，遇到不确定时会停下来问你。"}

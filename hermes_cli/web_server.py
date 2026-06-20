@@ -148,11 +148,77 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+    # Kari 组织协同:登录了云端(有 kari token)才起后台应答线程 —— 上报本机能力 +
+    # 轮询应答上级扇出来的查询(子爱马仕汇报)。无 token 直接跳过。
+    org_stop: "threading.Event | None" = None
+    try:
+        from hermes_cli import org_client
+
+        if org_client._cloud()[1]:
+            org_stop = threading.Event()
+            threading.Thread(
+                target=org_client.run_responder,
+                kwargs={"stop_event": org_stop},
+                daemon=True,
+                name="kari-org-responder",
+            ).start()
+    except Exception:  # noqa: BLE001 - 协同是可选能力,失败不影响仪表盘
+        org_stop = None
+
+    # 局域网自发现(3b 地基):广播自己 + 收别人,知道各节点当前 IP(换网/换 IP 自动更新)。
+    # 有 token(能解析自身 uid)才起;端口暂报后端端口(env 有就用,没有用 0,3b 再细化)。
+    lan_stop: "threading.Event | None" = None
+    try:
+        from hermes_cli import lan_discovery, org_client as _oc
+
+        if _oc._cloud()[1]:
+            lan_stop = threading.Event()
+            # 懒取真端口:发现线程此刻就起,但 app.state.bound_port 要等 startup() 之后才写,
+            # 故传 getter 每轮现取(fallback 到 env / 显式 port)。
+            def _lan_port_getter() -> int:
+                return int(
+                    getattr(app.state, "bound_port", 0)
+                    or os.environ.get("HERMES_DASHBOARD_PORT")
+                    or 0
+                )
+
+            threading.Thread(
+                target=lan_discovery.run_discovery,
+                kwargs={"port_getter": _lan_port_getter, "stop_event": lan_stop},
+                daemon=True,
+                name="kari-lan-discovery",
+            ).start()
+    except Exception:  # noqa: BLE001 - 自发现可选,失败不影响仪表盘
+        lan_stop = None
+
+    # 组织 LAN 服务(3b):把跨节点能力(model-B 入库等)暴露到局域网。配了 kari.lan_token 才起;
+    # 独立小服务 bind 0.0.0.0:48901,令牌+私网门控,dashboard 主服务仍只 127.0.0.1。
+    org_lan_stop: "threading.Event | None" = None
+    try:
+        from hermes_cli import org_lan_server
+
+        if org_lan_server._lan_token():  # noqa: SLF001
+            org_lan_stop = threading.Event()
+            threading.Thread(
+                target=org_lan_server.run_org_lan_server,
+                kwargs={"stop_event": org_lan_stop},
+                daemon=True,
+                name="kari-org-lan",
+            ).start()
+    except Exception:  # noqa: BLE001 - 组织 LAN 服务可选
+        org_lan_stop = None
+
     try:
         yield
     finally:
         if cron_stop is not None:
             cron_stop.set()
+        if org_stop is not None:
+            org_stop.set()
+        if lan_stop is not None:
+            lan_stop.set()
+        if org_lan_stop is not None:
+            org_lan_stop.set()
 
 
 def _get_event_state(app: "FastAPI"):
@@ -1860,6 +1926,162 @@ async def run_curator():
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to run curator: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "curator-run"}
+
+
+# ---------------------------------------------------------------------------
+# Workflow (local Langflow) — browser counterpart of the Electron IPC.
+# The 网页端 (browser → local Hermes) logs in to the cloud (accounts/billing/key),
+# persists the per-user token to ~/.hermes/workflow-secrets.json, and starts/attaches
+# the LOCAL Langflow process. Langflow itself runs locally; the cloud never runs it.
+# Sync `def` handlers so FastAPI runs the blocking probe/spawn in a threadpool.
+# ---------------------------------------------------------------------------
+class WorkflowLoginRequest(BaseModel):
+    cloudBaseUrl: str = ""
+    email: str = ""
+    password: str = ""
+
+
+@app.get("/api/workflow/auth-status")
+def workflow_auth_status():
+    from hermes_cli import workflow_backend as _wf
+
+    return _wf.auth_status()
+
+
+@app.get("/api/workflow/status")
+def workflow_status():
+    from hermes_cli import workflow_backend as _wf
+
+    return _wf.manager().status()
+
+
+@app.post("/api/workflow/start")
+def workflow_start():
+    from hermes_cli import workflow_backend as _wf
+
+    return _wf.manager().start()
+
+
+@app.post("/api/workflow/login")
+def workflow_login(body: WorkflowLoginRequest):
+    from hermes_cli import workflow_backend as _wf
+
+    res = _wf.login(body.cloudBaseUrl, body.email, body.password)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "登录失败")
+    return res
+
+
+@app.post("/api/workflow/logout")
+def workflow_logout():
+    from hermes_cli import workflow_backend as _wf
+
+    return _wf.logout()
+
+
+@app.get("/api/kari/resources")
+def kari_resources_list(kind: Optional[str] = None, node_uid: Optional[str] = None):
+    """主账号团队 UI 读**主本地**资源注册表(子上报、主拉取存档的 authoritative 副本,见 org_client 1d)。
+
+    本地这张表只存本主账号子树下被授权可见的资源(云端 subtree 拉取时已按 can_read 过滤),
+    所以直接全量返回即可,无跨租户泄漏。按 node_uid 分组返回,便于「每个子有哪些知识库」展示。
+    """
+    try:
+        from tools import kari_resources
+
+        rows = kari_resources.list_resources(kind=kind, node_uid=node_uid)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取资源注册表失败:{e}")
+    by_node: Dict[str, List[dict]] = {}
+    for r in rows:
+        by_node.setdefault(str(r.get("node_uid") or ""), []).append(r)
+    # 本节点是否「能力承载节点」(有 langflow,能给下级配 MCP)。权限面板据此门控「配 MCP」UI。
+    try:
+        from hermes_cli import workflow_backend as _wf
+
+        capable = bool(_wf.langflow_capable())
+    except Exception:  # noqa: BLE001
+        capable = False
+    return {"resources": rows, "by_node": by_node, "langflow_capable": capable}
+
+
+class KariGrantBody(BaseModel):
+    role: str
+    node_uid: str
+    kind: str
+    resource_id: str
+
+
+@app.get("/api/kari/grants")
+def kari_grants_list(role: Optional[str] = None, node_uid: Optional[str] = None, kind: Optional[str] = None):
+    """读主本地授权策略(角色→资源),团队角色面板据此回显勾选。Phase 2a。"""
+    try:
+        from tools import kari_resources
+
+        grants = kari_resources.list_grants(role=role, node_uid=node_uid, kind=kind)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取授权失败:{e}")
+    return {"grants": grants}
+
+
+@app.post("/api/kari/grants")
+def kari_grants_add(body: KariGrantBody, request: Request):
+    """授权:角色可用某节点上的某资源(改授权策略,要 session token)。Phase 2a。"""
+    _require_token(request)
+    from tools import kari_resources
+
+    if not kari_resources.add_grant(body.role, body.node_uid, body.kind, body.resource_id):
+        raise HTTPException(status_code=400, detail="授权参数无效(role / node_uid / kind / resource_id 必填且 kind 合法)")
+    return {"ok": True}
+
+
+@app.post("/api/kari/grants/delete")
+def kari_grants_delete(body: KariGrantBody, request: Request):
+    """撤销授权(要 session token)。Phase 2a。"""
+    _require_token(request)
+    from tools import kari_resources
+
+    removed = kari_resources.remove_grant(body.role, body.node_uid, body.kind, body.resource_id)
+    return {"ok": True, "removed": removed}
+
+
+class KariRoleBody(BaseModel):
+    role: str
+
+
+@app.post("/api/kari/grants/clear-role")
+def kari_grants_clear_role(body: KariRoleBody, request: Request):
+    """删除某角色的全部授权(角色被删时调,免得同名新角色继承旧授权)。要 session token。Phase 2a。"""
+    _require_token(request)
+    from tools import kari_resources
+
+    return {"ok": True, "cleared": kari_resources.remove_role_grants(body.role)}
+
+
+@app.get("/api/kari/authorized")
+def kari_authorized_resources(role: str, kind: Optional[str] = None):
+    """解析某角色「实际可用」的资源(grant ∩ 当前注册表,排除失效授权)。鉴权过滤产出,Phase 3a。
+
+    是 GET /api/kari/grants(原始策略)的已解析孪生:授权调用前应据此判断,而非裸 grant。
+    """
+    try:
+        from tools import kari_resources
+
+        resources = kari_resources.list_authorized_resources(role, kind=kind)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"解析授权资源失败:{e}")
+    return {"role": role, "resources": resources}
+
+
+@app.get("/api/kari/peers")
+def kari_lan_peers():
+    """局域网自发现到的在线节点(uid / ip / port / name / last_seen)。3b 跨节点据此找对方当前 IP。"""
+    try:
+        from hermes_cli import lan_discovery
+
+        return {"peers": lan_discovery.peers()}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取 LAN peers 失败:{e}")
 
 
 def _safe_call(mod, fn_name: str, default):

@@ -1135,10 +1135,54 @@ export const en: Translations = {
 
   workflow: {
     title: 'Workflow',
+    starting: 'Starting workflow backend...',
     loading: 'Loading workflow...',
     backendUnavailable: 'Workflow backend is not running',
-    backendUnavailableDetail: url => `Start Langflow, then reload this view. Target: ${url}`,
-    openInBrowser: 'Open in browser'
+    backendUnavailableDetail: url => `EasyHermes starts Langflow locally and embeds it here. Target: ${url}`,
+    canvas: 'Canvas',
+    knowledge: 'Knowledge',
+    knowledgeLocked: 'Available after the workflow starts',
+    bridgeUnavailable: 'The desktop workflow bridge is unavailable. Restart EasyHermes to enable embedded workflows.',
+    startEngineTitle: 'Start the workflow engine',
+    startEngineHint: 'Workflows and the on-device knowledge base both run on this engine (langflow). Start it on demand; stop it to free memory when done.',
+    startBtn: 'Start',
+    stopBtn: 'Stop',
+    lowMemWarn: gb => `This machine has ~${gb}GB RAM, below the recommended 8GB — startup may be slow or laggy. On low-memory machines, consider letting the main account host the knowledge base.`,
+    firstStartNote: 'The first start downloads a local model and may take a few minutes — please be patient.',
+    engineRunning: 'Engine running'
+  },
+
+  knowledge: {
+    title: 'Knowledge',
+    subtitle: 'Add folders or files to the on-device knowledge base. Only summaries sync upward; originals and the index stay on this machine.',
+    dropHint: 'Drop a folder or file here, or click to choose',
+    dropActive: 'Release to add',
+    scanning: 'Scanning…',
+    scanError: 'Scan failed',
+    empty: 'No knowledge sources yet. Drop a folder or file to start.',
+    indexableLabel: 'Full-text indexed',
+    nameOnlyLabel: 'Filename only',
+    nameOnlyHint: 'Images, audio/video, Office files, etc. are not parsed — only their filenames are added; an upstream model reads the content on demand.',
+    filesCount: n => `${n} file(s)`,
+    estMinutes: n => `~${n} min`,
+    noiseNote: n => `Skipped ${n} system/temp file(s).`,
+    truncatedNote: 'Too many files; only the first 100,000 were counted.',
+    indexing: 'Adding to knowledge base…',
+    startingBackend: 'Starting the backend (first run can take a minute or two)…',
+    ingestProgress: (done, total) => `Processed ${done} / ${total}`,
+    ingestDone: (indexed, nameOnly) => `Done: ${indexed} full-text, ${nameOnly} filename-only.`,
+    ingestError: 'Ingest failed',
+    doneBtn: 'Done',
+    cancel: 'Cancel',
+    confirm: 'Add to knowledge base',
+    sourcesTitle: 'Sources',
+    sync: 'Sync',
+    syncing: 'Syncing…',
+    remove: 'Remove',
+    upToDate: 'Up to date',
+    syncedChange: (added, modified, removed) => `Updated (+${added} added, ${modified} changed, ${removed} removed)`,
+    lastSync: 'Last synced',
+    sourceSummary: (indexed, nameOnly) => `${indexed} full-text · ${nameOnly} filename`
   },
 
   sidebar: {
@@ -1147,7 +1191,8 @@ export const en: Translations = {
       skills: 'Skills & Tools',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      workflow: 'Workflow'
+      workflow: 'Workflow',
+      knowledge: 'Knowledge'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

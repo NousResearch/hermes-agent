@@ -18,6 +18,28 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
+  account: {
+    status: () => ipcRenderer.invoke('hermes:account:status'),
+    me: () => ipcRenderer.invoke('hermes:account:me'),
+    login: payload => ipcRenderer.invoke('hermes:account:login', payload),
+    register: payload => ipcRenderer.invoke('hermes:account:register', payload),
+    logout: () => ipcRenderer.invoke('hermes:account:logout'),
+    usage: opts => ipcRenderer.invoke('hermes:account:usage', opts),
+    wallet: () => ipcRenderer.invoke('hermes:account:wallet'),
+    transactions: opts => ipcRenderer.invoke('hermes:account:transactions', opts),
+    payConfig: () => ipcRenderer.invoke('hermes:account:payConfig'),
+    createOrder: yuan => ipcRenderer.invoke('hermes:account:createOrder', yuan),
+    mockConfirm: orderId => ipcRenderer.invoke('hermes:account:mockConfirm', orderId),
+    redeem: code => ipcRenderer.invoke('hermes:account:redeem', code),
+    subtree: () => ipcRenderer.invoke('hermes:account:subtree'),
+    createSubaccount: payload => ipcRenderer.invoke('hermes:account:createSubaccount', payload),
+    createRelation: payload => ipcRenderer.invoke('hermes:account:createRelation', payload),
+    roles: () => ipcRenderer.invoke('hermes:account:roles'),
+    addRole: payload => ipcRenderer.invoke('hermes:account:addRole', payload),
+    removeRole: payload => ipcRenderer.invoke('hermes:account:removeRole', payload),
+    setRole: payload => ipcRenderer.invoke('hermes:account:setRole', payload),
+    changePassword: payload => ipcRenderer.invoke('hermes:account:changePassword', payload)
+  },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
@@ -38,6 +60,30 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   normalizePreviewTarget: (target, baseDir) => ipcRenderer.invoke('hermes:normalizePreviewTarget', target, baseDir),
   watchPreviewFile: url => ipcRenderer.invoke('hermes:watchPreviewFile', url),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
+  workflow: {
+    start: () => ipcRenderer.invoke('hermes:workflow:start'),
+    stop: () => ipcRenderer.invoke('hermes:workflow:stop'),
+    status: () => ipcRenderer.invoke('hermes:workflow:status'),
+    totalMemoryGb: () => ipcRenderer.invoke('hermes:system:total-memory-gb'),
+    authStatus: () => ipcRenderer.invoke('hermes:workflow:authStatus'),
+    onRestarted: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:workflow:restarted', listener)
+      return () => ipcRenderer.removeListener('hermes:workflow:restarted', listener)
+    }
+  },
+  knowledge: {
+    inventory: dirPath => ipcRenderer.invoke('hermes:knowledge:inventory', dirPath),
+    ingest: payload => ipcRenderer.invoke('hermes:knowledge:ingest', payload),
+    list: () => ipcRenderer.invoke('hermes:knowledge:list'),
+    remove: sourceId => ipcRenderer.invoke('hermes:knowledge:remove', sourceId),
+    sync: sourceId => ipcRenderer.invoke('hermes:knowledge:sync', sourceId),
+    onIngestProgress: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:knowledge:ingest-progress', listener)
+      return () => ipcRenderer.removeListener('hermes:knowledge:ingest-progress', listener)
+    }
+  },
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),

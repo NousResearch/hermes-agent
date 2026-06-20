@@ -810,7 +810,20 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
-    "toolsets": ["hermes-cli"],
+    # video_gen is on by default in EasyHermes (image_generate is already in the
+    # core CLI toolset) so "生图/生视频都交给他" works out of the box.
+    "toolsets": ["hermes-cli", "video_gen"],
+    # EasyHermes native media generation routes image + video through KIE
+    # (kie.ai). Set KIE_API_KEY in the environment; no other config needed.
+    # The deterministic builders (website_build / slides_build / webvideo_build)
+    # need no key and are always available.
+    "image_gen": {"provider": "kie"},
+    "video_gen": {"provider": "kie"},
+    # Local credit billing for KIE image/video generation. Off by default so
+    # generation is free out of the box; set enabled=true (or env KIE_BILLING=1)
+    # for the productized build where users buy credits. Grant credits with:
+    #   uv run python -c "import tools.kie_billing as b; b.grant(1000)"
+    "billing": {"enabled": False},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
@@ -1467,7 +1480,7 @@ DEFAULT_CONFIG = {
         # handful of gateway slash-command replies).  Does NOT affect agent
         # responses, log lines, tool outputs, or slash-command descriptions.
         # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
-        "language": "en",
+        "language": "zh",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",

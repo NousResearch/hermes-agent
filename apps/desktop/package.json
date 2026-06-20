@@ -3,7 +3,7 @@
   "productName": "Hermes",
   "private": true,
   "version": "0.15.1",
-  "description": "Native desktop shell for Hermes Agent.",
+  "description": "Native desktop shell for EasyHermes.",
   "author": "Nous Research",
   "type": "module",
   "main": "electron/main.cjs",
@@ -36,7 +36,7 @@
     "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
-    "test:desktop:platforms": "node --test electron/bootstrap-platform.test.cjs electron/hardening.test.cjs electron/backend-env.test.cjs electron/backend-probes.test.cjs electron/bootstrap-runner.test.cjs electron/connection-config.test.cjs electron/dashboard-token.test.cjs electron/gateway-ws-probe.test.cjs electron/oauth-net-request.test.cjs electron/desktop-uninstall.test.cjs electron/session-windows.test.cjs electron/workspace-cwd.test.cjs electron/fs-read-dir.test.cjs electron/git-root.test.cjs electron/windows-child-process.test.cjs electron/update-remote.test.cjs",
+    "test:desktop:platforms": "node --test electron/bootstrap-platform.test.cjs electron/hardening.test.cjs electron/backend-env.test.cjs electron/backend-probes.test.cjs electron/bootstrap-runner.test.cjs electron/connection-config.test.cjs electron/dashboard-token.test.cjs electron/gateway-ws-probe.test.cjs electron/oauth-net-request.test.cjs electron/desktop-uninstall.test.cjs electron/session-windows.test.cjs electron/workspace-cwd.test.cjs electron/fs-read-dir.test.cjs electron/git-root.test.cjs electron/windows-child-process.test.cjs electron/web-dist.test.cjs electron/webview-security.test.cjs electron/update-remote.test.cjs electron/workflow-backend.test.cjs",
     "typecheck": "tsc -p . --noEmit",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
@@ -139,7 +139,7 @@
     "executableName": "Hermes",
     "protocols": [
       {
-        "name": "Hermes Protocol",
+        "name": "EasyHermes Protocol",
         "schemes": [
           "hermes"
         ]
@@ -186,11 +186,11 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
+        "CFBundleDisplayName": "EasyHermes",
         "CFBundleExecutable": "Hermes",
         "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "NSAudioCaptureUsageDescription": "EasyHermes uses audio capture for voice conversations.",
+        "NSMicrophoneUsageDescription": "EasyHermes uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
@@ -200,7 +200,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install EasyHermes",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -222,7 +222,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "EasyHermes",
       "target": [
         "nsis",
         "msi"
@@ -232,7 +232,7 @@
     "linux": {
       "category": "Development",
       "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "synopsis": "Native desktop shell for EasyHermes.",
       "target": [
         "AppImage",
         "deb",
@@ -243,8 +243,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "EasyHermes",
+      "uninstallDisplayName": "EasyHermes",
       "warningsAsErrors": false
     }
   }

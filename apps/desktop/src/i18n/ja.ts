@@ -1275,10 +1275,54 @@ export const ja = defineLocale({
 
   workflow: {
     title: 'ワークフロー',
+    starting: 'ワークフローのバックエンドを起動中...',
     loading: 'ワークフローを読み込み中...',
     backendUnavailable: 'ワークフローのバックエンドが起動していません',
-    backendUnavailableDetail: url => `Langflow を起動してから、このビューを再読み込みしてください。対象: ${url}`,
-    openInBrowser: 'ブラウザーで開く'
+    backendUnavailableDetail: url => `EasyHermes がローカルで Langflow を起動し、ここに埋め込みます。対象: ${url}`,
+    canvas: 'キャンバス',
+    knowledge: 'ナレッジ',
+    knowledgeLocked: 'ワークフローの起動後に利用できます',
+    bridgeUnavailable: 'デスクトップのワークフロー連携が利用できません。埋め込みワークフローを有効にするには EasyHermes を再起動してください。',
+    startEngineTitle: 'ワークフローエンジンを起動',
+    startEngineHint: 'ワークフローとローカルのナレッジベースはこのエンジン(langflow)で動きます。必要なときに起動し、使い終わったら停止してメモリを解放できます。',
+    startBtn: '起動',
+    stopBtn: '停止',
+    lowMemWarn: gb => `このマシンのメモリは約 ${gb}GB で、推奨の 8GB を下回ります。起動が遅くなったり不安定になる場合があります。メモリの少ないマシンではナレッジベースを主アカウントに任せることを検討してください。`,
+    firstStartNote: '初回起動時にローカルモデルをダウンロードするため、数分かかることがあります。お待ちください。',
+    engineRunning: 'エンジン稼働中'
+  },
+
+  knowledge: {
+    title: 'ナレッジ',
+    subtitle: 'フォルダやファイルをローカルのナレッジベースに追加します。要約のみが上位に同期され、原文とインデックスは本機に残ります。',
+    dropHint: 'フォルダやファイルをここにドロップ、またはクリックして選択',
+    dropActive: '離して追加',
+    scanning: 'スキャン中…',
+    scanError: 'スキャンに失敗しました',
+    empty: 'ナレッジソースはまだありません。フォルダやファイルをドロップして開始します。',
+    indexableLabel: '全文インデックス',
+    nameOnlyLabel: 'ファイル名のみ',
+    nameOnlyHint: '画像・音声・動画・Office などは本文を解析せず、ファイル名のみ追加します。内容は上位モデルが必要に応じて読み取ります。',
+    filesCount: n => `${n} 件`,
+    estMinutes: n => `約 ${n} 分`,
+    noiseNote: n => `${n} 件のシステム/一時ファイルをスキップしました。`,
+    truncatedNote: 'ファイルが多すぎます。最初の 10 万件のみを集計しました。',
+    indexing: 'ナレッジベースに追加中…',
+    startingBackend: '初回はバックエンドの起動に1〜2分かかることがあります…',
+    ingestProgress: (done, total) => `処理済み ${done} / ${total}`,
+    ingestDone: (indexed, nameOnly) => `完了:全文 ${indexed} 件、ファイル名のみ ${nameOnly} 件。`,
+    ingestError: '取り込みに失敗しました',
+    doneBtn: '完了',
+    cancel: 'キャンセル',
+    confirm: 'ナレッジベースに追加',
+    sourcesTitle: 'ソース',
+    sync: '同期',
+    syncing: '同期中…',
+    remove: '削除',
+    upToDate: '最新です',
+    syncedChange: (added, modified, removed) => `更新しました(追加 ${added}、変更 ${modified}、削除 ${removed})`,
+    lastSync: '最終同期',
+    sourceSummary: (indexed, nameOnly) => `全文 ${indexed} · ファイル名 ${nameOnly}`
   },
 
   sidebar: {
@@ -1287,7 +1331,8 @@ export const ja = defineLocale({
       skills: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      workflow: 'ワークフロー'
+      workflow: 'ワークフロー',
+      knowledge: 'ナレッジ'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

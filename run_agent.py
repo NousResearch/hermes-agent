@@ -4773,6 +4773,80 @@ class AIAgent:
         from agent.chat_completion_helpers import build_api_kwargs
         return build_api_kwargs(self, api_messages)
 
+    def _canonical_model(self) -> str:
+        """Real underlying model name for capability detection.
+
+        Downlink providers expose display names (e.g. 性能/极致) that the
+        model-name capability detectors (thinking mode, reasoning support)
+        don't recognize. The provider's model config may declare
+        ``canonical_model`` (e.g. gpt-5.5, claude-opus-4-8); return it so the
+        detectors key off the real model, while the display name is still what
+        gets sent on the wire. Falls back to the wire model when no canonical
+        mapping is configured. Cached per (provider, model) so an in-place
+        model switch re-resolves.
+        """
+        key = (self.provider, self.model)
+        cached = getattr(self, "_canonical_model_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = self.model
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            providers = cfg.get("providers") or {}
+            # The runtime provider may be normalized (e.g. "custom") and not
+            # match the config key, so try the named provider first, then scan
+            # all providers for a model entry with this wire name.
+            search = []
+            named = providers.get(self.provider or "")
+            if isinstance(named, dict):
+                search.append(named)
+            search.extend(
+                pv for pv in providers.values()
+                if isinstance(pv, dict) and pv is not named
+            )
+            for pv in search:
+                mcfg = (pv.get("models") or {}).get(self.model)
+                if isinstance(mcfg, dict):
+                    canon = mcfg.get("canonical_model")
+                    if isinstance(canon, str) and canon.strip():
+                        result = canon.strip()
+                        break
+        except Exception:
+            pass
+        self._canonical_model_cache = (key, result)
+        return result
+
+    def _downlink_reasoning_extra(self) -> "dict | None":
+        """extra_body fragment that makes a canonical-aliased downlink chat
+        model emit reasoning.
+
+        Downlink reasoning models (e.g. 性能 → gpt-5.x via the lotjc gateway)
+        only return ``reasoning_content`` when the request carries
+        ``extra_body.reasoning_effort`` — verified by direct probe that a
+        top-level ``reasoning_effort`` and the OpenRouter-style
+        ``extra_body.reasoning`` are both ignored. Returns the fragment when a
+        canonical alias resolves to a reasoning family and thinking is not
+        disabled; otherwise None (so non-downlink routes are untouched).
+        """
+        canon = self._canonical_model()
+        if canon == self.model:
+            return None  # no alias configured → not a downlink model
+        cl = canon.lower()
+        if not any(k in cl for k in (
+            "gpt-5", "o1", "o3", "o4-", "deepseek-r1", "deepseek-reasoner",
+            "gemini-2.5", "gemini-3", "qwen3",
+        )):
+            return None
+        rc = self.reasoning_config
+        if isinstance(rc, dict) and rc.get("enabled") is False:
+            return None
+        effort = "high"
+        if isinstance(rc, dict) and str(rc.get("effort") or "").strip():
+            effort = str(rc["effort"]).strip().lower()
+        return {"reasoning_effort": effort}
+
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
 

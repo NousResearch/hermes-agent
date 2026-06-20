@@ -113,7 +113,8 @@ class TestGenerateTitle:
 
 
 class TestAutoTitleSession:
-    """Tests for auto_title_session() — the sync worker function."""
+    """Tests for auto_title_session() — derives the title locally from the
+    first user message (first 10 chars + ellipsis); no LLM call."""
 
     def test_skips_if_no_session_db(self):
         auto_title_session(None, "sess-1", "hi", "hello")  # should not crash
@@ -122,40 +123,47 @@ class TestAutoTitleSession:
         db = MagicMock()
         db.get_session_title.return_value = "Existing Title"
 
-        with patch("agent.title_generator.generate_title") as gen:
-            auto_title_session(db, "sess-1", "hi", "hello")
-            gen.assert_not_called()
+        auto_title_session(db, "sess-1", "hi", "hello")
+        # A title already exists — must not overwrite it.
+        db.set_session_title.assert_not_called()
 
-    def test_generates_and_sets_title(self):
+    def test_sets_title_from_short_user_message(self):
         db = MagicMock()
         db.get_session_title.return_value = None
 
-        with patch("agent.title_generator.generate_title", return_value="New Title"):
-            auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_called_once_with("sess-1", "New Title")
+        # <= 10 chars: used verbatim, no ellipsis.
+        auto_title_session(db, "sess-1", "hi there", "hello")
+        db.set_session_title.assert_called_once_with("sess-1", "hi there")
+
+    def test_truncates_long_user_message_with_ellipsis(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        # > 10 chars: first 10 + ellipsis.
+        auto_title_session(db, "sess-1", "abcdefghijklmnop", "hello")
+        db.set_session_title.assert_called_once_with("sess-1", "abcdefghij...")
 
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
         seen = []
-        with patch("agent.title_generator.generate_title", return_value="Readable Session"):
-            auto_title_session(
-                db,
-                "sess-1",
-                "hello",
-                "hi there",
-                title_callback=seen.append,
-            )
-        db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
-        assert seen == ["Readable Session"]
+        auto_title_session(
+            db,
+            "sess-1",
+            "hello",
+            "hi there",
+            title_callback=seen.append,
+        )
+        db.set_session_title.assert_called_once_with("sess-1", "hello")
+        assert seen == ["hello"]
 
-    def test_skips_if_generation_fails(self):
+    def test_skips_if_user_message_blank(self):
         db = MagicMock()
         db.get_session_title.return_value = None
 
-        with patch("agent.title_generator.generate_title", return_value=None):
-            auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_not_called()
+        # Whitespace-only first message yields no usable title — skip.
+        auto_title_session(db, "sess-1", "   ", "hello")
+        db.set_session_title.assert_not_called()
 
 
 class TestMaybeAutoTitle:

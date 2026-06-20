@@ -95,7 +95,14 @@ import {
   sessionPinId
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE, WORKFLOW_ROUTE } from '../../routes'
+import {
+  type AppView,
+  ARTIFACTS_ROUTE,
+  KNOWLEDGE_ROUTE,
+  MESSAGING_ROUTE,
+  SKILLS_ROUTE,
+  WORKFLOW_ROUTE
+} from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -132,7 +139,8 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   },
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE },
-  { id: 'workflow', label: '', icon: props => <Codicon name="type-hierarchy" {...props} />, route: WORKFLOW_ROUTE }
+  { id: 'workflow', label: '', icon: props => <Codicon name="type-hierarchy" {...props} />, route: WORKFLOW_ROUTE },
+  { id: 'knowledge', label: '', icon: props => <Codicon name="book" {...props} />, route: KNOWLEDGE_ROUTE }
 ]
 
 const WORKSPACE_PAGE = 5
@@ -189,7 +197,12 @@ function ReorderableList({
   }
 
   return (
-    <DndContext autoScroll={reorderAutoScroll} collisionDetection={closestCenter} onDragEnd={handleDragEnd} sensors={sensors}>
+    <DndContext
+      autoScroll={reorderAutoScroll}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+      sensors={sensors}
+    >
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
         {children}
       </SortableContext>
@@ -534,6 +547,7 @@ export function ChatSidebar({
 
     if (!next.length && agentOrderIds.length) {
       setSidebarSessionOrderIds([])
+
       return
     }
 
@@ -570,7 +584,14 @@ export function ChatSidebar({
       ...parent,
       groups: orderByIds(parent.groups, group => group.id, workspaceOrderIds)
     }))
-  }, [worktreeGroupingActive, agentSessions, s.noWorkspace, worktreeResolver, workspaceParentOrderIds, workspaceOrderIds])
+  }, [
+    worktreeGroupingActive,
+    agentSessions,
+    s.noWorkspace,
+    worktreeResolver,
+    workspaceParentOrderIds,
+    workspaceOrderIds
+  ])
 
   const loadMoreForProfileGroup = useCallback(
     (profile: string) => {
@@ -818,7 +839,8 @@ export function ChatSidebar({
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
-                  (item.id === 'workflow' && currentView === 'workflow')
+                  (item.id === 'workflow' && currentView === 'workflow') ||
+                  (item.id === 'knowledge' && currentView === 'knowledge')
 
                 const isNewSession = item.id === 'new-session'
 
@@ -1255,8 +1277,7 @@ function SidebarSessionsSection({
   // Sessions inside repos/worktrees are date-ordered and static.
   const renderRows = (items: SessionInfo[]) => items.map(session => renderRow(session, false))
 
-  const flatVirtualized =
-    !showEmptyState && !groups?.length && !tree?.length && sessions.length >= VIRTUALIZE_THRESHOLD
+  const flatVirtualized = !showEmptyState && !groups?.length && !tree?.length && sessions.length >= VIRTUALIZE_THRESHOLD
 
   let inner: React.ReactNode
 
@@ -1293,7 +1314,12 @@ function SidebarSessionsSection({
   } else if (groups?.length) {
     // Profile/source groups never reorder; render them flat with static rows.
     inner = groups.map(group => (
-      <SidebarWorkspaceGroup group={group} key={group.id} onNewSession={onNewSessionInWorkspace} renderRows={renderRows} />
+      <SidebarWorkspaceGroup
+        group={group}
+        key={group.id}
+        onNewSession={onNewSessionInWorkspace}
+        renderRows={renderRows}
+      />
     ))
   } else if (flatVirtualized) {
     const virtual = (
@@ -1552,7 +1578,8 @@ function SidebarWorkspaceParent({
     >
       <WorkspaceHeader
         action={
-          onNewSession && (newSessionPath || soleWorktree) && (
+          onNewSession &&
+          (newSessionPath || soleWorktree) && (
             <WorkspaceAddButton label={s.newSessionIn(parent.label)} onClick={() => onNewSession?.(newSessionPath)} />
           )
         }

@@ -210,6 +210,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
   // behind), THEN finalize so the unmount lands after the fade — mirrors the
   // connecting overlay's exit choreography instead of cutting instantly.
   const [leaving, setLeaving] = useState(false)
+  const waitingForGateway = !enabled && !onboarding.requested && !onboarding.manual
 
   const finalizeOnboarding = () => {
     if (leaving) {
@@ -264,6 +265,10 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
       clearPendingProviderOAuth()
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
+
+  if (waitingForGateway) {
+    return null
+  }
 
   // Mount from frame 1 so we replace the boot overlay seamlessly. The
   // configured field stays null until the runtime check resolves; only then

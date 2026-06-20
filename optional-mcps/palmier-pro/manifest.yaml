@@ -1,0 +1,26 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: palmier-pro
+description: Video editing timeline automation via the local Palmier Pro MCP server.
+source: https://github.com/palmier-io/palmier-pro
+
+# Palmier Pro exposes this HTTP MCP endpoint only while the native app is open.
+# The binary currently requires macOS 26+ on Apple Silicon.
+transport:
+  type: http
+  url: http://127.0.0.1:19789/mcp
+  version: v0.3.2
+
+auth:
+  type: none
+
+post_install: |
+  Palmier Pro must be running before Hermes can discover its video-editing tools.
+
+  Download/install Palmier Pro for macOS 26+ Apple Silicon:
+    https://github.com/palmier-io/palmier-pro/releases/latest/download/PalmierPro.dmg
+
+  Once the app is open, start a new Hermes session so the Palmier Pro MCP tools
+  are loaded from http://127.0.0.1:19789/mcp.

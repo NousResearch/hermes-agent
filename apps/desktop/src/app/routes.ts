@@ -6,16 +6,20 @@ export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const WORKFLOW_ROUTE = '/workflow'
+export const KNOWLEDGE_ROUTE = '/knowledge'
+export const ACCOUNT_ROUTE = '/account'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 
 export type AppView =
+  | 'account'
   | 'agents'
   | 'artifacts'
   | 'chat'
   | 'command-center'
   | 'cron'
+  | 'knowledge'
   | 'messaging'
   | 'profiles'
   | 'settings'
@@ -23,10 +27,12 @@ export type AppView =
   | 'workflow'
 
 export type AppRouteId =
+  | 'account'
   | 'agents'
   | 'artifacts'
   | 'command-center'
   | 'cron'
+  | 'knowledge'
   | 'messaging'
   | 'new'
   | 'profiles'
@@ -48,6 +54,8 @@ export const APP_ROUTES = [
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'workflow', path: WORKFLOW_ROUTE, view: 'workflow' },
+  { id: 'knowledge', path: KNOWLEDGE_ROUTE, view: 'knowledge' },
+  { id: 'account', path: ACCOUNT_ROUTE, view: 'account' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' }

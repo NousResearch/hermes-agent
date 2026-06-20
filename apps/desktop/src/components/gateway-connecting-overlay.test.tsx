@@ -117,6 +117,45 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(false)
   })
 
+  it('does not stay latched after initial boot stops while the gateway is still not open', () => {
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      message: 'Connecting to Hermes gateway',
+      phase: 'renderer.gateway.connect',
+      progress: 95,
+      running: true,
+      visible: true
+    })
+    setGatewayState('connecting')
+
+    const { rerender } = render(
+      <>
+        <GatewayConnectingOverlay />
+        <BootFailureOverlay />
+      </>
+    )
+    expect(isConnectingShown()).toBe(true)
+
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      message: 'ready',
+      phase: 'renderer.ready',
+      progress: 100,
+      running: false,
+      visible: false
+    })
+    setGatewayState('closed')
+    rerender(
+      <>
+        <GatewayConnectingOverlay />
+        <BootFailureOverlay />
+      </>
+    )
+
+    expect(isConnectingShown()).toBe(false)
+    expect(isRecoveryShown()).toBe(false)
+  })
+
   it('FIX: once the prolonged reconnect raises a recoverable boot error, the recovery overlay takes over', () => {
     // Mirrors what useGatewayBoot.scheduleReconnect() now does after ~45s of
     // failed post-boot reconnects: it calls failDesktopBoot(), flipping the UI

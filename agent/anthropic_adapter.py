@@ -2266,6 +2266,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    canonical_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -2311,6 +2312,16 @@ def build_anthropic_kwargs(
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
+    # Capability detection (thinking mode, sampling/fast-mode support) must key
+    # off the model's *real* identity. Downlink providers expose display names
+    # (e.g. 极致/性能) that the substring detectors don't recognize; when the
+    # caller passes the canonical model (from the provider's model config), use
+    # it for those checks while the display name is still what's sent on the wire.
+    caps_model = (
+        normalize_model_name(canonical_model, preserve_dots=preserve_dots)
+        if canonical_model
+        else model
+    )
     # effective_max_tokens = output cap for this call (≠ total context window)
     # Use the resolver helper so non-positive values (negative ints,
     # fractional floats, NaN, non-numeric) fail locally with a clear error
@@ -2419,10 +2430,10 @@ def build_anthropic_kwargs(
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if reasoning_config.get("enabled") is not False and "haiku" not in caps_model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
-            if _supports_adaptive_thinking(model):
+            if _supports_adaptive_thinking(caps_model):
                 kwargs["thinking"] = {
                     "type": "adaptive",
                     "display": "summarized",
@@ -2430,7 +2441,7 @@ def build_anthropic_kwargs(
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 # Downgrade xhigh→max on models that don't list xhigh as a
                 # supported level (Opus/Sonnet 4.6). Opus 4.7+ keeps xhigh.
-                if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
+                if adaptive_effort == "xhigh" and not _supports_xhigh_effort(caps_model):
                     adaptive_effort = "max"
                 kwargs["output_config"] = {
                     "effort": adaptive_effort,
@@ -2446,7 +2457,7 @@ def build_anthropic_kwargs(
     # Callers (auxiliary_client, etc.) may set these for older models;
     # drop them here as a safety net so upstream 4.6 → 4.7 migrations
     # don't require coordinated edits everywhere.
-    if _forbids_sampling_params(model):
+    if _forbids_sampling_params(caps_model):
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)
 
@@ -2459,7 +2470,7 @@ def build_anthropic_kwargs(
     if (
         fast_mode
         and not _is_third_party_anthropic_endpoint(base_url)
-        and _supports_fast_mode(model)
+        and _supports_fast_mode(caps_model)
     ):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request

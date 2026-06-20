@@ -1,0 +1,7 @@
+name: kie
+version: 1.0.0
+description: "KIE (kie.ai) image generation backend — gpt-image-2 text-to-image / image-to-image. EasyHermes native media provider."
+author: EasyHermes
+kind: backend
+requires_env:
+  - KIE_API_KEY

@@ -404,6 +404,27 @@ class TestPicker:
 # ---------------------------------------------------------------------------
 
 
+class TestPalmierProShippedCatalog:
+    def test_palmier_pro_catalog_entry_registers_local_http_mcp(self):
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import get_entry, install_entry
+
+        entry = get_entry("palmier-pro")
+        assert entry is not None
+        assert entry.description == "Video editing timeline automation via the local Palmier Pro MCP server."
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "http://127.0.0.1:19789/mcp"
+        assert entry.auth.type == "none"
+
+        install_entry(entry, enable=True)
+
+        server = load_config()["mcp_servers"]["palmier-pro"]
+        assert server == {
+            "enabled": True,
+            "url": "http://127.0.0.1:19789/mcp",
+        }
+
+
 class TestToolSelection:
     def _make_probed(self, *names):
         """Return a list of (tool_name, description) tuples for mocking."""

@@ -68,6 +68,10 @@ export function GatewayConnectingOverlay() {
     shownRef.current = true
   }
 
+  if (!previewing && !connecting && gatewayState !== 'open') {
+    shownRef.current = false
+  }
+
   // Decode loop — only while live (freeze the resolved word during the exit).
   useEffect(() => {
     if (phase !== 'live' || (!previewing && !connecting)) {

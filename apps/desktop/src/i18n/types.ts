@@ -870,10 +870,53 @@ export interface Translations {
 
   workflow: {
     title: string
+    starting: string
     loading: string
     backendUnavailable: string
     backendUnavailableDetail: (url: string) => string
-    openInBrowser: string
+    canvas: string
+    knowledge: string
+    knowledgeLocked: string
+    bridgeUnavailable: string
+    startEngineTitle: string
+    startEngineHint: string
+    startBtn: string
+    stopBtn: string
+    lowMemWarn: (gb: number) => string
+    firstStartNote: string
+    engineRunning: string
+  }
+  knowledge: {
+    title: string
+    subtitle: string
+    dropHint: string
+    dropActive: string
+    scanning: string
+    scanError: string
+    empty: string
+    indexableLabel: string
+    nameOnlyLabel: string
+    nameOnlyHint: string
+    filesCount: (n: number) => string
+    estMinutes: (n: number) => string
+    noiseNote: (n: number) => string
+    truncatedNote: string
+    indexing: string
+    startingBackend: string
+    ingestProgress: (done: number, total: number) => string
+    ingestDone: (indexed: number, nameOnly: number) => string
+    ingestError: string
+    doneBtn: string
+    cancel: string
+    confirm: string
+    sourcesTitle: string
+    sync: string
+    syncing: string
+    remove: string
+    upToDate: string
+    syncedChange: (added: number, modified: number, removed: number) => string
+    lastSync: string
+    sourceSummary: (indexed: number, nameOnly: number) => string
   }
 
   sidebar: {

@@ -2545,6 +2545,11 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unrecognized request argument",
         "unrecognized parameter",
         "invalid parameter",
+        # Newer OpenAI-family models (gpt-5.x via /v1/responses) phrase the
+        # rejection as "`temperature` is deprecated for this model." rather
+        # than "unsupported" — match it so the reactive drop-and-retry fires
+        # instead of failing the auxiliary call outright.
+        "deprecated",
     ))
 
 

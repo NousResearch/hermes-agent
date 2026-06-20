@@ -1999,7 +1999,9 @@ def _apply_model_switch(
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
         cfg = load_config()
-        user_provs = cfg.get("providers")
+        from hermes_cli.kari_cloud_provider import merge_kari_cloud_provider
+
+        user_provs = merge_kari_cloud_provider(cfg.get("providers"))
         custom_provs = get_compatible_custom_providers(cfg)
     except Exception:
         pass
@@ -3276,6 +3278,19 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
+# Consultative workflow guidance for the customer-facing copilot: clarify and
+# confirm the requirement before doing real work. Injected into the gateway
+# agent's system prompt by _make_agent (copilot scope only — the CLI path does
+# not go through _make_agent). Edit the wording here to tune copilot behavior.
+_COPILOT_CONSULTATIVE_GUIDANCE = """\
+【行动方式:先沟通确认,再动手】
+你是帮客户搭建自动化流程(langflow 画布)的助手。在执行任何会改变状态的实际操作之前 —— 创建/修改/连接画布节点、调用会落地的工具、给出最终交付方案 —— 必须先和客户把需求讨论清楚并取得确认:
+1. 先弄懂客户真正想要的:目标、使用场景、输入与产出、关键约束和偏好。凡有不清楚或有歧义之处,主动、精准地提问澄清(一次问到点子上,别一股脑罗列问题)。
+2. 用简洁的话复述你的理解,并说明你打算怎么做(方案与关键步骤),请客户确认。
+3. 客户明确认可后,才开始实际构建或调用工具。
+需求没讨论清楚、客户没确认前,不要直接动画布或调用工具。沟通时简洁直接、聚焦于把需求问明白,不要冗长。若客户的要求本身已经很明确具体,简要确认一句即可动手,不必反复追问。"""
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -3311,6 +3326,16 @@ def _make_agent(
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
+    # Copilot consultative workflow — discuss + confirm requirements with the
+    # customer BEFORE taking real action (building/connecting langflow canvas
+    # nodes, calling state-changing tools, committing to a deliverable). Scoped
+    # here to gateway (copilot) sessions; the interactive CLI builds its agent
+    # without _make_agent, so it's unaffected. Toggle off via config.yaml
+    # ``agent.copilot_consultative: false``.
+    if agent_cfg.get("copilot_consultative", True):
+        system_prompt = "\n\n".join(
+            p for p in (system_prompt, _COPILOT_CONSULTATIVE_GUIDANCE) if p
+        ).strip()
     startup_skills = _parse_tui_skills_env()
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt

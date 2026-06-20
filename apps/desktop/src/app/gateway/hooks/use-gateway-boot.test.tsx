@@ -159,6 +159,18 @@ async function advanceBackoff() {
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('does not surface the Electron IPC bridge guard as a hard boot failure in non-Electron renders', async () => {
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().running).toBe(false)
+    expect($desktopBoot.get().visible).toBe(false)
+    expect($gatewayState.get()).toBe('idle')
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it

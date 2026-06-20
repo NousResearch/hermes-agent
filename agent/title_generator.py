@@ -84,6 +84,21 @@ def generate_title(
         return None
 
 
+def _title_from_user_message(user_message: str) -> Optional[str]:
+    """Derive a session title locally from the first user message.
+
+    No LLM call — instant and never fails. Takes the first 10 characters
+    (whitespace collapsed so the title stays a single line) and appends an
+    ellipsis when the original message is longer. Replaces the old
+    ``generate_title`` LLM call so opening a new session no longer fires an
+    extra synchronous request against the downlinked models.
+    """
+    text = " ".join((user_message or "").split())
+    if not text:
+        return None
+    return text if len(text) <= 10 else text[:10] + "..."
+
+
 def auto_title_session(
     session_db,
     session_id: str,
@@ -112,9 +127,10 @@ def auto_title_session(
     except Exception:
         return
 
-    title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
-    )
+    # Titles are derived locally from the first user message (first 10 chars
+    # + ellipsis) — no LLM call, so a new session no longer triggers an extra
+    # synchronous request against the downlinked 极致/性能 models.
+    title = _title_from_user_message(user_message)
     if not title:
         return
 

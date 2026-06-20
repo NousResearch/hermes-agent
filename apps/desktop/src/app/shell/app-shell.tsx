@@ -18,6 +18,7 @@ import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 
+import { AccountDialog } from '../account/account-dialog'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
 import { KeybindPanel } from './keybind-panel'
@@ -163,6 +164,7 @@ export function AppShell({
       }
     >
       <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+      <AccountDialog />
 
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">
         <PaneShell className="min-h-0 flex-1">

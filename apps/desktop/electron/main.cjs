@@ -20,7 +20,6 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
-const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -39,7 +38,11 @@ const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
+const { resolveWebDist: resolveDashboardWebDist } = require('./web-dist.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
+const { scanInventory } = require('./knowledge-inventory.cjs')
+const { ingestSource } = require('./knowledge-ingest.cjs')
+const knowledgeSources = require('./knowledge-sources.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
@@ -76,6 +79,7 @@ const {
   resolveRequestedPathForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const { createWorkflowBackendManager, getWorkflowAuthStatus, resolveLangflowRoot } = require('./workflow-backend.cjs')
 
 let nodePty = null
 let nodePtyDir = null
@@ -321,7 +325,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 650
   return Math.max(120, raw)
 })()
-const APP_NAME = 'Hermes'
+const APP_NAME = 'EasyHermes'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 const WINDOW_BUTTON_POSITION = {
@@ -495,6 +499,11 @@ const MEDIA_MIME_TYPES = {
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
+const ALLOWED_WEBVIEW_PARTITIONS = new Set([
+  'persist:hermes-preview',
+  'persist:hermes-workflow',
+  'persist:hermes-workflow-chat'
+])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const PREVIEW_LANGUAGE_BY_EXT = {
   '.c': 'c',
@@ -649,6 +658,7 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+let workflowBackendManager = null
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by hermesProcess +
 // connectionPromise + startHermes(); this pool only holds EXTRA profile
@@ -2127,27 +2137,16 @@ function writeBootstrapMarker(payload) {
 }
 
 function resolveWebDist() {
-  const override = process.env.HERMES_DESKTOP_WEB_DIST
-  if (override && directoryExists(path.resolve(override))) return path.resolve(override)
-
-  const unpackedDist = path.join(unpackedPathFor(APP_ROOT), 'dist')
-  if (directoryExists(unpackedDist)) return unpackedDist
-
-  // Final fallback: APP_ROOT/dist. When packaged with asar:true this lives
-  // INSIDE app.asar — not a servable filesystem directory — so the embedded
-  // dashboard backend 404s on static routes (see #41327, #39472). The durable
-  // fix is unpacking dist/ (PR #41411 adds dist/** to asarUnpack so the tier-2
-  // unpackedDist above resolves). If we still land here while packaged, log it
-  // so the cause isn't silent.
-  const fallback = path.join(APP_ROOT, 'dist')
-  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !directoryExists(fallback)) {
-    rememberLog(
-      `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
-        `is not a real directory: ${fallback}. Static routes will 404. ` +
-        `Ensure dist/** is unpacked (asarUnpack) or set HERMES_DESKTOP_WEB_DIST.`
-    )
-  }
-  return fallback
+  return resolveDashboardWebDist({
+    activeHermesRoot: ACTIVE_HERMES_ROOT,
+    appRoot: APP_ROOT,
+    directoryExists,
+    env: process.env,
+    isPackaged: IS_PACKAGED,
+    rememberLog,
+    sourceRepoRoot: SOURCE_REPO_ROOT,
+    unpackedPathFor
+  })
 }
 
 function resolveRendererIndex() {
@@ -3194,6 +3193,44 @@ async function normalizePreviewTarget(rawTarget, baseDir) {
   }
 }
 
+function hardenAttachedWebview(webPreferences) {
+  delete webPreferences.preload
+  delete webPreferences.preloadURL
+
+  webPreferences.allowRunningInsecureContent = false
+  webPreferences.contextIsolation = true
+  webPreferences.experimentalFeatures = false
+  webPreferences.nodeIntegration = false
+  webPreferences.nodeIntegrationInSubFrames = false
+  webPreferences.nodeIntegrationInWorker = false
+  webPreferences.sandbox = true
+  webPreferences.webSecurity = true
+}
+
+function isAllowedWebviewAttach(params) {
+  const partition = String(params?.partition || '')
+
+  if (!ALLOWED_WEBVIEW_PARTITIONS.has(partition)) {
+    return false
+  }
+
+  try {
+    const url = new URL(String(params?.src || ''))
+
+    if (url.protocol === 'file:') {
+      return partition === 'persist:hermes-preview'
+    }
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return false
+    }
+
+    return LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
 async function filePathFromPreviewUrl(rawUrl) {
   const { resolvedPath } = await resolveReadableFileForIpc(String(rawUrl || ''), { purpose: 'Preview file' })
   return resolvedPath
@@ -3857,7 +3894,7 @@ function openOauthLoginWindow(baseUrl) {
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: 'Sign in to Hermes gateway',
+        title: 'Sign in to EasyHermes gateway',
         autoHideMenuBar: true,
         webPreferences: {
           contextIsolation: true,
@@ -5056,6 +5093,41 @@ function wireCommonWindowHandlers(win) {
     event.preventDefault()
     openExternalUrl(url)
   })
+  win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    hardenAttachedWebview(webPreferences)
+
+    if (isAllowedWebviewAttach(params)) {
+      return
+    }
+
+    event.preventDefault()
+    rememberLog(`[security] blocked webview attach: ${params?.src || '<empty>'}`)
+  })
+}
+
+// Delay the launch-time workflow pre-warm a touch so it doesn't contend with
+// the primary backend boot and the window's first paint.
+const WORKFLOW_PREWARM_DELAY_MS = 2500
+
+function getWorkflowBackendManager() {
+  if (!workflowBackendManager) {
+    const root = resolveLangflowRoot({
+      candidates: [
+        path.resolve(SOURCE_REPO_ROOT, '../../kari-all/langflow'),
+        path.resolve(SOURCE_REPO_ROOT, '../langflow'),
+        path.join(HERMES_HOME, 'langflow')
+      ]
+    })
+
+    workflowBackendManager = createWorkflowBackendManager({
+      root,
+      configDir: path.join(HERMES_HOME, 'langflow'),
+      secretsPath: path.join(HERMES_HOME, 'workflow-secrets.json'),
+      log: line => rememberLog(`[workflow] ${line}`)
+    })
+  }
+
+  return workflowBackendManager
 }
 
 // Secondary "session windows" — one extra OS window per chat so a user can
@@ -5081,7 +5153,7 @@ function createSessionWindow(sessionId, { watch = false } = {}) {
       height: SESSION_WINDOW_MIN_HEIGHT,
       minWidth: SESSION_WINDOW_MIN_WIDTH,
       minHeight: SESSION_WINDOW_MIN_HEIGHT,
-      title: 'Hermes',
+      title: 'EasyHermes',
       titleBarStyle: 'hidden',
       titleBarOverlay: getTitleBarOverlayOptions(),
       trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -5140,7 +5212,7 @@ function createWindow() {
     height: 800,
     minWidth: 400,
     minHeight: 620,
-    title: 'Hermes',
+    title: 'EasyHermes',
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit
@@ -5369,6 +5441,575 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
+ipcMain.handle('hermes:workflow:start', async () => getWorkflowBackendManager().start())
+ipcMain.handle('hermes:workflow:status', async () => getWorkflowBackendManager().status())
+ipcMain.handle('hermes:workflow:stop', async () => getWorkflowBackendManager().stop())
+// 本机总内存(GB)——工作流页据此判断是否够跑 langflow(建议 ≥8GB)。
+ipcMain.handle('hermes:system:total-memory-gb', async () => {
+  try {
+    return require('node:os').totalmem() / 1024 / 1024 / 1024
+  } catch {
+    return 0
+  }
+})
+// 知识库入库/同步/删除都依赖 langflow(建/删 KB + embed),但 langflow 是按需启动的;先用工作流
+// 后端管理器幂等拉起并等就绪,否则直接 fetch 会 connection refused。首次冷启慢(component+flows,
+// 实测 2-4 分钟),给足 deadline。等后端期间先发 total=0 进度,前端据此显示"正在启动后端"。
+async function ensureLangflowReady(sender) {
+  const manager = getWorkflowBackendManager()
+  if (sender) {
+    sender.send('hermes:knowledge:ingest-progress', { phase: 'preparing', done: 0, total: 0 })
+  }
+  let status = await manager.start()
+  const deadline = Date.now() + 300000
+  while (status && status.state === 'starting' && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    status = await manager.status()
+  }
+  if (!status || status.state !== 'ready') {
+    return { ok: false, error: `langflow 未就绪(${status ? status.state : 'unknown'})`, url: null }
+  }
+  return { ok: true, url: status.url }
+}
+
+ipcMain.handle('hermes:knowledge:inventory', async (_event, dirPath) => scanInventory(String(dirPath || '')))
+ipcMain.handle('hermes:knowledge:ingest', async (event, payload) => {
+  const ready = await ensureLangflowReady(event.sender)
+  if (!ready.ok) {
+    return { ok: false, error: ready.error }
+  }
+  const result = await ingestSource(payload, event.sender, ready.url)
+  if (result.ok) {
+    const payloadPath = String((payload && (payload.path || payload.folderPath)) || '').trim()
+    // 用解析后的路径(result.path)做记录,保证同步时 manifest 的 diff 根一致。
+    const srcPath = result.path || payloadPath
+    const name = result.name || String((payload && payload.name) || '').trim() || path.basename(srcPath)
+    knowledgeSources.upsertSource(HERMES_HOME, knowledgeSources.makeRecord(srcPath, name, result, Date.now()))
+  }
+  return result
+})
+ipcMain.handle('hermes:knowledge:list', async () => knowledgeSources.listSources(HERMES_HOME))
+ipcMain.handle('hermes:knowledge:remove', async (_event, sourceId) => {
+  const ready = await ensureLangflowReady(null) // best-effort:KB 删不掉也要删记录
+  return knowledgeSources.removeSource(HERMES_HOME, String(sourceId || ''), ready.ok ? ready.url : null)
+})
+ipcMain.handle('hermes:knowledge:sync', async (event, sourceId) => {
+  const ready = await ensureLangflowReady(event.sender)
+  if (!ready.ok) {
+    return { ok: false, error: ready.error }
+  }
+  return knowledgeSources.syncSource(HERMES_HOME, String(sourceId || ''), ready.url, event.sender, Date.now())
+})
+
+// --- Workflow cloud login (kari-cloud) -------------------------------------
+// The embedded Langflow never holds the real KIE_API_KEY. Instead the user logs
+// in to the cloud backend, which issues a per-user token; we persist it (+ the
+// cloud base URL) into workflow-secrets.json, and workflow-backend.cjs injects
+// it as KARI_HUB_URL + KARI_WORKSPACE_TOKEN so nodes relay kie/billing to the
+// cloud. The raw kie key stays on the server.
+const WORKFLOW_SECRETS_PATH = path.join(HERMES_HOME, 'workflow-secrets.json')
+
+function readWorkflowSecretsFile() {
+  try {
+    return JSON.parse(fs.readFileSync(WORKFLOW_SECRETS_PATH, 'utf8') || '{}') || {}
+  } catch (err) {
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return {}
+    throw err
+  }
+}
+
+function writeWorkflowSecretsFile(secrets) {
+  fs.mkdirSync(path.dirname(WORKFLOW_SECRETS_PATH), { recursive: true })
+  fs.writeFileSync(WORKFLOW_SECRETS_PATH, JSON.stringify(secrets, null, 2), { mode: 0o600 })
+}
+
+function workflowHasAuthToken() {
+  return Boolean(readWorkflowSecretsFile()?.kari?.token)
+}
+
+function workflowAccountDisplayName(kari) {
+  const username = String(kari?.username || kari?.name || '').trim()
+  if (username) return username
+  const email = String(kari?.email || '').trim()
+  if (email) return email
+  return ''
+}
+
+async function getEasyHermesAccountStatus() {
+  const secrets = readWorkflowSecretsFile()
+  const kari = secrets?.kari && typeof secrets.kari === 'object' ? secrets.kari : {}
+  const status = await getWorkflowAuthStatus({ secretsPath: WORKFLOW_SECRETS_PATH })
+
+  return {
+    ...status,
+    balance: typeof kari.balance === 'number' ? kari.balance : undefined,
+    email: String(kari.email || '').trim(),
+    username: workflowAccountDisplayName(kari)
+  }
+}
+
+function normalizeCloudCredential(value) {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const apiKey = String(value.apiKey || value.api_key || value.key || '').trim()
+  const baseURL = String(value.baseURL || value.baseUrl || value.base_url || '').trim()
+  const model = String(value.model || '').trim()
+
+  if (!apiKey && !baseURL && !model) {
+    return null
+  }
+
+  return { apiKey, baseURL, model }
+}
+
+const HERMES_DOTENV_PATH = path.join(HERMES_HOME, '.env')
+
+// Read-modify-write ~/.hermes/.env: set keys (string value) or remove them
+// (null), preserving every other line/comment. The desktop CHAT agent (gateway)
+// reads its LLM key from HERMES_LOTJC_*_API_KEY here via config.yaml key_env —
+// separate from the langflow workflow-secrets — so login swaps in the per-user
+// downlinked keys and logout removes the old fixed ones.
+function writeHermesDotenvKeys(updates) {
+  let lines = []
+  try {
+    lines = fs.readFileSync(HERMES_DOTENV_PATH, 'utf8').split('\n')
+  } catch (err) {
+    if (err && err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err
+  }
+  const seen = new Set()
+  const out = []
+  for (const line of lines) {
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)
+    const key = match && match[1]
+    if (key && Object.prototype.hasOwnProperty.call(updates, key)) {
+      seen.add(key)
+      if (updates[key] == null) continue // remove the line
+      out.push(`${key}=${updates[key]}`)
+    } else {
+      out.push(line)
+    }
+  }
+  for (const [key, val] of Object.entries(updates)) {
+    if (val != null && !seen.has(key)) out.push(`${key}=${val}`)
+  }
+  const text = `${out.join('\n').replace(/\n+$/, '')}\n`
+  fs.mkdirSync(path.dirname(HERMES_DOTENV_PATH), { recursive: true })
+  fs.writeFileSync(HERMES_DOTENV_PATH, text, { mode: 0o600 })
+}
+
+function saveEasyHermesAccountLogin(secrets, cloudBaseUrl, loginEmail, response) {
+  const json = response || {}
+  const token = json.token
+  const email = String(json.email || loginEmail || '').trim()
+  const username = String(json.username || json.name || email || '').trim()
+  const kari = {
+    token,
+    cloudBaseURL: cloudBaseUrl,
+    email,
+    username
+  }
+
+  if (typeof json.balance === 'number') {
+    kari.balance = json.balance
+  }
+
+  secrets.kari = kari
+
+  const openai = normalizeCloudCredential(json.openai || json.performance || json.models?.performance)
+  if (openai) {
+    secrets.openai = openai
+  }
+
+  const anthropic = normalizeCloudCredential(json.anthropic || json.extreme || json.models?.extreme)
+  if (anthropic) {
+    secrets.anthropic = anthropic
+  }
+
+  // Point the CHAT agent at this user's own downlinked keys (per-user sub2api
+  // billing), replacing the fixed shared HERMES_LOTJC_* keys. Write the value
+  // even when empty (not remove the line): the gateway reloads .env per turn
+  // with override=True, which overwrites a present key but can't unset an absent
+  // one — so an empty value is what actually clears the stale in-memory key.
+  writeHermesDotenvKeys({
+    HERMES_LOTJC_OPENAI_API_KEY: (openai && openai.apiKey) || '',
+    HERMES_LOTJC_ANTHROPIC_API_KEY: (anthropic && anthropic.apiKey) || '',
+    // CHAT agent 的 KIE 生图/生视频(tools/kie_common.py)经 hub relay:需要中枢地址 + 容器 token,
+    // 中枢注入真实 KIE_API_KEY 并权威扣费,客户端不持 key(对齐 langflow 的 lfx.kari_media)。
+    KARI_HUB_URL: String(cloudBaseUrl || ''),
+    KARI_WORKSPACE_TOKEN: String(token || '')
+  })
+}
+
+function clearEasyHermesAccountSecrets(secrets) {
+  // The kari token plus the openai/anthropic model slots are all cloud-issued on
+  // login (saveEasyHermesAccountLogin) — never hand-entered — so wiping them on
+  // logout is safe and is what makes the Kari nodes go unavailable.
+  // 但保留上次的云地址(+邮箱):否则退登后登录表单回落到生产默认地址,
+  // 本地 hub 用户每次都得重填 http://127.0.0.1:8900。只留这两个非敏感字段。
+  const prevKari = secrets.kari && typeof secrets.kari === 'object' ? secrets.kari : null
+  const keepCloud = prevKari ? String(prevKari.cloudBaseURL || prevKari.cloudBaseUrl || '').trim() : ''
+  const keepEmail = prevKari ? String(prevKari.email || '').trim() : ''
+  if (keepCloud || keepEmail) {
+    secrets.kari = { cloudBaseURL: keepCloud, email: keepEmail }
+  } else {
+    delete secrets.kari
+  }
+  delete secrets.openai
+  delete secrets.anthropic
+
+  if (secrets.env && typeof secrets.env === 'object') {
+    for (const key of [
+      'KARI_HUB_URL',
+      'KARI_WORKSPACE_TOKEN',
+      'OPENAI_API_KEY',
+      'OPENAI_BASE_URL',
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_BASE_URL',
+      'KARI_LLM_PERFORMANCE_API_KEY',
+      'KARI_LLM_PERFORMANCE_BASE_URL',
+      'KARI_LLM_PERFORMANCE_MODEL',
+      'KARI_LLM_EXTREME_API_KEY',
+      'KARI_LLM_EXTREME_BASE_URL',
+      'KARI_LLM_EXTREME_MODEL'
+    ]) {
+      delete secrets.env[key]
+    }
+
+    if (Object.keys(secrets.env).length === 0) {
+      delete secrets.env
+    }
+  }
+
+  // Clear the per-user CHAT keys in ~/.hermes/.env on logout. Write EMPTY values
+  // (not remove): the long-lived gateway only picks up keys present in .env on
+  // its per-turn override-reload, so an empty value is what unsets the stale
+  // in-memory key — removing the line would leave the old key live until restart.
+  writeHermesDotenvKeys({
+    HERMES_LOTJC_OPENAI_API_KEY: '',
+    HERMES_LOTJC_ANTHROPIC_API_KEY: '',
+    KARI_HUB_URL: '',
+    KARI_WORKSPACE_TOKEN: ''
+  })
+}
+
+async function restartWorkflowBackendIfCreated(reason) {
+  if (!workflowBackendManager) {
+    return
+  }
+
+  try {
+    await workflowBackendManager.stop()
+    await workflowBackendManager.start()
+    // The canvas webview was loaded against the pre-restart Langflow. Tell the
+    // renderer so it can reload and pick up the new Kari token state — nodes
+    // appear on login / disappear on logout without a manual refresh.
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('hermes:workflow:restarted', { reason })
+    }
+  } catch (err) {
+    rememberLog(`[workflow] restart after ${reason} failed: ${err?.message || err}`)
+  }
+}
+
+async function workflowHasReachableAuth() {
+  const status = await getWorkflowAuthStatus({ secretsPath: WORKFLOW_SECRETS_PATH })
+  if (!status.loggedIn && status.error) {
+    rememberLog(`[workflow] cloud auth unavailable: ${status.error}`)
+  }
+  return Boolean(status.loggedIn)
+}
+
+function postJsonToCloud(urlStr, body) {
+  return new Promise((resolve, reject) => {
+    let u
+    try {
+      u = new URL(urlStr)
+    } catch {
+      reject(new Error('无效的云端地址'))
+      return
+    }
+    const lib = u.protocol === 'https:' ? https : http
+    const data = Buffer.from(JSON.stringify(body))
+    const req = lib.request(
+      u,
+      { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': data.length }, timeout: 20000 },
+      res => {
+        const chunks = []
+        res.on('data', c => chunks.push(c))
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          let json = null
+          try {
+            json = text ? JSON.parse(text) : null
+          } catch {
+            json = null
+          }
+          resolve({ status: res.statusCode, json })
+        })
+      }
+    )
+    req.on('timeout', () => req.destroy(new Error('连接云端超时')))
+    req.on('error', reject)
+    req.write(data)
+    req.end()
+  })
+}
+
+ipcMain.handle('hermes:workflow:authStatus', async () => {
+  return getWorkflowAuthStatus({ secretsPath: WORKFLOW_SECRETS_PATH })
+})
+
+async function loginEasyHermesAccount(payload) {
+  const cloudBaseUrl = String(payload?.cloudBaseUrl || '')
+    .trim()
+    .replace(/\/+$/, '')
+  const email = String(payload?.email || '').trim()
+  const password = String(payload?.password || '')
+  if (!cloudBaseUrl || !email || !password) {
+    return { ok: false, error: '请填写云端地址、邮箱和密码' }
+  }
+  let resp
+  try {
+    resp = await postJsonToCloud(`${cloudBaseUrl}/auth/login`, { email, password })
+  } catch (err) {
+    return { ok: false, error: `无法连接云端:${err?.message || err}` }
+  }
+  if (resp.status !== 200 || !resp.json?.token) {
+    return { ok: false, error: resp.json?.detail || `登录失败(HTTP ${resp.status})` }
+  }
+  const secrets = readWorkflowSecretsFile()
+  saveEasyHermesAccountLogin(secrets, cloudBaseUrl, email, resp.json)
+  writeWorkflowSecretsFile(secrets)
+  void restartWorkflowBackendIfCreated('account login')
+  return { ok: true, balance: resp.json.balance, email: resp.json.email || email, username: resp.json.username || resp.json.name }
+}
+
+// Register mirrors login: create the account on the cloud, then persist the same
+// downlink (token + cloud model creds) so the user is signed in immediately.
+async function registerEasyHermesAccount(payload) {
+  const cloudBaseUrl = String(payload?.cloudBaseUrl || '')
+    .trim()
+    .replace(/\/+$/, '')
+  const email = String(payload?.email || '').trim()
+  const password = String(payload?.password || '')
+  if (!cloudBaseUrl || !email || !password) {
+    return { ok: false, error: '请填写云端地址、邮箱和密码' }
+  }
+  let resp
+  try {
+    resp = await postJsonToCloud(`${cloudBaseUrl}/auth/register`, { email, password })
+  } catch (err) {
+    return { ok: false, error: `无法连接云端:${err?.message || err}` }
+  }
+  if (resp.status !== 200 || !resp.json?.token) {
+    return { ok: false, error: resp.json?.detail || `注册失败(HTTP ${resp.status})` }
+  }
+  const secrets = readWorkflowSecretsFile()
+  saveEasyHermesAccountLogin(secrets, cloudBaseUrl, email, resp.json)
+  writeWorkflowSecretsFile(secrets)
+  void restartWorkflowBackendIfCreated('account register')
+  return { ok: true, balance: resp.json.balance, email: resp.json.email || email, username: resp.json.username || resp.json.name }
+}
+
+function getJsonFromCloud(urlStr, token) {
+  return new Promise((resolve, reject) => {
+    let u
+    try {
+      u = new URL(urlStr)
+    } catch {
+      reject(new Error('无效的云端地址'))
+      return
+    }
+    const lib = u.protocol === 'https:' ? https : http
+    const headers = { accept: 'application/json' }
+    if (token) headers['X-Kari-Workspace-Token'] = token
+    const req = lib.request(u, { method: 'GET', headers, timeout: 20000 }, res => {
+      const chunks = []
+      res.on('data', c => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        let json = null
+        try {
+          json = text ? JSON.parse(text) : null
+        } catch {
+          json = null
+        }
+        resolve({ status: res.statusCode, json })
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error('连接云端超时')))
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+function getEasyHermesCloudContext() {
+  const kari = readWorkflowSecretsFile()?.kari
+  const base = String(kari?.cloudBaseURL || kari?.cloudBaseUrl || '').trim().replace(/\/+$/, '')
+  const token = String(kari?.token || '').trim()
+
+  if (!base || !token) {
+    throw new Error('未登录或缺少云端地址')
+  }
+
+  return { base, token }
+}
+
+function cloudErrorMessage(status, json) {
+  const detail = json?.detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map(item => (item && (item.msg || item.message)) || (typeof item === 'string' ? item : JSON.stringify(item)))
+      .join('；')
+  }
+  if (detail && typeof detail === 'object') {
+    return detail.msg || detail.message || JSON.stringify(detail)
+  }
+  return String(detail || json?.error || `HTTP ${status}`)
+}
+
+function accountCloudRequest(pathname, options = {}) {
+  const { base, token } = getEasyHermesCloudContext()
+  const method = String(options.method || 'GET').toUpperCase()
+  const body = options.body
+
+  return new Promise((resolve, reject) => {
+    let u
+    try {
+      u = new URL(pathname, `${base}/`)
+    } catch {
+      reject(new Error('无效的云端地址'))
+      return
+    }
+
+    const lib = u.protocol === 'https:' ? https : http
+    const headers = { accept: 'application/json', 'X-Kari-Workspace-Token': token }
+    let data = null
+
+    if (body !== undefined) {
+      data = Buffer.from(JSON.stringify(body))
+      headers['content-type'] = 'application/json'
+      headers['content-length'] = data.length
+    }
+
+    const req = lib.request(u, { method, headers, timeout: 20000 }, res => {
+      const chunks = []
+      res.on('data', c => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        let json = null
+        try {
+          json = text ? JSON.parse(text) : null
+        } catch {
+          json = null
+        }
+
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(cloudErrorMessage(res.statusCode, json)))
+          return
+        }
+
+        resolve(json)
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error('连接云端超时')))
+    req.on('error', reject)
+    if (data) req.write(data)
+    req.end()
+  })
+}
+
+// Consumption detail + fresh balance for the account popup: read the cloud
+// base + per-user token from secrets, GET /account/usage and the wallet.
+async function getEasyHermesAccountUsage(opts) {
+  const kari = readWorkflowSecretsFile()?.kari
+  const base = String(kari?.cloudBaseURL || kari?.cloudBaseUrl || '').trim().replace(/\/+$/, '')
+  const token = String(kari?.token || '').trim()
+  if (!base || !token) {
+    return { ok: false, error: '未登录或缺少云端地址', items: [] }
+  }
+  const limit = Math.max(1, Math.min(100, Number(opts?.limit) || 20))
+  const offset = Math.max(0, Number(opts?.offset) || 0)
+  const kind = String(opts?.kind || '').trim()
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (kind) params.set('kind', kind)
+  try {
+    const [usage, wallet] = await Promise.all([
+      getJsonFromCloud(`${base}/account/usage?${params.toString()}`, token),
+      getJsonFromCloud(`${base}/api/v1/kari/billing/wallet`, token).catch(() => ({ status: 0, json: null }))
+    ])
+    if (usage.status !== 200) {
+      return { ok: false, error: usage.json?.detail || `读取消费明细失败(HTTP ${usage.status})`, items: [] }
+    }
+    return {
+      ok: true,
+      items: Array.isArray(usage.json?.items) ? usage.json.items : [],
+      total: usage.json?.total,
+      balance: typeof wallet.json?.balance === 'number' ? wallet.json.balance : undefined,
+      creditRmb: wallet.json?.credit_rmb
+    }
+  } catch (err) {
+    return { ok: false, error: `无法连接云端:${err?.message || err}`, items: [] }
+  }
+}
+
+ipcMain.handle('hermes:account:status', async () => getEasyHermesAccountStatus())
+ipcMain.handle('hermes:account:me', async () => accountCloudRequest('/account/me'))
+ipcMain.handle('hermes:account:register', async (_event, payload) => registerEasyHermesAccount(payload))
+ipcMain.handle('hermes:account:usage', async (_event, opts) => getEasyHermesAccountUsage(opts))
+ipcMain.handle('hermes:account:login', async (_event, payload) => loginEasyHermesAccount(payload))
+ipcMain.handle('hermes:account:wallet', async () => accountCloudRequest('/api/v1/kari/billing/wallet'))
+ipcMain.handle('hermes:account:transactions', async (_event, opts) => {
+  const limit = Math.max(1, Math.min(200, Number(opts?.limit) || 20))
+  const offset = Math.max(0, Number(opts?.offset) || 0)
+  return accountCloudRequest(`/api/v1/kari/billing/wallet/transactions?limit=${limit}&offset=${offset}`)
+})
+ipcMain.handle('hermes:account:payConfig', async () => accountCloudRequest('/api/v1/kari/billing/pay/config'))
+ipcMain.handle('hermes:account:createOrder', async (_event, yuan) =>
+  accountCloudRequest('/api/v1/kari/billing/pay/wallet-create', { body: { yuan }, method: 'POST' })
+)
+ipcMain.handle('hermes:account:mockConfirm', async (_event, orderId) =>
+  accountCloudRequest('/api/v1/kari/billing/pay/wallet-mock-confirm', {
+    body: { order_id: String(orderId || '') },
+    method: 'POST'
+  })
+)
+ipcMain.handle('hermes:account:redeem', async (_event, code) =>
+  accountCloudRequest('/api/v1/kari/billing/redeem', { body: { code: String(code || '') }, method: 'POST' })
+)
+ipcMain.handle('hermes:account:subtree', async () => accountCloudRequest('/account/subtree'))
+ipcMain.handle('hermes:account:createSubaccount', async (_event, payload) =>
+  accountCloudRequest('/account/subaccounts', { body: payload || {}, method: 'POST' })
+)
+ipcMain.handle('hermes:account:createRelation', async (_event, payload) =>
+  accountCloudRequest('/account/relations', { body: payload || {}, method: 'POST' })
+)
+ipcMain.handle('hermes:account:roles', async () => accountCloudRequest('/account/roles'))
+ipcMain.handle('hermes:account:addRole', async (_event, payload) =>
+  accountCloudRequest('/account/roles', { body: { name: String(payload?.name || '') }, method: 'POST' })
+)
+ipcMain.handle('hermes:account:removeRole', async (_event, payload) =>
+  accountCloudRequest('/account/roles/delete', { body: { name: String(payload?.name || '') }, method: 'POST' })
+)
+ipcMain.handle('hermes:account:setRole', async (_event, payload) =>
+  accountCloudRequest('/account/role', {
+    body: { user_id: String(payload?.user_id || ''), role: String(payload?.role || '') },
+    method: 'POST'
+  })
+)
+ipcMain.handle('hermes:account:changePassword', async (_event, payload) =>
+  accountCloudRequest('/account/password', { body: payload || {}, method: 'POST' })
+)
+
+ipcMain.handle('hermes:account:logout', async () => {
+  const secrets = readWorkflowSecretsFile()
+  clearEasyHermesAccountSecrets(secrets)
+  writeWorkflowSecretsFile(secrets)
+  void restartWorkflowBackendIfCreated('account logout')
+  return { ok: true }
+})
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
@@ -5613,7 +6254,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   // and the body click still works.
   const actions = Array.isArray(payload?.actions) ? payload.actions : []
   const notification = new Notification({
-    title: payload?.title || 'Hermes',
+    title: payload?.title || 'EasyHermes',
     body: payload?.body || '',
     silent: Boolean(payload?.silent),
     actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
@@ -5673,7 +6314,12 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
-  const properties = options?.directories ? ['openDirectory'] : ['openFile']
+  // both: 让用户在同一对话框里选文件或文件夹(macOS NSOpenPanel 支持);否则按 directories 二选一。
+  const properties = options?.both
+    ? ['openFile', 'openDirectory']
+    : options?.directories
+      ? ['openDirectory']
+      : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')
 
   let resolvedDefaultPath
@@ -6476,6 +7122,31 @@ app.whenReady().then(() => {
   registerPowerResumeListeners()
   createWindow()
 
+  // Pre-warm the embedded workflow backend so opening the Workflow view is
+  // (near-)instant. Langflow's Python import alone is ~1 min, so we kick off the
+  // boot in the background shortly after launch instead of on first click. The
+  // manager is a singleton and start() is idempotent, so a later click just
+  // attaches to the in-flight boot. Opt out with HERMES_DESKTOP_PREWARM_WORKFLOW=0.
+  // Skip pre-warm until the user has logged in to the cloud (no token → kie/billing
+  // would 401 anyway, and there's no point booting the heavy backend pre-login).
+  if (process.env.HERMES_DESKTOP_PREWARM_WORKFLOW !== '0' && workflowHasAuthToken()) {
+    setTimeout(() => {
+      try {
+        void workflowHasReachableAuth()
+          .then(hasAuth => {
+            if (!hasAuth) {
+              return null
+            }
+
+            return getWorkflowBackendManager().start()
+          })
+          .catch(err => rememberLog(`[workflow] prewarm failed: ${err?.message || err}`))
+      } catch (err) {
+        rememberLog(`[workflow] prewarm threw: ${err?.message || err}`)
+      }
+    }, WORKFLOW_PREWARM_DELAY_MS)
+  }
+
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
   if (_coldStartLink) handleDeepLink(_coldStartLink)
@@ -6534,6 +7205,9 @@ app.on('before-quit', () => {
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
+  }
+  if (workflowBackendManager) {
+    void workflowBackendManager.stop()
   }
   stopAllPoolBackends()
 })

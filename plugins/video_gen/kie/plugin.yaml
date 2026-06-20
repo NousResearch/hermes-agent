@@ -1,0 +1,7 @@
+name: kie
+version: 1.0.0
+description: "KIE (kie.ai) video generation backend — Seedance 2.0 text-to-video / image-to-video / first+last frame, optional audio. EasyHermes native media provider."
+author: EasyHermes
+kind: backend
+requires_env:
+  - KIE_API_KEY

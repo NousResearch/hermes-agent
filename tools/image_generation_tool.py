@@ -1024,6 +1024,17 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "image_urls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional reference image URLs for image-to-image / editing "
+                    "(e.g. 'turn this photo into night scene', 'combine these'). "
+                    "When provided, the image is generated from these references "
+                    "instead of pure text-to-image. Public URLs only. Supported "
+                    "by the KIE backend; ignored by text-only backends."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -1069,7 +1080,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, image_urls=None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1126,6 +1137,8 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        if image_urls:
+            kwargs["image_urls"] = image_urls
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1155,9 +1168,14 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     task_id = kw.get("task_id")
 
+    # Reference images turn this into image-to-image / editing. Only plugin
+    # providers that accept `image_urls` (e.g. KIE gpt-image-2) use them; the
+    # in-tree FAL fallback ignores them and stays text-to-image.
+    image_urls = args.get("image_urls") or args.get("image_url")
+
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, image_urls=image_urls)
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
 

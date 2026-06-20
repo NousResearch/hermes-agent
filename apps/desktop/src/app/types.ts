@@ -109,8 +109,13 @@ export type CommandDispatchResponse =
   | SendCommandDispatchResponse
 
 export type SidebarNavId =
+  | 'account-profile'
+  | 'account-recharge'
+  | 'account-team'
+  | 'account-usage'
   | 'artifacts'
   | 'command-center'
+  | 'knowledge'
   | 'messaging'
   | 'new-session'
   | 'settings'

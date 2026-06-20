@@ -5,6 +5,7 @@ import type { IconComponent } from '@/lib/icons'
 import type { EnvVarInfo } from '@/types/hermes'
 
 export type SettingsView =
+  | 'account'
   | 'about'
   | 'gateway'
   | 'keys'

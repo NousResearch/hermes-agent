@@ -20,24 +20,24 @@ const NEUTRAL_PERSONALITIES = new Set(['', 'default', 'none', 'neutral'])
 
 const FALLBACK_COPY: IntroCopy[] = [
   {
-    headline: 'What are we moving today?',
-    body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
+    headline: '今天我们来推进什么？',
+    body: '发来一个 bug、分支、计划或粗略想法，我会检查仓库，把它变成下一个具体步骤。'
   },
   {
-    headline: "What's on your mind?",
-    body: "Bring the code, question, or stuck part. I'll read the room before making changes."
+    headline: '在想什么？',
+    body: '把代码、问题或卡住的地方拿过来，我会先了解情况再动手修改。'
   },
   {
-    headline: 'What should Hermes look at?',
-    body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
+    headline: '想让我看点什么？',
+    body: '发来任务、报错路径或半成形的计划，我会帮你把它落地成行动。'
   },
   {
-    headline: 'Where should we start?',
-    body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
+    headline: '我们从哪开始？',
+    body: '把问题、目标或文件给我，我会先排查，并让下一步保持具体。'
   },
   {
-    headline: 'What needs attention?',
-    body: "Send the context you have. I'll help sort it into a plan or a fix."
+    headline: '有什么需要处理的？',
+    body: '把你掌握的背景发来，我会帮你梳理成一个计划或修复方案。'
   }
 ]
 
@@ -142,7 +142,7 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
   return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
 }
 
-const WORDMARK = 'HERMES AGENT'
+const WORDMARK = 'EasyHermes'
 
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)

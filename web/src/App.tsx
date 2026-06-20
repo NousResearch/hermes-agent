@@ -48,6 +48,7 @@ import {
   Terminal,
   Users,
   Webhook,
+  Workflow,
   Wrench,
   X,
   Zap,
@@ -89,6 +90,7 @@ import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import WorkflowPage from "@/pages/WorkflowPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -148,6 +150,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/workflow": WorkflowPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -165,6 +168,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/workflow", label: "工作流", icon: Workflow },
   { path: "/files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",

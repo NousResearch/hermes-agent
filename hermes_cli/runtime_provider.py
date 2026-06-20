@@ -645,6 +645,22 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         _lift_max_output_tokens(entry, result)
         return result
 
+    if requested_norm in {"kari", "kari-cloud"}:
+        try:
+            from hermes_cli.kari_cloud_provider import kari_cloud_provider_config
+
+            cfg = kari_cloud_provider_config()
+        except Exception:
+            cfg = None
+        if cfg:
+            return {
+                "name": cfg.get("name", "Kari 云端"),
+                "base_url": cfg.get("base_url", ""),
+                "api_key": cfg.get("api_key", ""),
+                "api_mode": cfg.get("api_mode", "chat_completions"),
+                "provider_key": "kari-cloud",
+            }
+
     return None
 
 
@@ -793,7 +809,14 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = None
+    if custom_provider.get("provider_key") != "kari-cloud":
+        pool_result = _try_resolve_from_custom_pool(
+            base_url,
+            "custom",
+            custom_provider.get("api_mode"),
+            provider_name=custom_provider.get("name"),
+        )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.

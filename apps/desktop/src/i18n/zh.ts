@@ -1323,10 +1323,54 @@ export const zh: Translations = {
 
   workflow: {
     title: '工作流',
+    starting: '正在启动工作流后端…',
     loading: '正在加载工作流…',
     backendUnavailable: '工作流后端未启动',
-    backendUnavailableDetail: url => `启动 Langflow 后重新加载此视图。目标: ${url}`,
-    openInBrowser: '在浏览器打开'
+    backendUnavailableDetail: url => `EasyHermes 会在本机启动 Langflow 并嵌入这里。目标: ${url}`,
+    canvas: '画布',
+    knowledge: '知识库',
+    knowledgeLocked: '工作流初始化后可进入',
+    bridgeUnavailable: '桌面端工作流桥接不可用。请重启 EasyHermes 以启用内嵌工作流。',
+    startEngineTitle: '启动工作流引擎',
+    startEngineHint: '工作流和本机知识库都靠这个引擎(langflow)。按需启动,用完可关闭释放内存。',
+    startBtn: '启动',
+    stopBtn: '关闭',
+    lowMemWarn: gb => `本机内存约 ${gb}GB,低于建议的 8GB,启动可能较慢或卡顿。内存小的机器建议把知识库交给主账号。`,
+    firstStartNote: '首次启动会下载本地模型,可能要几分钟,请耐心等待。',
+    engineRunning: '引擎运行中'
+  },
+
+  knowledge: {
+    title: '知识库',
+    subtitle: '把文件夹或文件加入本机知识库;只有摘要会同步给上级,原文和索引都留在本机。',
+    dropHint: '拖文件夹或文件到这里,或点击选择',
+    dropActive: '松手添加',
+    scanning: '正在扫描…',
+    scanError: '扫描失败',
+    empty: '还没有知识源。拖一个文件夹或文件进来开始。',
+    indexableLabel: '可全文索引',
+    nameOnlyLabel: '仅文件名',
+    nameOnlyHint: '图片、音视频、Office 等不解析正文,只把文件名加入知识库;内容由上游模型按需读取。',
+    filesCount: n => `${n} 个文件`,
+    estMinutes: n => `约 ${n} 分钟`,
+    noiseNote: n => `已跳过 ${n} 个系统/临时文件。`,
+    truncatedNote: '文件过多,仅统计了前 10 万个。',
+    indexing: '正在入库…',
+    startingBackend: '首次启动后端,可能要 1-2 分钟,请稍候…',
+    ingestProgress: (done, total) => `已处理 ${done} / ${total}`,
+    ingestDone: (indexed, nameOnly) => `完成:全文索引 ${indexed} 个、仅文件名 ${nameOnly} 个。`,
+    ingestError: '入库失败',
+    doneBtn: '完成',
+    cancel: '取消',
+    confirm: '确认入库',
+    sourcesTitle: '知识源',
+    sync: '同步',
+    syncing: '同步中…',
+    remove: '移除',
+    upToDate: '已是最新',
+    syncedChange: (added, modified, removed) => `已更新(新增 ${added}、改 ${modified}、删 ${removed})`,
+    lastSync: '上次同步',
+    sourceSummary: (indexed, nameOnly) => `全文 ${indexed} · 文件名 ${nameOnly}`
   },
 
   sidebar: {
@@ -1335,7 +1379,8 @@ export const zh: Translations = {
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      workflow: '工作流'
+      workflow: '工作流',
+      knowledge: '知识库'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',

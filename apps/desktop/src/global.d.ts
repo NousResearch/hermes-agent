@@ -39,6 +39,46 @@ declare global {
         // clear the preference.
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
+      account?: {
+        status: () => Promise<DesktopAccountStatus>
+        me: () => Promise<DesktopAccountMe>
+        login: (payload: {
+          cloudBaseUrl: string
+          email: string
+          password: string
+        }) => Promise<DesktopAccountLoginResult>
+        register: (payload: {
+          cloudBaseUrl: string
+          email: string
+          password: string
+        }) => Promise<DesktopAccountLoginResult>
+        logout: () => Promise<{ ok: boolean }>
+        usage: (opts?: { limit?: number; offset?: number; kind?: string }) => Promise<DesktopAccountUsage>
+        wallet: () => Promise<DesktopAccountWallet>
+        transactions: (opts?: { limit?: number; offset?: number }) => Promise<DesktopAccountTransactions>
+        payConfig: () => Promise<DesktopAccountPayConfig>
+        createOrder: (yuan: number) => Promise<DesktopAccountPayOrder>
+        mockConfirm: (orderId: string) => Promise<DesktopAccountMockConfirmResult>
+        redeem: (code: string) => Promise<DesktopAccountRedeemResult>
+        subtree: () => Promise<DesktopAccountSubtree>
+        createSubaccount: (payload: {
+          email: string
+          name?: string
+          password: string
+        }) => Promise<DesktopAccountSubaccount>
+        createRelation: (payload: {
+          manager_id: string
+          member_id: string
+        }) => Promise<DesktopAccountEdge>
+        roles: () => Promise<DesktopAccountRoles>
+        addRole: (payload: { name: string }) => Promise<DesktopAccountRoles>
+        removeRole: (payload: { name: string }) => Promise<DesktopAccountRoles>
+        setRole: (payload: { user_id: string; role: string }) => Promise<DesktopAccountRoleResult>
+        changePassword: (payload: {
+          old_password: string
+          new_password: string
+        }) => Promise<{ ok: boolean }>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -53,6 +93,24 @@ declare global {
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
+      workflow?: {
+        start: () => Promise<DesktopWorkflowBackendStatus>
+        stop: () => Promise<DesktopWorkflowBackendStatus>
+        status: () => Promise<DesktopWorkflowBackendStatus>
+        totalMemoryGb: () => Promise<number>
+        authStatus: () => Promise<DesktopWorkflowAuthStatus>
+        // Fired after the main process restarts the Langflow backend (e.g. on
+        // account login/logout) so the canvas can reload with the new token state.
+        onRestarted: (callback: (payload: { reason?: string }) => void) => () => void
+      }
+      knowledge?: {
+        inventory: (dirPath: string) => Promise<KnowledgeInventory>
+        ingest: (payload: { folderPath: string; name: string }) => Promise<KnowledgeIngestResult>
+        list: () => Promise<KnowledgeSource[]>
+        remove: (sourceId: string) => Promise<{ ok: boolean; removed?: boolean }>
+        sync: (sourceId: string) => Promise<KnowledgeSyncResult>
+        onIngestProgress: (callback: (progress: KnowledgeIngestProgress) => void) => () => void
+      }
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
@@ -340,6 +398,151 @@ export interface DesktopBootProgress {
   timestamp: number
 }
 
+export interface DesktopWorkflowBackendStatus {
+  error: string | null
+  external: boolean
+  pid: null | number
+  root: string
+  state: 'error' | 'exited' | 'ready' | 'starting' | 'stopped'
+  url: string
+}
+
+export interface DesktopWorkflowAuthStatus {
+  loggedIn: boolean
+  cloudBaseUrl: string
+  cloudReachable?: boolean
+  error?: string | null
+}
+
+export interface DesktopAccountStatus extends DesktopWorkflowAuthStatus {
+  balance?: number
+  email?: string
+  username?: string
+}
+
+export interface DesktopAccountMe {
+  user_id: string
+  email: string
+  name?: null | string
+  parent_id?: null | string
+  is_admin?: boolean
+  balance: number
+}
+
+export interface DesktopAccountLoginResult {
+  ok: boolean
+  error?: string
+  balance?: number
+  email?: string
+  username?: string
+}
+
+export interface DesktopAccountUsageItem {
+  user_id?: string
+  ts?: number
+  kind?: string
+  credits?: number
+  provider?: string | null
+  model?: string | null
+  note?: string | null
+}
+
+export interface DesktopAccountUsage {
+  ok: boolean
+  error?: string
+  items: DesktopAccountUsageItem[]
+  total?: number
+  balance?: number
+  creditRmb?: number
+}
+
+export interface DesktopAccountWallet {
+  balance: number
+  credit_rmb: number
+}
+
+export interface DesktopAccountTransactionItem {
+  ts?: number
+  delta: number
+  kind: string
+  note?: null | string
+  balance_after: number
+}
+
+export interface DesktopAccountTransactions {
+  items: DesktopAccountTransactionItem[]
+  total?: number
+  balance?: number
+}
+
+export interface DesktopAccountPayConfig {
+  enabled: boolean
+  mock: boolean
+  quick_yuan: number[]
+  min_yuan: number
+  credits_per_yuan: number
+}
+
+export interface DesktopAccountPayOrder {
+  order_id: string
+  user_id?: string
+  aoid?: null | string
+  yuan: number
+  credits: number
+  status?: string
+  qr_image_url?: null | string
+  mock?: boolean
+  expire_in?: number
+  created_ts?: number
+  paid_ts?: null | number
+}
+
+export interface DesktopAccountMockConfirmResult {
+  paid: boolean
+  credited: boolean
+  balance: number
+}
+
+export interface DesktopAccountRedeemResult {
+  added: number
+  balance: number
+}
+
+export interface DesktopAccountTreeNode {
+  user_id: string
+  email: string
+  name?: null | string
+  parent_id?: null | string
+  role?: null | string
+}
+
+export interface DesktopAccountRoles {
+  roles: string[]
+}
+
+export interface DesktopAccountRoleResult {
+  user_id: string
+  role: null | string
+}
+
+export interface DesktopAccountEdge {
+  manager_id: string
+  member_id: string
+  primary?: boolean
+}
+
+export interface DesktopAccountSubtree {
+  root: string
+  nodes: DesktopAccountTreeNode[]
+  edges?: DesktopAccountEdge[]
+}
+
+export interface DesktopAccountSubaccount {
+  user_id: string
+  email: string
+  name?: null | string
+}
+
 // First-launch install ("bootstrap") event types -- emitted by
 // electron/bootstrap-runner.cjs and observed by the renderer install overlay.
 // Mirrors the event shapes emitted by runBootstrap()'s onEvent callback.
@@ -473,6 +676,59 @@ export interface HermesReadDirResult {
   error?: string
 }
 
+export interface KnowledgeInventory {
+  ok: boolean
+  error?: string
+  path?: string
+  name?: string
+  // 文本类:可全文索引(langflow embed 正文)
+  indexable?: { count: number; size: number; types: { ext: string; count: number; size: number }[] }
+  // 其余文件:仅文件名进知识库(不解析正文;内容由上游多模态模型按需读取)
+  nameOnly?: { count: number; types: { ext: string; count: number }[] }
+  skipped?: { hidden: number; noise: number }
+  estMinutes?: number
+  truncated?: boolean
+}
+
+export interface KnowledgeIngestResult {
+  ok: boolean
+  error?: string
+  kb?: string
+  indexed?: number
+  nameOnly?: number
+  truncated?: boolean
+}
+
+export interface KnowledgeIngestProgress {
+  phase: 'preparing' | 'indexing' | 'names' | 'done' | 'error'
+  done?: number
+  total?: number
+  message?: string
+}
+
+// 一条已加入本机知识库的「知识源」(文件夹或文件)+ 它的 KB。manifest 不下发到渲染端。
+export interface KnowledgeSource {
+  sourceId: string
+  kb: string
+  type: 'folder' | 'file'
+  path: string
+  name: string
+  indexed: number
+  nameOnly: number
+  fileCount: number
+  truncated: boolean
+  lastSyncedTs: number
+}
+
+export interface KnowledgeSyncResult {
+  ok: boolean
+  error?: string
+  changed?: boolean
+  added?: number
+  modified?: number
+  removed?: number
+}
+
 export interface HermesPreviewFileChanged {
   id: string
   path: string
@@ -483,6 +739,8 @@ export interface HermesSelectPathsOptions {
   title?: string
   defaultPath?: string
   directories?: boolean
+  // 允许在同一对话框选文件或文件夹(macOS)。优先于 directories。
+  both?: boolean
   multiple?: boolean
   filters?: Array<{ name: string; extensions: string[] }>
 }

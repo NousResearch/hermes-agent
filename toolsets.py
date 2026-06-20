@@ -40,8 +40,14 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
+    # Deterministic builders (EasyHermes native, no key, no network):
+    # the agent writes the spec, these render a single-file HTML artifact.
+    "website_build", "slides_build", "webvideo_build",
     # Skills
     "skills_list", "skill_view", "skill_manage",
+    # Langflow flow → tool (gated on a reachable local Langflow via check_fn):
+    # expose a Chat Input/Output flow as a callable tool from chat.
+    "list_flows", "expose_flow_as_tool",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -139,6 +145,36 @@ TOOLSETS = {
             "``hermes tools`` → Video Generation."
         ),
         "tools": ["video_generate"],
+        "includes": []
+    },
+
+    "website_gen": {
+        "description": (
+            "Deterministic website builder. ``website_build`` renders a "
+            "structured site spec (written by the agent) into a complete "
+            "responsive single-file HTML site. No key, no network, no publish."
+        ),
+        "tools": ["website_build"],
+        "includes": []
+    },
+
+    "slides_gen": {
+        "description": (
+            "Deterministic slide-deck builder. ``slides_build`` renders an "
+            "outline (written by the agent) into a self-contained HTML "
+            "presentation (keyboard nav, print-to-PDF). No key, no binaries."
+        ),
+        "tools": ["slides_build"],
+        "includes": []
+    },
+
+    "webvideo_gen": {
+        "description": (
+            "Deterministic 'web video' builder. ``webvideo_build`` renders a "
+            "storyboard (written by the agent) into a self-contained "
+            "auto-playing animated HTML page. No key, no render service."
+        ),
+        "tools": ["webvideo_build"],
         "includes": []
     },
 

@@ -83,7 +83,7 @@ export function useGatewayBoot({
     }
 
     if (!desktop) {
-      failDesktopBoot('Desktop IPC bridge is unavailable.')
+      completeDesktopBoot()
       setSessionsLoading(false)
 
       return () => void (cancelled = true)

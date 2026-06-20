@@ -96,11 +96,13 @@ def load_picker_context() -> ConfigContext:
         current_provider = ""
         current_base_url = ""
     raw = cfg.get("providers")
+    from hermes_cli.kari_cloud_provider import merge_kari_cloud_provider
+
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
-        user_providers=raw if isinstance(raw, dict) else {},
+        user_providers=merge_kari_cloud_provider(raw),
         custom_providers=get_compatible_custom_providers(cfg),
     )
 

@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/banner.png" alt="EasyHermes" width="100%">
 </p>
 
-# Hermes Agent ☤
+# EasyHermes ☤
+
+<p align="center"><sub>EasyHermes —— 基于 <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>（Nous Research）的品牌化构建。</sub></p>
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>

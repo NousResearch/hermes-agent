@@ -5,7 +5,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Bell, Globe, Info, KeyRound, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'
+import { Archive, Bell, Globe, Info, KeyRound, Settings2, Sparkles, Users, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -14,6 +14,7 @@ import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from 
 import { OverlayView } from '../overlays/overlay-view'
 
 import { AboutSettings } from './about-settings'
+import { AccountSettings } from './account-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
@@ -26,6 +27,7 @@ import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
+  'account',
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
@@ -90,6 +92,13 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
     <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
+          <OverlayNavItem
+            active={activeView === 'account'}
+            icon={Users}
+            label="账号"
+            onClick={() => setActiveView('account')}
+          />
+          <div className="my-2 h-px bg-border/30" />
           {SECTIONS.map(s => {
             const view = `config:${s.id}` as SettingsViewId
 
@@ -214,7 +223,9 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
         </OverlaySidebar>
 
         <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
-          {activeView === 'config:appearance' ? (
+          {activeView === 'account' ? (
+            <AccountSettings />
+          ) : activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />

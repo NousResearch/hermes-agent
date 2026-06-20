@@ -13,7 +13,7 @@ const _READY_RE = /^HERMES_DASHBOARD_READY port=(\d+)/m
  * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
  */
-function waitForDashboardPort(child, timeoutMs = 45_000) {
+function waitForDashboardPort(child, timeoutMs = 120_000) {
   return new Promise((resolve, reject) => {
     let buf = ''
     let done = false

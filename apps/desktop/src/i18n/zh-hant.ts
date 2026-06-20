@@ -1229,10 +1229,54 @@ export const zhHant = defineLocale({
 
   workflow: {
     title: '工作流',
+    starting: '正在啟動工作流後端…',
     loading: '正在載入工作流…',
     backendUnavailable: '工作流後端未啟動',
-    backendUnavailableDetail: url => `啟動 Langflow 後重新載入此視圖。目標: ${url}`,
-    openInBrowser: '在瀏覽器開啟'
+    backendUnavailableDetail: url => `EasyHermes 會在本機啟動 Langflow 並嵌入這裡。目標: ${url}`,
+    canvas: '畫布',
+    knowledge: '知識庫',
+    knowledgeLocked: '工作流初始化後可進入',
+    bridgeUnavailable: '桌面端工作流橋接不可用。請重新啟動 EasyHermes 以啟用內嵌工作流。',
+    startEngineTitle: '啟動工作流引擎',
+    startEngineHint: '工作流和本機知識庫都靠這個引擎(langflow)。按需啟動,用完可關閉釋放記憶體。',
+    startBtn: '啟動',
+    stopBtn: '關閉',
+    lowMemWarn: gb => `本機記憶體約 ${gb}GB,低於建議的 8GB,啟動可能較慢或卡頓。記憶體小的機器建議把知識庫交給主帳號。`,
+    firstStartNote: '首次啟動會下載本機模型,可能要幾分鐘,請耐心等待。',
+    engineRunning: '引擎執行中'
+  },
+
+  knowledge: {
+    title: '知識庫',
+    subtitle: '把資料夾或檔案加入本機知識庫;只有摘要會同步給上級,原文與索引都留在本機。',
+    dropHint: '拖資料夾或檔案到這裡,或點擊選擇',
+    dropActive: '放開以加入',
+    scanning: '正在掃描…',
+    scanError: '掃描失敗',
+    empty: '還沒有知識來源。拖一個資料夾或檔案進來開始。',
+    indexableLabel: '可全文索引',
+    nameOnlyLabel: '僅檔名',
+    nameOnlyHint: '圖片、音視訊、Office 等不解析正文,只把檔名加入知識庫;內容由上游模型按需讀取。',
+    filesCount: n => `${n} 個檔案`,
+    estMinutes: n => `約 ${n} 分鐘`,
+    noiseNote: n => `已略過 ${n} 個系統/暫存檔。`,
+    truncatedNote: '檔案過多,僅統計了前 10 萬個。',
+    indexing: '正在入庫…',
+    startingBackend: '首次啟動後端,可能要 1-2 分鐘,請稍候…',
+    ingestProgress: (done, total) => `已處理 ${done} / ${total}`,
+    ingestDone: (indexed, nameOnly) => `完成:全文索引 ${indexed} 個、僅檔名 ${nameOnly} 個。`,
+    ingestError: '入庫失敗',
+    doneBtn: '完成',
+    cancel: '取消',
+    confirm: '確認入庫',
+    sourcesTitle: '知識來源',
+    sync: '同步',
+    syncing: '同步中…',
+    remove: '移除',
+    upToDate: '已是最新',
+    syncedChange: (added, modified, removed) => `已更新(新增 ${added}、改 ${modified}、刪 ${removed})`,
+    lastSync: '上次同步',
+    sourceSummary: (indexed, nameOnly) => `全文 ${indexed} · 檔名 ${nameOnly}`
   },
 
   sidebar: {
@@ -1241,7 +1285,8 @@ export const zhHant = defineLocale({
       skills: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      workflow: '工作流'
+      workflow: '工作流',
+      knowledge: '知識庫'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',

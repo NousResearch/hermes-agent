@@ -50,6 +50,11 @@ class TestIsUnsupportedTemperatureError:
         "temperature: unknown parameter",
         # Some gateways
         "unrecognized request argument supplied: temperature",
+        # gpt-5.x via /v1/responses (LotJC/sub2api downlink) phrases it as
+        # "deprecated" rather than "unsupported".
+        "`temperature` is deprecated for this model.",
+        '{"type":"error","error":{"type":"invalid_request_error",'
+        '"message":"`temperature` is deprecated for this model."}}',
     ])
     def test_matches_real_provider_messages(self, message):
         assert _is_unsupported_temperature_error(RuntimeError(message)) is True
@@ -87,6 +92,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
         "HTTP 400: Unsupported parameter: temperature",
         "Error code: 400 - {'error': {'code': 'unsupported_parameter', 'param': 'temperature'}}",
         "Provider error: this model does not support temperature",
+        "`temperature` is deprecated for this model.",
     ])
     def test_retries_once_without_temperature(self, error_message):
         client = self._setup(RuntimeError(error_message))

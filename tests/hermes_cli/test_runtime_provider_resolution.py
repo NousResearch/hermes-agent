@@ -863,6 +863,48 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_user_defined_kari_cloud_provider_overrides_synthetic_relay(monkeypatch):
+    """An explicit providers.kari-cloud entry must not be hijacked by workflow relay secrets."""
+    from hermes_cli import kari_cloud_provider as kcp
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("LOTJC_KEY", "lotjc-secret")
+    monkeypatch.setattr(
+        kcp,
+        "kari_cloud_provider_config",
+        lambda: {
+            "name": "Kari 云端",
+            "base_url": "http://127.0.0.1:8900/api/v1/kari/llm/v1",
+            "api_key": "relay-token",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "kari-cloud": {
+                    "base_url": "https://api.lotjc.com/v1",
+                    "default_model": "gpt-5.5",
+                    "key_env": "LOTJC_KEY",
+                    "name": "Kari LOTJC",
+                    "api_mode": "chat_completions",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kari-cloud")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.lotjc.com/v1"
+    assert resolved["api_key"] == "lotjc-secret"
+    assert resolved["source"] == "custom_provider:Kari LOTJC"
+    assert resolved["model"] == "gpt-5.5"
+
+
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
     """Named custom providers on one gateway must keep their own credentials and protocol."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

@@ -1,10 +1,11 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { Picker } from './desktop-onboarding-overlay'
+import { DesktopOnboardingOverlay, Picker } from './desktop-onboarding-overlay'
 
 function provider(id: string, name = id): OAuthProvider {
   return {
@@ -98,5 +99,26 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
+  })
+})
+
+describe('DesktopOnboardingOverlay', () => {
+  it('does not cover the app with boot progress before the gateway opens', () => {
+    const requestGateway = vi.fn(async () => undefined as never)
+    $desktopBoot.set({
+      error: null,
+      fakeMode: false,
+      message: 'Hermes Desktop is ready',
+      phase: 'renderer.ready',
+      progress: 100,
+      running: false,
+      timestamp: Date.now(),
+      visible: false
+    })
+
+    render(<DesktopOnboardingOverlay enabled={false} requestGateway={requestGateway} />)
+
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 })

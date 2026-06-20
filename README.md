@@ -193,3 +193,20 @@ scripts/run_tests.sh
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+
+## AI-Assisted Development (LiteLLM Cost Router)
+This repo includes a cost-optimized AI router that picks the cheapest viable model per task type.
+### Quick start
+```bash
+make setup-ai          # creates venv, installs litellm, prompts for keys
+make test-ai           # smoke-test the router
+make cost-summary      # print month-to-date spend by model
+```
+### Model routing
+| Task type | Model | Approx cost |
+|---|---|---|
+| `FIX` (lint, syntax) | gpt-4o-mini | ~$0.002 per call |
+| `REVIEW` (summaries, PR text) | claude-3-5-haiku | ~$0.01 per call |
+| `DEBUG` | claude-3-5-haiku | ~$0.01 per call |
+| `TDD`, `ARCH` | claude-3-5-sonnet | ~$0.05 per call |
+Adjust `ROUTES` in `ai_router.py` to tune. Pricing in `PRICING` is current as of June 2026 — refresh quarterly.

@@ -39,6 +39,16 @@ def _make_compressor(threshold_tokens: int = 204_000) -> ContextCompressor:
     return cc
 
 
+def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
+    """Build a multi-turn conversation with a system prompt."""
+    base_text = " ".join(["alpha"] * words_per_turn)
+    messages = [{"role": "system", "content": "You are a helpful agent."}]
+    for i in range(n_turns):
+        messages.append({"role": "user", "content": f"{base_text} (user turn {i})"})
+        messages.append({"role": "assistant", "content": f"{base_text} (assistant turn {i})"})
+    return messages
+
+
 def test_request_level_ineffective_increments_when_post_stays_over_threshold() -> None:
     """A compaction whose REQUEST-level post estimate did not drop below the
     threshold is ineffective, even if messages-only savings looked fine."""
@@ -95,3 +105,88 @@ def test_counter_resets_on_real_new_session() -> None:
     cc._ineffective_compression_count = 2
     cc.on_session_reset()
     assert cc._ineffective_compression_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Integration: the REQUEST-level estimate (incl. tool schemas) is what makes
+# the verdict correct. This reproduces the exact bug class on the real estimate
+# functions: a placeholder/partial summary shrinks the MESSAGES enough to look
+# effective, while the full REQUEST (messages + ~30K tool schemas) stays over
+# the trigger -> must count as ineffective.
+# ---------------------------------------------------------------------------
+
+def _fat_tool_schemas(n: int = 60) -> list:
+    """Build a realistic ~30K-token tool-schema payload (the live agent ships
+    50+ tools; their JSON schemas are the blind spot messages-only misses)."""
+    tools = []
+    for i in range(n):
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": f"tool_{i}",
+                "description": "x" * 300,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        f"param_{j}": {"type": "string", "description": "y" * 80}
+                        for j in range(6)
+                    },
+                },
+            },
+        })
+    return tools
+
+
+def test_request_level_estimate_catches_thrash_that_messages_only_misses() -> None:
+    """End-to-end on the real estimate functions: a compaction whose MESSAGES
+    shrank >=10% but whose full REQUEST stayed over threshold AND shed <10% is
+    ineffective. This is the real thrash mechanism: the protected tail (bulky
+    recent tool outputs) + system + tool schemas dominate, so summarizing the
+    middle barely moves the request even though messages-only looks like a win.
+
+    Exercises the same estimate_request_tokens_rough the done-site uses, not a
+    hand-picked number.
+    """
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        estimate_request_tokens_rough,
+    )
+
+    tools = _fat_tool_schemas(200)
+    system = "s" * 40000  # large system prompt (skills, soul, etc.)
+
+    # Small head + a modest summarizable middle + a bulky protected tail. The
+    # tool schemas (~80K) + system (~9K) dominate the request, so summarizing
+    # the middle shrinks the messages-only count a lot (the OLD bug's verdict)
+    # but barely dents the full request.
+    head = _build_session(2, words_per_turn=30)
+    middle = _build_session(6, words_per_turn=300)  # the summarizable window
+    big_tail = [
+        {"role": "user", "content": "recent " * 2500},
+        {"role": "assistant", "content": "recent reply " * 2500},
+    ] * 3  # bulky protected tail
+    pre_messages = head + middle + big_tail
+    # Post: middle replaced by a short placeholder; head + big_tail preserved.
+    post_messages = head + [
+        {"role": "user", "content": "[CONTEXT COMPACTION - REFERENCE ONLY] summary unavailable."}
+    ] + big_tail
+
+    pre_req = estimate_request_tokens_rough(pre_messages, system_prompt=system, tools=tools)
+    post_req = estimate_request_tokens_rough(post_messages, system_prompt=system, tools=tools)
+    pre_mo = estimate_messages_tokens_rough(pre_messages)
+    post_mo = estimate_messages_tokens_rough(post_messages)
+
+    # Fixture sanity: messages-only saw a big "win" (the OLD bug path would have
+    # reset the counter)…
+    assert (pre_mo - post_mo) / pre_mo * 100 >= 10
+    # …but the REQUEST barely moved (schemas + system + tail dominate) — <10%.
+    assert (pre_req - post_req) / pre_req * 100 < 10
+
+    # Pin the trigger just under the post REQUEST size: the real request is
+    # still over threshold (thrash condition).
+    cc = _make_compressor(threshold_tokens=post_req - 1)
+    cc.record_compaction_effectiveness(
+        pre_request_tokens=pre_req, post_request_tokens=post_req,
+    )
+    assert cc._ineffective_compression_count == 1
+

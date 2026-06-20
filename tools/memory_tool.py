@@ -633,7 +633,7 @@ class MemoryStore:
             return []
         try:
             raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
+        except (OSError, IOError, UnicodeDecodeError):
             return []
 
         if not raw.strip():
@@ -673,7 +673,7 @@ class MemoryStore:
             return None
         try:
             raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
+        except (OSError, IOError, UnicodeDecodeError):
             return None
         if not raw.strip():
             return None

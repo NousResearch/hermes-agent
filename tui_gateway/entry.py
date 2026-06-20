@@ -300,6 +300,21 @@ def main():
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
 
+    # Register declarative shell hooks from cli-config.yaml.  TUI gateway
+    # has no TTY, so consent has to come from one of the three opt-in
+    # channels (--accept-hooks on launch, HERMES_ACCEPT_HOOKS env var,
+    # or hooks_auto_accept: true in config.yaml).  Pass accept_hooks=False
+    # and let register_from_config resolve the effective value from env +
+    # config itself.  Failures are logged but must never block startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at TUI gateway startup", exc_info=True
+        )
+
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",

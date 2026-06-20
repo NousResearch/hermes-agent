@@ -617,6 +617,21 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+
+        # Register declarative shell hooks from cli-config.yaml.  ACP adapter
+        # has no TTY, so consent has to come from one of the three opt-in
+        # channels (--accept-hooks on launch, HERMES_ACCEPT_HOOKS env var,
+        # or hooks_auto_accept: true in config.yaml).  Pass accept_hooks=False
+        # and let register_from_config resolve the effective value from env +
+        # config itself.  Failures are logged but must not block session creation.
+        try:
+            from agent.shell_hooks import register_from_config
+            register_from_config(config, accept_hooks=False)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed for ACP session %s", session_id, exc_info=True
+            )
+
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print

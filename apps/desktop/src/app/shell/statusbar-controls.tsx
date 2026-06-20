@@ -181,6 +181,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
         item.onSelect?.({ shiftKey: event.shiftKey })
       }}
+	  title={item.title}
       type="button"
     >
       {content}

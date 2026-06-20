@@ -1487,7 +1487,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
+                allowed_updates=list(Update.ALL_TYPES) + ["guest_message"],
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
             )

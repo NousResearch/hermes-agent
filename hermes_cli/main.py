@@ -1948,7 +1948,12 @@ def _launch_tui(
         "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
     )
     env.setdefault("HERMES_PYTHON", sys.executable)
-    env.setdefault("HERMES_CWD", os.getcwd())
+    # Use the live launch cwd, not a HERMES_CWD inherited from os.environ: an
+    # exported/stale value (e.g. left over from an earlier `hermes --tui` in a
+    # different directory) must not win over where the user actually invoked the
+    # TUI. The --worktree branch below still overrides this with the worktree
+    # path. (#49637)
+    env["HERMES_CWD"] = os.getcwd()
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None

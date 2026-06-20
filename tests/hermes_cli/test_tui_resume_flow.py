@@ -996,6 +996,34 @@ def test_launch_tui_sets_resume_env_from_resume_arg(monkeypatch, main_mod):
     assert captured["env"]["HERMES_TUI_RESUME"] == "20260518_000000_goodid"
 
 
+def test_launch_tui_uses_current_cwd_over_stale_env(monkeypatch, main_mod, tmp_path):
+    captured = {}
+
+    # A HERMES_CWD exported in the parent shell (e.g. left over from an earlier
+    # `hermes --tui` in a different directory) must NOT win over the directory
+    # the TUI is actually launched from. setdefault() kept the stale value; the
+    # launch cwd is the source of truth (#49637).
+    monkeypatch.setenv("HERMES_CWD", "/stale/exported/dir")
+    monkeypatch.chdir(tmp_path)
+    expected_cwd = os.getcwd()
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["HERMES_CWD"] == expected_cwd
+    assert captured["env"]["HERMES_CWD"] != "/stale/exported/dir"
+
+
 def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
     tui_dir = tmp_path / "ui-tui"
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"

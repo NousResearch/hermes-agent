@@ -700,7 +700,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, email_subject=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -907,7 +907,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
-            result = await _send_email(pconfig.extra, chat_id, chunk)
+            result = await _send_email(pconfig.extra, chat_id, chunk, subject=email_subject)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATRIX:
@@ -1415,9 +1415,16 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {e}")
 
 
-async def _send_email(extra, chat_id, message):
-    """Send via SMTP (one-shot, no persistent connection needed)."""
+async def _send_email(extra, chat_id, message, subject=None):
+    """Send via SMTP (one-shot, no persistent connection needed).
+
+    When *message* starts with ``<!doctype html`` or ``<html``, the email
+    is sent as ``multipart/alternative`` with both HTML and a plain-text
+    fallback.  Otherwise it is sent as ``text/plain``.
+    """
+    import re
     import smtplib
+    from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
@@ -1431,11 +1438,44 @@ async def _send_email(extra, chat_id, message):
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
+    stripped = message.strip().lower()
+    start_idx = -1
+    # Find HTML content even if preamble text precedes it
+    doctype_idx = stripped.find("<!doctype html")
+    html_idx = stripped.find("<html")
+    if doctype_idx != -1 and (html_idx == -1 or doctype_idx < html_idx):
+        start_idx = doctype_idx
+        is_html = True
+    elif html_idx != -1:
+        start_idx = html_idx
+        is_html = True
+    else:
+        is_html = False
+
+    if is_html and start_idx > 0:
+        # Strip preamble text so email starts with HTML
+        message = message.strip()[start_idx:]
+
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        if is_html:
+            # HTML email — multipart/alternative with plain-text fallback
+            plain_body = re.sub(r"<[^>]+>", "", message)
+            plain_body = re.sub(r"&nbsp;", " ", plain_body)
+            plain_body = re.sub(r"&amp;", "&", plain_body)
+            plain_body = re.sub(r"&lt;", "<", plain_body)
+            plain_body = re.sub(r"&gt;", ">", plain_body)
+            plain_body = re.sub(r"\n{3,}", "\n\n", plain_body)
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(plain_body.strip(), "plain", "utf-8"))
+            msg.attach(MIMEText(message, "html", "utf-8"))
+        else:
+            msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        if subject:
+            msg["Subject"] = subject
+        else:
+            msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)

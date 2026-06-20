@@ -742,23 +742,68 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
+    # Track whether content is HTML so we can pass a proper email subject.
+    is_html = False
+
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
+        # Detect HTML content for two purposes: (1) skip the cron wrapper
+        # (it would break HTML detection downstream), and (2) build a
+        # proper email subject from the job name instead of "Hermes Agent".
+        # Don't wrap HTML email content — the wrapper prefix would break
+        # HTML detection (body must start with <!doctype html or <html).
+        # Also handle the common failure mode where the agent inserts a
+        # single-line preamble ("Here's the HTML:") before the doctype.
+        stripped = content.strip()
+        doctype_idx = stripped.lower().find("<!doctype html")
+        html_idx = stripped.lower().find("<html")
+        if doctype_idx != -1 and (html_idx == -1 or doctype_idx < html_idx):
+            start_idx = doctype_idx
+        elif html_idx != -1:
+            start_idx = html_idx
+        else:
+            start_idx = -1
+
+        if start_idx == 0:
+            # Content starts with HTML — deliver unwrapped
+            delivery_content = content
+            is_html = True
+        elif start_idx > 0:
+            # Preamble text before HTML — strip it
+            delivery_content = stripped[start_idx:]
+            is_html = True
+            logger.debug("Job '%s': stripped preamble before HTML (kept %d chars from position %d)",
+                         job["id"], len(delivery_content), start_idx)
+        else:
+            # No HTML — wrap normally
+            task_name = job.get("name", job["id"])
+            job_id = job.get("id", "")
+            delivery_content = (
+                f"Cronjob Response: {task_name}\n"
+                f"(job_id: {job_id})\n"
+                f"-------------\n\n"
+                f"{content}\n\n"
+                f'To stop or manage this job, send me a new message (e.g. "stop reminder {task_name}").'
+            )
     else:
         delivery_content = content
+        # Detect HTML even when wrapping is off so we can set a proper subject
+        stripped = content.strip().lower()
+        if stripped.startswith("<!doctype html") or stripped.startswith("<html"):
+            is_html = True
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
+    # Build email subject for HTML deliveries.  If the job name contains
+    # "{date}" it is substituted with today's date; otherwise the job
+    # name is used as-is (common for one-shot / non-weather jobs).
+    from datetime import date as dt_date
+    job_name = job.get("name", "")
+    email_subject = None
+    if is_html and job_name:
+        email_subject = job_name.replace("{date}", dt_date.today().strftime("%B %d, %Y"))
 
     try:
         config = load_gateway_config()
@@ -813,6 +858,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
+            # Attach email subject for HTML deliveries
+            if email_subject and platform == Platform.EMAIL:
+                if send_metadata is None:
+                    send_metadata = {}
+                send_metadata["subject"] = email_subject
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -886,7 +936,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, email_subject=email_subject)
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -896,7 +946,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, email_subject=email_subject))
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

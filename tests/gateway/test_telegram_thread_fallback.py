@@ -131,6 +131,10 @@ def _make_adapter():
     adapter._polling_conflict_count = 0
     adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
+    adapter._model_picker_state = {}
+    adapter._approval_state = {}
+    adapter._slash_confirm_state = {}
+    adapter._clarify_state = {}
     adapter.platform = Platform.TELEGRAM
     return adapter
 
@@ -771,6 +775,39 @@ async def test_send_model_picker_uses_metadata_reply_fallback_for_dm_topics():
 
 
 @pytest.mark.asyncio
+async def test_send_exec_approval_dm_topic_reply_not_found_retry_drops_topic_anchor():
+    """Control prompts should recover when a DM-topic reply anchor is deleted."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message to be replied not found")
+        return SimpleNamespace(message_id=780)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send_exec_approval(
+        chat_id="123",
+        command="echo test",
+        session_key="telegram:123:20197",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[1]["reply_to_message_id"] is None
+    assert "message_thread_id" not in call_log[1]
+    assert "direct_messages_topic_id" not in call_log[1]
+
+
+@pytest.mark.asyncio
 async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
     """DM-topic fallback without an anchor uses direct topic routing."""
     adapter = _make_adapter()
@@ -1076,6 +1113,53 @@ async def test_slash_confirm_private_topic_callback_followup_sends_thread_and_re
     assert call_log
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[0]["reply_to_message_id"] == 462
+
+
+@pytest.mark.asyncio
+async def test_slash_confirm_private_topic_callback_retry_drops_topic_anchor(monkeypatch):
+    adapter = _make_adapter()
+    adapter._slash_confirm_state = {"confirm-1": "session-1"}
+    adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message to be replied not found")
+        return SimpleNamespace(message_id=9002)
+
+    async def resolve(_session_key, _confirm_id, _choice):
+        return "done"
+
+    from tools import slash_confirm
+
+    monkeypatch.setattr(slash_confirm, "resolve", resolve)
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    class Query:
+        data = "sc:once:confirm-1"
+        from_user = SimpleNamespace(id=42, first_name="Alice")
+        message = SimpleNamespace(
+            chat_id=12345,
+            chat=SimpleNamespace(type=_fake_telegram_constants.ChatType.PRIVATE),
+            message_thread_id=20197,
+            message_id=462,
+        )
+
+        async def answer(self, **kwargs):
+            return None
+
+        async def edit_message_text(self, **kwargs):
+            return None
+
+    await adapter._handle_callback_query(SimpleNamespace(callback_query=Query()), SimpleNamespace())
+
+    assert len(call_log) == 2
+    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[1]["reply_to_message_id"] is None
+    assert "message_thread_id" not in call_log[1]
+    assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio

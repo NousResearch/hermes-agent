@@ -512,6 +512,16 @@ def compress_context(
             old_title = agent._session_db.get_session_title(agent.session_id)
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
+            # Flush any un-persisted messages from the current turn to the
+            # old session *before* rotating.  compress_context() can be
+            # called mid-turn (auto-compress when context exceeds threshold)
+            # at a point when _flush_messages_to_session_db() has not yet
+            # run.  Without this, messages generated during the current turn
+            # are silently lost on session rotation (#47202).
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                pass  # best-effort — don't block compression on a flush error
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -702,33 +712,58 @@ def try_shrink_image_parts_in_messages(
     # actually brought under the target.
     unshrinkable_oversized = 0
 
-    def _shrink_data_url(url: str) -> Optional[str]:
-        """Return a smaller data URL, or None if shrink can't help."""
-        if not isinstance(url, str) or not url.startswith("data:"):
+    def _decode_pixels(data_url: str) -> Optional[tuple]:
+        """Return ``(width, height)`` of a base64 data URL, or None on failure.
+
+        Soft-depends on Pillow; returns None (caller falls back to a
+        bytes-only check) if Pillow is missing or the payload is corrupt.
+        """
+        try:
+            import base64 as _b64_dim
+            import io as _io_dim
+            header_d, _, data_d = data_url.partition(",")
+            if not data_d or not data_url.startswith("data:"):
+                return None
+            from PIL import Image as _PILImage
+            with _PILImage.open(_io_dim.BytesIO(_b64_dim.b64decode(data_d))) as _img:
+                return _img.size
+        except Exception:
             return None
 
-        # Check both byte size AND pixel dimensions.
+    def _shrink_data_url(url: str) -> tuple:
+        """Return ``(resized_url, unshrinkable)`` for a data URL.
+
+        ``resized_url`` is a smaller/dimension-correct data URL, or None when
+        no rewrite was applied.  ``unshrinkable`` is True only when the image
+        exceeded a constraint (byte-size or dimensions) and the resize failed
+        to satisfy *that same* constraint — so the caller knows retrying is
+        pointless even if a different image in the request shrank.
+        """
+        if not isinstance(url, str) or not url.startswith("data:"):
+            return None, False
+
+        # Determine which constraint is binding.  The accept/reject gate below
+        # MUST be checked against the same axis that triggered the shrink: a
+        # downscaled screenshot PNG routinely re-encodes to *more* bytes than
+        # the original (PNG compression is non-monotonic in image size — a
+        # smaller raster with LANCZOS resampling noise compresses worse than a
+        # larger smooth one).  Rejecting a pixel-correct downscale purely
+        # because its bytes grew permanently wedges sessions on the Anthropic
+        # many-image 2000px path (#48013).
         needs_shrink = len(url) > target_bytes  # over byte budget
+        triggered_by = "bytes" if needs_shrink else None
         if not needs_shrink:
-            # Even if bytes are fine, check pixel dimensions against the
-            # provider's reported per-side cap.  A screenshot can be tiny in
-            # bytes yet too large in pixels.
-            try:
-                import base64 as _b64_dim
-                header_d, _, data_d = url.partition(",")
-                if not data_d:
-                    return None
-                raw_d = _b64_dim.b64decode(data_d)
-                from PIL import Image as _PILImage
-                import io as _io_dim
-                with _PILImage.open(_io_dim.BytesIO(raw_d)) as _img:
-                    if max(_img.size) <= max_dimension:
-                        return None  # both bytes and pixels are fine
-                needs_shrink = True  # pixels exceed limit, force shrink
-            except Exception:
-                # If we can't check dimensions (Pillow unavailable, corrupt
-                # image, etc.), fall back to byte-only check.
-                return None
+            # Bytes are fine — check pixel dimensions against the provider's
+            # reported per-side cap.  A screenshot can be tiny in bytes yet
+            # too large in pixels.
+            dims = _decode_pixels(url)
+            if dims is None:
+                # Pillow missing or corrupt data — fall back to byte-only.
+                return None, False
+            if max(dims) <= max_dimension:
+                return None, False  # both bytes and pixels are within limits
+            needs_shrink = True
+            triggered_by = "dimension"
 
         try:
             header, _, data = url.partition(",")
@@ -760,13 +795,45 @@ def try_shrink_image_parts_in_messages(
                     Path(tmp.name).unlink(missing_ok=True)
                 except Exception:
                     pass
-            if not resized or len(resized) >= len(url):
-                # Shrink didn't help (or made it bigger — corrupt input?).
-                return None
-            return resized
+            if not resized:
+                # Resize returned nothing — Pillow couldn't help.
+                return None, True
+            if triggered_by == "bytes":
+                # Byte budget is the binding constraint — bytes must shrink.
+                if len(resized) >= len(url):
+                    return None, True  # re-encode made it bigger
+                # The per-side dimension cap is ALSO an active provider
+                # constraint on this request (the caller passes the parsed cap
+                # to both this helper and the resizer).  _resize_image_for_vision
+                # returns a best-effort, possibly-over-cap blob when it
+                # exhausts its halving budget — it freezes the long side once
+                # the short side hits its 64px floor, so a very-high-aspect
+                # image can stay over the cap even after bytes shrank.  If the
+                # output is still over the cap, retrying would re-400 on
+                # dimensions; treat it as unshrinkable.  (Skip when dims can't
+                # be decoded — preserves historical byte-only behaviour.)
+                new_dims = _decode_pixels(resized)
+                if new_dims is not None and max(new_dims) > max_dimension:
+                    return None, True
+                return resized, False
+            # triggered_by == "dimension": the per-side cap is binding.  The
+            # re-encode may have grown in bytes; accept it as long as it is now
+            # within the dimension cap.  Verify the new dimensions when we can.
+            new_dims = _decode_pixels(resized)
+            if new_dims is not None:
+                if max(new_dims) <= max_dimension:
+                    return resized, False
+                # Still over the per-side cap — the resize didn't satisfy it.
+                return None, True
+            # Couldn't verify the re-encode's dimensions (corrupt output or
+            # Pillow gone mid-call).  Fall back to the historical "bytes must
+            # shrink" gate so we never accept an unverifiable, byte-larger blob.
+            if len(resized) >= len(url):
+                return None, True
+            return resized, False
         except Exception as exc:
             logger.warning("image-shrink recovery: re-encode failed — %s", exc)
-            return None
+            return None, triggered_by is not None
 
     for msg in api_messages:
         if not isinstance(msg, dict):
@@ -785,20 +852,18 @@ def try_shrink_image_parts_in_messages(
             # OpenAI Responses: {"image_url": "data:..."}
             if isinstance(image_value, dict):
                 url = image_value.get("url", "")
-                resized = _shrink_data_url(url)
+                resized, unshrinkable = _shrink_data_url(url)
                 if resized:
                     image_value["url"] = resized
                     changed_count += 1
-                elif isinstance(url, str) and url.startswith("data:") \
-                        and len(url) > target_bytes:
+                elif unshrinkable:
                     unshrinkable_oversized += 1
             elif isinstance(image_value, str):
-                resized = _shrink_data_url(image_value)
+                resized, unshrinkable = _shrink_data_url(image_value)
                 if resized:
                     part["image_url"] = resized
                     changed_count += 1
-                elif image_value.startswith("data:") \
-                        and len(image_value) > target_bytes:
+                elif unshrinkable:
                     unshrinkable_oversized += 1
 
     if changed_count:

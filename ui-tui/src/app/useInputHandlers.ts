@@ -2,6 +2,7 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
@@ -15,13 +16,30 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
+const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
+
+export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
+
+export function handleIdleHotkeyExit(
+  actions: Pick<InputHandlerActions, 'die' | 'sys'>,
+  dashboardTuiMode = DASHBOARD_TUI_MODE,
+  requestDashboardNewSession?: () => void
+) {
+  if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
+    requestDashboardNewSession?.()
+
+    return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
+  }
+
+  return actions.die()
+}
 
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
@@ -145,6 +163,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.modelPicker) {
       return patchOverlayState({ modelPicker: false })
+    }
+
+    if (overlay.billing) {
+      return patchOverlayState({ billing: null })
     }
 
     if (overlay.skillsHub) {
@@ -272,7 +294,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay = overlay.approval || overlay.clarify || overlay.confirm
+      const promptOverlay = overlay.approval || overlay.billing || overlay.clarify || overlay.confirm
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
       if (promptOverlay && !fallThroughForScroll) {
@@ -501,11 +523,23 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return cActions.clearIn()
       }
 
-      return actions.die()
+      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
+        gateway.gw.publishLocalEvent({
+          payload: { reason: 'idle_exit_hotkey' },
+          session_id: live.sid ?? undefined,
+          type: 'dashboard.new_session_requested'
+        })
+      })
     }
 
     if (isAction(key, ch, 'd')) {
-      return actions.die()
+      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
+        gateway.gw.publishLocalEvent({
+          payload: { reason: 'idle_exit_hotkey' },
+          session_id: live.sid ?? undefined,
+          type: 'dashboard.new_session_requested'
+        })
+      })
     }
 
     if (isAction(key, ch, 'l')) {

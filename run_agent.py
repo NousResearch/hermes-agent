@@ -89,6 +89,19 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
+def _session_source_for_agent(platform: Optional[str]) -> str:
+    try:
+        from gateway.session_context import get_session_env
+
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+    except Exception:
+        source = os.environ.get("HERMES_SESSION_SOURCE", "")
+    source = str(source or "").strip()
+    if source:
+        return source
+    return platform or "cli"
+
+
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
 # `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
 # The other `# noqa: F401` re-exports below cover names accessed via
@@ -196,7 +209,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, is_truthy_value, model_forces_max_completion_tokens
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
 
 
 
@@ -512,7 +525,7 @@ class AIAgent:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
-        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        source = _session_source_for_agent(self.platform)
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
@@ -578,7 +591,7 @@ class AIAgent:
             start_context = {
                 "old_session_id": old_session_id,
                 "carry_over_context": carry_over_context,
-                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "platform": _session_source_for_agent(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""),
                 "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None),
@@ -1096,7 +1109,7 @@ class AIAgent:
         cfg = get_provider_request_timeout(self.provider, self.model)
         if cfg is not None:
             return cfg
-        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        return env_float("HERMES_API_TIMEOUT", 1800.0)
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.
@@ -1515,7 +1528,7 @@ class AIAgent:
         a raw ``tool`` message and the next user turn lands as
         ``...tool, user, user`` — a protocol-invalid sequence that most
         providers silently reject (returns empty content), causing the
-        empty-retry loop to fire forever. See #<TBD>.
+        empty-retry loop to fire forever. (issue number to be backfilled once filed)
         """
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
@@ -1841,6 +1854,35 @@ class AIAgent:
         return f"{detail}{hint}"
 
     @staticmethod
+    def _coerce_api_error_detail(value: Any) -> str:
+        """Return a display-safe string for structured provider error fields."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            for key in ("message", "detail", "error", "code", "type"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested.strip():
+                    return nested
+            for key in ("message", "detail", "error", "code", "type"):
+                if key in value:
+                    nested_detail = AIAgent._coerce_api_error_detail(value[key])
+                    if nested_detail:
+                        return nested_detail
+            try:
+                return json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except TypeError:
+                return str(value)
+        if isinstance(value, (list, tuple)):
+            parts = [
+                AIAgent._coerce_api_error_detail(item)
+                for item in value
+            ]
+            return "; ".join(part for part in parts if part)
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -1879,6 +1921,7 @@ class AIAgent:
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
+                msg = AIAgent._coerce_api_error_detail(msg)
                 return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
@@ -2991,8 +3034,8 @@ class AIAgent:
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
@@ -3796,7 +3839,7 @@ class AIAgent:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
                 force_refresh=force,
             )
         except Exception as exc:
@@ -4046,11 +4089,13 @@ class AIAgent:
         # Defensive: strip Responses-only kwargs that can leak in under an
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
-        from agent.anthropic_adapter import sanitize_anthropic_kwargs
-        sanitize_anthropic_kwargs(
-            api_kwargs, log_prefix=getattr(self, "log_prefix", "")
+        from agent.anthropic_adapter import create_anthropic_message
+        return create_anthropic_message(
+            self._anthropic_client,
+            api_kwargs,
+            log_prefix=getattr(self, "log_prefix", ""),
+            prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
         )
-        return self._anthropic_client.messages.create(**api_kwargs)
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.

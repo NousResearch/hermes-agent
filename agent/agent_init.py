@@ -86,6 +86,19 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     )
 
 
+def _codex_gpt55_autoraise_notice_enabled(compression_cfg: Dict[str, Any]) -> bool:
+    """Whether to show the Codex gpt-5.5 autoraise notice.
+
+    ``compression.codex_gpt55_autoraise`` controls the behavior itself.  This
+    separate flag controls only the user-visible startup/gateway notice so users
+    can keep the better compaction threshold without a repeated informational
+    message in chat clients.
+    """
+    return str(
+        compression_cfg.get("codex_gpt55_autoraise_notice", True)
+    ).lower() in {"true", "1", "yes"}
+
+
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -1290,12 +1303,14 @@ def init_agent(
     # Per-model/route compaction-threshold override. Codex gpt-5.5 raises to
     # 85% (the Codex backend caps the window at 272K, so the default 50% would
     # compact at ~136K — half the usable context). Gated by an opt-out config
-    # flag so the user can fall back to the global threshold; when the override
-    # fires we stash a one-time notification (replayed on the first turn) that
-    # tells the user what changed and how to revert.
+    # flag so the user can fall back to the global threshold. A separate notice
+    # flag controls only the startup/gateway informational message.
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
+    _codex_gpt55_autoraise_notice = _codex_gpt55_autoraise_notice_enabled(
+        _compression_cfg
+    )
     agent._compression_threshold_autoraised = None
     try:
         from agent.auxiliary_client import (
@@ -1707,12 +1722,13 @@ def init_agent(
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
-        # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
+        # Optional one-time notice when the Codex gpt-5.5 autoraise kicked in,
+        # with the exact opt-back-out command. Printed inline at startup for CLI
+        # users; gateway users get the same text replayed via
+        # _compression_warning on turn 1 (set below, after the warning slot is
+        # initialized).
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
+        if _autoraise and compression_enabled and _codex_gpt55_autoraise_notice:
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
@@ -1723,7 +1739,7 @@ def init_agent(
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if _autoraise and compression_enabled and _codex_gpt55_autoraise_notice:
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network

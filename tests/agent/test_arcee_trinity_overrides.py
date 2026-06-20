@@ -19,6 +19,7 @@ from agent.auxiliary_client import (
     _is_arcee_trinity_thinking,
     _is_codex_gpt55,
 )
+from agent.agent_init import _codex_gpt55_autoraise_notice_enabled
 
 
 @pytest.mark.parametrize(
@@ -157,3 +158,21 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+def test_codex_gpt55_autoraise_notice_defaults_enabled() -> None:
+    assert _codex_gpt55_autoraise_notice_enabled({}) is True
+
+
+@pytest.mark.parametrize("value", [False, "false", "0", "no"])
+def test_codex_gpt55_autoraise_notice_can_be_disabled(value) -> None:
+    assert _codex_gpt55_autoraise_notice_enabled(
+        {"codex_gpt55_autoraise_notice": value}
+    ) is False
+
+
+@pytest.mark.parametrize("value", [True, "true", "1", "yes"])
+def test_codex_gpt55_autoraise_notice_can_be_enabled(value) -> None:
+    assert _codex_gpt55_autoraise_notice_enabled(
+        {"codex_gpt55_autoraise_notice": value}
+    ) is True

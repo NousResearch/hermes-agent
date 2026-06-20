@@ -3786,6 +3786,7 @@ class BasePlatformAdapter(ABC):
         *,
         release_guard: bool = True,
         discard_pending: bool = True,
+        chat_id: str | None = None,
     ) -> None:
         """Cancel in-flight processing for a single session.
 
@@ -3798,8 +3799,15 @@ class BasePlatformAdapter(ABC):
         stall the calling dispatch coroutine — particularly under pytest-
         asyncio where the event loop's cancellation-propagation semantics
         differ subtly from a bare ``asyncio.run`` harness.
+
+        ``chat_id``, when provided, enables proactive typing-indicator cleanup
+        on the timeout path.  If the cancelled task is stuck in blocking I/O
+        (e.g. a hung tool call), its finally block may never run — calling
+        ``interrupt_session_activity`` signals the ``_keep_typing`` refresh
+        loop to exit and invokes ``stop_typing`` on the adapter.
         """
         task = self._session_tasks.pop(session_key, None)
+        _gave_up = False
         if task is not None and not task.done():
             logger.debug(
                 "[%s] Cancelling active processing for session %s",
@@ -3813,6 +3821,7 @@ class BasePlatformAdapter(ABC):
             except asyncio.CancelledError:
                 pass
             except asyncio.TimeoutError:
+                _gave_up = True
                 logger.warning(
                     "[%s] Cancelled task for %s did not exit within 5s; "
                     "unblocking dispatch and letting the task unwind in the background",
@@ -3825,6 +3834,17 @@ class BasePlatformAdapter(ABC):
                     session_key,
                     exc_info=True,
                 )
+        # When the task refuses to unwind, proactively signal the interrupt
+        # event (which the _keep_typing loop checks on each tick) and stop
+        # any persistent typing indicator so the user doesn't see an infinite
+        # "typing…" bubble.  interrupt_session_activity handles both — the
+        # interrupt event causes _keep_typing to exit its refresh loop, and
+        # stop_typing cleans up any platform-level indicator state.
+        if _gave_up and chat_id:
+            try:
+                await self.interrupt_session_activity(session_key, chat_id)
+            except Exception:
+                pass
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
@@ -3913,6 +3933,7 @@ class BasePlatformAdapter(ABC):
                 session_key,
                 release_guard=False,
                 discard_pending=False,
+                chat_id=event.source.chat_id,
             )
         except Exception:
             # On failure, restore the original guard if one still exists so

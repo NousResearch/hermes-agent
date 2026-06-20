@@ -5033,6 +5033,29 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the typing indicator.
+
+        Telegram has no API to explicitly cancel a chat action.  We send a
+        one-shot ``cancel`` action (choose_sticker) which supersedes the
+        ``typing`` action and then expires after its own ~5 s window without
+        a refresh loop.
+
+        Must accept the same signature as BasePlatformAdapter.stop_typing
+        (chat_id) but also handles metadata=None for compatibility with the
+        base class finally block in _keep_typing.
+        """
+        if self._bot:
+            try:
+                await self._bot.send_chat_action(
+                    chat_id=int(chat_id),
+                    action="choose_sticker",
+                )
+            except Exception:
+                # Non-fatal — if this fails the typing bubble will still
+                # expire within 5 s once _keep_typing stops refreshing.
+                pass
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:

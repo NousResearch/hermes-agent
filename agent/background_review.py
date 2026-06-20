@@ -634,7 +634,15 @@ def _run_review_in_thread(
             except Exception:
                 pass
             try:
-                review_agent.close()
+                # Use release_clients() rather than close(): the review_agent
+                # shares session_id with the parent (set explicitly above), so
+                # close() -> kill_all(task_id=session_id) would SIGTERM every
+                # background process the user launched in this session via
+                # terminal(background=True). release_clients() drops the LLM
+                # client + child subagents but leaves process_registry,
+                # terminal sandbox, and browser daemon untouched -- exactly the
+                # semantics we want for a background-review teardown.
+                review_agent.release_clients()
             except Exception:
                 pass
             review_agent = None
@@ -684,7 +692,8 @@ def _run_review_in_thread(
                     except Exception:
                         pass
                     try:
-                        review_agent.close()
+                        # See note above on the happy path.
+                        review_agent.release_clients()
                     except Exception:
                         pass
             except Exception:

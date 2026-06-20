@@ -40,7 +40,7 @@ class ImmediateThread:
         self._target()
 
 
-def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
+def test_background_review_shuts_down_memory_provider_before_release(monkeypatch):
     events = []
 
     class FakeReviewAgent:
@@ -54,7 +54,14 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         def shutdown_memory_provider(self):
             events.append(("shutdown_memory_provider", None))
 
+        def release_clients(self):
+            events.append(("release_clients", None))
+
         def close(self):
+            # Must NOT be called by background-review teardown: close()
+            # invokes kill_all(task_id=session_id), which the review_agent
+            # shares with its parent, so it would SIGTERM every background
+            # process the user launched in this session.
             events.append(("close", None))
 
     monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
@@ -72,15 +79,16 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         "init",
         "run_conversation",
         "shutdown_memory_provider",
-        "close",
+        "release_clients",
     ]
+    assert ("close", None) not in events
 
 
-def test_background_review_summarizer_receives_captured_messages_after_close(monkeypatch):
-    """The action summarizer must see review messages even after close cleanup.
+def test_background_review_summarizer_receives_captured_messages_after_release(monkeypatch):
+    """The action summarizer must see review messages even after teardown.
 
-    Regression for the bug where ``review_messages`` was snapshot AFTER
-    ``review_agent.close()``. close() is allowed to clean per-session state
+    Regression for the bug where ``review_messages`` was snapshot AFTER the
+    review_agent teardown. Teardown is allowed to clean per-session state
     (including ``_session_messages``), so the summarizer would receive an
     empty list and the user-visible self-improvement summary would silently
     disappear. The fix snapshots ``_session_messages`` before teardown.
@@ -109,10 +117,10 @@ def test_background_review_summarizer_receives_captured_messages_after_close(mon
         def shutdown_memory_provider(self):
             events.append("shutdown_memory_provider")
 
-        def close(self):
-            events.append("close")
-            # close() is allowed to clean _session_messages — the fix
-            # must have snapshot them before this runs.
+        def release_clients(self):
+            events.append("release_clients")
+            # release_clients() is allowed to clean _session_messages — the
+            # fix must have snapshot them before this runs.
             self._session_messages = []
 
     def fake_summarize(review_messages, prior_snapshot, notification_mode="on"):
@@ -142,7 +150,7 @@ def test_background_review_summarizer_receives_captured_messages_after_close(mon
     assert events == [
         "run_conversation",
         "shutdown_memory_provider",
-        "close",
+        "release_clients",
         "summarize",
     ]
     assert captured["review_messages"] == [review_tool_message]

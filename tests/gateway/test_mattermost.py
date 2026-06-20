@@ -209,6 +209,27 @@ class TestMattermostControlAliases:
 
         assert _mattermost_control_command("permissions session") == "/permissions session"
 
+    def test_approve_session_becomes_gateway_approve_command(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("approve session") == "/approve session"
+        assert _mattermost_control_command("approve all always") == "/approve all always"
+
+    def test_deny_all_becomes_gateway_deny_command(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("deny all") == "/deny all"
+
+    def test_context_pause_becomes_gateway_context_command(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("context pause") == "/context pause"
+
+    def test_status_becomes_gateway_status_command(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("status") == "/status"
+
     def test_non_control_message_is_unchanged(self):
         from plugins.platforms.mattermost.adapter import _mattermost_control_command
 
@@ -670,13 +691,15 @@ class TestMattermostMentionBehavior:
         self.adapter._bot_username = "hermes-bot"
         self.adapter.handle_message = AsyncMock()
 
-    def _make_event(self, message, channel_type="O", channel_id="chan_456"):
+    def _make_event(self, message, channel_type="O", channel_id="chan_456", root_id=None):
         post_data = {
             "id": "post_mention",
             "user_id": "user_123",
             "channel_id": channel_id,
             "message": message,
         }
+        if root_id:
+            post_data["root_id"] = root_id
         return {
             "event": "posted",
             "data": {
@@ -727,6 +750,46 @@ class TestMattermostMentionBehavior:
             assert self.adapter.handle_message.called
 
     @pytest.mark.asyncio
+    async def test_unmentioned_approval_reply_bypasses_mention_when_pending(self):
+        """Threaded approval replies should work without repeating @bot."""
+        self.adapter.config.extra.update({
+            "require_mention": True,
+            "allowed_channels": ["chan_456"],
+            "reply_mode": "thread",
+        })
+        self.adapter._reply_mode = "thread"
+        store = MagicMock()
+        store._generate_session_key.return_value = "agent:main:mattermost:channel:chan_456:root_1"
+        self.adapter.set_session_store(store)
+
+        with patch("tools.approval.has_blocking_approval", return_value=True), \
+             patch("tools.approval.list_blocking_approvals", return_value=[]):
+            await self.adapter._handle_ws_event(
+                self._make_event("approve session", root_id="root_1")
+            )
+
+        assert self.adapter.handle_message.called
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert msg.text == "/approve session"
+        assert msg.message_type.name == "COMMAND"
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_approval_alias_still_skips_without_pending(self):
+        """A random unmentioned 'approve' should not wake the bot."""
+        self.adapter.config.extra.update({"require_mention": True, "allowed_channels": ["chan_456"]})
+        store = MagicMock()
+        store._generate_session_key.return_value = "agent:main:mattermost:channel:chan_456:root_1"
+        self.adapter.set_session_store(store)
+
+        with patch("tools.approval.has_blocking_approval", return_value=False), \
+             patch("tools.approval.list_blocking_approvals", return_value=[]):
+            await self.adapter._handle_ws_event(
+                self._make_event("approve", root_id="root_1")
+            )
+
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
     async def test_mention_stripped_from_text(self):
         """@mention is stripped from message text."""
         with patch.dict(os.environ, {}, clear=False):
@@ -761,6 +824,24 @@ class TestMattermostMentionBehavior:
         entry = store.append_to_transcript.call_args[0][1]
         assert entry["observed"] is True
         assert "plan: do the safe rollout" in entry["content"]
+
+    @pytest.mark.asyncio
+    async def test_context_pause_suppresses_observed_unmentioned_thread_message(self):
+        self.adapter.config.extra.update({
+            "observe_unmentioned_channel_messages": True,
+            "allowed_channels": ["chan_456"],
+            "reply_mode": "thread",
+        })
+        self.adapter._reply_mode = "thread"
+        store = MagicMock()
+        store.get_or_create_session.return_value = SimpleNamespace(session_id="sess-thread")
+        self.adapter.set_session_store(store)
+        self.adapter.pause_observed_context("chan_456", "post_mention")
+
+        await self.adapter._handle_ws_event(self._make_event("plan: paused"))
+
+        assert not self.adapter.handle_message.called
+        assert not store.append_to_transcript.called
 
     @pytest.mark.asyncio
     async def test_observe_mode_marks_addressed_thread_turn_for_context_split(self):

@@ -73,6 +73,44 @@ def _mattermost_control_command(text: str) -> str:
     if lower in {"control", "controls", "agent controls", "runtime", "runtime status", "agent status"}:
         return "/controls"
 
+    if lower in {"status", "session status", "thread status", "what are you doing", "what is running"}:
+        return "/status"
+    if lower in {"stop", "halt", "cancel run", "stop running"}:
+        return "/stop"
+    if lower.startswith("queue "):
+        return f"/queue {compact.split(' ', 1)[1]}"
+    if lower.startswith("steer "):
+        return f"/steer {compact.split(' ', 1)[1]}"
+
+    if lower in {"context", "context status", "thread context", "session context"}:
+        return "/context status"
+    m = re.fullmatch(r"context (status|pause|resume|clear|summarize|summary)", lower)
+    if m:
+        sub = "summarize" if m.group(1) == "summary" else m.group(1)
+        return f"/context {sub}"
+
+    if lower in {"approve", "approve once", "yes", "ok", "okay", "confirm"}:
+        return "/approve"
+    if lower in {"approve session", "approve for session", "session approve"}:
+        return "/approve session"
+    if lower in {"approve always", "always approve", "approve permanently", "permanently approve"}:
+        return "/approve always"
+    if lower in {"approve all", "approve everything"}:
+        return "/approve all"
+    m = re.fullmatch(r"approve all (session|always|permanent|permanently)", lower)
+    if m:
+        arg = "always" if m.group(1) in {"permanent", "permanently"} else m.group(1)
+        return f"/approve all {arg}"
+    m = re.fullmatch(r"approve (all )?(once|session|always|permanent|permanently)", lower)
+    if m:
+        all_part = "all " if m.group(1) else ""
+        arg = "always" if m.group(2) in {"permanent", "permanently"} else m.group(2)
+        return f"/approve {all_part}{arg}".strip()
+    if lower in {"deny", "no", "cancel", "reject", "do not run", "don't run"}:
+        return "/deny"
+    if lower in {"deny all", "reject all", "cancel all"}:
+        return "/deny all"
+
     if lower in {"model", "models", "model options", "models options", "show models", "list models", "switch model"}:
         return "/model"
     m = re.fullmatch(r"(?:use|select|switch to|switch) model #?(\d+)", lower)
@@ -145,6 +183,11 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
+        # Per-runtime context observation controls.  These are intentionally
+        # in-memory: they are operator toggles for the current gateway runtime,
+        # not durable policy (durable policy remains config.yaml).
+        self._paused_observed_context: set[tuple[str, str]] = set()
+
     # ------------------------------------------------------------------
     # Channel/thread context observation
     # ------------------------------------------------------------------
@@ -192,11 +235,34 @@ class MattermostAdapter(BasePlatformAdapter):
             )
         )
 
+    @staticmethod
+    def _context_control_key(chat_id: str, thread_id: Optional[str]) -> tuple[str, str]:
+        return (str(chat_id or ""), str(thread_id or ""))
+
+    def pause_observed_context(self, chat_id: str, thread_id: Optional[str]) -> None:
+        self._paused_observed_context.add(self._context_control_key(chat_id, thread_id))
+
+    def resume_observed_context(self, chat_id: str, thread_id: Optional[str]) -> None:
+        self._paused_observed_context.discard(self._context_control_key(chat_id, thread_id))
+
+    def observed_context_paused(self, chat_id: str, thread_id: Optional[str]) -> bool:
+        return self._context_control_key(chat_id, thread_id) in self._paused_observed_context
+
+    def observed_context_status(self, chat_id: str, thread_id: Optional[str]) -> Dict[str, Any]:
+        return {
+            "enabled": self._observe_unmentioned_channel_messages(),
+            "paused": self.observed_context_paused(chat_id, thread_id),
+            "reply_mode": self._reply_mode,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+        }
+
     def _should_observe_unmentioned_channel_message(
         self,
         *,
         channel_type_raw: str,
         channel_id: str,
+        thread_id: Optional[str],
         require_mention: bool,
         is_free_channel: bool,
         has_mention: bool,
@@ -205,6 +271,8 @@ class MattermostAdapter(BasePlatformAdapter):
         if channel_type_raw == "D":
             return False
         if not self._observe_unmentioned_channel_messages():
+            return False
+        if self.observed_context_paused(channel_id, thread_id):
             return False
         if not require_mention or is_free_channel or has_mention:
             return False
@@ -240,6 +308,34 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id=source.thread_id,
             message_id=source.message_id,
         )
+
+    def _session_key_for_control_source(self, source) -> Optional[str]:
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return None
+        try:
+            shared_source = self._shared_source_for_observed_context(source)
+            return store._generate_session_key(shared_source)
+        except Exception:
+            return None
+
+    def _has_nearby_pending_approval(self, source) -> bool:
+        session_key = self._session_key_for_control_source(source)
+        if not session_key:
+            return False
+        try:
+            from tools.approval import has_blocking_approval, list_blocking_approvals
+            if has_blocking_approval(session_key):
+                return True
+            prefix = ":".join(session_key.split(":")[:5])
+            return bool(list_blocking_approvals(prefix))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_approval_or_deny_command(text: str) -> bool:
+        command = (text or "").strip().lower()
+        return command == "/approve" or command.startswith("/approve ") or command == "/deny" or command.startswith("/deny ")
 
     def _append_observed_channel_message(
         self,
@@ -532,6 +628,78 @@ class MattermostAdapter(BasePlatformAdapter):
             last_id = data["id"]
 
         return SendResult(success=True, message_id=last_id)
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Mattermost-native text approval card.
+
+        Mattermost slash commands may be intercepted by the server/client before
+        Hermes sees them, so the card intentionally advertises plain threaded
+        replies (``approve``, ``approve session``, ``deny``).  The receive path
+        maps those Mattermost-safe phrases back to gateway slash commands and
+        bypasses mention-gating only when a pending approval exists nearby.
+        """
+        cmd_preview = command[:1200] + "…" if len(command) > 1200 else command
+        text = (
+            "⚠️ **Approval required**\n\n"
+            "Command:\n"
+            f"```bash\n{cmd_preview}\n```\n"
+            f"Reason: {description}\n\n"
+            "Reply in this Mattermost thread with one of:\n"
+            "- `approve` — run once\n"
+            "- `approve session` — remember this pattern for this session\n"
+            "- `approve always` — remember permanently when allowed\n"
+            "- `deny` — cancel\n"
+        )
+        return await self.send(chat_id, text, metadata=metadata)
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Mattermost-safe text confirmation card."""
+        text = (
+            f"⚠️ **{title or 'Confirm'}**\n\n"
+            f"{message}\n\n"
+            "Reply in this Mattermost thread with `approve`, `approve always`, or `cancel`."
+        )
+        return await self.send(chat_id, text, metadata=metadata)
+
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Use Mattermost ephemeral posts for operator-specific notices when possible."""
+        if user_id and self._session:
+            payload = {
+                "user_id": user_id,
+                "post": {
+                    "channel_id": chat_id,
+                    "message": self.format_message(content),
+                },
+            }
+            root_id = await self._thread_root_for_send(reply_to, metadata)
+            if root_id:
+                payload["post"]["root_id"] = root_id
+            data = await self._api_post("posts/ephemeral", payload)
+            if data:
+                return SendResult(success=True, message_id=data.get("id"))
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return channel name and type."""
@@ -1024,10 +1192,17 @@ class MattermostAdapter(BasePlatformAdapter):
                 if pattern and pattern != "@"
             )
 
-            if require_mention and not is_free_channel and not has_mention:
+            control_preview = _mattermost_control_command(message_text)
+            approval_reply_for_active_prompt = (
+                self._is_approval_or_deny_command(control_preview)
+                and self._has_nearby_pending_approval(source)
+            )
+
+            if require_mention and not is_free_channel and not has_mention and not approval_reply_for_active_prompt:
                 if self._should_observe_unmentioned_channel_message(
                     channel_type_raw=channel_type_raw,
                     channel_id=channel_id,
+                    thread_id=thread_id,
                     require_mention=require_mention,
                     is_free_channel=is_free_channel,
                     has_mention=has_mention,

@@ -240,6 +240,25 @@ mattermost:
 
 With this mode enabled, unmentioned messages in allowed Mattermost channels are appended to the channel/thread session transcript as observed context, but they do **not** dispatch the agent. A later `@bot proceed`, reply, or command in that same channel/thread can use that observed context. Observed rows are tagged with `[sender|user_id]` and wrapped as context-only input so the model does not treat old channel chatter as a new request.
 
+Mattermost also accepts natural control-room replies once Hermes has accepted a thread, so users do not need to rely on slash commands that the Mattermost client/server may intercept:
+
+| Say in Mattermost | Hermes command |
+|---|---|
+| `approve`, `approve session`, `approve always`, `deny` | `/approve ...`, `/deny` |
+| `status`, `thread status` | `/status` |
+| `context status`, `context pause`, `context resume`, `context clear`, `context summarize` | `/context ...` |
+| `queue <text>`, `steer <text>`, `stop` | `/queue`, `/steer`, `/stop` |
+| `model options`, `use model 3`, `reasoning high` | `/model`, `/reasoning` |
+
+Approval prompts are rendered as Mattermost approval cards that say to reply in the same thread with `approve`, `approve session`, or `deny`. If a reply lands in the wrong thread, Hermes reports that no approval is attached to the current thread and, when possible, points to pending approval work elsewhere in the same channel instead of silently saying only “no pending approvals”.
+
+The `/context` command is gateway-only and thread-scoped:
+
+- `context status` shows the current platform/chat/thread/session key and transcript counts, including observed rows.
+- `context pause` / `context resume` temporarily pause or resume unmentioned-context observation for the current Mattermost thread in this gateway runtime.
+- `context clear` resets the current session lane.
+- `context summarize` returns a compact deterministic summary of recent transcript rows.
+
 Equivalent environment variables:
 
 ```bash

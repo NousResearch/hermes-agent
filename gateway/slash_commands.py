@@ -61,6 +61,55 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
+    def _approval_related_session_prefix(self, source: SessionSource) -> str:
+        """Return the broadest useful same-chat approval prefix for diagnostics."""
+        parts = ["agent:main", source.platform.value, source.chat_type]
+        if source.chat_id:
+            parts.append(str(source.chat_id))
+        return ":".join(parts)
+
+    def _format_no_pending_approval(self, event: MessageEvent, action: str) -> str:
+        """Explain an empty approval queue without hiding nearby pending approvals."""
+        source = event.source
+        prefix = self._typed_command_prefix_for(source.platform)
+        try:
+            from tools.approval import list_blocking_approvals
+            nearby = list_blocking_approvals(self._approval_related_session_prefix(source))
+            all_pending = list_blocking_approvals()
+        except Exception:
+            nearby = []
+            all_pending = []
+
+        verb = "approve" if action == "approve" else "deny"
+        if nearby:
+            location = "Mattermost thread/session" if source.platform == Platform.MATTERMOST else "thread/session"
+            lines = [
+                f"No pending approval is attached to this {location}, so I did not {verb} anything.",
+                "",
+                "I do see pending approval work elsewhere in this channel:",
+            ]
+            for item in nearby[:5]:
+                key = str(item.get("session_key", ""))
+                suffix = key[len(self._approval_related_session_prefix(source)):].lstrip(":") or "channel root"
+                count = item.get("count", 1)
+                desc = item.get("description") or "approval required"
+                cmd = item.get("command_preview") or ""
+                lines.append(f"- `{suffix}`: {count} pending — {desc}")
+                if cmd:
+                    lines.append(f"  ```\n{cmd}\n```")
+            lines.append("")
+            lines.append(f"Reply in the thread that showed the approval prompt, or mention Hermes there with `{verb}` / `{verb} session`.")
+            return "\n".join(lines)
+
+        if all_pending and source.platform == Platform.MATTERMOST:
+            return (
+                f"No pending approval is attached to this Mattermost thread/session. "
+                f"There are pending approvals elsewhere, but I will not {verb} across unrelated sessions. "
+                f"Run `{prefix}status` in the thread that requested approval, or reply there with `{verb}`."
+            )
+
+        return t(f"gateway.{action}.no_pending")
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
@@ -3704,7 +3753,7 @@ class GatewaySlashCommandsMixin:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
+            return self._format_no_pending_approval(event, "approve")
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
@@ -3720,7 +3769,7 @@ class GatewaySlashCommandsMixin:
 
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
-            return t("gateway.approve.no_pending")
+            return self._format_no_pending_approval(event, "approve")
 
         # Resume typing indicator — agent is about to continue processing.
         _adapter = self.adapters.get(source.platform)
@@ -3730,6 +3779,86 @@ class GatewaySlashCommandsMixin:
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         plural = "plural" if count > 1 else "singular"
         return t(f"gateway.approve.{choice}_{plural}", count=count)
+
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Inspect and control the current gateway thread context lane."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        args = event.get_command_args().strip().lower().split()
+        subcmd = args[0] if args else "status"
+        if subcmd == "summary":
+            subcmd = "summarize"
+
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+
+        if subcmd in {"pause", "resume"}:
+            method = getattr(adapter, f"{subcmd}_observed_context", None) if adapter else None
+            if callable(method):
+                method(source.chat_id, source.thread_id)
+                return f"Context observation {subcmd}d for this thread/session."
+            return "This platform does not expose per-thread context observation controls."
+
+        if subcmd == "clear":
+            return await self._handle_reset_command(event)
+
+        entry = None
+        try:
+            entry = self.session_store.get_or_create_session(source)
+        except Exception:
+            entry = None
+        history = []
+        if entry is not None:
+            try:
+                history = self.session_store.load_transcript(entry.session_id)
+            except Exception:
+                history = []
+
+        observed_count = sum(1 for m in history if isinstance(m, dict) and m.get("observed"))
+        user_count = sum(1 for m in history if isinstance(m, dict) and m.get("role") == "user")
+        assistant_count = sum(1 for m in history if isinstance(m, dict) and m.get("role") == "assistant")
+        status = {}
+        status_fn = getattr(adapter, "observed_context_status", None) if adapter else None
+        if callable(status_fn):
+            try:
+                status = status_fn(source.chat_id, source.thread_id) or {}
+            except Exception:
+                status = {}
+
+        if subcmd == "summarize":
+            recent = []
+            for msg in history[-8:]:
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role", "?")
+                content = str(msg.get("content") or "").replace("\n", " ").strip()
+                if len(content) > 220:
+                    content = content[:217] + "…"
+                if content:
+                    recent.append(f"- {role}: {content}")
+            return "## Current thread context summary\n" + ("\n".join(recent) if recent else "No transcript content recorded yet.")
+
+        if subcmd != "status":
+            return "Usage: /context [status|pause|resume|clear|summarize]"
+
+        lines = [
+            "## Thread Context",
+            f"- Platform: `{source.platform.value}`",
+            f"- Chat: `{source.chat_id or 'unknown'}`",
+            f"- Thread/root: `{source.thread_id or 'channel root'}`",
+            f"- Session key: `{session_key}`",
+            f"- Transcript rows: {len(history)} ({user_count} user, {assistant_count} assistant, {observed_count} observed)",
+        ]
+        if status:
+            enabled = "on" if status.get("enabled") else "off"
+            paused = "yes" if status.get("paused") else "no"
+            lines.extend([
+                f"- Observing unmentioned context: {enabled}",
+                f"- Observation paused here: {paused}",
+                f"- Reply mode: `{status.get('reply_mode') or 'unknown'}`",
+            ])
+        lines.append("")
+        lines.append("Controls: `context pause`, `context resume`, `context clear`, `context summarize`.")
+        return "\n".join(lines)
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -3750,14 +3879,14 @@ class GatewaySlashCommandsMixin:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
+            return self._format_no_pending_approval(event, "deny")
 
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args
 
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:
-            return t("gateway.deny.no_pending")
+            return self._format_no_pending_approval(event, "deny")
 
         # Resume typing indicator — agent continues (with BLOCKED result).
         _adapter = self.adapters.get(source.platform)

@@ -760,6 +760,32 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def list_blocking_approvals(session_prefix: str | None = None) -> list[dict]:
+    """Return a redacted snapshot of blocking gateway approvals.
+
+    This is used by gateway surfaces to produce useful no-pending diagnostics
+    without exposing mutable queue internals.  ``session_prefix`` limits results
+    to related sessions, e.g. all threads in one Mattermost channel.
+    """
+    with _lock:
+        rows: list[dict] = []
+        for key, queue in _gateway_queues.items():
+            if session_prefix and not str(key).startswith(session_prefix):
+                continue
+            if not queue:
+                continue
+            first = getattr(queue[0], "data", {}) or {}
+            command = str(first.get("command") or "")
+            description = str(first.get("description") or "")
+            rows.append({
+                "session_key": key,
+                "count": len(queue),
+                "command_preview": command[:160] + ("…" if len(command) > 160 else ""),
+                "description": description[:160] + ("…" if len(description) > 160 else ""),
+            })
+        return rows
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

@@ -35,8 +35,8 @@ def _event(text):
 
 def test_batch_delays_default_from_config():
     adapter = _make_adapter()
-    assert adapter._text_batch_delay_seconds == 5.0
-    assert adapter._text_batch_split_delay_seconds == 10.0
+    assert adapter._text_batch_delay_seconds == 0.3
+    assert adapter._text_batch_split_delay_seconds == 2.0
 
 
 def test_batch_delays_overridden_via_config_extra():
@@ -53,15 +53,15 @@ def test_invalid_config_value_falls_back_to_default():
         text_batch_delay_seconds="garbage",
         text_batch_split_delay_seconds=-3,
     )
-    assert adapter._text_batch_delay_seconds == 5.0
-    assert adapter._text_batch_split_delay_seconds == 10.0
+    assert adapter._text_batch_delay_seconds == 0.3
+    assert adapter._text_batch_split_delay_seconds == 2.0
 
 
 def test_env_var_is_ignored(monkeypatch):
     # Config-only path: the legacy HERMES_* env var must NOT influence delays.
     monkeypatch.setenv("HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS", "99")
     adapter = _make_adapter()
-    assert adapter._text_batch_delay_seconds == 5.0
+    assert adapter._text_batch_delay_seconds == 0.3
 
 
 def test_rapid_texts_collapse_into_single_dispatch():

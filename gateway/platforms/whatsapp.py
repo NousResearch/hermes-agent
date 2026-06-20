@@ -298,16 +298,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # WhatsApp often delivers multiple messages in rapid succession
         # (e.g. forwarded batches, paste-splits) — without debounce each
         # message triggers a separate agent invocation, wasting tokens and
-        # flooding the user with reply fragments.  Default 5s delay /
-        # 10s split delay are conservative for WhatsApp's delivery cadence.
+        # flooding the user with reply fragments.  Default 0.3s delay /
+        # 2.0s split delay match the Telegram adapter's cadence.
         # Tunable via config.yaml under
         # ``gateway.platforms.whatsapp.extra.text_batch_delay_seconds`` /
         # ``text_batch_split_delay_seconds``.
         self._text_batch_delay_seconds = self._coerce_float_extra(
-            "text_batch_delay_seconds", 5.0
+            "text_batch_delay_seconds", 0.3
         )
         self._text_batch_split_delay_seconds = self._coerce_float_extra(
-            "text_batch_split_delay_seconds", 10.0
+            "text_batch_split_delay_seconds", 2.0
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}

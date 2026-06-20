@@ -610,6 +610,7 @@ class TestPreflightCompression:
             return 114_000 if _rough_calls["n"] == 1 else 40_000
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
@@ -660,6 +661,7 @@ class TestPreflightCompression:
             return 114_000 if _rough_calls["n"] == 1 else 40_000
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),

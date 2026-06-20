@@ -46,7 +46,7 @@ export function TerminalOutput({ className, text }: TerminalOutputProps) {
       data-selectable-text="true"
       ref={ref}
     >
-      <pre className="w-max min-w-full font-mono text-[0.5625rem] leading-[0.85rem] whitespace-pre text-muted-foreground/70">
+      <pre role="log" aria-live="polite" aria-label="Terminal output" className="w-max min-w-full font-mono text-[0.5625rem] leading-[0.85rem] whitespace-pre text-muted-foreground/70">
         {text}
       </pre>
     </div>

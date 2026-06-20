@@ -147,7 +147,7 @@ export async function listSessions(
 
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions: Array.isArray(result?.sessions) ? result.sessions.slice(0, limit) : [],
     offset: 0
   }
 }
@@ -188,7 +188,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions: Array.isArray(result?.sessions) ? result.sessions.slice(0, limit) : [],
     offset: 0
   }
 }

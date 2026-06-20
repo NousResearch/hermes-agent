@@ -194,8 +194,12 @@ export function useLinkTitle(url?: null | string): string {
   return title
 }
 
+export function isSafeExternalUrl(url: string): boolean {
+  return /^(https?:|file:|hermes-media:)/i.test(url)
+}
+
 export function openExternalLink(href: string): void {
-  if (href) {
+  if (href && isSafeExternalUrl(href)) {
     void window.hermesDesktop?.openExternal?.(href)
   }
 }

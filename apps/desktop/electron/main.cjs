@@ -2885,51 +2885,19 @@ function parseHtmlTitle(html) {
   return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
 }
 
-function fetchHtmlTitleWithCurl(rawUrl) {
-  return new Promise(resolve => {
-    const url = String(rawUrl || '').trim()
-    if (!url) return resolve('')
+async function fetchHtmlTitleWithSafeHttp(rawUrl) {
+  const url = String(rawUrl || '').trim()
+  if (!url) return ''
 
-    const args = [
-      '--silent',
-      '--show-error',
-      '--location',
-      '--max-redirs',
-      String(TITLE_MAX_REDIRECTS),
-      '--max-time',
-      String(Math.max(2, Math.ceil(TITLE_TIMEOUT_MS / 1000))),
-      '--connect-timeout',
-      '4',
-      '--user-agent',
-      TITLE_USER_AGENT,
-      '--header',
-      'Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
-      '--header',
-      'Accept-Language: en-US,en;q=0.7',
-      '--header',
-      'Accept-Encoding: identity',
-      '--raw',
-      url
-    ]
-    const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
-    const chunks = []
-    let bytes = 0
-
-    child.stdout.on('data', chunk => {
-      if (bytes >= TITLE_BYTE_BUDGET) return
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      const remaining = TITLE_BYTE_BUDGET - bytes
-      const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
-      chunks.push(next)
-      bytes += next.length
+  try {
+    const { buffer } = await resourceBufferFromUrl(url, {
+      maxRemoteBytes: TITLE_BYTE_BUDGET,
+      maxRedirects: TITLE_MAX_REDIRECTS
     })
-
-    child.on('error', () => resolve(''))
-    child.on('close', () => {
-      if (!chunks.length) return resolve('')
-      resolve(parseHtmlTitle(Buffer.concat(chunks).toString('utf8')))
-    })
-  })
+    return parseHtmlTitle(buffer.toString('utf8'))
+  } catch {
+    return ''
+  }
 }
 
 function getLinkTitleSession() {
@@ -3041,12 +3009,9 @@ function fetchLinkTitle(rawUrl) {
   if (titleCache.has(key)) return Promise.resolve(titleCache.get(key))
   if (titleInflight.has(key)) return titleInflight.get(key)
 
-  const pending = fetchHtmlTitleWithCurl(url)
+  const pending = fetchHtmlTitleWithSafeHttp(url)
     .catch(() => '')
     .then(value => usableTitle((value || '').slice(0, 240)))
-    .then(
-      async value => value || usableTitle(((await fetchHtmlTitleWithRenderer(url).catch(() => '')) || '').slice(0, 240))
-    )
     .then(clean => {
       cacheTitle(key, clean)
       titleInflight.delete(key)

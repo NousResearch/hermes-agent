@@ -1471,8 +1471,29 @@ class SignalAdapter(BasePlatformAdapter):
                 await task
             except asyncio.CancelledError:
                 pass
-        # Reset per-chat typing backoff state so the next agent turn starts
-        # fresh rather than inheriting a cooldown from a prior conversation.
+
+        # Send an explicit stop-typing RPC so the recipient's device drops the
+        # indicator immediately instead of waiting for Signal's ~5s built-in
+        # timeout.  Failures are best-effort — the backoff state must still be
+        # cleared so the next agent turn starts clean.
+        try:
+            params: Dict[str, Any] = {"account": self.account}
+            if chat_id.startswith("group:"):
+                params["groupId"] = chat_id[6:]
+            else:
+                params["recipient"] = [await self._resolve_recipient(chat_id)]
+            params["stop"] = True
+            await self._rpc(
+                "sendTyping",
+                params,
+                rpc_id="typing-stop",
+                log_failures=False,
+            )
+        except Exception:
+            # Best-effort: any RPC failure (or recipient-resolution failure)
+            # must not prevent backoff cleanup.
+            pass
+
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)
 

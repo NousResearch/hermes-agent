@@ -43,7 +43,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 try:
     from aiohttp import web
@@ -536,6 +536,299 @@ class ResponseStore:
         return row[0] if row else 0
 
 
+_RUN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+
+class RunEventStore:
+    """SQLite-backed event log and public metadata store for /v1/runs."""
+
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            try:
+                from hermes_cli.config import get_hermes_home
+                db_path = str(get_hermes_home() / "run_event_store.db")
+            except Exception:
+                db_path = ":memory:"
+        try:
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        except Exception:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS run_events (
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                event TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (run_id, sequence)
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS run_meta (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                terminal_at REAL,
+                last_sequence INTEGER NOT NULL DEFAULT 0,
+                status_data TEXT NOT NULL DEFAULT '{}'
+            )"""
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def is_terminal_status(status: str) -> bool:
+        return status in _RUN_TERMINAL_STATUSES
+
+    @staticmethod
+    def _loads(raw: Any) -> Dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            loaded = json.loads(raw)
+        except Exception:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    @staticmethod
+    def _status_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
+        private = {
+            "object",
+            "run_id",
+            "status",
+            "created_at",
+            "updated_at",
+            "terminal_at",
+            "last_sequence",
+        }
+        return {k: v for k, v in fields.items() if k not in private}
+
+    def initialize_run(
+        self,
+        run_id: str,
+        *,
+        status: str = "queued",
+        created_at: float = None,
+        status_data: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        now = created_at if created_at is not None else time.time()
+        payload = self._status_payload(status_data or {})
+        self._conn.execute(
+            """INSERT INTO run_meta
+                (run_id, status, created_at, updated_at, terminal_at, last_sequence, status_data)
+               VALUES (?, ?, ?, ?, ?, 0, ?)""",
+            (
+                run_id,
+                status,
+                now,
+                now,
+                now if self.is_terminal_status(status) else None,
+                json.dumps(payload, default=str),
+            ),
+        )
+        self._conn.commit()
+        return self.get_status(run_id)
+
+    def update_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
+        now = time.time()
+        row = self._conn.execute(
+            "SELECT status_data, created_at, terminal_at FROM run_meta WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return self.initialize_run(
+                run_id,
+                status=status,
+                created_at=fields.get("created_at", now),
+                status_data=fields,
+            )
+
+        payload = self._loads(row["status_data"])
+        payload.update(self._status_payload(fields))
+        terminal_at = row["terminal_at"]
+        if terminal_at is None and self.is_terminal_status(status):
+            terminal_at = now
+        self._conn.execute(
+            """UPDATE run_meta
+               SET status = ?, updated_at = ?, terminal_at = ?, status_data = ?
+               WHERE run_id = ?""",
+            (status, now, terminal_at, json.dumps(payload, default=str), run_id),
+        )
+        self._conn.commit()
+        return self.get_status(run_id)
+
+    def append_event(
+        self,
+        run_id: str,
+        event: Dict[str, Any],
+        *,
+        status: str = None,
+        terminal: bool = False,
+        status_fields: Dict[str, Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                """SELECT status, terminal_at, last_sequence, status_data
+                   FROM run_meta WHERE run_id = ?""",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if row["terminal_at"] is not None:
+                self._conn.rollback()
+                return None
+
+            event_type = str(event.get("event") or "")
+            if not event_type:
+                raise ValueError("run event missing event type")
+
+            sequence = int(row["last_sequence"] or 0) + 1
+            payload = dict(event)
+            payload["event"] = event_type
+            payload["run_id"] = run_id
+            payload["sequence"] = sequence
+            payload.setdefault("timestamp", now)
+
+            self._conn.execute(
+                """INSERT INTO run_events
+                    (run_id, sequence, event, data, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    sequence,
+                    event_type,
+                    json.dumps(payload, default=str),
+                    now,
+                ),
+            )
+
+            public_status = status or row["status"]
+            public_data = self._loads(row["status_data"])
+            public_data.update(self._status_payload(status_fields or {}))
+            public_data["last_event"] = event_type
+            terminal_at = now if terminal else row["terminal_at"]
+            self._conn.execute(
+                """UPDATE run_meta
+                   SET status = ?, updated_at = ?, terminal_at = ?,
+                       last_sequence = ?, status_data = ?
+                   WHERE run_id = ?""",
+                (
+                    public_status,
+                    now,
+                    terminal_at,
+                    sequence,
+                    json.dumps(public_data, default=str),
+                    run_id,
+                ),
+            )
+            self._conn.commit()
+            return payload
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def get_status(self, run_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT run_id, status, created_at, updated_at, terminal_at,
+                      last_sequence, status_data
+               FROM run_meta WHERE run_id = ?""",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = self._loads(row["status_data"])
+        status = {
+            "object": "hermes.run",
+            "run_id": row["run_id"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "last_sequence": row["last_sequence"],
+        }
+        if row["terminal_at"] is not None:
+            status["terminal_at"] = row["terminal_at"]
+        status.update(payload)
+        status.update({
+            "object": "hermes.run",
+            "run_id": row["run_id"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "last_sequence": row["last_sequence"],
+        })
+        return status
+
+    def list_events_after(self, run_id: str, after: int) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT data FROM run_events
+               WHERE run_id = ? AND sequence > ?
+               ORDER BY sequence ASC""",
+            (run_id, after),
+        ).fetchall()
+        return [json.loads(row["data"]) for row in rows]
+
+    def count_nonterminal_runs(self) -> int:
+        rows = self._conn.execute(
+            "SELECT status, terminal_at FROM run_meta"
+        ).fetchall()
+        return sum(
+            1 for row in rows
+            if row["terminal_at"] is None and not self.is_terminal_status(row["status"])
+        )
+
+    def mark_abandoned_nonterminal(self) -> List[str]:
+        rows = self._conn.execute(
+            "SELECT run_id, status, terminal_at FROM run_meta"
+        ).fetchall()
+        abandoned: List[str] = []
+        for row in rows:
+            if row["terminal_at"] is not None or self.is_terminal_status(row["status"]):
+                continue
+            run_id = row["run_id"]
+            error = "Run abandoned because the API server process restarted"
+            self.append_event(
+                run_id,
+                {
+                    "event": "run.failed",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "error": error,
+                },
+                status="failed",
+                terminal=True,
+                status_fields={"error": error},
+            )
+            abandoned.append(run_id)
+        return abandoned
+
+    def prune_terminal(self, ttl_seconds: int, *, now: float = None) -> List[str]:
+        now = now if now is not None else time.time()
+        cutoff = now - ttl_seconds
+        rows = self._conn.execute(
+            "SELECT run_id FROM run_meta WHERE terminal_at IS NOT NULL AND terminal_at < ?",
+            (cutoff,),
+        ).fetchall()
+        run_ids = [row["run_id"] for row in rows]
+        for run_id in run_ids:
+            self._conn.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
+            self._conn.execute("DELETE FROM run_meta WHERE run_id = ?", (run_id,))
+        self._conn.commit()
+        return run_ids
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------
@@ -768,14 +1061,20 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
-        # Active run streams: run_id -> asyncio.Queue of SSE event dicts
+        self._run_event_store = RunEventStore(extra.get("run_event_store_path"))
+        try:
+            self._run_event_store.mark_abandoned_nonterminal()
+        except Exception:
+            logger.exception("[api_server] failed to reconcile persisted run events")
+        # Back-compat debug attributes retained for tests/inspection; event
+        # delivery now uses per-run subscriber sets below.
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
-        # Creation timestamps for orphaned-run TTL sweep
-        self._run_streams_created: Dict[str, float] = {}
+        self._run_subscribers: Dict[str, Set["asyncio.Queue[Optional[Dict]]"]] = {}
+        self._run_event_locks: Dict[str, "asyncio.Lock"] = {}
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
-        # Pollable run status for dashboards and external control-plane UIs.
+        # Hot cache only. RunEventStore is the source of truth.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
@@ -1176,6 +1475,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
+                "run_events_resumable": True,
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
@@ -3643,13 +3943,19 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
-    _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+
+    def _get_run_lock(self, run_id: str) -> "asyncio.Lock":
+        lock = self._run_event_locks.get(run_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._run_event_locks[run_id] = lock
+        return lock
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
-        current = self._run_statuses.get(run_id, {})
+        current = self._run_statuses.get(run_id) or self._run_event_store.get_status(run_id) or {}
         current.update({
             "object": "hermes.run",
             "run_id": run_id,
@@ -3658,24 +3964,107 @@ class APIServerAdapter(BasePlatformAdapter):
         })
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
-        self._run_statuses[run_id] = current
-        return current
+        durable = self._run_event_store.update_status(
+            run_id,
+            status,
+            **RunEventStore._status_payload(current),
+        )
+        self._run_statuses[run_id] = durable
+        return durable
+
+    async def _emit_run_event(
+        self,
+        run_id: str,
+        event: Dict[str, Any],
+        *,
+        status: str = None,
+        terminal: bool = False,
+        status_fields: Dict[str, Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Commit a run event, update metadata, and fan it out to live subscribers."""
+        subscribers: List["asyncio.Queue[Optional[Dict]]"] = []
+        async with self._get_run_lock(run_id):
+            try:
+                sequenced = self._run_event_store.append_event(
+                    run_id,
+                    event,
+                    status=status,
+                    terminal=terminal,
+                    status_fields=status_fields,
+                )
+            except Exception:
+                logger.exception("[api_server] failed to append run event for %s", run_id)
+                raise
+            if sequenced is None:
+                logger.debug(
+                    "[api_server] ignoring run event after terminal state for %s: %s",
+                    run_id,
+                    event.get("event"),
+                )
+                return None
+            latest = self._run_event_store.get_status(run_id)
+            if latest is not None:
+                self._run_statuses[run_id] = latest
+            subscribers = list(self._run_subscribers.get(run_id, set()))
+
+        stale: List["asyncio.Queue[Optional[Dict]]"] = []
+        for q in subscribers:
+            try:
+                q.put_nowait(sequenced)
+            except Exception:
+                stale.append(q)
+        if stale:
+            current = self._run_subscribers.get(run_id)
+            if current is not None:
+                for q in stale:
+                    current.discard(q)
+        return sequenced
+
+    def _schedule_run_event(
+        self,
+        run_id: str,
+        loop: "asyncio.AbstractEventLoop",
+        event: Dict[str, Any],
+        *,
+        status: str = None,
+        terminal: bool = False,
+        status_fields: Dict[str, Any] = None,
+    ) -> None:
+        def _create_task() -> None:
+            task = asyncio.create_task(
+                self._emit_run_event(
+                    run_id,
+                    event,
+                    status=status,
+                    terminal=terminal,
+                    status_fields=status_fields,
+                )
+            )
+            try:
+                self._background_tasks.add(task)
+            except TypeError:
+                pass
+            if hasattr(task, "add_done_callback"):
+                def _finish(done_task: "asyncio.Task") -> None:
+                    self._background_tasks.discard(done_task)
+                    try:
+                        done_task.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.exception("[api_server] scheduled run event failed")
+
+                task.add_done_callback(_finish)
+
+        try:
+            loop.call_soon_threadsafe(_create_task)
+        except Exception:
+            logger.debug("[api_server] failed to schedule run event for %s", run_id, exc_info=True)
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
-        """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        """Return a tool_progress_callback that publishes structured run events."""
         def _push(event: Dict[str, Any]) -> None:
-            self._set_run_status(
-                run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
-            )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:
-                pass
+            self._schedule_run_event(run_id, loop, event)
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
@@ -3718,10 +4107,13 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit
-        if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
+        # Enforce active run concurrency limit.
+        if self._run_event_store.count_nonterminal_runs() >= self._MAX_CONCURRENT_RUNS:
             return web.json_response(
-                _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
+                _openai_error(
+                    f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})",
+                    code="rate_limit_exceeded",
+                ),
                 status=429,
             )
 
@@ -3790,10 +4182,7 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
-        self._run_streams[run_id] = q
-        self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
@@ -3802,27 +4191,40 @@ class APIServerAdapter(BasePlatformAdapter):
         def _text_cb(delta: Optional[str]) -> None:
             if delta is None:
                 return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+            self._schedule_run_event(
+                run_id,
+                loop,
+                {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "delta": delta,
-                })
-            except Exception:
-                pass
+                },
+            )
 
-        self._set_run_status(
+        initial_status = self._run_event_store.initialize_run(
             run_id,
-            "queued",
+            status="queued",
             created_at=created_at,
-            session_id=session_id,
-            model=body.get("model", self._model_name),
+            status_data={
+                "session_id": session_id,
+                "model": body.get("model", self._model_name),
+            },
         )
+        self._run_statuses[run_id] = initial_status
 
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
+                await self._emit_run_event(
+                    run_id,
+                    {
+                        "event": "run.started",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    },
+                    status="running",
+                )
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
@@ -3840,15 +4242,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": time.time(),
                         "choices": ["once", "session", "always", "deny"],
                     })
-                    self._set_run_status(
+                    self._schedule_run_event(
                         run_id,
-                        "waiting_for_approval",
-                        last_event="approval.request",
+                        loop,
+                        event,
+                        status="waiting_for_approval",
+                        status_fields={"last_event": "approval.request"},
                     )
-                    try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
-                    except Exception:
-                        pass
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars, set_session_vars
@@ -3904,64 +4304,63 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
-                        "event": "run.failed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "error": error_msg,
-                    })
-                    self._set_run_status(
+                    await self._emit_run_event(
                         run_id,
-                        "failed",
-                        error=error_msg,
-                        last_event="run.failed",
+                        {
+                            "event": "run.failed",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "error": error_msg,
+                        },
+                        status="failed",
+                        terminal=True,
+                        status_fields={"error": error_msg},
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
-                        "event": "run.completed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "output": final_response,
-                        "usage": usage,
-                    })
-                    self._set_run_status(
+                    await self._emit_run_event(
                         run_id,
-                        "completed",
-                        output=final_response,
-                        usage=usage,
-                        last_event="run.completed",
+                        {
+                            "event": "run.completed",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "output": final_response,
+                            "usage": usage,
+                        },
+                        status="completed",
+                        terminal=True,
+                        status_fields={"output": final_response, "usage": usage},
                     )
             except asyncio.CancelledError:
-                self._set_run_status(
-                    run_id,
-                    "cancelled",
-                    last_event="run.cancelled",
-                )
                 try:
-                    q.put_nowait({
-                        "event": "run.cancelled",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                    })
+                    await self._emit_run_event(
+                        run_id,
+                        {
+                            "event": "run.cancelled",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                        },
+                        status="cancelled",
+                        terminal=True,
+                    )
                 except Exception:
                     pass
                 raise
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
-                self._set_run_status(
-                    run_id,
-                    "failed",
-                    error=str(exc),
-                    last_event="run.failed",
-                )
                 try:
-                    q.put_nowait({
-                        "event": "run.failed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "error": str(exc),
-                    })
+                    await self._emit_run_event(
+                        run_id,
+                        {
+                            "event": "run.failed",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "error": str(exc),
+                        },
+                        status="failed",
+                        terminal=True,
+                        status_fields={"error": str(exc)},
+                    )
                 except Exception:
                     pass
             finally:
@@ -3974,11 +4373,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     from tools.approval import unregister_gateway_notify
 
                     unregister_gateway_notify(approval_session_key)
-                except Exception:
-                    pass
-                # Sentinel: signal SSE stream to close
-                try:
-                    q.put_nowait(None)
                 except Exception:
                     pass
                 self._active_run_agents.pop(run_id, None)
@@ -3998,7 +4392,12 @@ class APIServerAdapter(BasePlatformAdapter):
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
         return web.json_response(
-            {"run_id": run_id, "status": "started"},
+            {
+                "run_id": run_id,
+                "status": "started",
+                "session_id": session_id,
+                "events_url": f"/v1/runs/{run_id}/events",
+            },
             status=202,
             headers=response_headers,
         )
@@ -4010,13 +4409,36 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
-        status = self._run_statuses.get(run_id)
+        status = self._run_event_store.get_status(run_id)
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
+        self._run_statuses[run_id] = status
         return web.json_response(status)
+
+    @staticmethod
+    def _format_run_sse(event: Dict[str, Any]) -> bytes:
+        sequence = event.get("sequence", "")
+        event_type = event.get("event", "message")
+        payload = json.dumps(event)
+        return f"id: {sequence}\nevent: {event_type}\ndata: {payload}\n\n".encode()
+
+    @staticmethod
+    def _parse_run_after(request: "web.Request") -> tuple[Optional[int], Optional[str]]:
+        raw = request.query.get("after")
+        if raw is None:
+            raw = request.headers.get("Last-Event-ID")
+        if raw in (None, ""):
+            return 0, None
+        try:
+            after = int(str(raw))
+        except (TypeError, ValueError):
+            return None, "Invalid 'after' cursor"
+        if after < 0:
+            return None, "Invalid 'after' cursor"
+        return after, None
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -4025,16 +4447,38 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        after, cursor_error = self._parse_run_after(request)
+        if cursor_error:
+            return web.json_response(_openai_error(cursor_error, param="after"), status=400)
 
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
-            if run_id in self._run_streams:
+            if self._run_event_store.get_status(run_id) is not None:
                 break
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        q = self._run_streams[run_id]
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        replay_events: List[Dict[str, Any]] = []
+        highest_sent = after or 0
+        should_follow_live = False
+
+        async with self._get_run_lock(run_id):
+            status = self._run_event_store.get_status(run_id)
+            if status is None:
+                return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+            terminal = RunEventStore.is_terminal_status(status.get("status", ""))
+            last_sequence = int(status.get("last_sequence", 0) or 0)
+            should_follow_live = not terminal
+            if should_follow_live:
+                self._run_subscribers.setdefault(run_id, set()).add(q)
+            replay_events = self._run_event_store.list_events_after(run_id, after or 0)
+            for event in replay_events:
+                highest_sent = max(highest_sent, int(event.get("sequence", 0) or 0))
+            if terminal and (after or 0) >= last_sequence:
+                replay_events = []
+                should_follow_live = False
 
         response = web.StreamResponse(
             status=200,
@@ -4047,6 +4491,13 @@ class APIServerAdapter(BasePlatformAdapter):
         await response.prepare(request)
 
         try:
+            for event in replay_events:
+                await response.write(self._format_run_sse(event))
+
+            if not should_follow_live:
+                await response.write(b": stream closed\n\n")
+                return response
+
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
@@ -4057,13 +4508,22 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+                sequence = int(event.get("sequence", 0) or 0)
+                if sequence <= highest_sent:
+                    continue
+                highest_sent = sequence
+                await response.write(self._format_run_sse(event))
+                if RunEventStore.is_terminal_status(str(event.get("event", "")).removeprefix("run.")):
+                    await response.write(b": stream closed\n\n")
+                    break
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            subscribers = self._run_subscribers.get(run_id)
+            if subscribers is not None:
+                subscribers.discard(q)
+                if not subscribers:
+                    self._run_subscribers.pop(run_id, None)
 
         return response
 
@@ -4136,18 +4596,18 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         self._set_run_status(run_id, "running", last_event="approval.responded")
-        q = self._run_streams.get(run_id)
-        if q is not None:
-            try:
-                q.put_nowait({
-                    "event": "approval.responded",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "choice": choice,
-                    "resolved": resolved,
-                })
-            except Exception:
-                pass
+        await self._emit_run_event(
+            run_id,
+            {
+                "event": "approval.responded",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "choice": choice,
+                "resolved": resolved,
+            },
+            status="running",
+            status_fields={"last_event": "approval.responded"},
+        )
 
         return web.json_response({
             "object": "hermes.run.approval_response",
@@ -4197,30 +4657,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"run_id": run_id, "status": "stopping"})
 
     async def _sweep_orphaned_runs(self) -> None:
-        """Periodically clean up run streams that were never consumed."""
+        """Periodically prune retained terminal run events and status cache."""
         while True:
             await asyncio.sleep(60)
             now = time.time()
-            stale = [
-                run_id
-                for run_id, created_at in list(self._run_streams_created.items())
-                if now - created_at > self._RUN_STREAM_TTL
-            ]
-            for run_id in stale:
-                logger.debug("[api_server] sweeping orphaned run %s", run_id)
-                try:
-                    from tools.approval import unregister_gateway_notify
-
-                    approval_session_key = self._run_approval_sessions.get(run_id)
-                    if approval_session_key:
-                        unregister_gateway_notify(approval_session_key)
-                except Exception:
-                    pass
-                self._run_streams.pop(run_id, None)
-                self._run_streams_created.pop(run_id, None)
-                self._active_run_agents.pop(run_id, None)
-                self._active_run_tasks.pop(run_id, None)
-                self._run_approval_sessions.pop(run_id, None)
+            try:
+                pruned = self._run_event_store.prune_terminal(self._RUN_STATUS_TTL, now=now)
+            except Exception:
+                logger.exception("[api_server] failed to prune terminal run events")
+                pruned = []
+            for run_id in pruned:
+                logger.debug("[api_server] pruned terminal run event history for %s", run_id)
+                self._run_statuses.pop(run_id, None)
+                self._run_subscribers.pop(run_id, None)
+                self._run_event_locks.pop(run_id, None)
 
             stale_statuses = [
                 run_id
@@ -4381,6 +4831,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
+        try:
+            self._run_event_store.close()
+        except Exception:
+            pass
         self._app = None
         logger.info("[%s] API server stopped", self.name)
 

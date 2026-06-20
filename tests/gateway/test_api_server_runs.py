@@ -9,7 +9,9 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
+import time as _time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,9 +31,10 @@ from gateway.platforms.api_server import (
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(api_key: str = "") -> APIServerAdapter:
+def _make_adapter(api_key: str = "", **extra_overrides) -> APIServerAdapter:
     """Create an adapter with optional API key."""
-    extra = {}
+    extra = {"run_event_store_path": ":memory:"}
+    extra.update(extra_overrides)
     if api_key:
         extra["key"] = api_key
     config = PlatformConfig(enabled=True, extra=extra)
@@ -81,6 +84,48 @@ def _make_slow_agent(**kwargs):
     mock_agent.session_total_tokens = 0
 
     return mock_agent, ready, interrupted
+
+
+def _parse_sse_events(body: str):
+    """Return decoded SSE data payloads from a response body."""
+    events = []
+    for block in body.split("\n\n"):
+        data_lines = [
+            line.removeprefix("data: ")
+            for line in block.splitlines()
+            if line.startswith("data: ")
+        ]
+        if not data_lines:
+            continue
+        events.append(json.loads("\n".join(data_lines)))
+    return events
+
+
+def _make_streaming_agent(deltas=None, final_response="done", release=None, ready=None):
+    """Create an agent factory that emits text deltas through the captured callback."""
+    deltas = list(deltas or [])
+
+    def _factory(**kwargs):
+        stream_delta_callback = kwargs.get("stream_delta_callback")
+        mock_agent = MagicMock()
+
+        def _run(user_message=None, conversation_history=None, task_id=None):
+            if ready is not None:
+                ready.set()
+            if release is not None:
+                release.wait(timeout=5)
+            for delta in deltas:
+                if stream_delta_callback is not None:
+                    stream_delta_callback(delta)
+            return {"final_response": final_response}
+
+        mock_agent.run_conversation.side_effect = _run
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+        return mock_agent
+
+    return _factory
 
 
 @pytest.fixture
@@ -354,6 +399,17 @@ class TestRunEvents:
             "once",
             resolve_all=False,
         )
+        events = adapter._run_event_store.list_events_after(run_id, 0)
+        assert len(events) == 1
+        assert events[0]["event"] == "approval.responded"
+        assert events[0]["choice"] == "once"
+        assert events[0]["resolved"] == 1
+
+        status = adapter._run_event_store.get_status(run_id)
+        assert status is not None
+        assert status["status"] == "running"
+        assert status["last_event"] == "approval.responded"
+        assert status["last_sequence"] == 1
 
     @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
@@ -368,6 +424,219 @@ class TestRunEvents:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/v1/runs/run_any/events")
         assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_after_query_replays_only_higher_sequences(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _make_streaming_agent(
+                    deltas=["hello"],
+                    final_response="done",
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events?after=1")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+                events = _parse_sse_events(body)
+
+        assert events
+        assert all(event["sequence"] > 1 for event in events)
+        assert events[0]["event"] != "run.started"
+        assert "id: " in body
+        assert "event: " in body
+
+    @pytest.mark.asyncio
+    async def test_last_event_id_replays_only_higher_sequences(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _make_streaming_agent(
+                    deltas=["first", "second"],
+                    final_response="done",
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                events_resp = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers={"Last-Event-ID": "2"},
+                )
+                body = await events_resp.text()
+                events = _parse_sse_events(body)
+
+        assert events
+        assert all(event["sequence"] > 2 for event in events)
+
+    @pytest.mark.asyncio
+    async def test_after_query_takes_precedence_over_last_event_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _make_streaming_agent(
+                    deltas=["one", "two"],
+                    final_response="done",
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                events_resp = await cli.get(
+                    f"/v1/runs/{run_id}/events?after=1",
+                    headers={"Last-Event-ID": "999"},
+                )
+                body = await events_resp.text()
+                events = _parse_sse_events(body)
+
+        assert events
+        assert all(event["sequence"] > 1 for event in events)
+        assert any(event["event"] == "message.delta" for event in events)
+
+    @pytest.mark.asyncio
+    async def test_completed_run_after_last_sequence_closes_cleanly(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _make_streaming_agent(
+                    deltas=["hello"],
+                    final_response="done",
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                last_sequence = status["last_sequence"]
+                events_resp = await cli.get(
+                    f"/v1/runs/{run_id}/events?after={last_sequence}"
+                )
+                assert events_resp.status == 200
+                body = await asyncio.wait_for(events_resp.text(), timeout=2.0)
+
+        assert _parse_sse_events(body) == []
+
+    @pytest.mark.asyncio
+    async def test_multiple_subscribers_each_receive_live_events(self, adapter):
+        release = threading.Event()
+        ready = threading.Event()
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _make_streaming_agent(
+                    deltas=["shared"],
+                    final_response="done",
+                    release=release,
+                    ready=ready,
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                ready.wait(timeout=3)
+
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                second = await cli.get(f"/v1/runs/{run_id}/events")
+
+                release.set()
+
+                first_body, second_body = await asyncio.wait_for(
+                    asyncio.gather(first.text(), second.text()),
+                    timeout=5.0,
+                )
+
+        first_events = _parse_sse_events(first_body)
+        second_events = _parse_sse_events(second_body)
+        assert [event["event"] for event in first_events] == [
+            event["event"] for event in second_events
+        ]
+        assert any(event.get("delta") == "shared" for event in first_events)
+        assert any(event.get("delta") == "shared" for event in second_events)
+
+    @pytest.mark.asyncio
+    async def test_reconnect_after_disconnect_receives_missed_events(self, adapter):
+        release = threading.Event()
+        ready = threading.Event()
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _make_streaming_agent(
+                    deltas=["missed"],
+                    final_response="done",
+                    release=release,
+                    ready=ready,
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                ready.wait(timeout=3)
+
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                first.close()
+
+                release.set()
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                second = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await second.text()
+                events = _parse_sse_events(body)
+
+        assert any(event.get("delta") == "missed" for event in events)
+        assert events[-1]["event"] == "run.completed"
+
+    def test_startup_marks_persisted_running_runs_abandoned(self, tmp_path):
+        db_path = tmp_path / "run_events.db"
+        first = _make_adapter(run_event_store_path=str(db_path))
+        first._run_event_store.initialize_run(
+            "run_stale",
+            status="running",
+            created_at=_time.time(),
+            status_data={"session_id": "run_stale"},
+        )
+        first._run_event_store.close()
+
+        second = _make_adapter(run_event_store_path=str(db_path))
+        status = second._run_event_store.get_status("run_stale")
+        events = second._run_event_store.list_events_after("run_stale", 0)
+
+        assert status["status"] == "failed"
+        assert "abandoned" in status["error"]
+        assert events[-1]["event"] == "run.failed"
 
 
 # ---------------------------------------------------------------------------

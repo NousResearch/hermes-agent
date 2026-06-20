@@ -136,7 +136,7 @@ def _make_source():
 def _bloat(n):
     # Stand-in for the oversized, post-compression "child" transcript that
     # could not be compressed any further (#35809).
-    return [{"role": "user", "content": "x" * 2000} for _ in range(n)]
+    return [{"role": "user", "content": f"{i}: " + "x" * 2000} for i in range(n)]
 
 
 class TestAutoResetLoadsCleanContext:

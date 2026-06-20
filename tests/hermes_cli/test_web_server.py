@@ -3001,9 +3001,16 @@ class TestNewEndpoints:
         )
 
         assert resp.status_code == 200
-        wrapper_path = wrapper_dir / "writer"
-        assert wrapper_path.exists()
-        assert wrapper_path.read_text() == '#!/bin/sh\nexec /opt/hermes/bin/hermes -p writer "$@"\n'
+        import sys
+        if sys.platform == "win32":
+            wrapper_path = wrapper_dir / "writer.bat"
+            assert wrapper_path.exists()
+            lines = [line for line in wrapper_path.read_text().splitlines() if line]
+            assert lines == ["@echo off", "hermes -p writer %*"]
+        else:
+            wrapper_path = wrapper_dir / "writer"
+            assert wrapper_path.exists()
+            assert wrapper_path.read_text() == '#!/bin/sh\nexec /opt/hermes/bin/hermes -p writer "$@"\n'
 
     def test_profiles_create_with_clone_from_copies_source_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home

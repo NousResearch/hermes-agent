@@ -314,3 +314,11 @@ The bundled NeMo Relay plugin maps the same generic observer contract to NeMo
 Relay scopes, LLM spans, tool spans, marks, ATOF streams, and ATIF exports.
 NeMo Relay-specific configuration and examples live in
 [`plugins/observability/nemo_relay/README.md`](../../plugins/observability/nemo_relay/README.md).
+
+## Sandbox Validation
+
+Observer hooks have been validated in an isolated sandbox environment using
+dummy repositories and scrubbed (secret-free) configurations. Sandbox
+validation confirms that hook registration, event emission, and callback
+error handling work correctly without requiring access to production
+credentials or live provider endpoints.

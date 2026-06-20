@@ -34,6 +34,8 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_TYPING_REFRESH_MAX_SECONDS = 90.0
+_PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
 
 
 def _platform_name(platform) -> str:
@@ -1906,6 +1908,14 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Active typing lifecycle records keyed by job_id.  This is observability
+        # and a guard rail: typing refreshes are tied to a concrete request job,
+        # never to a global loop.  Entries are removed in the request finally
+        # path and by _keep_typing when it exits due to timeout/cancel.
+        self._active_typing_jobs: Dict[str, dict] = {}
+        # Provider-rate-limit cooldowns by chat_id.  Kept in memory only; no
+        # secrets or provider payloads are stored.
+        self._provider_rate_limit_cooldowns: Dict[str, float] = {}
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -3145,6 +3155,8 @@ class BasePlatformAdapter(ABC):
         interval: float = 2.0,
         metadata=None,
         stop_event: asyncio.Event | None = None,
+        job_id: str | None = None,
+        max_duration: float = _TYPING_REFRESH_MAX_SECONDS,
     ) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -3170,9 +3182,46 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        timed_out = False
+        if job_id:
+            self._active_typing_jobs[job_id] = {
+                "job_id": job_id,
+                "chat_id": chat_id,
+                "started_at": time.time(),
+                "status": "running",
+                "typing_started": True,
+                "typing_stopped": False,
+            }
+            logger.info(
+                "[%s] typing_job_start job_id=%s chat_id=%s status=running",
+                self.name, job_id, chat_id,
+            )
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if max_duration > 0 and loop.time() - started_at >= max_duration:
+                    timed_out = True
+                    if job_id and job_id in self._active_typing_jobs:
+                        self._active_typing_jobs[job_id]["status"] = "timeout"
+                    logger.warning(
+                        "[%s] typing_job_timeout job_id=%s chat_id=%s max_duration=%.1fs",
+                        self.name, job_id or "unknown", chat_id, max_duration,
+                    )
+                    try:
+                        await self.send(
+                            chat_id=chat_id,
+                            content=(
+                                "Task masih berjalan, tapi indikator mengetik dihentikan "
+                                "agar tidak menggantung. Aku akan mengirim hasil/error "
+                                "begitu proses selesai."
+                            ),
+                            metadata=metadata,
+                        )
+                    except Exception:
+                        pass
                     return
                 if chat_id not in self._typing_paused:
                     try:
@@ -3194,7 +3243,6 @@ class BasePlatformAdapter(ABC):
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
-                loop = asyncio.get_running_loop()
                 deadline = loop.time() + interval
                 while not stop_event.is_set():
                     remaining = deadline - loop.time()
@@ -3220,6 +3268,16 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     pass
             self._typing_paused.discard(chat_id)
+            if job_id:
+                record = self._active_typing_jobs.pop(job_id, None)
+                if record is not None:
+                    record["typing_stopped"] = True
+                    if not timed_out and record.get("status") == "running":
+                        record["status"] = "stopped"
+                    logger.info(
+                        "[%s] typing_job_stop job_id=%s chat_id=%s status=%s typing_stopped=true",
+                        self.name, job_id, chat_id, record.get("status"),
+                    )
 
     async def _stop_typing_refresh(
         self,
@@ -4145,6 +4203,35 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    @staticmethod
+    def _looks_like_provider_rate_limit(exc: BaseException) -> bool:
+        """Best-effort provider rate-limit classifier without storing payloads."""
+        text = f"{type(exc).__name__}: {exc}".lower()
+        return any(
+            marker in text
+            for marker in (
+                "429",
+                "rate limit",
+                "ratelimit",
+                "too many requests",
+                "quota exceeded",
+                "overloaded",
+            )
+        )
+
+    def _provider_cooldown_remaining(self, chat_id: str) -> float:
+        until = self._provider_rate_limit_cooldowns.get(str(chat_id), 0.0)
+        remaining = until - time.time()
+        if remaining <= 0:
+            self._provider_rate_limit_cooldowns.pop(str(chat_id), None)
+            return 0.0
+        return remaining
+
+    def _mark_provider_rate_limited(self, chat_id: str) -> None:
+        self._provider_rate_limit_cooldowns[str(chat_id)] = (
+            time.time() + _PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS
+        )
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -4164,6 +4251,37 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        job_id = f"{session_key}:{uuid.uuid4().hex[:8]}"
+        logger.info(
+            "[%s] request_job_start job_id=%s chat_id=%s status=queued started_at=%.3f",
+            self.name, job_id, event.source.chat_id, time.time(),
+        )
+
+        cooldown_remaining = self._provider_cooldown_remaining(event.source.chat_id)
+        if cooldown_remaining > 0:
+            logger.info(
+                "[%s] request_job_blocked_rate_limit job_id=%s chat_id=%s cooldown_remaining=%.1fs",
+                self.name, job_id, event.source.chat_id, cooldown_remaining,
+            )
+            try:
+                await self._run_processing_hook("on_processing_start", event)
+                await self.send(
+                    chat_id=event.source.chat_id,
+                    content=(
+                        "Provider sedang rate limit. Task tidak dijalankan/ditunda. "
+                        "Coba lagi setelah cooldown."
+                    ),
+                    metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+                )
+                await self._run_processing_hook(
+                    "on_processing_complete", event, ProcessingOutcome.FAILURE
+                )
+            finally:
+                current_task = asyncio.current_task()
+                if current_task is not None and self._session_tasks.get(session_key) is current_task:
+                    del self._session_tasks[session_key]
+                    self._release_session_guard(session_key, guard=interrupt_event)
+            return
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
@@ -4174,6 +4292,10 @@ class BasePlatformAdapter(ABC):
             _keep_typing_sig = None
         if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
             _keep_typing_kwargs["stop_event"] = interrupt_event
+        if _keep_typing_sig is None or "job_id" in _keep_typing_sig.parameters:
+            _keep_typing_kwargs["job_id"] = job_id
+        if _keep_typing_sig is None or "max_duration" in _keep_typing_sig.parameters:
+            _keep_typing_kwargs["max_duration"] = _TYPING_REFRESH_MAX_SECONDS
         typing_task = asyncio.create_task(
             self._keep_typing(
                 event.source.chat_id,
@@ -4485,6 +4607,15 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            if job_id in self._active_typing_jobs:
+                self._active_typing_jobs[job_id]["status"] = "completed" if processing_ok else "failed"
+            logger.info(
+                "[%s] request_job_complete job_id=%s chat_id=%s status=%s",
+                self.name,
+                job_id,
+                event.source.chat_id,
+                "completed" if processing_ok else "failed",
+            )
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
@@ -4540,25 +4671,61 @@ class BasePlatformAdapter(ABC):
             outcome = ProcessingOutcome.CANCELLED
             if current_task is None or current_task not in self._expected_cancelled_tasks:
                 outcome = ProcessingOutcome.FAILURE
+            if job_id in self._active_typing_jobs:
+                self._active_typing_jobs[job_id]["status"] = (
+                    "cancelled" if outcome is ProcessingOutcome.CANCELLED else "failed"
+                )
+            logger.info(
+                "[%s] request_job_cancelled job_id=%s chat_id=%s status=%s",
+                self.name,
+                job_id,
+                event.source.chat_id,
+                "cancelled" if outcome is ProcessingOutcome.CANCELLED else "failed",
+            )
             await self._run_processing_hook("on_processing_complete", event, outcome)
             raise
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
-            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            is_rate_limit = self._looks_like_provider_rate_limit(e)
+            if is_rate_limit:
+                self._mark_provider_rate_limited(event.source.chat_id)
+                if job_id in self._active_typing_jobs:
+                    self._active_typing_jobs[job_id]["status"] = "blocked_rate_limit"
+                    self._active_typing_jobs[job_id]["provider_error"] = type(e).__name__
+                logger.warning(
+                    "[%s] request_job_blocked_rate_limit job_id=%s chat_id=%s provider_error=%s",
+                    self.name, job_id, event.source.chat_id, type(e).__name__,
+                )
+                await _stop_typing_task()
+            else:
+                if job_id in self._active_typing_jobs:
+                    self._active_typing_jobs[job_id]["status"] = "failed"
+                    self._active_typing_jobs[job_id]["provider_error"] = type(e).__name__
+                logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:
-                error_type = type(e).__name__
-                error_detail = str(e)[:300] if str(e) else "no details available"
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-                await self.send(
-                    chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
-                    ),
-                    metadata=_thread_metadata,
-                )
+                if is_rate_limit:
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            "Provider sedang rate limit. Task tidak dijalankan/ditunda. "
+                            "Coba lagi setelah cooldown."
+                        ),
+                        metadata=_thread_metadata,
+                    )
+                else:
+                    error_type = type(e).__name__
+                    error_detail = str(e)[:300] if str(e) else "no details available"
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            f"Sorry, I encountered an error ({error_type}).\n"
+                            f"{error_detail}\n"
+                            "Try again or use /reset to start a fresh session."
+                        ),
+                        metadata=_thread_metadata,
+                    )
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:

@@ -28,6 +28,8 @@ import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     Platform,
     PlatformConfig,
     SendResult,
@@ -234,3 +236,152 @@ class TestKeepTypingTimeoutPerTick:
             ("discord-chat", True),
         ]
         assert "discord-chat" not in adapter._typing_paused
+    @pytest.mark.asyncio
+    async def test_typing_job_hard_cap_stops_refresh_and_clears_active_job(self, monkeypatch):
+        """Typing refresh is tied to a concrete job and cannot run forever."""
+        adapter = _StubAdapter()
+        typing_calls = []
+        sent_messages = []
+
+        async def send_typing(chat_id, metadata=None):
+            typing_calls.append(chat_id)
+
+        async def send(chat_id, content, reply_to=None, metadata=None):
+            sent_messages.append(content)
+            return SendResult(success=True, message_id="timeout-notice")
+
+        async def stop_typing(chat_id):
+            return None
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        monkeypatch.setattr(adapter, "send", send)
+        monkeypatch.setattr(adapter, "stop_typing", stop_typing)
+
+        await adapter._keep_typing(
+            chat_id="hard-cap-chat",
+            interval=0.05,
+            job_id="job-hard-cap",
+            max_duration=0.12,
+        )
+
+        assert typing_calls
+        assert adapter._active_typing_jobs == {}
+        assert any("indikator mengetik dihentikan" in msg for msg in sent_messages)
+
+    @pytest.mark.asyncio
+    async def test_process_message_success_stops_typing_and_clears_job(self, monkeypatch):
+        """A normally completed request must stop typing and leave no active job."""
+        adapter = _StubAdapter()
+        sends = []
+        typing_calls = []
+        stop_calls = []
+
+        async def handler(event):
+            await asyncio.sleep(0.02)
+            return "done"
+
+        async def send(chat_id, content, reply_to=None, metadata=None):
+            sends.append(content)
+            return SendResult(success=True, message_id="m-success")
+
+        async def send_typing(chat_id, metadata=None):
+            typing_calls.append(chat_id)
+
+        async def stop_typing(chat_id):
+            stop_calls.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send", send)
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        monkeypatch.setattr(adapter, "stop_typing", stop_typing)
+        adapter.set_message_handler(handler)
+
+        event = MessageEvent(
+            text="Test",
+            message_type=MessageType.TEXT,
+            source=adapter.build_source(chat_id="success-chat", chat_type="dm"),
+        )
+        session_key = "telegram:success-chat"
+        task = asyncio.create_task(adapter._process_message_background(event, session_key))
+        adapter._session_tasks[session_key] = task
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert sends == ["done"]
+        assert typing_calls
+        assert stop_calls
+        assert adapter._active_typing_jobs == {}
+        assert session_key not in adapter._active_sessions
+        assert session_key not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_provider_rate_limit_stops_typing_sets_cooldown_and_blocks_next_request(self, monkeypatch):
+        """Provider 429/rate-limit errors must stop typing and avoid immediate retry spam."""
+        adapter = _StubAdapter()
+        sends = []
+        typing_calls = []
+        stop_calls = []
+        handler_calls = {"n": 0}
+
+        async def handler(event):
+            handler_calls["n"] += 1
+            raise RuntimeError("429 rate limit from provider")
+
+        async def send(chat_id, content, reply_to=None, metadata=None):
+            sends.append(content)
+            return SendResult(success=True, message_id=f"m{len(sends)}")
+
+        async def send_typing(chat_id, metadata=None):
+            typing_calls.append(chat_id)
+
+        async def stop_typing(chat_id):
+            stop_calls.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send", send)
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        monkeypatch.setattr(adapter, "stop_typing", stop_typing)
+        adapter.set_message_handler(handler)
+
+        event = MessageEvent(
+            text="Test",
+            message_type=MessageType.TEXT,
+            source=adapter.build_source(chat_id="rl-chat", chat_type="dm"),
+        )
+        session_key = "telegram:rl-chat"
+        task = asyncio.create_task(adapter._process_message_background(event, session_key))
+        adapter._session_tasks[session_key] = task
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert handler_calls["n"] == 1
+        assert any("Provider sedang rate limit" in msg for msg in sends)
+        assert adapter._provider_cooldown_remaining("rl-chat") > 0
+        assert adapter._active_typing_jobs == {}
+        assert stop_calls
+        first_typing_count = len(typing_calls)
+
+        # A second request during cooldown must not call the provider handler or
+        # start a typing loop; it replies with the cooldown message immediately.
+        second = MessageEvent(
+            text="Test again",
+            message_type=MessageType.TEXT,
+            source=adapter.build_source(chat_id="rl-chat", chat_type="dm"),
+        )
+        task2 = asyncio.create_task(adapter._process_message_background(second, session_key))
+        adapter._session_tasks[session_key] = task2
+        await asyncio.wait_for(task2, timeout=2.0)
+
+        assert handler_calls["n"] == 1
+        assert len(typing_calls) == first_typing_count
+        assert sum("Provider sedang rate limit" in msg for msg in sends) == 2
+        assert adapter._active_typing_jobs == {}
+        assert session_key not in adapter._active_sessions
+        assert session_key not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_keep_typing_exits_immediately_when_stop_event_already_set(self, monkeypatch):
+        adapter = _StubAdapter()
+        calls = []
+        monkeypatch.setattr(adapter, "send_typing", lambda *args, **kwargs: calls.append(args))
+        stop_event = asyncio.Event()
+        stop_event.set()
+        await adapter._keep_typing("pre-stopped", interval=0.1, stop_event=stop_event)
+        assert calls == []
+

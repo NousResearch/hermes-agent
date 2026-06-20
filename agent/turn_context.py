@@ -237,7 +237,21 @@ def build_turn_context(
             agent._turns_since_memory = 0
 
     # Add user message.
-    user_msg = {"role": "user", "content": user_message}
+    # If the user message was already persisted by the bridge/Node.js layer
+    # (it exists in conversation_history with matching content), reuse that
+    # dict object so the identity-based dedup in _flush_messages_to_session_db
+    # prevents a duplicate persist. (#49391)
+    _existing_user_msg = None
+    if conversation_history:
+        _expected_content = persist_user_message if persist_user_message is not None else user_message
+        for _m in reversed(conversation_history):
+            if _m.get("role") == "user" and _m.get("content") == _expected_content:
+                _existing_user_msg = _m
+                break
+    if _existing_user_msg is not None:
+        user_msg = _existing_user_msg
+    else:
+        user_msg = {"role": "user", "content": user_message}
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

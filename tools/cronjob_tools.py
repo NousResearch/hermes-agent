@@ -7,6 +7,7 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Any, Dict, List, Optional, Union
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+_CRON_CONTEXT_ALLOWED_ACTIONS = {"list", "resume"}
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -472,6 +475,28 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _is_cron_tool_call_context() -> bool:
+    """Return True when the current cronjob() call is running inside a cron tick."""
+    try:
+        from gateway.session_context import get_session_env
+
+        session_platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+        if session_platform:
+            return session_platform == "cron"
+    except Exception:
+        pass
+    return os.getenv("HERMES_CRON_SESSION", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cron_context_action_error(action: str) -> str:
+    allowed = ", ".join(sorted(_CRON_CONTEXT_ALLOWED_ACTIONS))
+    return tool_error(
+        f"cronjob(action='{action}') is blocked inside cron-run sessions. "
+        f"Cron jobs may only use cronjob actions {{{allowed}}} to avoid recursive scheduling or destructive cron mutation.",
+        success=False,
+    )
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -499,6 +524,8 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+        if _is_cron_tool_call_context() and normalized not in _CRON_CONTEXT_ALLOWED_ACTIONS:
+            return _cron_context_action_error(normalized)
 
         if normalized == "create":
             if not schedule:
@@ -859,9 +886,9 @@ def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
 
-    Available in interactive CLI mode and gateway/messaging platforms.
-    The cron system is internal (JSON file-based scheduler ticked by the gateway),
-    so no external crontab executable is required.
+    Available in interactive CLI mode, gateway/messaging platforms, and cron
+    sessions. The cron system is internal (JSON file-based scheduler ticked by
+    the gateway), so no external crontab executable is required.
 
     Session env vars must hold an explicit truthy string (``1``, ``true``,
     ``yes``, ``on``) — false-like values (``0``, ``false``, ``no``, ``off``)
@@ -874,6 +901,7 @@ def check_cronjob_requirements() -> bool:
         env_var_enabled("HERMES_INTERACTIVE")
         or env_var_enabled("HERMES_GATEWAY_SESSION")
         or env_var_enabled("HERMES_EXEC_ASK")
+        or env_var_enabled("HERMES_CRON_SESSION")
     )
 
 

@@ -1065,8 +1065,8 @@ class TestRunJobSessionPersistence:
         LLM-supplied cronjob() call re-enable tools the operator had globally
         disabled. The fix: ALWAYS include agent.disabled_toolsets in the
         disabled_toolsets passed to AIAgent, on top of the cron baseline
-        (cronjob/messaging/clarify). AIAgent's disabled_toolsets takes
-        precedence over enabled_toolsets, so this stops the bypass.
+        (messaging/clarify). AIAgent's disabled_toolsets takes precedence over
+        enabled_toolsets, so this stops the bypass.
         """
         (tmp_path / "config.yaml").write_text(
             "agent:\n"
@@ -1091,8 +1091,28 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert set(kwargs["disabled_toolsets"]) >= {
-            "cronjob", "messaging", "clarify", "terminal", "file",
+            "messaging", "clarify", "terminal", "file",
         }
+        assert "cronjob" not in kwargs["disabled_toolsets"]
+
+    def test_run_job_cronjob_toolset_can_reach_agent_when_explicitly_enabled(self, tmp_path):
+        job = {
+            "id": "cronjob-toolset-job",
+            "name": "test",
+            "prompt": "resume the paused jobs",
+            "enabled_toolsets": ["cronjob", "file"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["cronjob", "file"]
+        assert "cronjob" not in kwargs["disabled_toolsets"]
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now
@@ -1820,7 +1840,7 @@ class TestRunJobSkillBacked:
         assert final_response == "ok"
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert "cronjob" in (kwargs["disabled_toolsets"] or [])
+        assert kwargs["disabled_toolsets"] == ["messaging", "clarify"]
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
         assert "blogwatcher" in prompt_arg

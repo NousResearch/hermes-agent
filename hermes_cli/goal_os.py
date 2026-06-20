@@ -258,20 +258,53 @@ def sanitize_blind_prompt_text(text: str) -> str:
     return cleaned
 
 
+def _is_negated_gate_mention(lower: str, start: int) -> bool:
+    """Return True when a hard-gate term is listed as a safety constraint.
+
+    Goal text often says things like "without running providers, prompts,
+    production or DNS". Those are boundaries, not requests to execute hard-gate
+    work. Keep direct requests blocked, but do not convert negative safety
+    constraints into false RED blockers.
+    """
+    prefix = lower[max(0, start - 180):start]
+    return any(
+        marker in prefix
+        for marker in (
+            "without ",
+            "without running ",
+            "without touching ",
+            "no ",
+            "not ",
+            "do not ",
+            "don't ",
+            "never ",
+        )
+    )
+
+
+def _contains_non_negated(lower: str, needle: str) -> bool:
+    index = lower.find(needle)
+    while index != -1:
+        if not _is_negated_gate_mention(lower, index):
+            return True
+        index = lower.find(needle, index + len(needle))
+    return False
+
+
 def is_hard_gate(text: str) -> bool:
     lower = str(text or "").lower()
     gates = [gate.lower() for gate in HARD_APPROVAL_GATES] + list(_HARD_GATE_ALIASES)
-    return any(gate in lower for gate in gates)
+    return any(_contains_non_negated(lower, gate) for gate in gates)
 
 
 def hard_gates_in_text(text: str) -> list[str]:
     lower = str(text or "").lower()
     found: list[str] = []
     for gate in HARD_APPROVAL_GATES:
-        if gate.lower() in lower:
+        if _contains_non_negated(lower, gate.lower()):
             found.append(gate)
     for alias, gate in _HARD_GATE_ALIASES.items():
-        if alias in lower and gate not in found:
+        if _contains_non_negated(lower, alias) and gate not in found:
             found.append(gate)
     return found
 

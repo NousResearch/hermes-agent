@@ -220,11 +220,15 @@ def test_niko_is_not_asked_for_terminal_or_credentials_in_safe_tasks(hermes_home
 
 
 def test_report_classifier_green_red_noise():
-    from hermes_cli.goal_os import classify_report
+    from hermes_cli.goal_os import classify_report, hard_gates_in_text
 
     assert classify_report("proceed with evidence") == "GREEN"
     assert classify_report("blocked by production deploy approval") == "RED"
     assert classify_report("harmless wording difference in label") == "NOISE"
+    assert hard_gates_in_text("deploy production") == ["production deploy"]
+    assert hard_gates_in_text(
+        "Verify safe mode without running providers, prompts, production, DNS, DB migrations, billing, credits, payments, images or worker actions."
+    ) == []
 
 
 def test_no_known_live_prompt_or_provider_keys_embedded(hermes_home):

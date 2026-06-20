@@ -327,20 +327,27 @@ _seen_nonces: dict[str, float] = {}
 _nonce_lock = threading.Lock()
 
 
-def _nonce_fresh(nonce: str, exp) -> bool:
-    """nonce 首次见返回 True 并记下;再见(重放)/缺失返回 False。按 exp 自动驱逐。"""
+_NONCE_MAX_TTL = 300.0  # nonce 记录存活上限(秒):封顶,防攻击者用超大 exp 撑爆内存
+
+
+def _nonce_fresh(caller: str, nonce: str, exp) -> bool:
+    """nonce 首次见 → True 并记下;再见/缺失 → False。按 caller 命名空间;存活封顶(不信票里的 exp)。"""
     if not nonce:
         return False
+    key = f"{caller}|{nonce}"
     now = time.time()
+    try:
+        exp_f = float(exp)
+    except (TypeError, ValueError):
+        exp_f = 0.0
+    store_exp = min(exp_f, now + _NONCE_MAX_TTL) if exp_f > now else now + _NONCE_MAX_TTL
     with _nonce_lock:
-        for n in [k for k, v in _seen_nonces.items() if v < now]:
-            _seen_nonces.pop(n, None)
-        if nonce in _seen_nonces:
+        for k, v in list(_seen_nonces.items()):
+            if v < now:
+                _seen_nonces.pop(k, None)
+        if key in _seen_nonces:
             return False
-        try:
-            _seen_nonces[nonce] = float(exp) if exp else now + 120
-        except (TypeError, ValueError):
-            _seen_nonces[nonce] = now + 120
+        _seen_nonces[key] = store_exp
         return True
 
 
@@ -360,6 +367,9 @@ def authorize_request(body: dict, *, self_uid=None, fetch_pubkey=None, ancestors
     ticket = params.get("ticket")
     if not isinstance(ticket, dict):
         return "", "缺少授权票(ticket):A2A 需主签票,团队令牌不足以证明调用方身份"
+    tbody0 = ticket.get("body")
+    if not isinstance(tbody0, dict):  # 畸形 body 早返回,别让 verify 前 .get 崩线程(codex minor)
+        return "", "ticket.body 非法"
     if self_uid is None or fetch_pubkey is None or ancestors is None:
         from hermes_cli import org_client  # noqa: PLC0415
 
@@ -371,16 +381,35 @@ def authorize_request(body: dict, *, self_uid=None, fetch_pubkey=None, ancestors
             ancestors = org_client.self_ancestors()
     if not self_uid:
         return "", "本节点未登录云端,无法验票"
-    claim = str((ticket.get("body") or {}).get("caller") or "")
-    pub = fetch_pubkey(claim) if claim else None
-    ok, tbody, reason = kari_identity.verify_ticket(ticket, pub or "", self_uid)
+    # 取**实际请求**的内容(核 mh:票必须绑定这条消息,防持票改内容重放)
+    msg = params.get("message") or {}
+    text = "\n".join(
+        str(p.get("text"))
+        for p in (msg.get("parts") or [])
+        if isinstance(p, dict) and (p.get("kind") == "text" or p.get("type") == "text") and p.get("text")
+    ).strip()
+    ctx = str(msg.get("contextId") or "")
+    claim = str(tbody0.get("caller") or "")
+
+    def _pub(force: bool):
+        if not claim:
+            return None
+        try:
+            return fetch_pubkey(claim, force)
+        except TypeError:  # 注入的 fetch_pubkey 可能只收 1 个参数
+            return fetch_pubkey(claim)
+
+    ok, tbody, reason = kari_identity.verify_ticket(ticket, _pub(False) or "", self_uid, ctx, text)
+    if not ok and "签名" in reason:  # 公钥可能轮换/缓存陈旧 → 强制重取再验一次
+        ok, tbody, reason = kari_identity.verify_ticket(ticket, _pub(True) or "", self_uid, ctx, text)
     if not ok:
         return "", f"票无效:{reason}"
     caller = str(tbody.get("caller") or "")
-    if not _nonce_fresh(tbody.get("nonce"), tbody.get("exp")):
-        return "", "票已使用或缺 nonce(防重放)"
+    # **先鉴权(必须是上级)再记 nonce** —— 否则非上级也能往 nonce 表灌(DoS,codex #2)。
     if caller not in (ancestors or set()):
         return "", "调用方非本节点上级,无权发起对话"
+    if not _nonce_fresh(caller, tbody.get("nonce"), tbody.get("exp")):
+        return "", "票已使用或缺 nonce(防重放)"
     return caller, ""
 
 

@@ -189,7 +189,7 @@ def _signed_req(tmp_path, *, caller, target, ctx="", key="boss"):
     """造一个带主签票的 /a2a 请求体,返回 (body, 签票方公钥)。"""
     ki.set_key_path(str(tmp_path / f"{key}.key"))
     pub = ki.public_key_b64()
-    ticket = ki.make_ticket(caller, target, ctx)
+    ticket = ki.make_ticket(caller, target, ctx, "hi")  # 票绑定消息文本 "hi"(须与请求一致)
     body = {
         "id": 1,
         "method": "message/send",
@@ -244,3 +244,17 @@ def test_authorize_wrong_target_rejected(tmp_path):
     body, boss_pub = _signed_req(tmp_path, caller="boss", target="someoneelse")  # 票发给别人的
     caller, err = ac.authorize_request(body, self_uid="me", fetch_pubkey=lambda u: boss_pub, ancestors={"boss"})
     assert caller == "" and "票无效" in err
+
+
+def test_authorize_message_tampered_rejected(tmp_path):
+    """持有效票但篡改了消息文本 → mh 不符,拒(codex blocker 修复验证)。"""
+    ki.set_key_path(str(tmp_path / "boss.key"))
+    boss_pub = ki.public_key_b64()
+    ticket = ki.make_ticket("boss", "me", "", "原始问题")  # 票绑定"原始问题"
+    body = {
+        "id": 1,
+        "method": "message/send",
+        "params": {"message": {"parts": [{"kind": "text", "text": "被篡改的问题"}]}, "ticket": ticket},
+    }
+    caller, err = ac.authorize_request(body, self_uid="me", fetch_pubkey=lambda u: boss_pub, ancestors={"boss"})
+    assert caller == "" and "内容与票" in err

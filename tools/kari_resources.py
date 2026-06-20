@@ -372,8 +372,10 @@ def is_callable(caller_user_id: str, role: str, node_uid: str, kind: str, resour
     (与 list_authorized_resources 的 join 语义一致)。A2A agent 对话:kind="agent"、node_uid=子 uid、
     resource_id="agent"。
 
-    ⚠️ **v1 尚未接入 /a2a 调用链**(codex 评审 #3):当前 A2A 对话仅靠团队 LAN 令牌 + 私网门控,
-    没有逐资源鉴权。把本函数接入 + 主签票身份是 **Phase 3**(评审通过前 A2A 勿对非可信网开放)。
+    注:A2A **对话**的鉴权走「主签票验身份 + caller 必须是本节点上级」(a2a_context.authorize_request),
+    **不**走本函数——「上级可调子 agent」是层级权限。本函数是给**能力借用**(下级用上级的知识库/工作流)
+    做逐资源鉴权的(kind=knowledge/workflow)。若日后要把"对话"也按 agent 资源 grant 进一步收窄,
+    再在 authorize_request 里叠加调用本函数(kind="agent")。
     """
     if not (
         is_granted(role, node_uid, kind, resource_id)

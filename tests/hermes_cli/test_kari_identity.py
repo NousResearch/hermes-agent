@@ -11,8 +11,8 @@ from hermes_cli import kari_identity as ki
 def test_sign_verify_ok(tmp_path):
     ki.set_key_path(str(tmp_path / "main.key"))
     main_pub = ki.public_key_b64()
-    t = ki.make_ticket("mainUid", "subUid", "ctx1", ttl=60)
-    ok, body, reason = ki.verify_ticket(t, main_pub, "subUid")
+    t = ki.make_ticket("mainUid", "subUid", "ctx1", "你好", ttl=60)
+    ok, body, reason = ki.verify_ticket(t, main_pub, "subUid", "ctx1", "你好")
     assert ok, reason
     assert body["caller"] == "mainUid" and body["ctx"] == "ctx1"
 
@@ -62,3 +62,14 @@ def test_pubkey_stable_and_persisted(tmp_path):
     ki.set_key_path(p)  # 清缓存重读同一文件
     pub2 = ki.public_key_b64()
     assert pub1 == pub2 and len(pub1) > 20
+
+
+def test_message_binding_rejected(tmp_path):
+    """票绑定了请求内容(contextId+文本):换了内容再验,签名虽真也拒(防持票改内容重放)。"""
+    ki.set_key_path(str(tmp_path / "m.key"))
+    pub = ki.public_key_b64()
+    t = ki.make_ticket("m", "sub", "c1", "原始问题")
+    ok, _, reason = ki.verify_ticket(t, pub, "sub", "c1", "被改的问题")  # 文本被改
+    assert not ok and "内容与票" in reason
+    ok2, _, reason2 = ki.verify_ticket(t, pub, "sub", "c2", "原始问题")  # contextId 被改
+    assert not ok2 and "内容与票" in reason2

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import threading
@@ -45,7 +46,11 @@ def _load_or_create():
             return _priv
         if os.path.exists(_KEY_PATH):
             with open(_KEY_PATH, "rb") as f:
-                _priv = Ed25519PrivateKey.from_private_bytes(f.read())
+                _priv = Ed25519PrivateKey.from_private_bytes(f.read())  # 32B raw;损坏/截断会抛 → 调用方 fail-closed
+            try:
+                os.chmod(_KEY_PATH, 0o600)  # 收紧既有文件权限(可能是早期非 0600 写的)
+            except OSError:
+                pass
         else:
             _priv = Ed25519PrivateKey.generate()
             d = os.path.dirname(_KEY_PATH)
@@ -56,9 +61,12 @@ def _load_or_create():
                 serialization.PrivateFormat.Raw,
                 serialization.NoEncryption(),
             )
-            fd = os.open(_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # 原子写:先写临时文件(0600)再 rename,避免并发首次生成时互相截断。
+            tmp = f"{_KEY_PATH}.{uuid.uuid4().hex}.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(raw)
+            os.replace(tmp, _KEY_PATH)
         return _priv
 
 
@@ -93,11 +101,17 @@ def _canon(body: dict) -> bytes:
     return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def make_ticket(caller_uid: str, target_uid: str, context_id: str = "", ttl: float = 120.0) -> dict:
-    """主侧签一张授权票:证明「caller_uid(本机,私钥持有者)要在 context 上找 target_uid」。
+def _request_digest(context_id: str, text: str) -> str:
+    """把「请求内容(contextId + 文本)」摘成哈希,签进票里 **绑定请求**——
+    否则签名只认身份不认内容,持票者可改消息文本/contextId 重放(codex blocker)。"""
+    return hashlib.sha256(f"{context_id or ''}\x00{text or ''}".encode("utf-8")).hexdigest()
 
-    返回 {"body": {...}, "sig": "..."}。sig 用本机私钥签 body 的规范化序列化。
-    子侧用 caller_uid 的公钥(从云端取)验。短时效 + nonce 防重放。
+
+def make_ticket(caller_uid: str, target_uid: str, context_id: str = "", text: str = "", ttl: float = 120.0) -> dict:
+    """主侧签一张授权票:证明「caller_uid(本机,私钥持有者)要在 context 上对 target_uid 发**这条**消息」。
+
+    返回 {"body": {...}, "sig": "..."}。body 里 ``mh`` = 请求内容摘要(绑定 contextId+文本),
+    连同 caller/target/exp/nonce 一起签。子侧用 caller 公钥验签 + 重算 mh 比对。短时效 + nonce 防重放。
     """
     now = time.time()
     body = {
@@ -105,6 +119,7 @@ def make_ticket(caller_uid: str, target_uid: str, context_id: str = "", ttl: flo
         "caller": str(caller_uid or ""),
         "target": str(target_uid or ""),
         "ctx": str(context_id or ""),
+        "mh": _request_digest(context_id, text),
         "iat": now,
         "exp": now + max(1.0, ttl),
         "nonce": uuid.uuid4().hex,
@@ -112,11 +127,17 @@ def make_ticket(caller_uid: str, target_uid: str, context_id: str = "", ttl: flo
     return {"body": body, "sig": _sign_b64(_canon(body))}
 
 
-def verify_ticket(ticket: dict, caller_pubkey_b64: str, expected_target_uid: str) -> tuple[bool, dict, str]:
+def verify_ticket(
+    ticket: dict,
+    caller_pubkey_b64: str,
+    expected_target_uid: str,
+    context_id: str = "",
+    text: str = "",
+) -> tuple[bool, dict, str]:
     """子侧验票。返回 (ok, body, reason)。
 
-    校验:结构 → target==自身 → 未过期 → 用 caller 公钥验签。**不**在此查 nonce 重放
-    (调用方拿 body['nonce'] 自己查/记,见 org_lan_server),因为 nonce 状态在更上层。
+    校验:结构 → target==自身 → 未过期 → 用 caller 公钥验签 → **请求内容摘要(mh)与实际请求一致**。
+    传 context_id/text(实际请求里的)以核 mh —— 防持票改内容重放。**不**在此查 nonce(状态在更上层)。
     """
     if not isinstance(ticket, dict):
         return False, {}, "ticket 非对象"
@@ -136,4 +157,6 @@ def verify_ticket(ticket: dict, caller_pubkey_b64: str, expected_target_uid: str
         return False, body, "拿不到调用方公钥"
     if not verify_sig(caller_pubkey_b64, _canon(body), sig):
         return False, body, "签名验证失败"
+    if str(body.get("mh") or "") != _request_digest(context_id, text):
+        return False, body, "请求内容与票不符(疑似改内容重放)"
     return True, body, ""

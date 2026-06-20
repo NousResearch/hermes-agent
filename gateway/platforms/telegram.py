@@ -5413,11 +5413,34 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         return chat_type in {"group", "supergroup"}
 
+    def _telegram_user_matches_bot(self, user) -> bool:
+        bot = getattr(self, "_bot", None)
+        if not bot or not user:
+            return False
+
+        user_id = getattr(user, "id", None)
+        bot_id = getattr(bot, "id", None)
+        if user_id is not None and bot_id is not None and str(user_id) == str(bot_id):
+            return True
+
+        if getattr(user, "is_bot", False) is not True:
+            return False
+
+        user_username = (getattr(user, "username", None) or "").lstrip("@").lower()
+        bot_username = (getattr(bot, "username", None) or "").lstrip("@").lower()
+        return bool(user_username and bot_username and user_username == bot_username)
+
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):
             return False
-        reply_user = getattr(message.reply_to_message, "from_user", None)
-        return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
+        reply_to = message.reply_to_message
+        return any(
+            self._telegram_user_matches_bot(candidate)
+            for candidate in (
+                getattr(reply_to, "from_user", None),
+                getattr(reply_to, "via_bot", None),
+            )
+        )
 
     @staticmethod
     def _extract_bot_mention_usernames(message: Message) -> set[str]:

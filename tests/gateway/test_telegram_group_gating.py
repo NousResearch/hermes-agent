@@ -93,13 +93,23 @@ def _group_message(
     from_user_name="Alice Example",
     thread_id=None,
     reply_to_bot=False,
+    reply_from_user=None,
+    reply_via_bot=None,
     entities=None,
     caption=None,
     caption_entities=None,
 ):
     reply_to_message = None
     if reply_to_bot:
-        reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999), message_id=10, text="previous bot reply", caption=None)
+        reply_from_user = SimpleNamespace(id=999, username="hermes_bot", is_bot=True)
+    if reply_from_user is not None or reply_via_bot is not None:
+        reply_to_message = SimpleNamespace(
+            from_user=reply_from_user,
+            via_bot=reply_via_bot,
+            message_id=10,
+            text="previous bot reply",
+            caption=None,
+        )
     return SimpleNamespace(
         message_id=42,
         text=text,
@@ -468,6 +478,43 @@ def test_group_messages_can_require_direct_trigger_via_config():
     # And commands still pass unconditionally when require_mention is disabled
     adapter_no_mention = _make_adapter(require_mention=False)
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
+
+
+def test_group_reply_to_bot_from_user_id_satisfies_mention_gate():
+    adapter = _make_adapter(require_mention=True)
+    reply_user = SimpleNamespace(id=999, username="other_bot", is_bot=True)
+
+    assert adapter._should_process_message(
+        _group_message("replying", reply_from_user=reply_user)
+    ) is True
+
+
+def test_group_reply_to_bot_via_bot_id_satisfies_mention_gate():
+    adapter = _make_adapter(require_mention=True)
+    reply_user = SimpleNamespace(id=222, username="alice", is_bot=False)
+    via_bot = SimpleNamespace(id=999, username="other_bot", is_bot=True)
+
+    assert adapter._should_process_message(
+        _group_message("replying", reply_from_user=reply_user, reply_via_bot=via_bot)
+    ) is True
+
+
+def test_group_reply_to_bot_username_satisfies_mention_gate_for_bot_user():
+    adapter = _make_adapter(require_mention=True)
+    reply_user = SimpleNamespace(id=123456, username="@Hermes_Bot", is_bot=True)
+
+    assert adapter._should_process_message(
+        _group_message("replying", reply_from_user=reply_user)
+    ) is True
+
+
+def test_group_reply_to_non_bot_stays_blocked_when_mention_required():
+    adapter = _make_adapter(require_mention=True)
+    reply_user = SimpleNamespace(id=123456, username="hermes_bot", is_bot=False)
+
+    assert adapter._should_process_message(
+        _group_message("replying", reply_from_user=reply_user)
+    ) is False
 
 
 def test_explicit_multi_bot_mentions_route_only_to_named_bots():

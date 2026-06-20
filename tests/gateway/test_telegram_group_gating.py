@@ -537,10 +537,17 @@ def test_exclusive_bot_mentions_can_be_disabled_for_legacy_groups():
 
 
 def test_free_response_chats_bypass_mention_requirement():
-    adapter = _make_adapter(require_mention=True, free_response_chats=["-200"])
+    # require_mention takes precedence: free_response_chats only applies
+    # when require_mention is disabled.
+    adapter_mention_on = _make_adapter(require_mention=True, free_response_chats=["-200"])
+    assert adapter_mention_on._should_process_message(_group_message("hello everyone", chat_id=-200)) is False
+    assert adapter_mention_on._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
+    # @mention in free_response_chats chat should still work
+    assert adapter_mention_on._should_process_message(_group_message("hi @hermes_bot", chat_id=-200, entities=[_mention_entity("hi @hermes_bot")])) is True
 
-    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200)) is True
-    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
+    adapter_mention_off = _make_adapter(require_mention=False, free_response_chats=["-200"])
+    assert adapter_mention_off._should_process_message(_group_message("hello everyone", chat_id=-200)) is True
+    assert adapter_mention_off._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
 
 
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():

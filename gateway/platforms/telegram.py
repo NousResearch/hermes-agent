@@ -5853,8 +5853,8 @@ class TelegramAdapter(BasePlatformAdapter):
         DMs remain unrestricted. Group/supergroup messages are accepted when:
         - the chat passes the ``allowed_chats`` whitelist (when set), or
           ``guest_mode`` is enabled and the bot is explicitly mentioned
-        - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
+        - the chat is explicitly allowlisted in ``free_response_chats``
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
@@ -5862,7 +5862,13 @@ class TelegramAdapter(BasePlatformAdapter):
         When ``allowed_chats`` is non-empty, it remains a hard gate except for
         the narrow ``guest_mode`` bypass: group/supergroup messages that
         explicitly @mention this bot. Replies and regex wake words do not bypass
-        ``allowed_chats``. When ``require_mention`` is enabled, slash commands are not given
+        ``allowed_chats``.
+
+        ``require_mention`` takes precedence over ``free_response_chats``
+        so that both settings can coexist: a chat in ``free_response_chats``
+        with ``require_mention`` enabled still requires an explicit @mention.
+
+        When ``require_mention`` is enabled, slash commands are not given
         special treatment — they must pass the same mention/reply checks
         as any other group message.  Users can still trigger commands via
         the Telegram bot menu (``/command@botname``) or by explicitly
@@ -5913,9 +5919,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if guest_mention:
             return True
-        if chat_id_str in self._telegram_free_response_chats():
-            return True
+        # require_mention takes precedence over free_response_chats
+        # When require_mention is enabled, free_response_chats does NOT
+        # bypass the mention/reply/pattern requirement.
         if not self._telegram_require_mention():
+            # When require_mention is disabled and free_response_chats is
+            # set, only accept messages from chats in the list.
+            free = self._telegram_free_response_chats()
+            if free:
+                return chat_id_str in free
             return True
         if self._is_reply_to_bot(message):
             return True

@@ -1837,7 +1837,21 @@ async def _send_qqbot(pconfig, chat_id, message):
                 "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            payload = {"content": message[:4000], "msg_type": 0}
+            # Honor markdown_support config (default: True) — same logic as
+            # QQBotAdapter._build_text_body().  Previously hardcoded to msg_type=0
+            # (plain text), causing inconsistent rendering between the live-adapter
+            # path (msg_type=2) and this standalone fallback path (msg_type=0).
+            markdown_support = bool(extra.get("markdown_support", True))
+            if markdown_support:
+                import time as _time
+                _msg_seq = int(_time.time() * 1000) % 2147483647
+                payload = {
+                    "markdown": {"content": message[:4000]},
+                    "msg_type": 2,
+                    "msg_seq": _msg_seq,
+                }
+            else:
+                payload = {"content": message[:4000], "msg_type": 0}
 
             # Try channel endpoint first (works for guild channels)
             url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"

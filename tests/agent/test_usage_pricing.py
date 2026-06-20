@@ -250,3 +250,66 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+def test_gemini_35_flash_pricing_entry_exists():
+    """Ensure gemini-3.5-flash has a pricing entry and provider mapping works."""
+    entry = get_pricing_entry(
+        "gemini-3.5-flash",
+        provider="gemini",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert entry.cache_read_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == 1.50
+    assert float(entry.output_cost_per_million) == 9.00
+    assert float(entry.cache_read_cost_per_million) == 0.15
+
+
+def test_gemini_35_flash_estimate_usage_cost():
+    """Ensure gemini-3.5-flash sessions get a dollar estimate with mapped provider."""
+    result = estimate_usage_cost(
+        "gemini-3.5-flash",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000, cache_read_tokens=200000),
+        provider="gemini",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $1.50/M + 500K output × $9.00/M + 200K cache_read × $0.15/M
+    # = $1.50 + $4.50 + $0.03 = $6.03
+    assert float(result.amount_usd) == 6.03
+
+
+def test_gemini_31_flash_lite_pricing_entry_exists():
+    """Ensure gemini-3.1-flash-lite has a pricing entry and provider mapping works."""
+    entry = get_pricing_entry(
+        "gemini-3.1-flash-lite",
+        provider="gemini",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert entry.cache_read_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == 0.25
+    assert float(entry.output_cost_per_million) == 1.50
+    assert float(entry.cache_read_cost_per_million) == 0.025
+
+
+def test_gemini_3_flash_preview_pricing_entry_exists():
+    """Ensure gemini-3-flash-preview has a pricing entry and provider mapping works."""
+    entry = get_pricing_entry(
+        "gemini-3-flash-preview",
+        provider="gemini",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert entry.cache_read_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == 0.50
+    assert float(entry.output_cost_per_million) == 3.00
+    assert float(entry.cache_read_cost_per_million) == 0.05

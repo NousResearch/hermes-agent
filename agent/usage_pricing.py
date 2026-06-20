@@ -413,6 +413,50 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # Google Gemini
     (
         "google",
+        "gemini-3.5-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("9.00"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05-19",
+    ),
+    (
+        "google",
+        "gemini-3.1-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.50"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05-19",
+    ),
+    (
+        "google",
+        "gemini-3.1-flash-lite-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.50"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05-19",
+    ),
+    (
+        "google",
+        "gemini-3-flash-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.50"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05-19",
+    ),
+    (
+        "google",
         "gemini-2.5-pro",
     ): PricingEntry(
         input_cost_per_million=Decimal("1.25"),
@@ -577,6 +621,8 @@ def resolve_billing_route(
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name in {"google", "gemini", "google-gemini", "google-ai-studio"}:
+        return BillingRoute(provider="google", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):

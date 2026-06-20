@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import ReactionTypeEmoji
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -6822,11 +6823,11 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._bot.set_message_reaction(
                 chat_id=int(chat_id),
                 message_id=int(message_id),
-                reaction=emoji,
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
             return True
         except Exception as e:
-            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
+            logger.warning("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
     async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
@@ -6857,7 +6858,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(chat_id, message_id, "\U0001f440")  # 👀 processing
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction.
@@ -6884,5 +6885,5 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(
                 chat_id,
                 message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",  # 👍 success / 👎 failure
             )

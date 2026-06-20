@@ -3071,14 +3071,21 @@ def run_setup_wizard(args):
         setup_mode = prompt_choice(
             "How would you like to set up Hermes?",
             [
-                "Quick Setup (Nous Portal) — free OAuth login, no API keys, model + tools (recommended)",
-                "Full setup — configure every provider, tool & option yourself (bring your own keys)",
+                "Choose inference provider — Nous Portal, API keys, local models, or custom endpoint",
+                "Quick Setup (Nous Portal) — free OAuth login, no API keys, model + tools",
+                "Skip setup for now — configure later with 'hermes setup model'",
             ],
             0,
         )
 
-        if setup_mode == 0:
+        if setup_mode == 1:
             _run_first_time_quick_setup(config, hermes_home, is_existing)
+            return
+        if setup_mode == 2:
+            print()
+            print_info("Skipping setup for now.")
+            print_info("Configure inference later with: hermes setup model")
+            print_info("Or open the provider picker with: hermes model")
             return
 
     # ── Full Setup — run all sections ──

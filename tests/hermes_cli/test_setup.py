@@ -17,6 +17,7 @@ def _maybe_keep_current_tts(question, choices):
 
 def _clear_provider_env(monkeypatch):
     for key in (
+        "HERMES_INFERENCE_PROVIDER",
         "NOUS_API_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_BASE_URL",
@@ -336,6 +337,48 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
     out = capsys.readouterr().out
     assert "selected saved custom provider is no longer available" in out
+
+
+def test_select_provider_and_model_defaults_to_skip_when_unconfigured(
+    tmp_path, monkeypatch, capsys
+):
+    """`hermes setup model` should not default fresh installs into Nous Portal."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    from hermes_cli.auth import AuthError
+
+    captured = {}
+
+    def fake_resolve_provider(provider):
+        raise AuthError("No provider configured", provider=provider)
+
+    def fake_prompt_provider_choice(choices, default=0):
+        captured["choices"] = list(choices)
+        captured["default"] = default
+        return default
+
+    def fail_provider_flow(*args, **kwargs):
+        raise AssertionError(
+            "provider flow should not run when default skip is selected"
+        )
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", fake_resolve_provider)
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_provider_choice", fake_prompt_provider_choice
+    )
+    monkeypatch.setattr("hermes_cli.main._model_flow_nous", fail_provider_flow)
+    monkeypatch.setattr("hermes_cli.main._model_flow_openrouter", fail_provider_flow)
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    assert captured["choices"][0] == "Skip (configure later)"
+    assert captured["default"] == 0
+    assert "Leave unchanged" in captured["choices"]
+    out = capsys.readouterr().out
+    assert "No change." in out
 
 
 def test_select_provider_and_model_accepts_named_provider_from_providers_section(

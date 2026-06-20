@@ -2918,6 +2918,8 @@ def select_provider_and_model(args=None):
     #   members != [] → group row, key is "group:<gid>"
     ordered: list[tuple[str, str, list[str]]] = []
     default_idx = 0
+    if not active:
+        ordered.append(("cancel", "Skip (configure later)", []))
     for row in grouped_rows:
         if row["kind"] == "group":
             gid = row["group_id"]

@@ -1465,6 +1465,51 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.text, "/help test")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_fetches_message_detail_when_websocket_reply_parent_missing(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_detail = AsyncMock(
+            return_value=SimpleNamespace(parent_id="om_parent", upper_message_id=None, root_id=None)
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="被引用的原文")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            root_id=None,
+            message_type="text",
+            content='{"text":"复述引用"}',
+            message_id="om_child",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_child",
+            )
+        )
+
+        adapter._fetch_message_detail.assert_awaited_once_with("om_child")
+        adapter._fetch_message_text.assert_awaited_once_with("om_parent")
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+        self.assertEqual(event.reply_to_text, "被引用的原文")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -1991,7 +2036,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_reply")
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
@@ -2030,7 +2075,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(captured["request"].message_id, "om_trigger")
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
@@ -2173,7 +2218,7 @@ class TestAdapterBehavior(unittest.TestCase):
             os.unlink(file_path)
 
         self.assertTrue(result.success)
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_uploads_file_and_sends_file_message(self):

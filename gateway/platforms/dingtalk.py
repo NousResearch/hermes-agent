@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -226,6 +227,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         # auto-close them as siblings — otherwise tool-progress cards get
         # stuck in streaming state forever.
         self._streaming_cards: Dict[str, Dict[str, str]] = {}
+        # Per-card last-edit timestamp (ms)
+        self._card_last_edit_ms: Dict[str, int] = {}
+        # Per-chat error-send cooldown
+        self._error_last_sent_ms: Dict[str, int] = {}
         # Track fire-and-forget emoji/reaction coroutines so Python's GC
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
         self._bg_tasks: Set[asyncio.Task] = set()
@@ -379,6 +384,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._session_webhooks.clear()
         self._message_contexts.clear()
         self._streaming_cards.clear()
+        self._card_last_edit_ms.clear()
+        self._error_last_sent_ms.clear()
         self._done_emoji_fired.clear()
         self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
@@ -1151,6 +1158,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         """
         if not message_id:
             return SendResult(success=False, error="message_id required")
+
+        # Throttle non-finalize edits per out_track_id.
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        if not finalize:
+            last_ms = self._card_last_edit_ms.get(message_id, 0)
+            if now_ms - last_ms < _CARD_EDIT_THROTTLE_MS:
+                logger.debug(
+                    "[%s] edit_message throttled (%dms since last) for %s",
+                    self.name, now_ms - last_ms, message_id,
+                )
+                return SendResult(success=True, message_id=message_id)
+        self._card_last_edit_ms[message_id] = now_ms
+
         token = await self._get_access_token()
         if not token:
             return SendResult(success=False, error="No access token")
@@ -1166,6 +1186,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 self._streaming_cards.get(chat_id, {}).pop(message_id, None)
                 if not self._streaming_cards.get(chat_id):
                     self._streaming_cards.pop(chat_id, None)
+                self._card_last_edit_ms.pop(message_id, None)
                 logger.debug(
                     "[%s] AI Card finalized (edit): %s",
                     self.name, message_id,
@@ -1188,7 +1209,13 @@ class DingTalkAdapter(BasePlatformAdapter):
         content: str,
         finalize: bool = False,
     ) -> None:
-        """Stream content to an existing AI Card."""
+        """Stream content to an existing AI Card.
+
+        Per-card 800ms throttle happens at the ``edit_message`` layer; this
+        function additionally goes through the **global** token bucket so
+        that many parallel chats can't collectively overrun the tenant-wide
+        DingTalk card-API QPS cap (~40/s).
+        """
         stream_request = dingtalk_card_models.StreamingUpdateRequest(
             out_track_id=out_track_id,
             guid=str(uuid.uuid4()),
@@ -1204,9 +1231,20 @@ class DingTalkAdapter(BasePlatformAdapter):
         )
 
         runtime = tea_util_models.RuntimeOptions()
-        await self._card_sdk.streaming_update_with_options_async(
-            stream_request, stream_headers, runtime
-        )
+        await _CARD_BUCKET.acquire()
+        try:
+            await self._card_sdk.streaming_update_with_options_async(
+                stream_request, stream_headers, runtime
+            )
+        except Exception as e:
+            err_msg = str(e)
+            if "QpsLimit" in err_msg or "403" in err_msg or "qps" in err_msg.lower():
+                logger.warning(
+                    "[%s] Card QPS limit hit, backing off %dms: %s",
+                    self.name, _CARD_API_QPS_BACKOFF_MS, err_msg[:160],
+                )
+                _CARD_BUCKET.trigger_backoff()
+            raise
 
     async def _get_access_token(self) -> Optional[str]:
         """Get access token using SDK's cached token."""

@@ -1219,6 +1219,7 @@ def _emit_fallback_announce(
     new_model: str,
     new_provider: str,
     *,
+    old_provider: "str | None" = None,
     old_window: "int | None" = None,
     new_window: "int | None" = None,
 ) -> None:
@@ -1231,6 +1232,12 @@ def _emit_fallback_announce(
     closing the 2026-06-19 gap where an opus->gpt-5.5 fallback that *succeeded*
     was invisible to the user.
 
+    Both sides are rendered ``provider/model`` (e.g.
+    ``claude-app/claude-opus-4-8 → openai-codex/gpt-5.5``) so the *route* is
+    unambiguous — the same model slug can be served by different providers, and
+    the provider is the thing that explains a window/behavior change. When the
+    old provider is unknown the source side degrades to the bare model slug.
+
     De-duplicated on the ``(old_model, new_model)`` pair so a re-entrant fallback
     chain that bounces to the same destination within a turn announces once
     (Invariant I5). A no-op transition (``old_model == new_model``) is silent.
@@ -1242,7 +1249,9 @@ def _emit_fallback_announce(
         return
     agent._last_fallback_announced = transition
 
-    msg = f"🔄 Model fallback: {old_model} → {new_model} ({new_provider})"
+    old_label = f"{old_provider}/{old_model}" if old_provider else old_model
+    new_label = f"{new_provider}/{new_model}" if new_provider else new_model
+    msg = f"🔄 Model fallback: {old_label} → {new_label}"
     old_lbl = _format_context_window(old_window)
     new_lbl = _format_context_window(new_window)
     if old_lbl and new_lbl and old_lbl != new_lbl:
@@ -1383,6 +1392,7 @@ def try_activate_fallback(
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_provider = agent.provider
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1587,6 +1597,7 @@ def try_activate_fallback(
             )
             _emit_fallback_announce(
                 agent, old_model, fb_model, fb_provider,
+                old_provider=old_provider,
                 old_window=locals().get("_old_ctx_window"),
                 new_window=_new_ctx_window,
             )

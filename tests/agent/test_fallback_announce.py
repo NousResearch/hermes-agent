@@ -116,8 +116,9 @@ def test_fallback_announces_once_with_model_provider_and_window(monkeypatch):
     announces = [m for (k, m) in agent._announced if "fallback" in m.lower()]
     assert len(announces) == 1, f"expected exactly one announce, got {announces!r}"
     msg = announces[0]
-    assert "gpt-5.5" in msg
-    assert "openai-codex" in msg
+    # Both sides are rendered as provider/model so the route is unambiguous.
+    assert "claude-pool/claude-opus-4-8" in msg, msg
+    assert "openai-codex/gpt-5.5" in msg, msg
     # Window delta is the load-bearing diagnostic fact.
     assert "1M" in msg or "1,000,000" in msg or "272" in msg
 

@@ -6814,6 +6814,66 @@ class TelegramAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
 
+    def _telegram_reaction_chat_types(self) -> set[str]:
+        """Return normalized chat types where lifecycle reactions are allowed."""
+        env_raw = os.getenv("TELEGRAM_REACTION_CHAT_TYPES")
+        if env_raw is not None and str(env_raw).strip():
+            raw = env_raw
+        else:
+            raw = self.config.extra.get("reaction_chat_types") if getattr(self.config, "extra", None) else None
+            if raw is None:
+                raw = env_raw or ""
+
+        configured = False
+        if isinstance(raw, list):
+            values = raw
+            configured = True
+        else:
+            text_raw = str(raw).strip()
+            values = text_raw.split(",") if text_raw else []
+            configured = bool(text_raw)
+
+        alias_map = {
+            "private": "dm",
+            "direct": "dm",
+            "direct_message": "dm",
+            "supergroup": "group",
+            "thread": "forum",
+        }
+        allowed_values = {"dm", "group", "forum", "channel"}
+        normalized: set[str] = set()
+        for value in values:
+            text = alias_map.get(str(value).strip().lower(), str(value).strip().lower())
+            if not text:
+                continue
+            if text in allowed_values:
+                normalized.add(text)
+            else:
+                logger.warning("[%s] Ignoring invalid Telegram reaction chat type: %r", self.name, value)
+
+        # Backward-compatible default: reactions apply in all Telegram chat types
+        # only when the setting is unset. Explicit but invalid values should not
+        # silently broaden reactions.
+        return normalized if configured else {"dm", "group", "forum", "channel"}
+
+    def _should_react_to_event(self, event: MessageEvent) -> bool:
+        """Return whether lifecycle reactions should be emitted for this event."""
+        alias_map = {
+            "private": "dm",
+            "direct": "dm",
+            "direct_message": "dm",
+            "supergroup": "group",
+            "thread": "forum",
+        }
+        raw_chat_type = str(getattr(getattr(event, "source", None), "chat_type", "") or "").strip().lower()
+        if not raw_chat_type:
+            return False
+        chat_type = alias_map.get(raw_chat_type, raw_chat_type)
+        thread_id = getattr(getattr(event, "source", None), "thread_id", None)
+        if chat_type == "group" and thread_id:
+            chat_type = "forum"
+        return chat_type in self._telegram_reaction_chat_types()
+
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
@@ -6852,7 +6912,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
+        if not self._reactions_enabled() or not self._should_react_to_event(event):
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
@@ -6872,7 +6932,7 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
-        if not self._reactions_enabled():
+        if not self._reactions_enabled() or not self._should_react_to_event(event):
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)

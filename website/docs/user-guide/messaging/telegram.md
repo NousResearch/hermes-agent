@@ -514,6 +514,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
+- Use `telegram.reaction_chat_types` to choose where processing-lifecycle reactions appear. For example, set it to `[group, forum, channel]` if you want reactions in shared chats but not in DMs.
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
 ### Multiple Hermes bots in one group
@@ -587,10 +588,15 @@ telegram:
   ignored_threads:
     - 31
     - "42"
+  reaction_chat_types:
+    - group
+    - forum
+    - channel
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
 Messages in Telegram topics `31` and `42` are always ignored before the mention and free-response checks run.
+Lifecycle reactions appear only in shared chats, so DMs stay reaction-free.
 
 ### Notes on `mention_patterns`
 
@@ -1180,12 +1186,19 @@ Reactions are **disabled by default**. Enable them in `config.yaml`:
 ```yaml
 telegram:
   reactions: true
+  reaction_chat_types:
+    - group
+    - forum
+    - channel
 ```
 
-Or via environment variable:
+The optional `reaction_chat_types` list narrows where lifecycle reactions appear. If you omit it, reactions remain enabled in all Telegram chat types for backward compatibility.
+
+Or via environment variables:
 
 ```bash
 TELEGRAM_REACTIONS=true
+TELEGRAM_REACTION_CHAT_TYPES=group,forum,channel
 ```
 
 :::note

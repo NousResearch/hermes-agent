@@ -81,16 +81,16 @@ agent_cyber:
 - S2: controlled reconnaissance/scanning. Requires registry match.
 - S3: credential-sensitive, incident-recovery, lab mutation, or command execution. Requires registry match.
 - S4: reserved for explicitly approved high-impact changes. Current implementation treats destructive strings as S5.
-- S5: destructive or external-high-risk actions. Blocked from autonomous tool flow; requires explicit human approval/break-glass outside the model-generated tool call.
+- S5: destructive or external-high-risk actions. Blocked from autonomous tool flow unless a valid, scoped, exact-action break-glass approval is supplied.
 
-The gate runs before plugin hooks, checkpoints, callbacks, and actual tool dispatch for both sequential and concurrent tool execution paths.
+The gate runs before plugin hooks, checkpoints, callbacks, and actual tool dispatch for both sequential and concurrent tool execution paths. See `docs/CYBER_BREAKGLASS_OPERATOR_WORKFLOW.md` for the operator workflow.
 
 ## Credential and break-glass policy
 
 - Retrieval/use of stored credentials is allowed only from approved operator-controlled sources.
 - Secrets must never be printed, summarized, or moved to hosted providers unless the operator explicitly chooses a hosted override and accepts the risk.
 - Break-glass does not authorize third-party access. It only changes urgency and recovery posture for owned/approved assets.
-- Destructive actions remain blocked by S5 until a separate human approval workflow is implemented.
+- Destructive S5 actions require a valid, scoped, unexpired, exact-action approval id. Unknown, expired, revoked, or mismatched approvals fail closed.
 
 ## Verification
 

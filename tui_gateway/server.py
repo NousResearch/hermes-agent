@@ -8370,6 +8370,42 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5010, str(e))
 
 
+@method("process.remove")
+def _(rid, params: dict) -> dict:
+    """Reap ONE finished background process from the registry — session-scoped."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    proc_id = str(params.get("process_id") or "")
+    if not proc_id:
+        return _err(rid, 4012, "process_id required")
+    try:
+        from tools.process_registry import process_registry
+        proc = process_registry.get(proc_id)
+        if proc is None or str(getattr(proc, "session_key", "") or "") != str(session.get("session_key") or ""):
+            return _err(rid, 4044, f"no such process: {proc_id}")
+        result = process_registry.remove(proc_id)
+        if result.get("status") == "running":
+            return _err(rid, 4090, result["error"])
+        return _ok(rid, result)
+    except Exception as e:
+        return _err(rid, 5010, str(e))
+
+
+@method("process.clear_finished")
+def _(rid, params: dict) -> dict:
+    """Reap ALL finished background processes owned by the caller's session."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        from tools.process_registry import process_registry
+        key = str(session.get("session_key") or "")
+        return _ok(rid, process_registry.clear_finished(session_key=key))
+    except Exception as e:
+        return _err(rid, 5010, str(e))
+
+
 @method("reload.mcp")
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))

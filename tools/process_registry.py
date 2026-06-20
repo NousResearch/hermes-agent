@@ -1236,6 +1236,31 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    def remove(self, session_id: str) -> dict:
+        """Evict ONE finished session from _finished. Refuses to remove a running process."""
+        with self._lock:
+            if session_id in self._running:
+                return {"status": "running", "error": f"Process {session_id} is still running; kill it first"}
+            existed = self._finished.pop(session_id, None) is not None
+        self._completion_consumed.discard(session_id)
+        if existed:
+            self._write_checkpoint()
+            return {"status": "removed", "session_id": session_id}
+        return {"status": "not_found", "session_id": session_id}
+
+    def clear_finished(self, task_id: str = None, session_key: str = None) -> dict:
+        """Evict ALL finished sessions, optionally scoped by task_id and/or session_key."""
+        with self._lock:
+            ids = [sid for sid, s in self._finished.items()
+                   if (task_id is None or s.task_id == task_id)
+                   and (session_key is None or (s.session_key or "") == session_key)]
+            for sid in ids:
+                del self._finished[sid]
+                self._completion_consumed.discard(sid)
+        if ids:
+            self._write_checkpoint()
+        return {"status": "ok", "removed": len(ids), "session_ids": ids}
+
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
         session = self.get(session_id)
@@ -1748,14 +1773,15 @@ PROCESS_SCHEMA = {
         "Actions: 'list' (show all), 'poll' (check status + new output), "
         "'log' (full output with pagination), 'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
+        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF), "
+        "'remove' (evict one finished process from registry), 'clear' (evict all finished processes)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"],
+                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close", "remove", "clear"],
                 "description": "Action to perform on background processes"
             },
             "session_id": {
@@ -1794,7 +1820,9 @@ def _handle_process(args, **kw):
 
     if action == "list":
         return json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
-    elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
+    elif action == "clear":
+        return json.dumps(process_registry.clear_finished(task_id=task_id), ensure_ascii=False)
+    elif action in {"poll", "log", "wait", "kill", "write", "submit", "close", "remove"}:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":
@@ -1812,7 +1840,9 @@ def _handle_process(args, **kw):
             return json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "close":
             return json.dumps(process_registry.close_stdin(session_id), ensure_ascii=False)
-    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close")
+        elif action == "remove":
+            return json.dumps(process_registry.remove(session_id), ensure_ascii=False)
+    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, remove, clear")
 
 
 registry.register(

@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $backgroundStatusBySession, dismissBackgroundProcess, reconcileBackgroundProcesses } from './composer-status'
+import {
+  $backgroundStatusBySession,
+  clearFinishedBackgroundProcesses,
+  dismissBackgroundProcess,
+  reconcileBackgroundProcesses
+} from './composer-status'
 
 const SID = 'sess-1'
 
@@ -95,5 +100,46 @@ describe('reconcileBackgroundProcesses', () => {
     reconcileBackgroundProcesses(SID, [])
 
     expect($backgroundStatusBySession.get()).toEqual({})
+  })
+
+  it('maps negative exit code to stopped state', () => {
+    reconcileBackgroundProcesses(SID, [exited('a', -15)])
+
+    expect(items()[0]!.state).toBe('stopped')
+    expect(items()[0]!.exitCode).toBe(-15)
+  })
+
+  it('maps exit code 1 to failed state', () => {
+    reconcileBackgroundProcesses(SID, [exited('a', 1)])
+
+    expect(items()[0]!.state).toBe('failed')
+  })
+
+  it('maps exit code 0 to done state', () => {
+    reconcileBackgroundProcesses(SID, [exited('a', 0)])
+
+    expect(items()[0]!.state).toBe('done')
+  })
+})
+
+describe('clearFinishedBackgroundProcesses', () => {
+  beforeEach(() => {
+    $backgroundStatusBySession.set({})
+  })
+
+  it('keeps running rows and drops finished rows', () => {
+    reconcileBackgroundProcesses(SID, [running('a'), exited('b', 0), exited('c', 1)])
+
+    clearFinishedBackgroundProcesses(SID)
+
+    expect(items().map(i => i.id)).toEqual(['a'])
+  })
+
+  it('does nothing when session id is empty', () => {
+    reconcileBackgroundProcesses(SID, [exited('a', 0)])
+
+    clearFinishedBackgroundProcesses('')
+
+    expect(items().length).toBeGreaterThan(0)
   })
 })

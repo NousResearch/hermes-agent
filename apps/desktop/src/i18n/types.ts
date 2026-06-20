@@ -1023,6 +1023,8 @@ export interface Translations {
     running: string
     stop: string
     dismiss: string
+    stopped: string
+    clearFinished: string
     exit: (code: number) => string
   }
 

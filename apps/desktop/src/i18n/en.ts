@@ -1344,6 +1344,8 @@ export const en: Translations = {
     running: 'Running',
     stop: 'Stop',
     dismiss: 'Dismiss',
+    stopped: 'Stopped',
+    clearFinished: 'Clear finished',
     exit: code => `exit ${code}`
   },
 

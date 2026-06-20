@@ -55,9 +55,11 @@ interface ComposerTriggerPopoverProps {
   activeIndex: number
   items: readonly Unstable_TriggerItem[]
   kind: '@' | '/' | ':'
+  listboxId: string
   loading: boolean
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
+  optionIdPrefix: string
   placement?: 'bottom' | 'top'
   /** The `@kind:` browse the list is filtered to, when there is one. Rendered
    *  as a header so the scope reads as the mode it is — the raw `@folder:` in
@@ -81,9 +83,11 @@ export function ComposerTriggerPopover({
   activeIndex,
   items,
   kind,
+  listboxId,
   loading,
   onHover,
   onPick,
+  optionIdPrefix,
   placement = 'top',
   scope
 }: ComposerTriggerPopoverProps) {
@@ -99,6 +103,7 @@ export function ComposerTriggerPopover({
       className={placement === 'bottom' ? COMPLETION_DRAWER_BELOW_CLASS : COMPLETION_DRAWER_CLASS}
       data-slot="composer-completion-drawer"
       data-state="open"
+      id={listboxId}
       onMouseDown={event => event.preventDefault()}
       role="listbox"
     >
@@ -106,7 +111,7 @@ export function ComposerTriggerPopover({
       {items.length === 0 ? (
         loading ? (
           <div className="flex items-center gap-2 px-2 py-1.5 text-(--ui-text-tertiary)">
-            <GlyphSpinner ariaLabel={copy.lookupLoading} className="text-foreground/70" spinner="braille" />
+            <GlyphSpinner className="text-foreground/70" decorative spinner="braille" />
             <span>{copy.lookupLoading}</span>
           </div>
         ) : (
@@ -138,15 +143,21 @@ export function ComposerTriggerPopover({
           lastGroup = group || lastGroup
           const active = index === activeIndex
           const refKind = referenceKind(rowKind(item, isSlash))
+          const optionId = `${optionIdPrefix}-${index}`
+          const accessibleLabel = description ? `${display}: ${description}` : display
 
           return (
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
               <button
+                aria-label={accessibleLabel}
+                aria-selected={active}
                 className={ROW_CLASS}
                 data-highlighted={active ? '' : undefined}
+                id={optionId}
                 onClick={() => onPick(item)}
                 onMouseEnter={() => onHover(index)}
+                role="option"
                 type="button"
               >
                 {isEmoji ? (

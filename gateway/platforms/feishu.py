@@ -433,6 +433,12 @@ def _is_bot_sender(sender: Any) -> bool:
     return getattr(sender, "sender_type", "") in {"bot", "app"}
 
 
+def _get_field(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 def _sender_identity(sender: Any) -> frozenset:
     # Take any non-empty id variant — tenant sender_id_type decides which are populated.
     sid = getattr(sender, "sender_id", None)
@@ -1176,12 +1182,13 @@ def _unique_lines(lines: List[str]) -> List[str]:
 
 
 def _extract_mention_ids(mention: Any) -> tuple[str, str]:
-    # Returns (open_id, user_id). im.v1.message.get hands back id as a string
-    # plus id_type discriminator; event payloads hand back a nested UserId
-    # object carrying both fields.
-    mention_id = getattr(mention, "id", None)
+    # Returns (open_id, user_id). im.v1.message.get can hand back mention
+    # entries either as SDK objects or raw dictionaries; in both cases id may
+    # be a string plus id_type discriminator, while websocket event payloads
+    # can expose a nested UserId object carrying both fields.
+    mention_id = _get_field(mention, "id", None)
     if isinstance(mention_id, str):
-        id_type = str(getattr(mention, "id_type", "") or "").lower()
+        id_type = str(_get_field(mention, "id_type", "") or "").lower()
         if id_type == "open_id":
             return mention_id, ""
         if id_type == "user_id":
@@ -1190,8 +1197,8 @@ def _extract_mention_ids(mention: Any) -> tuple[str, str]:
     if mention_id is None:
         return "", ""
     return (
-        str(getattr(mention_id, "open_id", "") or ""),
-        str(getattr(mention_id, "user_id", "") or ""),
+        str(_get_field(mention_id, "open_id", "") or ""),
+        str(_get_field(mention_id, "user_id", "") or ""),
     )
 
 
@@ -1201,14 +1208,14 @@ def _build_mentions_map(
 ) -> Dict[str, FeishuMentionRef]:
     result: Dict[str, FeishuMentionRef] = {}
     for mention in mentions or []:
-        key = str(getattr(mention, "key", "") or "")
+        key = str(_get_field(mention, "key", "") or "")
         if not key:
             continue
         if key == "@_all":
             result[key] = FeishuMentionRef(is_all=True)
             continue
         open_id, user_id = _extract_mention_ids(mention)
-        name = str(getattr(mention, "name", "") or "").strip()
+        name = str(_get_field(mention, "name", "") or "").strip()
         result[key] = FeishuMentionRef(
             name=name,
             open_id=open_id,
@@ -1629,6 +1636,15 @@ class FeishuAdapter(BasePlatformAdapter):
             .register_p2_im_chat_member_bot_deleted_v1(self._on_bot_removed_from_chat)
             .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._on_p2p_chat_entered)
             .register_p2_im_message_recalled_v1(self._on_message_recalled)
+            # No-op handlers for events users commonly subscribe in the open-platform
+            # console but that Hermes doesn't act on. Without these, the lark SDK
+            # logs "processor not found" and the entire WebSocket event batch can be
+            # dropped — taking real im.message.receive_v1 events down with it.
+            .register_p2_im_chat_updated_v1(lambda data: None)
+            .register_p2_im_chat_disbanded_v1(lambda data: None)
+            .register_p2_im_chat_member_user_added_v1(lambda data: None)
+            .register_p2_im_chat_member_user_deleted_v1(lambda data: None)
+            .register_p2_im_chat_member_user_withdrawn_v1(lambda data: None)
             .register_p2_customized_event(
                 "drive.notice.comment_add_v1",
                 self._on_drive_comment_event,
@@ -2422,7 +2438,33 @@ class FeishuAdapter(BasePlatformAdapter):
 
         reason = self._admit(sender, message)
         if reason is not None:
-            logger.debug("[Feishu] dropping inbound event: %s", reason)
+            hydrated_message = await self._maybe_hydrate_rejected_mention(message, reason)
+            if hydrated_message is not None:
+                setattr(hydrated_message, "_feishu_hydrated_for_admission", True)
+                message = hydrated_message
+                reason = self._admit(sender, message)
+                logger.debug(
+                    "[Feishu] mention hydration retried admission: message_id=%s chat_id=%s result=%s mentions=%d",
+                    message_id,
+                    getattr(message, "chat_id", "") or "",
+                    "admitted" if reason is None else reason,
+                    len(getattr(message, "mentions", None) or []),
+                )
+        if reason is not None:
+            logger.debug(
+                "[Feishu] dropping inbound event: reason=%s message_id=%s chat_id=%s chat_type=%s is_reply=%s has_placeholder=%s mentions=%d",
+                reason,
+                message_id,
+                getattr(message, "chat_id", "") or "",
+                getattr(message, "chat_type", "") or "",
+                bool(
+                    getattr(message, "parent_id", None)
+                    or getattr(message, "upper_message_id", None)
+                    or getattr(message, "root_id", None)
+                ),
+                bool(_MENTION_PLACEHOLDER_RE.search(str(getattr(message, "content", "") or ""))),
+                len(getattr(message, "mentions", None) or []),
+            )
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
@@ -3112,16 +3154,11 @@ class FeishuAdapter(BasePlatformAdapter):
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 
-        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
-        if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
-
-        if inbound_type != MessageType.COMMAND:
-            hint = _build_mention_hint(mentions)
-            if hint:
-                text = f"{hint}\n\n{text}" if text else hint
-
+        # Guard runs post-strip so a pure "@Bot" normal group/DM message is
+        # ignored. Reply-only @mentions are different: in Feishu, replying to a
+        # specific message and @mentioning the bot is an explicit request to act
+        # on that parent/root message, even if the new message body contains no
+        # text beyond the mention placeholder.
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
@@ -3129,6 +3166,20 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
+        if inbound_type == MessageType.TEXT and not text and not media_urls:
+            if reply_to_message_id and any(m.is_self for m in mentions):
+                text = "[Reply mentioned the bot]"
+            elif any(m.is_self for m in mentions):
+                text = "[Bot mentioned]"
+            else:
+                logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+                return
+
+        if inbound_type != MessageType.COMMAND:
+            hint = _build_mention_hint(mentions)
+            if hint:
+                text = f"{hint}\n\n{text}" if text else hint
+
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         sender_primary = (
@@ -4073,6 +4124,97 @@ class FeishuAdapter(BasePlatformAdapter):
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
         return str(placeholder).strip() or None
 
+    async def _maybe_hydrate_rejected_mention(self, message: Any, reason: RejectReason) -> Optional[Any]:
+        if reason != "group_policy_rejected" or not self._client:
+            return None
+        # Some Feishu websocket reply events omit chat_type even for group
+        # messages. If _admit already returned group_policy_rejected, the
+        # message was group-like enough to reach group admission, so only skip
+        # explicit p2p payloads here.
+        if getattr(message, "chat_type", None) == "p2p":
+            return None
+        raw_content = str(getattr(message, "content", "") or "")
+        if not self._message_may_contain_unresolved_mention(message, raw_content):
+            return None
+
+        message_id = str(getattr(message, "message_id", "") or "")
+        if not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.debug(
+                    "[Feishu] Mention hydration lookup failed for message %s chat_id=%s is_reply=%s has_placeholder=%s: [%s] %s",
+                    message_id,
+                    getattr(message, "chat_id", "") or "",
+                    bool(
+                        getattr(message, "parent_id", None)
+                        or getattr(message, "upper_message_id", None)
+                        or getattr(message, "root_id", None)
+                    ),
+                    bool(_MENTION_PLACEHOLDER_RE.search(raw_content)),
+                    code,
+                    msg,
+                )
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            hydrated = items[0] if items else None
+            if not hydrated:
+                logger.debug(
+                    "[Feishu] Mention hydration returned no message: message_id=%s chat_id=%s is_reply=%s has_placeholder=%s",
+                    message_id,
+                    getattr(message, "chat_id", "") or "",
+                    bool(
+                        getattr(message, "parent_id", None)
+                        or getattr(message, "upper_message_id", None)
+                        or getattr(message, "root_id", None)
+                    ),
+                    bool(_MENTION_PLACEHOLDER_RE.search(raw_content)),
+                )
+                return None
+            if not getattr(hydrated, "chat_type", None):
+                setattr(hydrated, "chat_type", getattr(message, "chat_type", ""))
+            if not getattr(hydrated, "chat_id", None):
+                setattr(hydrated, "chat_id", getattr(message, "chat_id", ""))
+            if not getattr(hydrated, "message_id", None):
+                setattr(hydrated, "message_id", message_id)
+            if getattr(hydrated, "message_type", None) is None:
+                setattr(hydrated, "message_type", getattr(message, "message_type", ""))
+            if getattr(hydrated, "content", None) is None:
+                setattr(hydrated, "content", raw_content)
+            if getattr(hydrated, "parent_id", None) is None:
+                setattr(hydrated, "parent_id", getattr(message, "parent_id", None))
+            if getattr(hydrated, "root_id", None) is None:
+                setattr(hydrated, "root_id", getattr(message, "root_id", None))
+            return hydrated
+        except Exception:
+            logger.debug(
+                "[Feishu] Mention hydration lookup raised for message %s chat_id=%s is_reply=%s has_placeholder=%s",
+                message_id,
+                getattr(message, "chat_id", "") or "",
+                bool(
+                    getattr(message, "parent_id", None)
+                    or getattr(message, "upper_message_id", None)
+                    or getattr(message, "root_id", None)
+                ),
+                bool(_MENTION_PLACEHOLDER_RE.search(raw_content)),
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _message_may_contain_unresolved_mention(message: Any, raw_content: str) -> bool:
+        if "@_all" in raw_content or _MENTION_PLACEHOLDER_RE.search(raw_content):
+            return True
+        return bool(
+            getattr(message, "parent_id", None)
+            or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None)
+        )
+
     @staticmethod
     def _default_image_media_type(ext: str) -> str:
         normalized_ext = (ext or "").lower()
@@ -4096,6 +4238,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)
         is_bot = _is_bot_sender(sender)
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
+        if not is_group and (
+            getattr(message, "parent_id", None)
+            or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None)
+            or getattr(message, "mentions", None)
+            or getattr(message, "_feishu_hydrated_for_admission", False)
+        ):
+            is_group = bool(getattr(message, "chat_id", ""))
         chat_id = getattr(message, "chat_id", "") or ""
         require_mention = is_group and self._require_mention_for(chat_id)
 
@@ -4199,12 +4349,13 @@ class FeishuAdapter(BasePlatformAdapter):
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
         # IDs trump names: when both sides have open_id (or both user_id),
         # match requires equal IDs. Name fallback only when either side
-        # lacks an ID.
+        # lacks an ID. Feishu websocket event payloads expose mention.id as
+        # a UserId-like object, while im/v1/message.get returns the same field
+        # as a string plus id_type. Use the shared extractor so both shapes are
+        # admitted consistently.
         for mention in mentions:
-            mention_id = getattr(mention, "id", None)
-            mention_open_id = (getattr(mention_id, "open_id", None) or "").strip()
-            mention_user_id = (getattr(mention_id, "user_id", None) or "").strip()
-            mention_name = (getattr(mention, "name", None) or "").strip()
+            mention_open_id, mention_user_id = _extract_mention_ids(mention)
+            mention_name = (_get_field(mention, "name", None) or "").strip()
 
             if mention_open_id and self._bot_open_id:
                 if mention_open_id == self._bot_open_id:

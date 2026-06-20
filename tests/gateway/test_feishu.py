@@ -616,6 +616,26 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("message_recalled")
                 return self
 
+            def register_p2_im_chat_updated_v1(self, _handler):
+                calls.append("chat_updated")
+                return self
+
+            def register_p2_im_chat_disbanded_v1(self, _handler):
+                calls.append("chat_disbanded")
+                return self
+
+            def register_p2_im_chat_member_user_added_v1(self, _handler):
+                calls.append("user_added")
+                return self
+
+            def register_p2_im_chat_member_user_deleted_v1(self, _handler):
+                calls.append("user_deleted")
+                return self
+
+            def register_p2_im_chat_member_user_withdrawn_v1(self, _handler):
+                calls.append("user_withdrawn")
+                return self
+
             def register_p2_customized_event(self, event_key, _handler):
                 calls.append(f"customized:{event_key}")
                 return self
@@ -647,6 +667,11 @@ class TestAdapterBehavior(unittest.TestCase):
                 "bot_deleted",
                 "p2p_chat_entered",
                 "message_recalled",
+                "chat_updated",
+                "chat_disbanded",
+                "user_added",
+                "user_deleted",
+                "user_withdrawn",
                 "customized:drive.notice.comment_add_v1",
                 "customized:vc.bot.meeting_invited_v1",
                 "build",
@@ -792,6 +817,370 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertFalse(
             _admits_group(adapter, SimpleNamespace(mentions=[other_mention]), sender_id, "")
         )
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_message_with_string_open_id_mention_is_admitted(self):
+        """Regression: Feishu websocket and message.get can represent
+        mentions differently. ``im/v1/message.get`` returns mentions[].id as a
+        string with id_type=open_id; mention gating must treat that as a real
+        bot mention too.
+        """
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        bot_mention = SimpleNamespace(
+            name="fy_bot",
+            id="ou_bot",
+            id_type="open_id",
+        )
+
+        self.assertTrue(
+            _admits_group(adapter, SimpleNamespace(mentions=[bot_mention]), sender_id, "")
+        )
+
+
+    def test_build_mentions_map_uses_dict_key_for_placeholder_resolution(self):
+        from gateway.platforms.feishu import _FeishuBotIdentity, _build_mentions_map
+
+        refs = _build_mentions_map(
+            [{"key": "@_user_1", "name": "fy_bot", "id": "ou_bot", "id_type": "open_id"}],
+            _FeishuBotIdentity(open_id="ou_bot", user_id="", name="fy_bot"),
+        )
+
+        self.assertIn("@_user_1", refs)
+        self.assertTrue(refs["@_user_1"].is_self)
+
+    def test_normalize_text_resolves_dict_mention_placeholder(self):
+        from gateway.platforms.feishu import _FeishuBotIdentity, _build_mentions_map, _normalize_feishu_text
+
+        mentions_map = _build_mentions_map(
+            [{"key": "@_user_1", "name": "fy_bot", "id": "ou_bot", "id_type": "open_id"}],
+            _FeishuBotIdentity(open_id="ou_bot", user_id="", name="fy_bot"),
+        )
+        normalized = _normalize_feishu_text("@_user_1 please help", mentions_map)
+
+        self.assertIn("@fy_bot", normalized)
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_message_mentions_bot_from_dict_payload(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        message = SimpleNamespace(
+            chat_type="group",
+            chat_id="oc_chat",
+            mentions=[{"key": "@_user_1", "name": "fy_bot", "id": "ou_bot", "id_type": "open_id"}],
+        )
+
+        self.assertTrue(_admits_group(adapter, message, sender_id, "oc_chat"))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_reply_placeholder_fetches_mentions_before_rejecting(self):
+        """Feishu reply websocket events can carry only @_user_N in content.
+
+        Since the placeholder does not include the mentioned user's identity,
+        admission must hydrate the message via im/v1/message.get before dropping
+        it for require_mention.
+        """
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._is_duplicate = Mock(return_value=False)
+        adapter._process_inbound_message = AsyncMock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        fetched = SimpleNamespace(
+            message_id="om_reply",
+            chat_id="oc_chat",
+            chat_type="group",
+            message_type="text",
+            content=json.dumps({"text": "@_user_1 please help"}),
+            # The live lark_oapi message.get response exposed mentions as dicts;
+            # keep that shape in the test to prevent object-only regressions.
+            mentions=[{"key": "@_user_1", "name": "fy_bot", "id": "ou_bot", "id_type": "open_id"}],
+            parent_id="om_parent",
+            root_id="om_root",
+        )
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        get=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=[fetched])))
+                    )
+                )
+            )
+        )
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                sender=SimpleNamespace(
+                    sender_type="user",
+                    sender_id=SimpleNamespace(open_id="ou_any", user_id=None, union_id=None),
+                ),
+                message=SimpleNamespace(
+                    message_id="om_reply",
+                    chat_id="oc_chat",
+                    chat_type="group",
+                    message_type="text",
+                    content=json.dumps({"text": "@_user_1 please help"}),
+                    mentions=[],
+                    parent_id="om_parent",
+                    root_id="om_root",
+                ),
+            )
+        )
+
+        asyncio.run(adapter._handle_message_event_data(data))
+
+        adapter._client.im.v1.message.get.assert_called_once()
+        adapter._process_inbound_message.assert_awaited_once()
+
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_reply_hydration_treats_rest_null_chat_type_as_group(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._is_duplicate = Mock(return_value=False)
+        adapter._process_inbound_message = AsyncMock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        fetched = SimpleNamespace(
+            message_id="om_reply",
+            chat_id="oc_chat",
+            chat_type=None,
+            message_type=None,
+            content=None,
+            body={"content": json.dumps({"text": "@_user_1"})},
+            msg_type="text",
+            mentions=[{"key": "@_user_1", "name": "fy_bot", "id": "ou_bot", "id_type": "open_id"}],
+            parent_id="om_parent",
+            root_id="om_parent",
+        )
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        get=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=[fetched])))
+                    )
+                )
+            )
+        )
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                sender=SimpleNamespace(
+                    sender_type="user",
+                    sender_id=SimpleNamespace(open_id="ou_any", user_id=None, union_id=None),
+                ),
+                message=SimpleNamespace(
+                    message_id="om_reply",
+                    chat_id="oc_chat",
+                    chat_type="group",
+                    message_type="text",
+                    content=json.dumps({"text": "@_user_1"}),
+                    mentions=[],
+                    parent_id="om_parent",
+                    root_id="om_parent",
+                ),
+            )
+        )
+
+        asyncio.run(adapter._handle_message_event_data(data))
+
+        adapter._client.im.v1.message.get.assert_called_once()
+        adapter._process_inbound_message.assert_awaited_once()
+        hydrated = adapter._process_inbound_message.await_args.kwargs["message"]
+        self.assertEqual(getattr(hydrated, "chat_type"), "group")
+        self.assertEqual(getattr(hydrated, "message_type"), "text")
+        self.assertEqual(getattr(hydrated, "content"), json.dumps({"text": "@_user_1"}))
+
+
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_reply_only_bot_mention_dispatches_with_parent_context(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_name = "fy_bot"
+        adapter._is_duplicate = Mock(return_value=False)
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._fetch_message_text = AsyncMock(return_value="parent text")
+        adapter.get_chat_info = AsyncMock(return_value={"name": "realestate", "type": "group"})
+        adapter._resolve_sender_profile = AsyncMock(return_value={
+            "user_id": "ou_sender",
+            "user_name": "Fan",
+            "user_id_alt": None,
+        })
+        adapter._handle_message_with_guards = AsyncMock()
+
+        hydrated = SimpleNamespace(
+            message_id="om_live",
+            chat_id="oc_group",
+            chat_type=None,
+            message_type="text",
+            content=json.dumps({"text": "@_user_1"}),
+            body={"content": json.dumps({"text": "@_user_1"})},
+            msg_type="text",
+            mentions=[{"key": "@_user_1", "name": "fy_bot", "id": "ou_bot", "id_type": "open_id"}],
+            parent_id="om_parent",
+            root_id="om_root",
+        )
+        adapter._build_get_message_request = Mock(return_value=object())
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        get=Mock(
+                            return_value=SimpleNamespace(
+                                success=lambda: True,
+                                data=SimpleNamespace(items=[hydrated]),
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        raw_message = SimpleNamespace(
+            message_id="om_live",
+            chat_id="oc_group",
+            chat_type=None,
+            message_type="text",
+            content=json.dumps({"text": "@_user_1"}),
+            mentions=[],
+            parent_id="om_parent",
+            root_id="om_root",
+        )
+        sender = SimpleNamespace(
+            sender_type="user",
+            sender_id=SimpleNamespace(open_id="ou_sender", user_id=None, union_id=None),
+        )
+
+        asyncio.run(adapter._handle_message_event_data(SimpleNamespace(event=SimpleNamespace(sender=sender, message=raw_message))))
+        self.assertEqual(len(adapter._pending_text_batches), 1)
+        pending = next(iter(adapter._pending_text_batches.values()))
+        self.assertEqual(pending.text, "[Reply mentioned the bot]")
+        self.assertEqual(pending.reply_to_message_id, "om_parent")
+        self.assertEqual(pending.reply_to_text, "parent text")
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_reply_placeholder_with_missing_raw_chat_type_still_hydrates(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._is_duplicate = Mock(return_value=False)
+        adapter._process_inbound_message = AsyncMock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        fetched = SimpleNamespace(
+            message_id="om_reply",
+            chat_id="oc_chat",
+            chat_type=None,
+            message_type=None,
+            content=None,
+            body={"content": json.dumps({"text": "@_user_1"})},
+            msg_type="text",
+            mentions=[{"key": "@_user_1", "name": "fy_bot", "id": "ou_bot", "id_type": "open_id"}],
+            parent_id="om_parent",
+            root_id="om_parent",
+        )
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        get=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=[fetched])))
+                    )
+                )
+            )
+        )
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                sender=SimpleNamespace(
+                    sender_type="user",
+                    sender_id=SimpleNamespace(open_id="ou_any", user_id=None, union_id=None),
+                ),
+                message=SimpleNamespace(
+                    message_id="om_reply",
+                    chat_id="oc_chat",
+                    chat_type=None,
+                    message_type="text",
+                    content=json.dumps({"text": "@_user_1"}),
+                    mentions=[],
+                    parent_id="om_parent",
+                    root_id="om_parent",
+                ),
+            )
+        )
+
+        asyncio.run(adapter._handle_message_event_data(data))
+
+        adapter._client.im.v1.message.get.assert_called_once()
+        adapter._process_inbound_message.assert_awaited_once()
+        hydrated = adapter._process_inbound_message.await_args.kwargs["message"]
+        self.assertIsNone(getattr(hydrated, "chat_type"))
+        self.assertTrue(adapter._mentions_self(hydrated))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_reply_placeholder_still_rejects_when_hydrated_mentions_do_not_target_bot(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._is_duplicate = Mock(return_value=False)
+        adapter._process_inbound_message = AsyncMock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        fetched = SimpleNamespace(
+            message_id="om_reply",
+            chat_id="oc_chat",
+            chat_type="group",
+            message_type="text",
+            content=json.dumps({"text": "@_user_1 please help"}),
+            mentions=[SimpleNamespace(key="@_user_1", name="Other", id="ou_other", id_type="open_id")],
+            parent_id="om_parent",
+            root_id="om_root",
+        )
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        get=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=[fetched])))
+                    )
+                )
+            )
+        )
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                sender=SimpleNamespace(
+                    sender_type="user",
+                    sender_id=SimpleNamespace(open_id="ou_any", user_id=None, union_id=None),
+                ),
+                message=SimpleNamespace(
+                    message_id="om_reply",
+                    chat_id="oc_chat",
+                    chat_type="group",
+                    message_type="text",
+                    content=json.dumps({"text": "@_user_1 please help"}),
+                    mentions=[],
+                    parent_id="om_parent",
+                    root_id="om_root",
+                ),
+            )
+        )
+
+        asyncio.run(adapter._handle_message_event_data(data))
+
+        adapter._client.im.v1.message.get.assert_called_once()
+        adapter._process_inbound_message.assert_not_awaited()
 
     @patch.dict(
         os.environ,
@@ -4566,12 +4955,8 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertEqual(event.text, "stop pinging @Hermes please")
 
-    def test_pure_self_mention_message_is_ignored(self):
-        """A message containing only '@Bot' (no body, no media) must not dispatch.
-
-        Regression guard: the rendered '@Hermes' slips past the pre-strip empty
-        guard; the post-strip guard must catch it.
-        """
+    def test_pure_self_mention_message_dispatches_as_bot_ping(self):
+        """A message containing only '@Bot' should still dispatch as an explicit bot ping."""
         adapter = self._build_adapter()
         bot_mention = SimpleNamespace(
             key="@_user_1",
@@ -4594,7 +4979,8 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
                 chat_type="group", message_id="m5",
             )
         )
-        adapter._dispatch_inbound_event.assert_not_called()
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.text, "[Bot mentioned]")
 
 
 class TestFeishuFetchMessageText(unittest.TestCase):

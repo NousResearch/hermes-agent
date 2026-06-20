@@ -664,6 +664,12 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
+    Credential checks are intentionally silent — the caller
+    (``gateway/run.py`` ``_create_adapter()``) already emits a warning
+    when this function returns ``False`` and an adapter is requested.
+    Logging here duplicates that warning on every adapter-creation
+    attempt (initial connect, reconnect, profile load).
+
     Lazy-installs the full ``platform.matrix`` feature group via
     ``tools.lazy_deps.ensure_and_bind`` whenever any of the declared
     packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
@@ -677,10 +683,8 @@ def check_matrix_requirements() -> bool:
     homeserver = os.getenv("MATRIX_HOMESERVER", "")
 
     if not token and not password:
-        logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
         return False
     if not homeserver:
-        logger.warning("Matrix: MATRIX_HOMESERVER not set")
         return False
 
     # Check whether any package in the platform.matrix feature group is

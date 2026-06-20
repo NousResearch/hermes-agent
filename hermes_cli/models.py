@@ -83,7 +83,30 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
+# Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
+# OSS / open-weight models prioritized first, then closed-source by family.
+# Slugs match Vercel's actual /v1/models catalog (e.g. alibaba/ for Qwen,
+# zai/ and xai/ without hyphens).
+VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
+    ("moonshotai/kimi-k2.6",                 "recommended"),
+    ("alibaba/qwen3.6-plus",                 ""),
+    ("zai/glm-5.1",                          ""),
+    ("minimax/minimax-m2.7",                 ""),
+    ("anthropic/claude-sonnet-4.6",          ""),
+    ("anthropic/claude-opus-4.7",            ""),
+    ("anthropic/claude-opus-4.6",            ""),
+    ("anthropic/claude-haiku-4.5",           ""),
+    ("openai/gpt-5.4",                       ""),
+    ("openai/gpt-5.4-mini",                  ""),
+    ("openai/gpt-5.3-codex",                 ""),
+    ("google/gemini-3.1-pro-preview",        ""),
+    ("google/gemini-3-flash",                ""),
+    ("google/gemini-3.1-flash-lite-preview", ""),
+    ("xai/grok-4.20-reasoning",              ""),
+]
+
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
 
@@ -518,6 +541,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3-235b-a22b-fp8",
     ],
 }
+
+# Vercel AI Gateway: derive the bare-model-id catalog from the curated
+# ``VERCEL_AI_GATEWAY_MODELS`` snapshot so both the picker (tuples with
+# descriptions) and the static fallback catalog (bare ids) stay in sync
+# from a single source of truth.
+_PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
 
 # ---------------------------------------------------------------------------
 # Nous Portal free-model helper
@@ -1255,6 +1284,17 @@ _PROVIDER_ALIASES = {
     "ollama_cloud": "ollama-cloud",
 }
 
+# Auto-merge aliases declared by provider plugins so plugin-only providers work
+# with the same provider:model syntax as hardcoded providers. Existing explicit
+# aliases above remain authoritative.
+try:
+    import providers as _providers_module
+    for _pp in getattr(_providers_module, "list_providers")():
+        for _alias in _pp.aliases:
+            _PROVIDER_ALIASES.setdefault(str(_alias).strip().lower(), _pp.name)
+except Exception:
+    pass
+
 
 # Cost-safe overrides for the *silent* auto-default
 # (``get_default_model_for_provider``). Most providers' curated lists lead with a
@@ -1425,6 +1465,98 @@ def get_curated_nous_model_ids() -> list[str]:
     return list(_PROVIDER_MODELS.get("nous", []))
 
 
+def _ai_gateway_model_is_free(pricing: Any) -> bool:
+    """Return True if an AI Gateway model has $0 input AND output pricing."""
+    if not isinstance(pricing, dict):
+        return False
+    try:
+        return float(pricing.get("input", "0")) == 0 and float(pricing.get("output", "0")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def fetch_ai_gateway_models(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, str]]:
+    """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
+    global _ai_gateway_catalog_cache
+
+    if _ai_gateway_catalog_cache is not None and not force_refresh:
+        return list(_ai_gateway_catalog_cache)
+
+    try:
+        import providers as _providers_module
+        profile = getattr(_providers_module, "get_provider_profile")("ai-gateway")
+        base_url = (profile.base_url if profile else "") or "https://ai-gateway.vercel.sh/v1"
+    except Exception:
+        base_url = "https://ai-gateway.vercel.sh/v1"
+
+    fallback = list(VERCEL_AI_GATEWAY_MODELS)
+    preferred_ids = [mid for mid, _ in fallback]
+
+    try:
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_items = payload.get("data", [])
+    if not isinstance(live_items, list):
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_by_id: dict[str, dict[str, Any]] = {}
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        live_by_id[mid] = item
+
+    curated: list[tuple[str, str]] = []
+    for preferred_id in preferred_ids:
+        live_item = live_by_id.get(preferred_id)
+        if live_item is None:
+            continue
+        desc = "free" if _ai_gateway_model_is_free(live_item.get("pricing")) else ""
+        curated.append((preferred_id, desc))
+
+    if not curated:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    # If the live catalog offers a free Moonshot model, auto-promote it to
+    # position #1 as "recommended" — dynamic discovery without a PR.
+    free_moonshot = next(
+        (
+            mid
+            for mid, item in live_by_id.items()
+            if mid.startswith("moonshotai/")
+            and _ai_gateway_model_is_free(item.get("pricing"))
+        ),
+        None,
+    )
+    if free_moonshot:
+        curated = [(mid, desc) for mid, desc in curated if mid != free_moonshot]
+        curated.insert(0, (free_moonshot, "recommended"))
+    else:
+        first_id, _ = curated[0]
+        curated[0] = (first_id, "recommended")
+
+    _ai_gateway_catalog_cache = curated
+    return list(curated)
+
+
+def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
+    """Return just the AI Gateway model-id strings."""
+    return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
+
+
 # ---------------------------------------------------------------------------
 # Pricing helpers — fetch live pricing from OpenRouter-compatible /v1/models
 # ---------------------------------------------------------------------------
@@ -1508,6 +1640,61 @@ def fetch_models_with_pricing(
     return result
 
 
+def fetch_ai_gateway_pricing(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch Vercel AI Gateway /v1/models and return Hermes-shaped pricing.
+
+    Vercel uses ``input`` / ``output`` field names; Hermes' picker expects
+    ``prompt`` / ``completion``. This translates them and preserves cache
+    read/write prices when present.
+    """
+    try:
+        import providers as _providers_module
+        profile = getattr(_providers_module, "get_provider_profile")("ai-gateway")
+        base_url = (profile.base_url if profile else "") or "https://ai-gateway.vercel.sh/v1"
+    except Exception:
+        base_url = "https://ai-gateway.vercel.sh/v1"
+
+    cache_key = base_url.rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    try:
+        req = urllib.request.Request(
+            f"{cache_key}/models",
+            headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        pricing = item.get("pricing")
+        if not (mid and isinstance(pricing, dict)):
+            continue
+        entry: dict[str, str] = {
+            "prompt": str(pricing.get("input", "")),
+            "completion": str(pricing.get("output", "")),
+        }
+        if pricing.get("input_cache_read"):
+            entry["input_cache_read"] = str(pricing["input_cache_read"])
+        if pricing.get("input_cache_write"):
+            entry["input_cache_write"] = str(pricing["input_cache_write"])
+        result[mid] = entry
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
 def _resolve_openrouter_api_key() -> str:
     """Best-effort OpenRouter API key for pricing fetch."""
     return os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -1547,6 +1734,8 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
             base_url="https://openrouter.ai/api",
             force_refresh=force_refresh,
         )
+    if normalized == "ai-gateway":
+        return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "novita":
         return _fetch_novita_pricing(force_refresh=force_refresh)
     if normalized == "nous":
@@ -1785,7 +1974,7 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "copilot", "kilocode"}
+    {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
 )
 
 
@@ -2342,6 +2531,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
+        # GMI has a dedicated live-fetch path above. If it returns no data,
+        # fall back directly to the curated static list instead of falling
+        # through to the generic api-key profile fetch; that generic path would
+        # make a second live call and can make offline fallback tests flaky.
+        return list(_PROVIDER_MODELS.get("gmi", []))
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

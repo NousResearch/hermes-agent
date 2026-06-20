@@ -24,7 +24,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # The matrix only runs TypeScript's compiler. Native postinstall builds
+      # (notably node-pty) are exercised by desktop-build below; skipping them
+      # here avoids flaky node-gyp header downloads in five duplicate jobs.
+      - run: npm ci --ignore-scripts
       - run: npm run --prefix ${{ matrix.package }} typecheck
 
   # Production build of the desktop renderer. `typecheck` runs `tsc` only,

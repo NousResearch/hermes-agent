@@ -70,6 +70,11 @@ class TestParseModelInput:
         assert provider == "stepfun"
         assert model == "step-3.5-flash"
 
+    def test_plugin_provider_alias_resolved(self):
+        provider, model = parse_model_input("vercel:moonshotai/kimi-k2.6", "openrouter")
+        assert provider == "ai-gateway"
+        assert model == "moonshotai/kimi-k2.6"
+
     def test_no_slash_no_colon_keeps_provider(self):
         provider, model = parse_model_input("gpt-5.4", "openrouter")
         assert provider == "openrouter"
@@ -159,6 +164,8 @@ class TestNormalizeProvider:
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("step") == "stepfun"
         assert normalize_provider("github-copilot") == "copilot"
+        assert normalize_provider("vercel") == "ai-gateway"
+        assert normalize_provider("vercel-ai-gateway") == "ai-gateway"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"

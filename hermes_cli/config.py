@@ -884,6 +884,30 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    "agent_cyber": {
+        "include_builtin_bc_assets": True,
+        "routing": {
+            "enabled": True,
+            "require_local_for_sensitive": True,
+            "allow_hosted_override": True,
+            "allow_hosted_open_weight": False,
+            "local_open_weight": {
+                "provider": "",
+                "model": "",
+                "base_url": "",
+                "api_key_env": "",
+                "api_mode": "chat_completions",
+                "context_length": None,
+            },
+        },
+        "asset_registry": {
+            "file": "",
+            "assets": [],
+        },
+        "execution_gates": {
+            "enabled": True,
+        },
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
@@ -4361,7 +4385,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "agent_cyber", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",

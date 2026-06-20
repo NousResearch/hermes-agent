@@ -4061,13 +4061,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # against an agent that doesn't actually have subagents.
         if not isinstance(children, (list, tuple, set)):
             return False
-        if not children:
-            return False
         lock = getattr(running_agent, "_active_children_lock", None)
         try:
             if lock is not None:
-                with lock:
-                    return bool(children)
+                # Non-blocking acquire avoids stalling the event loop thread.
+                # If contended, fall through to the unprotected read — bool(list)
+                # is atomic under CPython's GIL and sufficient for this snapshot.
+                if lock.acquire(blocking=False):
+                    try:
+                        return bool(children)
+                    finally:
+                        lock.release()
             return bool(children)
         except Exception:
             return False
@@ -4255,11 +4259,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True  # input still processed, just no ack sent
 
         # Debounce: only send an acknowledgment once every 30 seconds per session
-        # to avoid spamming the user when they send multiple messages quickly
+        # to avoid spamming the user when they send multiple messages quickly.
+        # Bypass for subagent demotion: the user must know their follow-up was
+        # queued rather than interrupting, regardless of recent ack history.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
         last_ack = self._busy_ack_ts.get(session_key, 0)
-        if now - last_ack < _BUSY_ACK_COOLDOWN:
+        if not demoted_for_subagents and now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
         self._busy_ack_ts[session_key] = now
@@ -9539,6 +9545,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "cyber_route": agent_result.get("cyber_route"),
             })
             
             # Check for pending process watchers (check_interval on background processes)

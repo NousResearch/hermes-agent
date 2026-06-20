@@ -396,24 +396,27 @@ def test_workspace_root_consistent_with_need_npm_install(
     # for the install cwd — both use _workspace_root(sub).
 
 
-def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
-    """Workspace sub-directories must not contain their own package-lock.json.
+def test_preserved_workspace_lockfiles_do_not_override_root_workspace(main_mod) -> None:
+    """Preserved fork lockfiles must not change npm workspace cwd selection.
 
-    With a single workspace root lockfile, per-directory lockfiles are
-    always accidental (typically from running ``npm install`` inside the
-    wrong directory).  They cause ``_workspace_root`` to treat the
-    sub-package as standalone, which breaks hoisted ``node_modules``
-    resolution and can silently diverge the install cwd from the
-    lockfile-check root.
-
-    This is an invariant, not a change-detector: the workspace structure
-    is not expected to gain per-dir lockfiles.
+    Cyber Edition intentionally preserved historical ``package-lock.json``
+    files from restored web/TUI paths during the upstream sync.  Keep those
+    files unless a later approved cleanup lane removes/quarantines them, but
+    still force Hermes' npm install/build helpers to use the repo-root
+    workspace lockfile so cwd selection cannot diverge.
     """
     root = main_mod.PROJECT_ROOT
-    # Workspace members that live one level below the root and should
-    # NOT have their own lockfile.  (ui-tui/packages/* members are
-    # two levels deep and even less likely to get accidental lockfiles,
-    # but we check them too for completeness.)
+    preserved = {
+        root / "ui-tui",
+        root / "web",
+        root / "ui-tui" / "packages" / "hermes-ink",
+    }
+    for workspace_dir in preserved:
+        assert (workspace_dir / "package-lock.json").is_file()
+        assert main_mod._workspace_root(workspace_dir) == root
+
+    # Keep failing on new, unexpected sub-workspace lockfiles; only the
+    # explicitly preserved Cyber Edition lockfiles above are tolerated.
     subdirs = [
         root / "ui-tui",
         root / "web",
@@ -425,10 +428,10 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
     if tui_pkgs.is_dir():
         subdirs.extend(d for d in tui_pkgs.iterdir() if d.is_dir())
 
-    stray = [d for d in subdirs if (d / "package-lock.json").is_file()]
+    stray = [d for d in subdirs if (d / "package-lock.json").is_file() and d not in preserved]
     assert not stray, (
-        "stray package-lock.json found in workspace sub-directory(es); "
-        "delete them and run `npm install` from the repo root instead: "
+        "unexpected package-lock.json found in workspace sub-directory(es); "
+        "get approval before removing/quarantining restored paths: "
         + ", ".join(str(d / "package-lock.json") for d in stray)
     )
 

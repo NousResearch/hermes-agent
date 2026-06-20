@@ -2398,11 +2398,12 @@ class _HungThread:
         return None
 
 
-def test_on_session_end_skips_commit_when_sync_worker_outlives_join():
+def test_on_session_end_skips_commit_when_sync_worker_outlives_join(monkeypatch):
     """If the sync worker is still alive after the 10s join, the commit must
     be skipped — late writes from the worker would otherwise land in an
     already-committed session and never be extracted. Leave _turn_count
     intact so the session stays marked dirty."""
+    monkeypatch.setattr(openviking_module, "_SESSION_DRAIN_TIMEOUT", 0.01)
     provider = _make_provider_with_session("old-sid", turn_count=3)
     provider._inflight_writers["old-sid"] = {_HungThread()}
 
@@ -2412,10 +2413,11 @@ def test_on_session_end_skips_commit_when_sync_worker_outlives_join():
     assert provider._turn_count == 3
 
 
-def test_on_session_switch_skips_commit_when_sync_worker_outlives_join():
+def test_on_session_switch_skips_commit_when_sync_worker_outlives_join(monkeypatch):
     """Same hazard on the switch path. Rotation must still proceed (the new
     session needs to start) but the old-session commit is skipped to avoid
     orphaning the worker's late writes past commit."""
+    monkeypatch.setattr(openviking_module, "_DEFERRED_COMMIT_TIMEOUT", 0.01)
     provider = _make_provider_with_session("old-sid", turn_count=2)
     provider._inflight_writers["old-sid"] = {_HungThread()}
 
@@ -2424,6 +2426,7 @@ def test_on_session_switch_skips_commit_when_sync_worker_outlives_join():
     provider._client.post.assert_not_called()
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
+    assert provider._drain_finalizers(timeout=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -2433,7 +2436,8 @@ def test_on_session_switch_skips_commit_when_sync_worker_outlives_join():
 # old sid and would otherwise land its writes past the commit boundary.
 # ---------------------------------------------------------------------------
 
-def test_on_session_end_waits_for_all_writers_not_just_latest():
+def test_on_session_end_waits_for_all_writers_not_just_latest(monkeypatch):
+    monkeypatch.setattr(openviking_module, "_SESSION_DRAIN_TIMEOUT", 0.01)
     provider = _make_provider_with_session("old-sid", turn_count=2)
     provider._inflight_writers["old-sid"] = {_HungThread()}
 
@@ -2443,7 +2447,8 @@ def test_on_session_end_waits_for_all_writers_not_just_latest():
     assert provider._turn_count == 2
 
 
-def test_on_session_switch_waits_for_all_writers_not_just_latest():
+def test_on_session_switch_waits_for_all_writers_not_just_latest(monkeypatch):
+    monkeypatch.setattr(openviking_module, "_DEFERRED_COMMIT_TIMEOUT", 0.01)
     provider = _make_provider_with_session("old-sid", turn_count=2)
     provider._inflight_writers["old-sid"] = {_HungThread()}
 
@@ -2452,6 +2457,7 @@ def test_on_session_switch_waits_for_all_writers_not_just_latest():
     provider._client.post.assert_not_called()
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
+    assert provider._drain_finalizers(timeout=1.0)
 
 
 def test_on_session_switch_does_not_block_caller_on_slow_drain():

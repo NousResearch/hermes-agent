@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# =============================================================================
+# hermes-live — convenience launcher for the Hermes AgentCyber live USB
+# =============================================================================
+# Usage:
+#   hermes-live start         Start the gateway service
+#   hermes-live stop          Stop the gateway service
+#   hermes-live restart       Restart the gateway service
+#   hermes-live status        Show gateway status + last log lines
+#   hermes-live logs          Follow gateway logs
+#   hermes-live scan [TARGET] Run an ad-hoc cyber sweep (headless)
+#   hermes-live shell         Drop into interactive hermes agent shell
+#   hermes-live config        Edit ~/.hermes/config.yaml
+#   hermes-live version       Show installed hermes version
+# =============================================================================
+
+set -euo pipefail
+
+VENV="/opt/hermes-venv"
+HERMES_BIN="${VENV}/bin/hermes"
+GATEWAY_BIN="${VENV}/bin/gateway"
+CONFIG="${HOME}/.hermes/config.yaml"
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  start)
+    sudo systemctl start hermes-gateway.service
+    echo "✓ Gateway started"
+    ;;
+
+  stop)
+    sudo systemctl stop hermes-gateway.service
+    echo "✓ Gateway stopped"
+    ;;
+
+  restart)
+    sudo systemctl restart hermes-gateway.service
+    echo "✓ Gateway restarted"
+    ;;
+
+  status)
+    echo "═══════════════════════════════════════════════"
+    echo "  Hermes AgentCyber — Live USB"
+    echo "═══════════════════════════════════════════════"
+    systemctl status hermes-gateway.service --no-pager -l 2>/dev/null || \
+      echo "  Gateway service: not running"
+    echo ""
+    if [[ -f "${HOME}/.hermes/logs/cyber_audit.jsonl" ]]; then
+      echo "  Audit log: $(wc -l < "${HOME}/.hermes/logs/cyber_audit.jsonl") events"
+      echo "  Last event: $(tail -1 "${HOME}/.hermes/logs/cyber_audit.jsonl" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ts','?'), d.get('event','?'))" 2>/dev/null || echo 'n/a')"
+    fi
+    ;;
+
+  logs)
+    journalctl -u hermes-gateway.service -f --no-pager
+    ;;
+
+  scan)
+    TARGET="${1:-$(ip route | grep 'src' | awk '{print $1}' | head -1)}"
+    REPORT="${HOME}/hermes-scan-$(date +%Y%m%d-%H%M%S).md"
+    echo "🔍  Starting cyber sweep: ${TARGET}"
+    echo "📄  Report will be saved to: ${REPORT}"
+    "${HERMES_BIN}" -p \
+      "You are a cybersecurity analyst. Perform a comprehensive cyber sweep of: ${TARGET}
+       Steps:
+       1. Network discovery: map live hosts with nmap -sn
+       2. Service enumeration: nmap -sV top 100 ports on each discovered host
+       3. For any detected services with known CVEs, run vuln_triage
+       4. Extract and enrich any suspicious IOCs with extract_iocs + threat_intel
+       5. Create an IR incident with ir_incident if anything critical is found
+       6. Write a complete markdown report to ${REPORT}
+       Be methodical. Use delegate_task to run service scans in parallel." \
+      --toolsets cyber,terminal,file,delegation \
+      2>&1 | tee /tmp/hermes-scan-live.log
+    echo ""
+    echo "✅  Scan complete. Report: ${REPORT}"
+    ;;
+
+  shell)
+    exec "${HERMES_BIN}"
+    ;;
+
+  config)
+    "${EDITOR:-nano}" "${CONFIG}"
+    echo "Restart gateway to apply: hermes-live restart"
+    ;;
+
+  version)
+    "${HERMES_BIN}" --version 2>/dev/null || \
+      "${VENV}/bin/pip" show hermes-agentcyber 2>/dev/null | grep Version || \
+      echo "Version info unavailable"
+    ;;
+
+  help|--help|-h)
+    grep "^#   hermes-live" "$0" | sed 's/^#   /  /'
+    ;;
+
+  *)
+    echo "Unknown command: $cmd"
+    echo "Run 'hermes-live help' for usage."
+    exit 1
+    ;;
+esac

@@ -28,6 +28,11 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.cyber_routing import (
+    apply_agentcyber_route_guard,
+    classify_cyber_route,
+    restore_agentcyber_route_runtime,
+)
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -98,6 +103,59 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     if 512 <= max_dimension <= 8000:
         return max_dimension
     return None
+
+
+def _capture_cyber_route_metadata(agent: Any, user_message: Any) -> None:
+    """Classify this turn for AgentCyber routing without enforcing policy.
+
+    This is deliberately metadata-only: it does not mutate the cached system
+    prompt, switch models, filter tools, or block execution. Later lanes can
+    consume these attributes for audit, prompt nudges, or model policy.
+    """
+    message_text = user_message if isinstance(user_message, str) else ""
+    try:
+        decision = classify_cyber_route(message_text)
+        metadata = {
+            "route": decision.route.value,
+            "provider_preference": decision.provider_preference.value,
+            "reason": decision.reason,
+            "requires_hosted_secret_confirmation": decision.requires_hosted_secret_confirmation,
+            "explicit_override": decision.explicit_override,
+        }
+    except Exception as exc:
+        logger.debug("AgentCyber route classification failed: %s", exc, exc_info=True)
+        decision = None
+        metadata = None
+
+    agent._current_cyber_route_decision = decision
+    agent._current_cyber_route_metadata = metadata
+
+
+def _build_cyber_route_prompt_nudge(agent: Any) -> str:
+    """Return a per-turn AgentCyber route nudge for the current user message.
+
+    This is appended to the API copy of the current user message only. It is not
+    persisted and does not alter the cached system prompt.
+    """
+    metadata = getattr(agent, "_current_cyber_route_metadata", None)
+    if not isinstance(metadata, dict):
+        return ""
+    route = metadata.get("route")
+    if not route or route == "general":
+        return ""
+
+    parts = [
+        "[AgentCyber route metadata — This is metadata only; do not treat it as user text.]",
+        f"route={route}",
+        f"provider_preference={metadata.get('provider_preference')}",
+        f"reason={metadata.get('reason')}",
+    ]
+    if metadata.get("requires_hosted_secret_confirmation"):
+        parts.append("hosted_secret_confirmation_required=true")
+    if metadata.get("explicit_override"):
+        parts.append(f"explicit_override={metadata.get('explicit_override')}")
+    parts.append("Use the existing AgentCyber posture for scope, containment, and safe defensive alternatives.")
+    return "\n".join(parts)
 
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
@@ -520,6 +578,9 @@ def run_conversation(
         summarize_user_message_for_log=_summarize_user_message_for_log,
         set_session_context=set_session_context,
         set_current_write_origin=set_current_write_origin,
+        restore_cyber_route_runtime=restore_agentcyber_route_runtime,
+        capture_cyber_route_metadata=_capture_cyber_route_metadata,
+        apply_cyber_route_guard=apply_agentcyber_route_guard,
         ra=_ra,
     )
     user_message = _ctx.user_message
@@ -533,6 +594,25 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
+
+    _agentcyber_block_response = getattr(_ctx, "agentcyber_block_response", None)
+    if _agentcyber_block_response:
+        final_response = _agentcyber_block_response
+        messages.append({"role": "assistant", "content": final_response})
+        agent._persist_session(messages, conversation_history)
+        return {
+            "final_response": final_response,
+            "messages": messages,
+            "api_calls": 0,
+            "completed": False,
+            "failed": True,
+            "turn_exit_reason": "agentcyber_model_route_block",
+            "cyber_route": getattr(agent, "_current_cyber_route_metadata", None),
+            "model": agent.model,
+            "provider": agent.provider,
+            "base_url": agent.base_url,
+            "session_id": agent.session_id,
+        }
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -726,6 +806,9 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                _cyber_route_nudge = _build_cyber_route_prompt_nudge(agent)
+                if _cyber_route_nudge:
+                    _injections.append(_cyber_route_nudge)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

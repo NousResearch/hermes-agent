@@ -1,0 +1,41 @@
+[Unit]
+Description=Hermes AgentCyber Gateway
+Documentation=https://github.com/NousResearch/hermes-agent
+After=network-online.target hermes-firstboot.service
+Wants=network-online.target
+# Gateway exits with code 1 when no platforms are connected — restart until configured
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes
+
+# Load API keys from .env
+EnvironmentFile=-/home/hermes/.hermes/.env
+
+ExecStart=/opt/hermes-venv/bin/gateway run --config /home/hermes/.hermes/config.yaml
+
+# Restart policy: always restart unless we hit the rate limit above
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-gateway
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/hermes/.hermes
+PrivateTmp=yes
+PrivateDevices=no
+# Allow binding to network (needed for webhook/API server modes)
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

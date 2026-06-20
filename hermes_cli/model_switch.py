@@ -1376,6 +1376,25 @@ def list_authenticated_providers(
         except Exception:
             return False
 
+    def _real_api_key(value: str) -> str:
+        """Return a normalized API key string for custom provider probing."""
+        return str(value or "").strip()
+
+    def _is_local_base_url(value: str) -> bool:
+        try:
+            from urllib.parse import urlparse
+            url_str = str(value or "").strip()
+            if url_str and "://" not in url_str:
+                url_str = "http://" + url_str
+            host = (urlparse(url_str).hostname or "").lower()
+            if host in {"localhost", "127.0.0.1", "::1"}:
+                return True
+            import ipaddress
+            ip = ipaddress.ip_address(host)
+            return bool(ip.is_private or ip.is_loopback or ip.is_link_local)
+        except Exception:
+            return False
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -1798,13 +1817,14 @@ def list_authenticated_providers(
             # Prefer the endpoint's live /models list when discoverable,
             # unless the provider explicitly opts out via discover_models: false.
             # Policy mirrors Section 4's should_probe logic:
-            # - With an api_key: always probe (user opted into the endpoint).
+            # - With an api_key: always probe (user opted into the endpoint),
+            #   except local endpoints with an explicit models list.
             # - Without an api_key but with explicit models: skip — the user
             #   is narrowing a public endpoint to a specific subset.
             # - Without an api_key AND no explicit models: probe anyway so
             #   bare-endpoint providers (local llama.cpp / Ollama servers)
             #   still show their full model catalog.
-            api_key = str(ep_cfg.get("api_key", "") or "").strip()
+            api_key = _real_api_key(str(ep_cfg.get("api_key", "") or "").strip())
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
@@ -1911,7 +1931,7 @@ def list_authenticated_providers(
             ).strip().rstrip("/")
             if not raw_name or not api_url:
                 continue
-            inline_api_key = (entry.get("api_key") or "").strip()
+            inline_api_key = _real_api_key((entry.get("api_key") or "").strip())
             key_env = (entry.get("key_env") or "").strip()
             api_key = inline_api_key or (
                 os.environ.get(key_env, "").strip() if key_env else ""
@@ -2061,6 +2081,8 @@ def list_authenticated_providers(
                 and (bool(api_key) or not grp["models"])
                 and grp.get("discover_models", True)
             )
+            if grp["models"] and _is_local_base_url(api_url):
+                should_probe = False
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models

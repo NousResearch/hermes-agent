@@ -411,6 +411,7 @@ AUTHOR_MAP = {
     "kiranvk2011@gmail.com": "kiranvk-2011",  # PR #24815 salvage (image documents → vision)
     "kosmonaut-t@centrum.cz": "rak135",  # PR #25960 salvage (Windows /restart)
     "bot.chi.online@gmail.com": "B0Tch1",  # PR #27634 salvage (disable_topic_auto_rename)
+    "daniel.laforce@argobox.com": "KeyArgo",  # upstream sync attribution (active-agent ref wiring)
     "1037461232@qq.com": "jackjin1997",  # PR #27239 salvage (restore DM topic thread_id after split)
     "soynchuux@gmail.com": "soynchux",  # PR #27806 salvage (chat-scoped auth without user_id)
     "psikonetik@gmail.com": "el-analista",  # PR #25368 salvage (cron topic fallback report)
@@ -720,6 +721,14 @@ AUTHOR_MAP = {
     "roopaknijhara@gmail.com": "rnijhara",
     "josephzcan@gmail.com": "j0sephz",
     # contributors (manual mapping from git names)
+    "alaamohanad169@gmail.com": "Spider-Vers",
+    "batosk2@gmail.com": "batosk2",
+    "ilonagaja509-glitch@users.noreply.github.com": "ilonagaja509-glitch",
+    "info@aminvakil.com": "aminvakil",
+    "nikpolale@gmail.com": "nikpolale",
+    "redpiggy-cyber@users.noreply.github.com": "redpiggy-cyber",
+    "sohyuanchin@gmail.com": "wysie",
+    "vinoth12940@users.noreply.github.com": "Vinoth",
     "ahmedsherif95@gmail.com": "asheriif",
     "dyxushuai@gmail.com": "dyxushuai",
     "33860762+etcircle@users.noreply.github.com": "etcircle",
@@ -1102,6 +1111,8 @@ AUTHOR_MAP = {
     "yehuosi@users.noreply.github.com": "yehuosi",
     "31932854+jelrod27@users.noreply.github.com": "jelrod27",
     "11262660+konsisumer@users.noreply.github.com": "konsisumer",
+    "konsisumer@users.noreply.github.com": "konsisumer",
+    "naqerl@users.noreply.github.com": "naqerl",
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",

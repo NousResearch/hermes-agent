@@ -346,3 +346,4 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         # handler just skips the interrupt call silently).
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
         assert "Subagent working" not in content
+        assert "⚡ Interrupting" in content

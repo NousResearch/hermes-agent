@@ -72,11 +72,69 @@ class HookRegistry:
     def _register_builtin_hooks(self) -> None:
         """Register built-in hooks that are always active.
 
-        Currently empty — no shipped built-in hooks. Kept as the extension
-        point for future always-on gateway hooks so they drop in without
-        re-plumbing discover_and_load().
+        Hooks registered here run on every gateway instance without requiring
+        the operator to drop files into ~/.hermes/hooks/. Each registration
+        is guarded by its own enable check so unused hooks have zero overhead.
         """
-        return
+        self._register_cyber_audit_hook()
+        self._register_hardening_hook()
+
+    def _register_cyber_audit_hook(self) -> None:
+        """SOC audit trail hook (active when HERMES_CYBER_AUDIT=true).
+
+        Writes every agent:step and agent:end event to a structured NDJSON
+        log at $HERMES_HOME/logs/cyber_audit.jsonl for SOC review and
+        compliance purposes. See gateway/builtin_hooks/cyber_audit.py.
+        """
+        import os
+        if os.environ.get("HERMES_CYBER_AUDIT", "").lower() not in ("1", "true", "yes"):
+            return
+        try:
+            from gateway.builtin_hooks.cyber_audit import handle as _cyber_handle
+        except Exception as exc:
+            print(f"[hooks] Could not load cyber_audit builtin hook: {exc}", flush=True)
+            return
+        _CYBER_EVENTS = [
+            "gateway:startup",
+            "session:start",
+            "session:end",
+            "agent:step",
+            "agent:end",
+        ]
+        for event in _CYBER_EVENTS:
+            self._handlers.setdefault(event, []).append(_cyber_handle)
+        self._loaded_hooks.append({
+            "name":        "cyber_audit",
+            "description": "SOC audit trail — structured NDJSON log of every agent step",
+            "events":      _CYBER_EVENTS,
+            "builtin":     True,
+        })
+        print("[hooks] Loaded builtin hook 'cyber_audit' (HERMES_CYBER_AUDIT=true)", flush=True)
+
+    def _register_hardening_hook(self) -> None:
+        """Rate-limiter + input-sanitizer hook (active when HERMES_HARDENING=true).
+
+        Registers hardening_gate as a pre_gateway_dispatch handler. This hook
+        enforces a per-key sliding-window rate limit and strips null bytes,
+        C0 control chars, and prompt-injection preambles from every inbound
+        message before it reaches the agent. See gateway/hardening.py.
+        """
+        import os
+        if os.environ.get("HERMES_HARDENING", "").lower() not in ("1", "true", "yes"):
+            return
+        try:
+            from gateway.hardening import hardening_gate
+        except Exception as exc:
+            print(f"[hooks] Could not load hardening builtin hook: {exc}", flush=True)
+            return
+        self._handlers.setdefault("pre_gateway_dispatch", []).append(hardening_gate)
+        self._loaded_hooks.append({
+            "name":        "hardening",
+            "description": "Rate limiter + input sanitizer for extreme breach hardening",
+            "events":      ["pre_gateway_dispatch"],
+            "builtin":     True,
+        })
+        print("[hooks] Loaded builtin hook 'hardening' (HERMES_HARDENING=true)", flush=True)
 
     def discover_and_load(self) -> None:
         """

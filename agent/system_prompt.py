@@ -27,6 +27,14 @@ import json
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
+    COMPUTER_USE_GUIDANCE,
+    CYBER_AUTHORIZED_ASSET_REGISTRY_GUIDANCE,
+    CYBER_BREAK_GLASS_ACCESS_RECOVERY_GUIDANCE,
+    CYBER_CREDENTIAL_HANDLING_GUIDANCE,
+    CYBER_MODEL_ROUTING_GUIDANCE,
+    CYBER_OPERATOR_IDENTITY_GUIDANCE,
+    CYBER_REFUSAL_REPLACEMENT_GUIDANCE,
+    CYBER_SERIOUS_WORK_TONE_GUIDANCE,
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
@@ -164,6 +172,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Cyber Edition posture is a stable identity extension. It is deliberately
+    # not gated on the cyber toolset: operators may perform authorized security
+    # research with terminal/web/file tools before enabling the dedicated tools.
+    stable_parts.append(CYBER_OPERATOR_IDENTITY_GUIDANCE)
+    stable_parts.append(CYBER_REFUSAL_REPLACEMENT_GUIDANCE)
+    stable_parts.append(CYBER_CREDENTIAL_HANDLING_GUIDANCE)
+    stable_parts.append(CYBER_BREAK_GLASS_ACCESS_RECOVERY_GUIDANCE)
+    stable_parts.append(CYBER_AUTHORIZED_ASSET_REGISTRY_GUIDANCE)
+    stable_parts.append(CYBER_MODEL_ROUTING_GUIDANCE)
+    stable_parts.append(CYBER_SERIOUS_WORK_TONE_GUIDANCE)
+
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
     # this targets (stopping after a stub; fabricating output when a real
@@ -213,7 +232,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Computer-use (macOS) — goes in as its own block rather than being
     # merged into tool_guidance because the content is multi-paragraph.
     if "computer_use" in agent.valid_tool_names:
-        from agent.prompt_builder import COMPUTER_USE_GUIDANCE
         stable_parts.append(COMPUTER_USE_GUIDANCE)
 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)

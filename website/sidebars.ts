@@ -181,6 +181,17 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'cybersecurity',
+                  key: 'skills-bundled-cybersecurity',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/cybersecurity/cybersecurity-ir-copilot',
+                    'user-guide/skills/bundled/cybersecurity/cybersecurity-threat-intel',
+                    'user-guide/skills/bundled/cybersecurity/cybersecurity-vuln-triage',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'data-science',
                   key: 'skills-bundled-data-science',
                   collapsed: true,
@@ -239,6 +250,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/media/media-gif-search',
                     'user-guide/skills/bundled/media/media-heartmula',
                     'user-guide/skills/bundled/media/media-songsee',
+                    'user-guide/skills/bundled/media/media-spotify',
                     'user-guide/skills/bundled/media/media-youtube-content',
                   ],
                 },
@@ -274,6 +286,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
+                    'user-guide/skills/bundled/productivity/productivity-linear',
                     'user-guide/skills/bundled/productivity/productivity-maps',
                     'user-guide/skills/bundled/productivity/productivity-nano-pdf',
                     'user-guide/skills/bundled/productivity/productivity-notion',
@@ -319,6 +332,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-software-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands',
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
                     'user-guide/skills/bundled/software-development/software-development-plan',
@@ -328,6 +342,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-spike',
                     'user-guide/skills/bundled/software-development/software-development-systematic-debugging',
                     'user-guide/skills/bundled/software-development/software-development-test-driven-development',
+                    'user-guide/skills/bundled/software-development/software-development-writing-plans',
                   ],
                 },
                 {

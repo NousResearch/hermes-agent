@@ -829,10 +829,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
+        _agentcyber_block_result: Optional[str] = None
         if _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
         else:
+            try:
+                from agent.cyber_policy import gate_tool_call_for_agent, tool_block_message
+                _agentcyber_gate = gate_tool_call_for_agent(agent, function_name, function_args)
+                if not _agentcyber_gate.allowed:
+                    _agentcyber_block_result = tool_block_message(_agentcyber_gate)
+                    _block_error_type = "agentcyber_execution_gate"
+            except Exception:
+                logger.debug("AgentCyber execution gate check failed", exc_info=True)
+
+        if _block_msg is None and _agentcyber_block_result is None:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 _block_msg = get_pre_tool_call_block_message(
@@ -849,12 +860,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if _block_msg is None and _agentcyber_block_result is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = _block_msg is not None or _agentcyber_block_result is not None or _guardrail_block_decision is not None
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -928,7 +939,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if _block_msg is not None:
+        if _agentcyber_block_result is not None:
+            function_result = _agentcyber_block_result
+            tool_duration = 0.0
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type=_block_error_type,
+                error_message="AgentCyber execution gate blocked tool call",
+            )
+        elif _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0

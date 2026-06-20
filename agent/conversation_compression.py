@@ -328,6 +328,16 @@ def compress_context(
         agent._compression_feasibility_checked = True
 
     _pre_msg_count = len(messages)
+    # In-place compaction (config: compression.in_place, see #38763). When True,
+    # this compaction rewrites the message list + rebuilds the system prompt but
+    # keeps the SAME session_id — no end_session, no parent_session_id child, no
+    # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
+    # engine session-switch. The conversation keeps one durable id for life,
+    # eliminating the session-rotation bug cluster. Default False during rollout.
+    in_place = bool(getattr(agent, "compression_in_place", False))
+    # Set True once the in-place DB write actually completes (the DB block can
+    # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
+    compacted_in_place = False
     logger.info(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
         agent.session_id or "none", _pre_msg_count,
@@ -508,96 +518,141 @@ def compress_context(
 
     if agent._session_db:
         try:
-            # Propagate title to the new session with auto-numbering
-            old_title = agent._session_db.get_session_title(agent.session_id)
-            # Trigger memory extraction on the old session before it rotates.
+            # Trigger memory extraction on the current session before the
+            # transcript is rewritten (runs in BOTH modes — the logical
+            # conversation's pre-compaction turns are about to be summarized
+            # away regardless of whether the id rotates).
             agent.commit_memory_session(messages)
-            # Flush any un-persisted messages from the current turn to the
-            # old session *before* rotating.  compress_context() can be
-            # called mid-turn (auto-compress when context exceeds threshold)
-            # at a point when _flush_messages_to_session_db() has not yet
-            # run.  Without this, messages generated during the current turn
-            # are silently lost on session rotation (#47202).
-            try:
-                agent._flush_messages_to_session_db(messages)
-            except Exception:
-                pass  # best-effort — don't block compression on a flush error
-            agent._session_db.end_session(agent.session_id, "compression")
-            old_session_id = agent.session_id
-            agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-            # Ordering contract: the agent thread updates the contextvar here;
-            # the gateway propagates to SessionEntry after run_in_executor returns.
-            try:
-                from gateway.session_context import set_current_session_id
 
-                set_current_session_id(agent.session_id)
-            except Exception:
-                os.environ["HERMES_SESSION_ID"] = agent.session_id
-            # The gateway/tools session context (ContextVar + env) and the
-            # logging session context are SEPARATE mechanisms. The call above
-            # moves the former; the ``[session_id]`` tag on log lines comes
-            # from ``hermes_logging._session_context`` (set once per turn in
-            # conversation_loop.py). Without this, post-rotation log lines in
-            # the same turn keep the STALE old id while the message/DB/gateway
-            # state carry the new one — breaking log correlation exactly at the
-            # compaction boundary (see #34089). Guarded separately so a logging
-            # failure can never regress the routing update above.
-            try:
-                from hermes_logging import set_session_context
-
-                set_session_context(agent.session_id)
-            except Exception:
-                pass
-            agent._session_db_created = False
-            agent._session_db.create_session(
-                session_id=agent.session_id,
-                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=agent.model,
-                model_config=agent._session_init_model_config,
-                parent_session_id=old_session_id,
-            )
-            agent._session_db_created = True
-            # Auto-number the title for the continuation session
-            if old_title:
+            if in_place:
+                # ── In-place compaction: keep the same session_id ──────────
+                # No end_session, no new row, no parent_session_id, no title
+                # renumber, no contextvar/env/logging re-sync. The session's
+                # id, title, cwd, /goal, and gateway routing all stay put.
+                #
+                # Durable, NON-DESTRUCTIVE replace: soft-archive the
+                # pre-compaction turns (active=0, kept on disk + FTS-searchable +
+                # recoverable) and insert `compressed` as the new live (active=1)
+                # set, atomically. `compressed` already carries the surviving
+                # tail (current-turn messages the compressor kept via
+                # protect_last_n), so we DON'T pre-flush here — a flush would
+                # INSERT current-turn rows that archive_and_compact would then
+                # archive alongside the rest (harmless but wasted writes). The
+                # live-context load filters active=1, so a resume reloads ONLY
+                # the compacted set; the original turns remain under the SAME id
+                # for search/recovery (Teknium review — keep one durable id
+                # WITHOUT destroying history, unlike a hard replace_messages).
+                # See #38763.
+                agent._session_db.archive_and_compact(agent.session_id, compressed)
+                # Reset the flush identity set so the next turn's appends are
+                # diffed against the COMPACTED transcript: the compacted dicts
+                # are passed as conversation_history next turn and skipped by
+                # identity, so only genuinely new turn messages get appended
+                # (no dup of the summary, no resurrection of dropped turns).
+                agent._flushed_db_message_ids = set()
+                # Rotation-independent signal: the conversation was compacted in
+                # place (id unchanged). The gateway reads this (NOT an id-change
+                # diff) to re-baseline transcript handling.
+                compacted_in_place = True
+            else:
+                # ── Rotation (legacy): end this session, fork a continuation ─
+                # Flush any un-persisted current-turn messages to the OLD
+                # session before ending it, so they survive in the preserved
+                # parent transcript (#47202). (In-place skips this — see above.)
                 try:
-                    new_title = agent._session_db.get_next_title_in_lineage(old_title)
-                    agent._session_db.set_session_title(agent.session_id, new_title)
-                except (ValueError, Exception) as e:
-                    logger.debug("Could not propagate title on compression: %s", e)
+                    agent._flush_messages_to_session_db(messages)
+                except Exception:
+                    pass  # best-effort — don't block compression on a flush error
+                # Propagate title to the new session with auto-numbering
+                old_title = agent._session_db.get_session_title(agent.session_id)
+                agent._session_db.end_session(agent.session_id, "compression")
+                old_session_id = agent.session_id
+                agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                # Ordering contract: the agent thread updates the contextvar here;
+                # the gateway propagates to SessionEntry after run_in_executor returns.
+                try:
+                    from gateway.session_context import set_current_session_id
+
+                    set_current_session_id(agent.session_id)
+                except Exception:
+                    os.environ["HERMES_SESSION_ID"] = agent.session_id
+                # The gateway/tools session context (ContextVar + env) and the
+                # logging session context are SEPARATE mechanisms. The call above
+                # moves the former; the ``[session_id]`` tag on log lines comes
+                # from ``hermes_logging._session_context`` (set once per turn in
+                # conversation_loop.py). Without this, post-rotation log lines in
+                # the same turn keep the STALE old id while the message/DB/gateway
+                # state carry the new one — breaking log correlation exactly at the
+                # compaction boundary (see #34089). Guarded separately so a logging
+                # failure can never regress the routing update above.
+                try:
+                    from hermes_logging import set_session_context
+
+                    set_session_context(agent.session_id)
+                except Exception:
+                    pass
+                agent._session_db_created = False
+                agent._session_db.create_session(
+                    session_id=agent.session_id,
+                    source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=agent.model,
+                    model_config=agent._session_init_model_config,
+                    parent_session_id=old_session_id,
+                )
+                agent._session_db_created = True
+                # Auto-number the title for the continuation session
+                if old_title:
+                    try:
+                        new_title = agent._session_db.get_next_title_in_lineage(old_title)
+                        agent._session_db.set_session_title(agent.session_id, new_title)
+                    except (ValueError, Exception) as e:
+                        logger.debug("Could not propagate title on compression: %s", e)
+
+            # Shared post-write steps (both modes target agent.session_id, which
+            # in-place keeps and rotation has already reassigned to the new id):
+            # refresh the stored system prompt and reset the flush cursor so the
+            # next turn re-bases its append diff.
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            # Reset flush cursor — new session starts with no messages written
             agent._last_flushed_db_idx = 0
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
-    # Notify the context engine that the session_id rotated because of
-    # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
-    # boundary_reason="compression" to preserve DAG lineage across the
-    # rollover instead of re-initializing fresh per-session state.
-    # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
+    # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
+    # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`
+    # is the id the boundary notifications attribute the prior state to: the old
+    # id on rotation, the (unchanged) current id in-place.
+    _old_sid = locals().get("old_session_id")
+    _is_boundary = bool(_old_sid) or in_place
+    _boundary_parent = _old_sid or agent.session_id or ""
+
+    # Notify the context engine that a compaction boundary occurred. Plugin
+    # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
+    # DAG lineage / checkpoint per-session state across the boundary instead of
+    # re-initializing fresh. See hermes-lcm#68. Built-in ContextCompressor
+    # ignores kwargs. Fires in BOTH modes: rotation passes old→new ids; in-place
+    # passes the SAME id (the boundary is real even though the id didn't move).
     try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and hasattr(agent.context_compressor, "on_session_start"):
+        if _is_boundary and hasattr(agent.context_compressor, "on_session_start"):
             agent.context_compressor.on_session_start(
                 agent.session_id or "",
                 boundary_reason="compression",
-                old_session_id=_old_sid,
+                old_session_id=_boundary_parent,
                 conversation_id=getattr(agent, "_gateway_session_key", None),
             )
     except Exception as _ce_err:
         logger.debug("context engine on_session_start (compression): %s", _ce_err)
 
-    # Notify memory providers of the compression-driven session_id rotation
-    # so provider-cached per-session state (Hindsight's _document_id,
-    # accumulated turn buffers, counters) refreshes. reset=False because
-    # the logical conversation continues; only the id and DB row rolled
-    # over. See #6672.
+    # Notify memory providers of the compaction boundary so provider-cached
+    # per-session state (Hindsight's _document_id, accumulated turn buffers,
+    # counters) refreshes. reset=False because the logical conversation
+    # continues. See #6672. Fires in BOTH modes: in-place uses the same id as
+    # parent (the conversation didn't fork, but the buffer must still be told
+    # the transcript was compacted so it doesn't double-count dropped turns).
     try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and agent._memory_manager:
+        if _is_boundary and agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 agent.session_id or "",
-                parent_session_id=_old_sid,
+                parent_session_id=_boundary_parent,
                 reset=False,
                 reason="compression",
             )
@@ -614,18 +669,26 @@ def compress_context(
         )
 
     # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
-    # the completed old session before its details are lost.
-    _old_sid_for_event = locals().get("old_session_id")
+    # the completed old session before its details are lost. In in-place mode
+    # there is no old id (same session); ``in_place=True`` tells hooks the
+    # transcript was compacted on the same id rather than rotated.
     if getattr(agent, "event_callback", None):
         try:
             agent.event_callback("session:compress", {
                 "platform": agent.platform or "",
                 "session_id": agent.session_id,
-                "old_session_id": _old_sid_for_event or "",
+                "old_session_id": _old_sid or "",
+                "in_place": in_place,
                 "compression_count": agent.context_compressor.compression_count,
             })
         except Exception as e:
             logger.debug("event_callback error on session:compress: %s", e)
+
+    # Surface the compaction mode to the caller (run_conversation / gateway)
+    # via a rotation-independent flag. The gateway uses this — NOT an
+    # id-change diff — to re-baseline transcript handling (history_offset=0 +
+    # rewrite on the same id) when compaction happened in place. See #38763.
+    agent._last_compaction_in_place = compacted_in_place
 
     # Keep the post-compression rough estimate for diagnostics, but do not
     # treat it as provider-reported prompt usage. Schema-heavy rough estimates
@@ -712,33 +775,58 @@ def try_shrink_image_parts_in_messages(
     # actually brought under the target.
     unshrinkable_oversized = 0
 
-    def _shrink_data_url(url: str) -> Optional[str]:
-        """Return a smaller data URL, or None if shrink can't help."""
-        if not isinstance(url, str) or not url.startswith("data:"):
+    def _decode_pixels(data_url: str) -> Optional[tuple]:
+        """Return ``(width, height)`` of a base64 data URL, or None on failure.
+
+        Soft-depends on Pillow; returns None (caller falls back to a
+        bytes-only check) if Pillow is missing or the payload is corrupt.
+        """
+        try:
+            import base64 as _b64_dim
+            import io as _io_dim
+            header_d, _, data_d = data_url.partition(",")
+            if not data_d or not data_url.startswith("data:"):
+                return None
+            from PIL import Image as _PILImage
+            with _PILImage.open(_io_dim.BytesIO(_b64_dim.b64decode(data_d))) as _img:
+                return _img.size
+        except Exception:
             return None
 
-        # Check both byte size AND pixel dimensions.
+    def _shrink_data_url(url: str) -> tuple:
+        """Return ``(resized_url, unshrinkable)`` for a data URL.
+
+        ``resized_url`` is a smaller/dimension-correct data URL, or None when
+        no rewrite was applied.  ``unshrinkable`` is True only when the image
+        exceeded a constraint (byte-size or dimensions) and the resize failed
+        to satisfy *that same* constraint — so the caller knows retrying is
+        pointless even if a different image in the request shrank.
+        """
+        if not isinstance(url, str) or not url.startswith("data:"):
+            return None, False
+
+        # Determine which constraint is binding.  The accept/reject gate below
+        # MUST be checked against the same axis that triggered the shrink: a
+        # downscaled screenshot PNG routinely re-encodes to *more* bytes than
+        # the original (PNG compression is non-monotonic in image size — a
+        # smaller raster with LANCZOS resampling noise compresses worse than a
+        # larger smooth one).  Rejecting a pixel-correct downscale purely
+        # because its bytes grew permanently wedges sessions on the Anthropic
+        # many-image 2000px path (#48013).
         needs_shrink = len(url) > target_bytes  # over byte budget
+        triggered_by = "bytes" if needs_shrink else None
         if not needs_shrink:
-            # Even if bytes are fine, check pixel dimensions against the
-            # provider's reported per-side cap.  A screenshot can be tiny in
-            # bytes yet too large in pixels.
-            try:
-                import base64 as _b64_dim
-                header_d, _, data_d = url.partition(",")
-                if not data_d:
-                    return None
-                raw_d = _b64_dim.b64decode(data_d)
-                from PIL import Image as _PILImage
-                import io as _io_dim
-                with _PILImage.open(_io_dim.BytesIO(raw_d)) as _img:
-                    if max(_img.size) <= max_dimension:
-                        return None  # both bytes and pixels are fine
-                needs_shrink = True  # pixels exceed limit, force shrink
-            except Exception:
-                # If we can't check dimensions (Pillow unavailable, corrupt
-                # image, etc.), fall back to byte-only check.
-                return None
+            # Bytes are fine — check pixel dimensions against the provider's
+            # reported per-side cap.  A screenshot can be tiny in bytes yet
+            # too large in pixels.
+            dims = _decode_pixels(url)
+            if dims is None:
+                # Pillow missing or corrupt data — fall back to byte-only.
+                return None, False
+            if max(dims) <= max_dimension:
+                return None, False  # both bytes and pixels are within limits
+            needs_shrink = True
+            triggered_by = "dimension"
 
         try:
             header, _, data = url.partition(",")
@@ -770,13 +858,45 @@ def try_shrink_image_parts_in_messages(
                     Path(tmp.name).unlink(missing_ok=True)
                 except Exception:
                     pass
-            if not resized or len(resized) >= len(url):
-                # Shrink didn't help (or made it bigger — corrupt input?).
-                return None
-            return resized
+            if not resized:
+                # Resize returned nothing — Pillow couldn't help.
+                return None, True
+            if triggered_by == "bytes":
+                # Byte budget is the binding constraint — bytes must shrink.
+                if len(resized) >= len(url):
+                    return None, True  # re-encode made it bigger
+                # The per-side dimension cap is ALSO an active provider
+                # constraint on this request (the caller passes the parsed cap
+                # to both this helper and the resizer).  _resize_image_for_vision
+                # returns a best-effort, possibly-over-cap blob when it
+                # exhausts its halving budget — it freezes the long side once
+                # the short side hits its 64px floor, so a very-high-aspect
+                # image can stay over the cap even after bytes shrank.  If the
+                # output is still over the cap, retrying would re-400 on
+                # dimensions; treat it as unshrinkable.  (Skip when dims can't
+                # be decoded — preserves historical byte-only behaviour.)
+                new_dims = _decode_pixels(resized)
+                if new_dims is not None and max(new_dims) > max_dimension:
+                    return None, True
+                return resized, False
+            # triggered_by == "dimension": the per-side cap is binding.  The
+            # re-encode may have grown in bytes; accept it as long as it is now
+            # within the dimension cap.  Verify the new dimensions when we can.
+            new_dims = _decode_pixels(resized)
+            if new_dims is not None:
+                if max(new_dims) <= max_dimension:
+                    return resized, False
+                # Still over the per-side cap — the resize didn't satisfy it.
+                return None, True
+            # Couldn't verify the re-encode's dimensions (corrupt output or
+            # Pillow gone mid-call).  Fall back to the historical "bytes must
+            # shrink" gate so we never accept an unverifiable, byte-larger blob.
+            if len(resized) >= len(url):
+                return None, True
+            return resized, False
         except Exception as exc:
             logger.warning("image-shrink recovery: re-encode failed — %s", exc)
-            return None
+            return None, triggered_by is not None
 
     for msg in api_messages:
         if not isinstance(msg, dict):
@@ -795,20 +915,18 @@ def try_shrink_image_parts_in_messages(
             # OpenAI Responses: {"image_url": "data:..."}
             if isinstance(image_value, dict):
                 url = image_value.get("url", "")
-                resized = _shrink_data_url(url)
+                resized, unshrinkable = _shrink_data_url(url)
                 if resized:
                     image_value["url"] = resized
                     changed_count += 1
-                elif isinstance(url, str) and url.startswith("data:") \
-                        and len(url) > target_bytes:
+                elif unshrinkable:
                     unshrinkable_oversized += 1
             elif isinstance(image_value, str):
-                resized = _shrink_data_url(image_value)
+                resized, unshrinkable = _shrink_data_url(image_value)
                 if resized:
                     part["image_url"] = resized
                     changed_count += 1
-                elif image_value.startswith("data:") \
-                        and len(image_value) > target_bytes:
+                elif unshrinkable:
                     unshrinkable_oversized += 1
 
     if changed_count:

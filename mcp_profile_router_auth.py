@@ -25,6 +25,8 @@ from uuid import uuid4
 from hermes_constants import get_hermes_home
 
 DEFAULT_PROFILE_ROUTER_SCOPES = ("context:read", "workspace:read", "diff:read")
+VIKING_PROFILE_ROUTER_SCOPE = "viking:read"
+SUPPORTED_PROFILE_ROUTER_SCOPES = (*DEFAULT_PROFILE_ROUTER_SCOPES, VIKING_PROFILE_ROUTER_SCOPE)
 PROFILE_ROUTER_TOKEN_FILENAME = "profile_router_tokens.json"
 PROFILE_ROUTER_AUDIT_FILENAME = "profile_router_audit.jsonl"
 TOKEN_PREFIX = "hpr"
@@ -167,7 +169,7 @@ def _normalize_scopes(scopes: Iterable[str] | None) -> tuple[str, ...]:
         text = scope.strip()
         if not text:
             continue
-        if text not in DEFAULT_PROFILE_ROUTER_SCOPES:
+        if text not in SUPPORTED_PROFILE_ROUTER_SCOPES:
             raise ProfileRouterAuthError(
                 "invalid_scope",
                 "Unsupported profile-router scope: " + text,

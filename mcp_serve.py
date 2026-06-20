@@ -953,6 +953,11 @@ def create_profile_router_mcp_server(
         profile_get as _profile_get,
         profile_health as _profile_health,
         profiles_list as _profiles_list,
+        session_search as _session_search,
+        skill_view as _skill_view,
+        skills_list as _skills_list,
+        viking_read as _viking_read,
+        viking_search as _viking_search,
         workspace_close as _workspace_close,
         workspace_context_status as _workspace_context_status,
         workspace_diff as _workspace_diff,
@@ -967,6 +972,7 @@ def create_profile_router_mcp_server(
         ProfileRouterAuthError,
         ProfileRouterBearerTokenVerifier,
         ProfileRouterTokenStore,
+        VIKING_PROFILE_ROUTER_SCOPE,
         current_access_token_identity,
         extract_result_audit_fields,
         require_current_access_token_scope,
@@ -993,13 +999,16 @@ def create_profile_router_mcp_server(
             "Hermes Agent no-model profile router. This v1 surface is self-hosted "
             "and read-only by default. HTTP mode is bound to localhost unless the "
             "operator chooses otherwise and requires Hermes-generated bearer tokens. "
-            "Public tools expose profile/context hydration and bounded workspace "
-            "read/diff only: profiles_list, profile_get, profile_health, "
-            "profile_context_get, workspace_open, workspace_instructions_get, "
-            "workspace_context_status, workspace_get, workspace_close, "
-            "workspace_file_list, workspace_file_read, and workspace_diff. It does "
-            "not expose conversation messaging, write/patch, terminal, cron, deploy, "
-            "or agent-loop execution tools."
+            "Public tools expose profile/context hydration, bounded profile skills, "
+            "bounded profile session search, and bounded workspace read/diff only: "
+            "profiles_list, profile_get, profile_health, profile_context_get, "
+            "skills_list, skill_view, session_search, workspace_open, "
+            "workspace_instructions_get, workspace_context_status, workspace_get, "
+            "workspace_close, workspace_file_list, workspace_file_read, "
+            "workspace_diff, and policy-gated local/private OpenViking context "
+            "tools viking_search and viking_read. It does not expose conversation "
+            "messaging, session dumps, write/patch, terminal, cron, deploy, or "
+            "agent-loop execution tools."
         ),
         host=host,
         port=port,
@@ -1045,7 +1054,7 @@ def create_profile_router_mcp_server(
 
     def _call_tool(
         tool_name: str,
-        scope: str,
+        required_scope: str,
         fn,
         *,
         audit_profile_ref: str | None = None,
@@ -1054,14 +1063,14 @@ def create_profile_router_mcp_server(
     ) -> str:
         try:
             if http_auth:
-                require_current_access_token_scope(scope)
+                require_current_access_token_scope(required_scope)
             result = fn(**kwargs)
         except ProfileRouterAuthError as exc:
             result = _auth_error_result(tool_name, exc)
         try:
             _audit_tool_result(
                 tool_name=tool_name,
-                scope=scope,
+                scope=required_scope,
                 result=result,
                 audit_profile_ref=audit_profile_ref,
                 audit_workspace_id=audit_workspace_id,
@@ -1111,6 +1120,79 @@ def create_profile_router_mcp_server(
             _profile_context_get,
             audit_profile_ref=profile_ref,
             profile_ref=profile_ref,
+        )
+
+    @mcp.tool()
+    def skills_list(profile_ref: str, limit: int | None = 100) -> str:
+        """List bounded sanitized profile skill metadata without invoking any model."""
+        return _call_tool(
+            "skills_list",
+            "context:read",
+            _skills_list,
+            audit_profile_ref=profile_ref,
+            profile_ref=profile_ref,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def skill_view(profile_ref: str, name: str, file_path: str | None = None) -> str:
+        """Read a bounded sanitized profile skill file without invoking any model."""
+        return _call_tool(
+            "skill_view",
+            "context:read",
+            _skill_view,
+            audit_profile_ref=profile_ref,
+            profile_ref=profile_ref,
+            name=name,
+            file_path=file_path,
+        )
+
+    @mcp.tool()
+    def session_search(
+        profile_ref: str,
+        query: str | None = None,
+        limit: int | None = 3,
+        sort: str | None = None,
+    ) -> str:
+        """Search bounded sanitized profile session snippets without invoking any model."""
+        return _call_tool(
+            "session_search",
+            "context:read",
+            _session_search,
+            audit_profile_ref=profile_ref,
+            profile_ref=profile_ref,
+            query=query,
+            limit=limit,
+            sort=sort,
+        )
+
+    @mcp.tool()
+    def viking_search(
+        query: str,
+        mode: str = "auto",
+        scope: str | None = None,
+        limit: int | None = 10,
+    ) -> str:
+        """Search bounded local/private OpenViking context without invoking a model."""
+        return _call_tool(
+            "viking_search",
+            VIKING_PROFILE_ROUTER_SCOPE,
+            _viking_search,
+            query=query,
+            mode=mode,
+            scope=scope,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def viking_read(uri: str, level: str = "overview") -> str:
+        """Read bounded local/private OpenViking context without invoking a model."""
+        return _call_tool(
+            "viking_read",
+            VIKING_PROFILE_ROUTER_SCOPE,
+            _viking_read,
+            uri=uri,
+            level=level,
         )
 
     @mcp.tool()

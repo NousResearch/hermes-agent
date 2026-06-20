@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import sqlite3
 import subprocess
 import sys
 import time
@@ -11,9 +12,13 @@ import pytest
 import mcp_profile_router
 from mcp_profile_router import (
     COST_CLASS_CALLS_HERMES_AGENT_MODEL,
+    COST_CLASS_EXTERNAL_API_NO_MODEL,
     COST_CLASS_NO_MODEL,
+    MAX_CONTEXT_FILE_BYTES,
+    MAX_SESSION_SNIPPET_CHARS,
     MAX_TERMINAL_OUTPUT_CHARS,
     MAX_TERMINAL_TIMEOUT_SECONDS,
+    MAX_VIKING_OVERVIEW_CHARS,
     PROFILE_ROUTER_TOOL_GROUP,
     ProfileRouterError,
     RouterToolMetadata,
@@ -36,7 +41,12 @@ from mcp_profile_router import (
     profiles_list,
     require_fresh_workspace_context,
     resolve_workspace_path,
+    session_search,
+    skill_view,
+    skills_list,
     terminal_run,
+    viking_read,
+    viking_search,
     workspace_close,
     workspace_context_status,
     workspace_diff,
@@ -51,6 +61,7 @@ from mcp_profile_router_auth import (
     ProfileRouterAuditLogger,
     ProfileRouterBearerTokenVerifier,
     ProfileRouterTokenStore,
+    VIKING_PROFILE_ROUTER_SCOPE,
     extract_result_audit_fields,
 )
 
@@ -95,7 +106,7 @@ def hermes_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _write_router_config(hermes_home, *, profiles=None, host_roots=None):
+def _write_router_config(hermes_home, *, profiles=None, host_roots=None, context=None):
     host_roots = host_roots or [str(hermes_home)]
     profiles = profiles or {
         "local:main-bot": {
@@ -104,19 +115,93 @@ def _write_router_config(hermes_home, *, profiles=None, host_roots=None):
             "allowed_roots": [str(hermes_home)],
         }
     }
-    config = {
-        "profile_router": {
-            "hosts": {
-                "local": {
-                    "enabled": True,
-                    "allowed_roots": host_roots,
-                }
-            },
-            "profiles": profiles,
-        }
+    profile_router = {
+        "hosts": {
+            "local": {
+                "enabled": True,
+                "allowed_roots": host_roots,
+            }
+        },
+        "profiles": profiles,
     }
+    if context is not None:
+        profile_router["context"] = context
+    config = {"profile_router": profile_router}
     (hermes_home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
     return config
+
+
+def _write_skill(
+    hermes_home,
+    profile,
+    skill_path,
+    content,
+    *,
+    linked_files=None,
+):
+    skill_dir = hermes_home / "profiles" / profile / "skills" / skill_path
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+    for relative_path, file_content in (linked_files or {}).items():
+        target = skill_dir / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(file_content, bytes):
+            target.write_bytes(file_content)
+        else:
+            target.write_text(file_content, encoding="utf-8")
+    return skill_dir
+
+
+def _write_session_db(hermes_home, profile, sessions):
+    db_path = hermes_home / "profiles" / profile / "state.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                model TEXT,
+                started_at REAL NOT NULL,
+                title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            );
+            """
+        )
+        for session in sessions:
+            conn.execute(
+                "INSERT INTO sessions(id, source, model, started_at, title) VALUES (?, ?, ?, ?, ?)",
+                (
+                    session["id"],
+                    session.get("source", "cli"),
+                    session.get("model", "test/model"),
+                    session.get("started_at", 1.0),
+                    session.get("title"),
+                ),
+            )
+            for message in session.get("messages", []):
+                conn.execute(
+                    "INSERT INTO messages(session_id, role, content, timestamp, active) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        session["id"],
+                        message["role"],
+                        message.get("content", ""),
+                        message.get("timestamp", session.get("started_at", 1.0)),
+                        message.get("active", 1),
+                    ),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return db_path
 
 
 def _git(repo, *args):
@@ -148,6 +233,11 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "profile_get",
         "profile_health",
         "profile_context_get",
+        "skills_list",
+        "skill_view",
+        "session_search",
+        "viking_search",
+        "viking_read",
         "workspace_open",
         "workspace_instructions_get",
         "workspace_context_status",
@@ -162,7 +252,12 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
 
     for name in public_tools:
         tool = metadata[name]
-        assert tool["cost_class"] == COST_CLASS_NO_MODEL
+        expected_cost_class = (
+            COST_CLASS_EXTERNAL_API_NO_MODEL
+            if name in {"viking_search", "viking_read"}
+            else COST_CLASS_NO_MODEL
+        )
+        assert tool["cost_class"] == expected_cost_class
         assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is True
         assert tool["mutates_state"] is False
@@ -174,6 +269,28 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is False
         assert tool["requires_context"] is True
+    for name in {"skills_list", "skill_view"}:
+        tool = metadata[name]
+        assert tool["cost_class"] == COST_CLASS_NO_MODEL
+        assert tool["llm_calls"] == 0
+        assert tool["enabled_by_default"] is True
+        assert tool["mutates_state"] is False
+        assert tool["requires_profile_ref"] is True
+        assert tool["requires_context_policy"] == "context.skills.read"
+    session_tool = metadata["session_search"]
+    assert session_tool["cost_class"] == COST_CLASS_NO_MODEL
+    assert session_tool["llm_calls"] == 0
+    assert session_tool["enabled_by_default"] is True
+    assert session_tool["mutates_state"] is False
+    assert session_tool["requires_profile_ref"] is True
+    assert session_tool["requires_context_policy"] == "context.sessions.search"
+    for name in {"viking_search", "viking_read"}:
+        tool = metadata[name]
+        assert tool["cost_class"] == COST_CLASS_EXTERNAL_API_NO_MODEL
+        assert tool["llm_calls"] == 0
+        assert tool["enabled_by_default"] is True
+        assert tool["mutates_state"] is False
+        assert tool["requires_context_policy"] == "profile_router.context.viking.read"
     assert metadata["workspace_diff"]["mutates_state"] is False
     for name in {"file_patch", "file_write", "terminal_run"}:
         assert metadata[name]["mutates_state"] is True
@@ -368,6 +485,8 @@ def test_profile_router_policy_is_deny_by_default_for_execution_groups(hermes_ho
     assert route_policy.allow_git_push is False
     assert route_policy.allow_deploy is False
     assert route_policy.allow_model_tools is False
+    assert route_policy.allow_context_skills_read is False
+    assert route_policy.allow_context_sessions_search is False
     assert route_policy.allowed_cost_classes == (COST_CLASS_NO_MODEL,)
     assert route_policy.terminal_execution_policy.enabled is False
     assert route_policy.terminal_execution_policy.allowed_commands == ()
@@ -1812,6 +1931,10 @@ def test_profiles_list_returns_policy_enabled_local_profile_refs_without_secret_
         "allow_model_tools": False,
         "allowed_cost_classes": [COST_CLASS_NO_MODEL],
     }
+    assert enabled_profile["policy"]["context"] == {
+        "skills": {"read": False},
+        "sessions": {"search": False},
+    }
     assert all("path" not in profile for profile in result["profiles"])
     assert all("has_env" not in profile for profile in result["profiles"])
     assert all("model" not in profile for profile in result["profiles"])
@@ -1866,6 +1989,618 @@ def test_profile_get_and_health_are_local_only_no_model_wrappers(hermes_home):
     assert missing["llm_calls"] == 0
 
 
+def test_phase8_context_skills_are_policy_gated_bounded_and_redacted(
+    hermes_home,
+    tmp_path,
+):
+    skill_dir = _write_skill(
+        hermes_home,
+        "main-bot",
+        "software-development/demo-skill",
+        """---
+name: demo-skill
+description: Demo skill for safe router context
+tags: [demo, context]
+required_environment_variables: [OPENAI_API_KEY]
+---
+# Demo Skill
+
+Use this safely from /Users/alice/private/project.
+OPENAI_API_KEY=sk-tes...7890
+""",
+        linked_files={
+            "references/guide.md": "# Guide\nPASSWORD=\"hunter2\"\nUse bounded context from /home/bob/private/notes.\n",
+            "references/binary.bin": b"\x00binary",
+            "templates/prompt.txt": "token: should-redact\n",
+            "references/large.md": "x" * (MAX_CONTEXT_FILE_BYTES + 1),
+        },
+    )
+    (skill_dir / "references" / ".hidden.md").write_text("hidden", encoding="utf-8")
+
+    _write_router_config(hermes_home)
+
+    denied = {
+        "skills_list": json.loads(skills_list("local:main-bot")),
+        "skill_view": json.loads(skill_view("local:main-bot", "demo-skill")),
+        "session_search": json.loads(session_search("local:main-bot", query="hello")),
+    }
+    assert denied["skills_list"]["error"]["code"] == "context_skills_read_not_allowed"
+    assert denied["skill_view"]["error"]["code"] == "context_skills_read_not_allowed"
+    assert denied["session_search"]["error"]["code"] == "context_sessions_search_not_allowed"
+    for result in denied.values():
+        assert result["ok"] is False
+        assert result["llm_calls"] == 0
+        assert str(hermes_home) not in json.dumps(result)
+
+    missing = json.loads(skills_list("local:missing"))
+    assert missing["ok"] is False
+    assert missing["error"]["code"] == "profile_not_found"
+    assert missing["llm_calls"] == 0
+
+    _write_router_config(
+        hermes_home,
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(hermes_home)],
+                "context": {
+                    "skills": {"read": True},
+                    "sessions": {"search": True},
+                },
+            }
+        },
+    )
+    policy = load_profile_router_policy()
+    route_policy = policy.get_profile_policy(parse_profile_ref("local:main-bot"))
+    assert route_policy.allow_context_skills_read is True
+    assert route_policy.allow_context_sessions_search is True
+
+    listed = json.loads(skills_list("local:main-bot"))
+    listed_dump = json.dumps(listed)
+    assert listed["ok"] is True
+    assert listed["profile_ref"] == "local:main-bot"
+    assert listed["cost_class"] == COST_CLASS_NO_MODEL
+    assert listed["llm_calls"] == 0
+    assert listed["audit"]["root_exposed"] is False
+    assert listed["total_count"] == 1
+    assert listed["skills"][0]["id"] == "software-development/demo-skill"
+    assert listed["skills"][0]["name"] == "demo-skill"
+    assert listed["skills"][0]["category"] == "software-development"
+    assert listed["skills"][0]["linked_files"]["references"] == [
+        "binary.bin",
+        "guide.md",
+        "large.md",
+    ]
+    assert str(hermes_home) not in listed_dump
+    assert "skill_dir" not in listed_dump
+    assert "OPENAI_API_KEY" not in listed_dump
+    assert "hunter2" not in listed_dump
+
+    viewed = json.loads(skill_view("local:main-bot", "demo-skill"))
+    viewed_dump = json.dumps(viewed)
+    assert viewed["ok"] is True
+    assert viewed["skill"]["id"] == "software-development/demo-skill"
+    assert viewed["file"]["path"] == "SKILL.md"
+    assert "Use this safely" in viewed["file"]["content"]
+    assert "sk-tes...7890" not in viewed_dump
+    assert "/Users/alice" not in viewed_dump
+    assert "private/project" not in viewed_dump
+    assert str(hermes_home) not in viewed_dump
+    assert "skill_dir" not in viewed_dump
+    assert viewed["audit"] == {
+        "tool": "skill_view",
+        "llm_calls": 0,
+        "root_exposed": False,
+    }
+
+    support = json.loads(
+        skill_view(
+            "local:main-bot",
+            "software-development/demo-skill",
+            file_path="references/guide.md",
+        )
+    )
+    support_dump = json.dumps(support)
+    assert support["ok"] is True
+    assert support["file"]["path"] == "references/guide.md"
+    assert "Use bounded context" in support["file"]["content"]
+    assert "hunter2" not in support_dump
+    assert "/home/bob" not in support_dump
+    assert "private/notes" not in support_dump
+    assert str(hermes_home) not in support_dump
+
+    for unsafe_path in (
+        "../secret.txt",
+        "/etc/passwd",
+        "references/../SKILL.md",
+        "references/.hidden.md",
+        "secrets/token.txt",
+    ):
+        result = json.loads(
+            skill_view("local:main-bot", "demo-skill", file_path=unsafe_path)
+        )
+        assert result["ok"] is False
+        assert result["llm_calls"] == 0
+        assert result["error"]["code"] in {
+            "invalid_skill_file_path",
+            "secret_path_denied",
+        }
+        assert str(hermes_home) not in json.dumps(result)
+
+    bad_name = json.loads(skill_view("local:main-bot", "software-development/../demo-skill"))
+    assert bad_name["ok"] is False
+    assert bad_name["error"]["code"] == "invalid_skill_name"
+    assert str(hermes_home) not in json.dumps(bad_name)
+
+    binary = json.loads(
+        skill_view("local:main-bot", "demo-skill", file_path="references/binary.bin")
+    )
+    assert binary["ok"] is False
+    assert binary["error"]["code"] == "binary_file_not_supported"
+
+    large = json.loads(
+        skill_view("local:main-bot", "demo-skill", file_path="references/large.md")
+    )
+    assert large["ok"] is False
+    assert large["error"]["code"] == "file_too_large"
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    try:
+        (skill_dir / "references" / "escape.md").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        escaped = json.loads(
+            skill_view("local:main-bot", "demo-skill", file_path="references/escape.md")
+        )
+        assert escaped["ok"] is False
+        assert escaped["error"]["code"] == "symlink_traversal_denied"
+        assert str(outside) not in json.dumps(escaped)
+
+    outside_skill = tmp_path / "outside-skill"
+    outside_skill.mkdir()
+    (outside_skill / "SKILL.md").write_text("---\nname: linked-skill\n---\n", encoding="utf-8")
+    linked_skill = hermes_home / "profiles" / "main-bot" / "skills" / "linked-skill"
+    try:
+        linked_skill.symlink_to(outside_skill, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        symlinked = json.loads(skill_view("local:main-bot", "linked-skill"))
+        assert symlinked["ok"] is False
+        assert symlinked["error"]["code"] == "profile_skill_symlink_denied"
+
+    session = json.loads(session_search("local:main-bot", query="hello"))
+    assert session["ok"] is True
+    assert session["count"] == 0
+    assert session["state_db_present"] is False
+    assert session["cost_class"] == COST_CLASS_NO_MODEL
+    assert session["llm_calls"] == 0
+
+
+def test_phase8_session_search_is_policy_gated_read_only_bounded_and_redacted(
+    hermes_home,
+    tmp_path,
+):
+    _write_session_db(
+        hermes_home,
+        "main-bot",
+        [
+            {
+                "id": f"session-alpha-{hermes_home}-TOKEN=supersecret",
+                "source": "telegram",
+                "model": "openai/test",
+                "started_at": 10.0,
+                "title": "Deploy debug",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"please deploy from {hermes_home} and /Users/alice/private/project with OPENAI_API_KEY=sk-tes...7890",
+                        "timestamp": 11.0,
+                    },
+                    {
+                        "role": "tool",
+                        "content": "deploy raw tool output should never be returned",
+                        "timestamp": 12.0,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "deploy summary PASSWORD=hunter2 and no full dump",
+                        "timestamp": 13.0,
+                    },
+                ],
+            },
+            {
+                "id": "session-beta",
+                "source": "cli",
+                "model": "anthropic/test",
+                "started_at": 20.0,
+                "title": "Other work",
+                "messages": [
+                    {"role": "user", "content": "deploy second match", "timestamp": 21.0},
+                    {"role": "assistant", "content": "deploy second answer", "timestamp": 22.0},
+                ],
+            },
+        ],
+    )
+    _write_session_db(
+        hermes_home,
+        "maker",
+        [
+            {
+                "id": "maker-session",
+                "source": "cli",
+                "started_at": 30.0,
+                "title": "Wrong profile",
+                "messages": [
+                    {"role": "user", "content": "deploy maker-only leak", "timestamp": 31.0},
+                ],
+            }
+        ],
+    )
+
+    _write_router_config(hermes_home)
+    denied = json.loads(session_search("local:main-bot", query="deploy"))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "context_sessions_search_not_allowed"
+    assert denied["llm_calls"] == 0
+    assert str(hermes_home) not in json.dumps(denied)
+
+    missing = json.loads(session_search("local:missing", query="deploy"))
+    assert missing["ok"] is False
+    assert missing["error"]["code"] == "profile_not_found"
+    assert missing["llm_calls"] == 0
+
+    _write_router_config(
+        hermes_home,
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(hermes_home)],
+                "context": {"sessions": {"search": True}},
+            },
+        },
+    )
+    first_page = json.loads(session_search("local:main-bot", query="deploy", limit=1, sort="newest"))
+    first_dump = json.dumps(first_page)
+    assert first_page["ok"] is True
+    assert first_page["profile_ref"] == "local:main-bot"
+    assert first_page["cost_class"] == COST_CLASS_NO_MODEL
+    assert first_page["llm_calls"] == 0
+    assert first_page["state_db_present"] is True
+    assert first_page["query_supplied"] is True
+    assert first_page["count"] == 1
+    assert first_page["limit"] == 1
+    assert first_page["truncated"] is True
+    assert first_page["audit"] == {
+        "tool": "session_search",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "state_db_read_only": True,
+        "roles": ["user", "assistant"],
+    }
+    assert first_page["results"][0]["role"] in {"user", "assistant"}
+    assert first_page["results"][0]["session"]["title"] == "Other work"
+    assert "session_id" not in first_page["results"][0]
+    assert len(first_page["results"][0]["session_id_hash"]) == 16
+    assert len(first_page["results"][0]["snippet"]) <= MAX_SESSION_SNIPPET_CHARS
+    assert "content" not in first_page["results"][0]
+    assert "messages" not in first_dump
+    assert "deploy raw tool output" not in first_dump
+    assert "maker-only leak" not in first_dump
+    assert "sk-test-secret" not in first_dump
+    assert "hunter2" not in first_dump
+    assert str(hermes_home) not in first_dump
+    assert "TOKEN=supersecret" not in first_dump
+
+    all_results = json.loads(session_search("local:main-bot", query="deploy", limit=5, sort="oldest"))
+    all_dump = json.dumps(all_results)
+    assert all_results["ok"] is True
+    assert all_results["count"] == 4
+    assert [item["role"] for item in all_results["results"]] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert "tool" not in {item["role"] for item in all_results["results"]}
+    assert {item["session"]["title"] for item in all_results["results"]} == {
+        "Deploy debug",
+        "Other work",
+    }
+    assert all(len(item["session_id_hash"]) == 16 for item in all_results["results"])
+    assert all("session_id" not in item for item in all_results["results"])
+    assert str(hermes_home) not in all_dump
+    assert "/Users/alice" not in all_dump
+    assert "private/project" not in all_dump
+    assert "TOKEN=supersecret" not in all_dump
+    assert "OPENAI_API_KEY=***" not in all_dump
+    assert "PASSWORD=hunter2" not in all_dump
+
+    recent = json.loads(session_search("local:main-bot", query=None, limit=2))
+    assert recent["ok"] is True
+    assert recent["query_supplied"] is False
+    assert recent["count"] == 2
+
+    invalid = json.loads(session_search("local:main-bot", query="deploy", sort="random"))
+    assert invalid["ok"] is False
+    assert invalid["error"]["code"] == "invalid_session_search_sort"
+    assert invalid["llm_calls"] == 0
+
+    outside = tmp_path / "outside-state.db"
+    outside.write_text("not sqlite", encoding="utf-8")
+    state_db = hermes_home / "profiles" / "main-bot" / "state.db"
+    state_db.unlink()
+    try:
+        state_db.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        symlinked = json.loads(session_search("local:main-bot", query="deploy"))
+        assert symlinked["ok"] is False
+        assert symlinked["error"]["code"] == "profile_session_db_symlink_denied"
+        assert str(outside) not in json.dumps(symlinked)
+
+
+def test_phase8_session_search_uses_fts_index_when_available(hermes_home):
+    db_path = _write_session_db(
+        hermes_home,
+        "main-bot",
+        [
+            {
+                "id": "fts-session",
+                "source": "cli",
+                "started_at": 40.0,
+                "title": "FTS backed",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "visible content without the synthetic index marker",
+                        "timestamp": 41.0,
+                    }
+                ],
+            }
+        ],
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        try:
+            conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(content)")
+        except sqlite3.OperationalError as exc:
+            pytest.skip(f"sqlite fts5 unavailable: {exc}")
+        conn.execute(
+            "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+            (1, "ftsmarker-only"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _write_router_config(
+        hermes_home,
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(hermes_home)],
+                "context": {"sessions": {"search": True}},
+            },
+        },
+    )
+
+    result = json.loads(session_search("local:main-bot", query="ftsmarker-only"))
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert result["results"][0]["session"]["title"] == "FTS backed"
+    assert "visible content" in result["results"][0]["snippet"]
+    assert result["llm_calls"] == 0
+
+
+def test_phase8_openviking_search_is_policy_gated_local_bounded_and_compatible(
+    hermes_home,
+    monkeypatch,
+):
+    _write_router_config(hermes_home)
+    denied = json.loads(viking_search("hello SECRET_TOKEN=should-not-log"))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "context_viking_read_not_allowed"
+    assert denied["cost_class"] == COST_CLASS_EXTERNAL_API_NO_MODEL
+    assert denied["llm_calls"] == 0
+    assert "should-not-log" not in json.dumps(denied)
+
+    _write_router_config(
+        hermes_home,
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(hermes_home)],
+                "context": {"viking": {"read": True}},
+            },
+        },
+    )
+    profile_only = json.loads(viking_search("hello"))
+    assert profile_only["ok"] is False
+    assert profile_only["error"]["code"] == "context_viking_read_not_allowed"
+
+    _write_router_config(
+        hermes_home,
+        context={"viking": {"read": True}},
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(hermes_home)],
+            },
+        },
+    )
+    monkeypatch.delenv("OPENVIKING_ENDPOINT", raising=False)
+    unconfigured = json.loads(viking_search("hello"))
+    assert unconfigured["ok"] is False
+    assert unconfigured["error"]["code"] == "openviking_endpoint_unconfigured"
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://example.com")
+    public_endpoint = json.loads(viking_search("hello"))
+    public_dump = json.dumps(public_endpoint)
+    assert public_endpoint["ok"] is False
+    assert public_endpoint["error"]["code"] == "openviking_endpoint_not_private"
+    assert "example.com" not in public_dump
+
+    calls = []
+
+    def fake_request(method, path, *, params=None, payload=None):
+        params = params or {}
+        payload = payload or {}
+        calls.append({"method": method, "path": path, "params": params, "payload": payload})
+        assert path == "/api/v1/search/find"
+        if "limit" in payload:
+            raise ProfileRouterError("openviking_request_failed", "limit not accepted")
+        assert payload["top_k"] == 2
+        return {
+            "result": {
+                "memories": [
+                    {
+                        "uri": "viking://user/hermes/memories/mem_1.md",
+                        "score": 0.91,
+                        "abstract": "Memory OPENAI_API_KEY=sk-secret-value at /Users/arturo/secrets",
+                    }
+                ],
+                "resources": [
+                    {
+                        "uri": "viking://resources/.env",
+                        "score": 0.99,
+                        "abstract": "must be skipped",
+                    }
+                ],
+                "total": 2,
+            }
+        }
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1933")
+    monkeypatch.setattr(mcp_profile_router, "_openviking_request_json", fake_request)
+    result = json.loads(
+        viking_search(
+            "find routing SECRET_TOKEN=should-not-log",
+            mode="deep",
+            scope="viking://user/hermes",
+            limit=2,
+        )
+    )
+    dumped = json.dumps(result)
+    assert result["ok"] is True
+    assert result["cost_class"] == COST_CLASS_EXTERNAL_API_NO_MODEL
+    assert result["llm_calls"] == 0
+    assert result["mode"] == "deep"
+    assert result["scope"] == "viking://user/hermes"
+    assert result["request_shape"] == "top_k_fallback"
+    assert result["policy_scope"] == {
+        "type": "global",
+        "authorized_profiles_count": 1,
+        "profile_refs_exposed": False,
+    }
+    assert result["endpoint"] == {
+        "server_configured": True,
+        "local_private": True,
+        "url_exposed": False,
+    }
+    assert result["count"] == 1
+    assert result["skipped"] >= 1
+    assert result["results"][0]["uri"] == "viking://user/hermes/memories/mem_1.md"
+    assert result["audit"] == {
+        "tool": "viking_search",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "endpoint_local_private": True,
+        "raw_query_logged": False,
+        "url_exposed": False,
+    }
+    assert calls[0]["payload"]["limit"] == 2
+    assert calls[1]["payload"]["top_k"] == 2
+    assert "should-not-log" not in dumped
+    assert "sk-secret-value" not in dumped
+    assert "/Users/arturo" not in dumped
+    assert "127.0.0.1" not in dumped
+
+
+def test_phase8_openviking_read_validates_uri_and_returns_bounded_redacted_content(
+    hermes_home,
+    monkeypatch,
+):
+    _write_router_config(
+        hermes_home,
+        context={"viking": {"read": True}},
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(hermes_home)],
+            },
+        },
+    )
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1933")
+    calls = []
+
+    def fake_request(method, path, *, params=None, payload=None):
+        params = params or {}
+        payload = payload or {}
+        calls.append({"method": method, "path": path, "params": params, "payload": payload})
+        if path == "/api/v1/fs/stat":
+            return {"result": {"isDir": False}}
+        if path == "/api/v1/content/read":
+            return {
+                "result": {
+                    "content": (
+                        "TOKEN=supersecret /Users/arturo/root "
+                        + "x" * (MAX_VIKING_OVERVIEW_CHARS + 200)
+                    )
+                }
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(mcp_profile_router, "_openviking_request_json", fake_request)
+    result = json.loads(viking_read("viking://user/hermes/memories/mem_1.md", level="overview"))
+    dumped = json.dumps(result)
+    assert result["ok"] is True
+    assert result["cost_class"] == COST_CLASS_EXTERNAL_API_NO_MODEL
+    assert result["llm_calls"] == 0
+    assert result["uri"] == "viking://user/hermes/memories/mem_1.md"
+    assert result["resolved_uri"] == "viking://user/hermes/memories/mem_1.md"
+    assert result["fallback"] == "content/read"
+    assert result["truncated"] is True
+    assert result["max_chars"] == MAX_VIKING_OVERVIEW_CHARS
+    assert len(result["content"]) <= MAX_VIKING_OVERVIEW_CHARS
+    assert calls == [
+        {
+            "method": "GET",
+            "path": "/api/v1/fs/stat",
+            "params": {"uri": "viking://user/hermes/memories/mem_1.md"},
+            "payload": {},
+        },
+        {
+            "method": "GET",
+            "path": "/api/v1/content/read",
+            "params": {"uri": "viking://user/hermes/memories/mem_1.md"},
+            "payload": {},
+        },
+    ]
+    assert "supersecret" not in dumped
+    assert "/Users/arturo" not in dumped
+    assert "localhost" not in dumped
+
+    call_count = len(calls)
+    for bad_uri in (
+        "http://example.com/resource",
+        "viking://",
+        "viking://resources/.env",
+        "viking://resources/../secret",
+        "viking://resources/%2e%2e/public",
+        "viking://resources/%2ehidden/file",
+        "viking://resources/foo%2Fbar",
+        "viking://resources/Users/arturo",
+    ):
+        invalid = json.loads(viking_read(bad_uri, level="overview"))
+        assert invalid["ok"] is False
+        assert invalid["llm_calls"] == 0
+    assert len(calls) == call_count
+
+
 def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
     hermes_home,
     monkeypatch,
@@ -1882,6 +2617,11 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         "profile_get",
         "profile_health",
         "profile_context_get",
+        "skills_list",
+        "skill_view",
+        "session_search",
+        "viking_search",
+        "viking_read",
         "workspace_open",
         "workspace_instructions_get",
         "workspace_context_status",
@@ -1907,6 +2647,11 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
     assert "file_search" not in tools
     assert "file_patch" not in tools
     assert "file_write" not in tools
+    assert "skills_list" in tools
+    assert "skill_view" in tools
+    assert "session_search" in tools
+    assert "viking_search" in tools
+    assert "viking_read" in tools
 
     listed = json.loads(tools["profiles_list"].fn())
     assert listed["ok"] is True
@@ -2011,6 +2756,11 @@ def test_profile_router_token_store_hashes_verifies_revokes_and_rotates(tmp_path
     assert raw_token.startswith("hpr_prt_")
     assert record["token_id"].startswith("prt_")
     assert record["scopes"] == list(DEFAULT_PROFILE_ROUTER_SCOPES)
+    assert VIKING_PROFILE_ROUTER_SCOPE not in record["scopes"]
+    assert store.verify_token(raw_token, required_scopes=[VIKING_PROFILE_ROUTER_SCOPE]) is None
+    viking_token = store.create_token(scopes=[VIKING_PROFILE_ROUTER_SCOPE], name="viking")
+    assert viking_token["record"]["scopes"] == [VIKING_PROFILE_ROUTER_SCOPE]
+    assert store.verify_token(viking_token["token"], required_scopes=[VIKING_PROFILE_ROUTER_SCOPE]) is not None
     assert raw_token not in (tmp_path / "tokens.json").read_text(encoding="utf-8")
     assert "token_hash_prefix" in record
 
@@ -2181,3 +2931,8 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     assert "terminal_run" not in tools
     assert "file_patch" not in tools
     assert "file_write" not in tools
+    assert "skills_list" in tools
+    assert "skill_view" in tools
+    assert "session_search" in tools
+    assert "viking_search" in tools
+    assert "viking_read" in tools

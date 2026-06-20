@@ -13,16 +13,21 @@ from __future__ import annotations
 import difflib
 import fnmatch
 import hashlib
+import ipaddress
 import json
 import os
 import posixpath
 import re
 import shlex
+import sqlite3
 import subprocess
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NoReturn
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlencode, urlparse
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from hermes_cli.profiles import (
@@ -47,6 +52,9 @@ DEFAULT_ALLOWED_HOSTS = frozenset({"local", "mac"})
 LOCAL_HOST = "local"
 PROFILE_ROUTER_CONFIG_KEY = "profile_router"
 PROFILE_ROUTER_TOOL_GROUP = "profile_router"
+CONTEXT_SKILLS_READ_POLICY = "context.skills.read"
+CONTEXT_SESSIONS_SEARCH_POLICY = "context.sessions.search"
+CONTEXT_VIKING_READ_POLICY = "profile_router.context.viking.read"
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "develop", "production")
 DEFAULT_ALLOWED_COST_CLASSES = (COST_CLASS_NO_MODEL,)
 SECRET_PATH_NAMES = frozenset(
@@ -82,6 +90,11 @@ SENSITIVE_PATH_RE = re.compile(
     r"(api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|"
     r"credential|credentials|passwd|password|private[_-]?key|secret|secrets|token|tokens)"
     r"($|[._-])"
+)
+HOST_ROOT_PATH_RE = re.compile(
+    r"(?i)(/Users/[^\s,;'\"<>]+|/home/[^\s,;'\"<>]+|"
+    r"/private/var/[^\s,;'\"<>]+|/var/folders/[^\s,;'\"<>]+|"
+    r"/etc/[^\s,;'\"<>]+|[A-Z]:[\\/][^\s,;'\"<>]+)"
 )
 MAX_FILE_READ_LINES = 200
 MAX_FILE_READ_CHARS = 60_000
@@ -125,6 +138,26 @@ ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
 MAX_CONTEXT_FILE_CHARS = 12_000
 MAX_CONTEXT_FILE_BYTES = 128_000
 MAX_CONTEXT_HASH_BYTES = 1_000_000
+MAX_SKILLS_LIST_RESULTS = 100
+MAX_SKILL_LINKED_FILES_PER_DIR = 50
+MAX_SKILL_DESCRIPTION_CHARS = 500
+MAX_SESSION_SEARCH_RESULTS = 10
+MAX_SESSION_SEARCH_QUERY_CHARS = 200
+MAX_SESSION_SNIPPET_CHARS = 500
+MAX_VIKING_SEARCH_RESULTS = 10
+MAX_VIKING_QUERY_CHARS = 500
+MAX_VIKING_URI_CHARS = 512
+MAX_VIKING_ABSTRACT_CHARS = 1_200
+MAX_VIKING_OVERVIEW_CHARS = 4_000
+MAX_VIKING_FULL_CHARS = 8_000
+MAX_VIKING_HTTP_RESPONSE_BYTES = 256_000
+OPENVIKING_REQUEST_TIMEOUT_SECONDS = 10.0
+OPENVIKING_ALLOWED_SEARCH_MODES = frozenset({"auto", "fast", "deep"})
+OPENVIKING_ALLOWED_READ_LEVELS = frozenset({"abstract", "overview", "full"})
+OPENVIKING_PSEUDO_SUMMARY_FILES = frozenset(
+    {".abstract.md", ".overview.md", ".read.md", ".full.md"}
+)
+SAFE_SKILL_SUPPORT_DIRS = ("references", "templates", "scripts", "assets")
 PROFILE_CONTEXT_FILES = ("SOUL.md",)
 WORKSPACE_INSTRUCTION_FILES = (
     "AGENTS.md",
@@ -274,6 +307,8 @@ class ProfileRoutePolicy:
     allow_git_push: bool = False
     allow_deploy: bool = False
     allow_model_tools: bool = False
+    allow_context_skills_read: bool = False
+    allow_context_sessions_search: bool = False
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
     allowed_cost_classes: tuple[str, ...] = DEFAULT_ALLOWED_COST_CLASSES
     terminal_execution_policy: TerminalExecutionPolicy = field(
@@ -292,6 +327,7 @@ class ProfileRouterPolicy:
 
     hosts: Mapping[str, HostRoutePolicy]
     profiles: Mapping[str, ProfileRoutePolicy]
+    allow_global_viking_read: bool = False
 
     def is_profile_exposed(self, policy: ProfileRoutePolicy) -> bool:
         host_policy = self.hosts.get(policy.ref.host)
@@ -639,6 +675,13 @@ def _parse_profile_policy(
     cron = _policy_mapping(policy.get("cron"), f"profiles.{ref.value}.cron")
     git = _policy_mapping(policy.get("git"), f"profiles.{ref.value}.git")
     deploy = _policy_mapping(policy.get("deploy"), f"profiles.{ref.value}.deploy")
+    context = _policy_mapping(policy.get("context"), f"profiles.{ref.value}.context")
+    context_skills = _policy_mapping(
+        context.get("skills"), f"profiles.{ref.value}.context.skills"
+    )
+    context_sessions = _policy_mapping(
+        context.get("sessions"), f"profiles.{ref.value}.context.sessions"
+    )
     model_tools = _policy_mapping(
         policy.get("model_tools", policy.get("model_policy")),
         f"profiles.{ref.value}.model_tools",
@@ -690,6 +733,13 @@ def _parse_profile_policy(
             deploy.get("enabled"), f"profiles.{ref.value}.deploy.enabled"
         ),
         allow_model_tools=allow_model_tools,
+        allow_context_skills_read=_policy_bool(
+            context_skills.get("read"), f"profiles.{ref.value}.context.skills.read"
+        ),
+        allow_context_sessions_search=_policy_bool(
+            context_sessions.get("search"),
+            f"profiles.{ref.value}.context.sessions.search",
+        ),
         protected_branches=_policy_string_tuple(
             git.get("protected_branches"),
             f"profiles.{ref.value}.git.protected_branches",
@@ -720,6 +770,16 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
     raw_profiles = _policy_mapping(
         section.get("profiles"), f"{PROFILE_ROUTER_CONFIG_KEY}.profiles"
     )
+    global_context = _policy_mapping(
+        section.get("context"), f"{PROFILE_ROUTER_CONFIG_KEY}.context"
+    )
+    global_context_viking = _policy_mapping(
+        global_context.get("viking"), f"{PROFILE_ROUTER_CONFIG_KEY}.context.viking"
+    )
+    allow_global_viking_read = _policy_bool(
+        global_context_viking.get("read"),
+        f"{PROFILE_ROUTER_CONFIG_KEY}.context.viking.read",
+    )
 
     hosts = {
         host: _parse_host_policy(host, host_policy)
@@ -731,7 +791,11 @@ def load_profile_router_policy(config: Mapping[str, Any] | None = None) -> Profi
         )
         for profile_ref, profile_policy in raw_profiles.items()
     }
-    return ProfileRouterPolicy(hosts=hosts, profiles=profiles)
+    return ProfileRouterPolicy(
+        hosts=hosts,
+        profiles=profiles,
+        allow_global_viking_read=allow_global_viking_read,
+    )
 
 
 @dataclass(frozen=True)
@@ -745,6 +809,8 @@ class RouterToolMetadata:
     enabled_by_default: bool = True
     mutates_state: bool = False
     requires_context: bool = False
+    requires_profile_ref: bool = False
+    requires_context_policy: str | None = None
     tool_group: str = "profile_router"
 
 
@@ -800,18 +866,78 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         description="Get non-secret metadata for one local Hermes profile.",
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
+        requires_profile_ref=True,
     ),
     "profile_health": RouterToolMetadata(
         name="profile_health",
         description="Report read-only local profile health without executing tools.",
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
+        requires_profile_ref=True,
     ),
     "profile_context_get": RouterToolMetadata(
         name="profile_context_get",
         description="Load bounded no-model profile SOUL/policy context for a profile.",
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
+        requires_profile_ref=True,
+    ),
+    "skills_list": RouterToolMetadata(
+        name="skills_list",
+        description=(
+            "List bounded, sanitized profile skill metadata after context.skills.read policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=True,
+        requires_profile_ref=True,
+        requires_context_policy=CONTEXT_SKILLS_READ_POLICY,
+    ),
+    "skill_view": RouterToolMetadata(
+        name="skill_view",
+        description=(
+            "Read bounded, sanitized profile SKILL.md or safe supporting files "
+            "after context.skills.read policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=True,
+        requires_profile_ref=True,
+        requires_context_policy=CONTEXT_SKILLS_READ_POLICY,
+    ),
+    "session_search": RouterToolMetadata(
+        name="session_search",
+        description=(
+            "Search bounded, sanitized user/assistant snippets in a selected "
+            "profile state.db after context.sessions.search policy."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=True,
+        requires_profile_ref=True,
+        requires_context_policy=CONTEXT_SESSIONS_SEARCH_POLICY,
+    ),
+    "viking_search": RouterToolMetadata(
+        name="viking_search",
+        description=(
+            "Search the server-configured local/private OpenViking memory surface "
+            "after explicit context.viking.read policy; no model calls."
+        ),
+        cost_class=COST_CLASS_EXTERNAL_API_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=True,
+        requires_context_policy=CONTEXT_VIKING_READ_POLICY,
+    ),
+    "viking_read": RouterToolMetadata(
+        name="viking_read",
+        description=(
+            "Read bounded content from the server-configured local/private "
+            "OpenViking memory surface after context.viking.read policy."
+        ),
+        cost_class=COST_CLASS_EXTERNAL_API_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=True,
+        requires_context_policy=CONTEXT_VIKING_READ_POLICY,
     ),
     "workspace_instructions_get": RouterToolMetadata(
         name="workspace_instructions_get",
@@ -971,6 +1097,21 @@ class WorkspaceMetadata:
 
     def to_public_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ProfileSkillRecord:
+    """Internal profile skill metadata with host paths kept server-side only."""
+
+    skill_id: str
+    name: str
+    category: str
+    description: str
+    tags: tuple[str, ...]
+    skill_dir: Path
+    skill_file: Path
+    linked_files: Mapping[str, tuple[str, ...]]
+    content_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -1373,6 +1514,36 @@ def _require_local_profile_policy(profile_ref: str) -> tuple[ProfileRef, Profile
     return ref, route_policy, router_policy
 
 
+def _resolve_local_profile_dir(ref: ProfileRef) -> Path:
+    """Resolve a local profile directory without allowing symlink escapes."""
+
+    profile_dir_path = get_profile_dir(ref.profile)
+    if profile_dir_path.is_symlink():
+        raise ProfileRouterError(
+            "profile_symlink_denied",
+            f"Profile directory may not be a symlink: {ref.value}",
+        )
+    if ref.profile != "default" and profile_dir_path.parent.is_symlink():
+        raise ProfileRouterError(
+            "profile_symlink_denied",
+            f"Profile parent directory may not be a symlink: {ref.value}",
+        )
+    try:
+        profile_dir = profile_dir_path.resolve(strict=True)
+    except OSError as exc:
+        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}") from exc
+    if not profile_dir.is_dir():
+        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}")
+    if ref.profile != "default":
+        profile_parent = profile_dir_path.parent.resolve(strict=True)
+        if not _path_is_relative_to(profile_dir, profile_parent):
+            raise ProfileRouterError(
+                "profile_symlink_denied",
+                f"Profile directory escapes profiles root: {ref.value}",
+            )
+    return profile_dir
+
+
 def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: ProfileRouterPolicy) -> dict:
     return {
         "enabled": router_policy.is_profile_exposed(route_policy),
@@ -1386,6 +1557,10 @@ def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: Prof
             "cron": route_policy.allow_cron,
             "git_push": route_policy.allow_git_push,
             "deploy": route_policy.allow_deploy,
+        },
+        "context": {
+            "skills": {"read": route_policy.allow_context_skills_read},
+            "sessions": {"search": route_policy.allow_context_sessions_search},
         },
         "messaging_recipients_configured": bool(route_policy.messaging_allowed_recipients),
         "terminal_execution_policy": {
@@ -1414,30 +1589,7 @@ def build_profile_context(profile_ref: str) -> dict:
 
     assert_default_tools_are_no_model()
     ref, route_policy, router_policy = _require_local_profile_policy(profile_ref)
-    profile_dir_path = get_profile_dir(ref.profile)
-    if profile_dir_path.is_symlink():
-        raise ProfileRouterError(
-            "profile_symlink_denied",
-            f"Profile directory may not be a symlink: {ref.value}",
-        )
-    if ref.profile != "default" and profile_dir_path.parent.is_symlink():
-        raise ProfileRouterError(
-            "profile_symlink_denied",
-            f"Profile parent directory may not be a symlink: {ref.value}",
-        )
-    try:
-        profile_dir = profile_dir_path.resolve(strict=True)
-    except OSError as exc:
-        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}") from exc
-    if not profile_dir.is_dir():
-        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}")
-    if ref.profile != "default":
-        profile_parent = profile_dir_path.parent.resolve(strict=True)
-        if not _path_is_relative_to(profile_dir, profile_parent):
-            raise ProfileRouterError(
-                "profile_symlink_denied",
-                f"Profile directory escapes profiles root: {ref.value}",
-            )
+    profile_dir = _resolve_local_profile_dir(ref)
     policy_context = _public_policy_context(route_policy, router_policy)
 
     files: list[dict] = []
@@ -3383,6 +3535,10 @@ def _safe_profile_summary(
                 "git_push": route_policy.allow_git_push,
                 "deploy": route_policy.allow_deploy,
             },
+            "context": {
+                "skills": {"read": route_policy.allow_context_skills_read},
+                "sessions": {"search": route_policy.allow_context_sessions_search},
+            },
             "messaging_recipients_configured": bool(
                 route_policy.messaging_allowed_recipients
             ),
@@ -3457,6 +3613,1241 @@ def _tool_error(tool_name: str, exc: ProfileRouterError) -> str:
             "error": {"code": exc.code, "message": exc.message},
         },
     )
+
+
+def _require_profile_context_policy(
+    profile_ref: str,
+    policy_name: str,
+) -> tuple[ProfileRef, ProfileRoutePolicy, ProfileRouterPolicy]:
+    """Require a dedicated deny-by-default context permission for a profile."""
+
+    ref, route_policy, router_policy = _require_local_profile_policy(profile_ref)
+    if policy_name == CONTEXT_SKILLS_READ_POLICY:
+        allowed = route_policy.allow_context_skills_read
+        error_code = "context_skills_read_not_allowed"
+    elif policy_name == CONTEXT_SESSIONS_SEARCH_POLICY:
+        allowed = route_policy.allow_context_sessions_search
+        error_code = "context_sessions_search_not_allowed"
+    else:
+        raise ProfileRouterError("invalid_context_policy", "Unknown context policy")
+    if not allowed:
+        raise ProfileRouterError(
+            error_code,
+            f"{policy_name} is disabled by profile_router policy: {ref.value}",
+        )
+    return ref, route_policy, router_policy
+
+
+def _is_unsafe_relative_context_path(path: str) -> bool:
+    if not isinstance(path, str):
+        return True
+    text = path.strip()
+    if not text or "\x00" in text or "\\" in text or text.startswith("/"):
+        return True
+    raw_parts = text.split("/")
+    if any(part in {"", ".", ".."} or part.startswith(".") for part in raw_parts):
+        return True
+    normalized = posixpath.normpath(text)
+    if normalized in {"", "."} or normalized.startswith("../"):
+        return True
+    parts = [part for part in normalized.split("/") if part]
+    return any(part in {".", ".."} or part.startswith(".") for part in parts)
+
+
+def _normalize_skill_lookup_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise ProfileRouterError("invalid_skill_name", "skill name must be a string")
+    text = name.strip()
+    if len(text) > 160 or _is_unsafe_relative_context_path(text) or ":" in text:
+        raise ProfileRouterError("invalid_skill_name", "skill name must be a safe relative skill name")
+    normalized = posixpath.normpath(text)
+    if _is_secret_path(normalized):
+        raise ProfileRouterError("secret_path_denied", "Skill name is blocked by the secret denylist")
+    return normalized
+
+
+def _normalize_skill_file_path(file_path: str) -> str:
+    if not isinstance(file_path, str):
+        raise ProfileRouterError("invalid_skill_file_path", "file_path must be a string")
+    text = file_path.strip()
+    if len(text) > 240 or _is_unsafe_relative_context_path(text):
+        raise ProfileRouterError("invalid_skill_file_path", "file_path must be a safe relative path")
+    normalized = posixpath.normpath(text)
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 2 or parts[0] not in SAFE_SKILL_SUPPORT_DIRS:
+        raise ProfileRouterError(
+            "invalid_skill_file_path",
+            "skill supporting files must live under references/, templates/, scripts/, or assets/",
+        )
+    if _is_secret_path(normalized):
+        raise ProfileRouterError(
+            "secret_path_denied",
+            "Skill supporting file path is blocked by the secret denylist",
+        )
+    return normalized
+
+
+def _yaml_scalar_text(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'\"', "'"}:
+        return text[1:-1]
+    return text
+
+
+def _yaml_inline_list(value: str) -> list[str]:
+    text = value.strip()
+    if not (text.startswith("[") and text.endswith("]")):
+        return []
+    items: list[str] = []
+    for raw_item in text[1:-1].split(","):
+        item = _yaml_scalar_text(raw_item)
+        if item:
+            items.append(item)
+    return items
+
+
+def _parse_skill_frontmatter(text: str) -> dict:
+    if not text.startswith("---"):
+        return {}
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    frontmatter: list[str] = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        frontmatter.append(line)
+    parsed: dict[str, Any] = {}
+    collecting_list: str | None = None
+    for line in frontmatter:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if collecting_list and stripped.startswith("-"):
+            item = _yaml_scalar_text(stripped[1:].strip())
+            if item:
+                parsed.setdefault(collecting_list, []).append(item)
+            continue
+        collecting_list = None
+        if ":" not in line or line.startswith((" ", "\t")):
+            continue
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        value = raw_value.strip()
+        if key in {"name", "description"}:
+            parsed[key] = _yaml_scalar_text(value)
+        elif key == "tags":
+            if value:
+                parsed[key] = _yaml_inline_list(value)
+            else:
+                parsed[key] = []
+                collecting_list = key
+    return parsed
+
+
+def _safe_skill_display_name(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    if (
+        not text
+        or len(text) > 120
+        or ":" in text
+        or "/" in text
+        or "\\" in text
+        or text.startswith(".")
+        or "\x00" in text
+        or _is_secret_path(text)
+    ):
+        return fallback
+    return text
+
+
+def _safe_skill_tags(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raw_tags = [value]
+    elif isinstance(value, IterableABC) and not isinstance(value, (bytes, MappingABC)):
+        raw_tags = list(value)
+    else:
+        raw_tags = []
+    tags: list[str] = []
+    for raw_tag in raw_tags:
+        tag = str(raw_tag or "").strip()
+        if not tag or len(tag) > 80 or "/" in tag or "\\" in tag or tag.startswith("."):
+            continue
+        if _is_secret_path(tag):
+            continue
+        if tag not in tags:
+            tags.append(tag)
+        if len(tags) >= 20:
+            break
+    return tuple(tags)
+
+
+def _read_skill_text_file(
+    path: Path,
+    public_path: str,
+    *,
+    reject_oversized: bool = False,
+) -> dict:
+    if _is_secret_path(public_path):
+        raise ProfileRouterError(
+            "secret_path_denied",
+            "Skill file path is blocked by the secret denylist",
+        )
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", f"Skill file is not accessible: {public_path}") from exc
+    if not path.is_file():
+        raise ProfileRouterError("not_a_file", f"Skill path is not a file: {public_path}")
+    if reject_oversized and stat.st_size > MAX_CONTEXT_FILE_BYTES:
+        raise ProfileRouterError(
+            "file_too_large",
+            f"Skill supporting file exceeds {MAX_CONTEXT_FILE_BYTES} bytes: {public_path}",
+        )
+    sha256, hash_truncated = _hash_file(path)
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_CONTEXT_FILE_BYTES + 1)
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", f"Skill file is not readable: {public_path}") from exc
+    if b"\x00" in raw[:4096]:
+        raise ProfileRouterError("binary_file_not_supported", f"Skill file is binary: {public_path}")
+    if reject_oversized and len(raw) > MAX_CONTEXT_FILE_BYTES:
+        raise ProfileRouterError(
+            "file_too_large",
+            f"Skill supporting file exceeds {MAX_CONTEXT_FILE_BYTES} bytes: {public_path}",
+        )
+    decoded = raw[:MAX_CONTEXT_FILE_BYTES].decode("utf-8", errors="replace")
+    truncated = len(raw) > MAX_CONTEXT_FILE_BYTES or len(decoded) > MAX_CONTEXT_FILE_CHARS
+    content = _redact_context_text(decoded[:MAX_CONTEXT_FILE_CHARS])
+    return {
+        "path": public_path,
+        "sha256": sha256,
+        "hash_truncated": hash_truncated,
+        "size_bytes": stat.st_size,
+        "truncated": truncated,
+        "content": content,
+    }
+
+
+def _resolve_profile_skills_root(ref: ProfileRef) -> tuple[Path, Path]:
+    profile_dir = _resolve_local_profile_dir(ref)
+    skills_root_path = profile_dir / "skills"
+    if not skills_root_path.exists():
+        return profile_dir, skills_root_path
+    if skills_root_path.is_symlink():
+        raise ProfileRouterError(
+            "profile_skill_symlink_denied",
+            f"Profile skills directory may not be a symlink: {ref.value}",
+        )
+    try:
+        skills_root = skills_root_path.resolve(strict=True)
+    except OSError as exc:
+        raise ProfileRouterError("profile_skills_not_readable", "Profile skills directory is not readable") from exc
+    if not _path_is_relative_to(skills_root, profile_dir):
+        raise ProfileRouterError(
+            "profile_skill_symlink_denied",
+            f"Profile skills directory escapes profile root: {ref.value}",
+        )
+    return profile_dir, skills_root
+
+
+def _safe_resolve_skill_child(root: Path, relative_path: str) -> Path:
+    current = root
+    for part in [part for part in relative_path.split("/") if part]:
+        current = current / part
+        if current.is_symlink():
+            raise ProfileRouterError(
+                "symlink_traversal_denied",
+                f"Skill path uses a symlink: {relative_path}",
+            )
+    try:
+        resolved = current.resolve(strict=True)
+    except OSError as exc:
+        raise ProfileRouterError("file_not_found", f"Skill file not found: {relative_path}") from exc
+    if not _path_is_relative_to(resolved, root):
+        raise ProfileRouterError("symlink_traversal_denied", "Skill path escapes its skill directory")
+    return resolved
+
+
+def _list_skill_linked_files(skill_dir: Path) -> tuple[dict[str, tuple[str, ...]], dict[str, int]]:
+    linked: dict[str, tuple[str, ...]] = {}
+    skipped = {"secret": 0, "symlink": 0, "unreadable": 0, "limit": 0}
+    for top_dir in SAFE_SKILL_SUPPORT_DIRS:
+        base = skill_dir / top_dir
+        if not base.exists():
+            continue
+        if base.is_symlink():
+            skipped["symlink"] += 1
+            continue
+        try:
+            resolved_base = base.resolve(strict=True)
+        except OSError:
+            skipped["unreadable"] += 1
+            continue
+        if not _path_is_relative_to(resolved_base, skill_dir) or not resolved_base.is_dir():
+            skipped["unreadable"] += 1
+            continue
+        files: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(resolved_base, followlinks=False):
+            current = Path(dirpath)
+            safe_dirnames: list[str] = []
+            for dirname in sorted(dirnames):
+                candidate = current / dirname
+                rel = candidate.relative_to(resolved_base).as_posix()
+                public_rel = posixpath.join(top_dir, rel)
+                if dirname.startswith(".") or _is_secret_path(public_rel):
+                    skipped["secret"] += 1
+                    continue
+                if candidate.is_symlink():
+                    skipped["symlink"] += 1
+                    continue
+                safe_dirnames.append(dirname)
+            dirnames[:] = safe_dirnames
+            for filename in sorted(filenames):
+                candidate = current / filename
+                rel = candidate.relative_to(resolved_base).as_posix()
+                public_rel = posixpath.join(top_dir, rel)
+                if filename.startswith(".") or _is_secret_path(public_rel):
+                    skipped["secret"] += 1
+                    continue
+                if candidate.is_symlink():
+                    skipped["symlink"] += 1
+                    continue
+                if len(files) >= MAX_SKILL_LINKED_FILES_PER_DIR:
+                    skipped["limit"] += 1
+                    continue
+                files.append(rel)
+        if files:
+            linked[top_dir] = tuple(files)
+    return linked, skipped
+
+
+def _skill_record_summary(record: ProfileSkillRecord) -> dict:
+    return {
+        "id": record.skill_id,
+        "name": record.name,
+        "category": record.category,
+        "description": record.description,
+        "tags": list(record.tags),
+        "linked_files": {key: list(value) for key, value in record.linked_files.items()},
+        "content_truncated": record.content_truncated,
+    }
+
+
+def _scan_profile_skills(ref: ProfileRef) -> tuple[list[ProfileSkillRecord], dict[str, int]]:
+    profile_dir, skills_root = _resolve_profile_skills_root(ref)
+    del profile_dir
+    skipped = {"secret": 0, "symlink": 0, "binary": 0, "unreadable": 0, "limit": 0}
+    if not skills_root.exists():
+        return [], skipped
+    if not skills_root.is_dir():
+        raise ProfileRouterError("profile_skills_not_readable", "Profile skills path is not a directory")
+    records: list[ProfileSkillRecord] = []
+    for dirpath, dirnames, filenames in os.walk(skills_root, followlinks=False):
+        current = Path(dirpath)
+        safe_dirnames: list[str] = []
+        for dirname in sorted(dirnames):
+            candidate = current / dirname
+            rel = candidate.relative_to(skills_root).as_posix()
+            if dirname.startswith(".") or _is_secret_path(rel):
+                skipped["secret"] += 1
+                continue
+            if candidate.is_symlink():
+                skipped["symlink"] += 1
+                continue
+            safe_dirnames.append(dirname)
+        dirnames[:] = safe_dirnames
+        if "SKILL.md" not in filenames:
+            continue
+        public_id = current.relative_to(skills_root).as_posix()
+        if public_id in {"", "."} or _is_secret_path(public_id):
+            skipped["secret"] += 1
+            dirnames[:] = []
+            continue
+        skill_file = current / "SKILL.md"
+        if skill_file.is_symlink():
+            skipped["symlink"] += 1
+            dirnames[:] = []
+            continue
+        try:
+            resolved_skill_file = skill_file.resolve(strict=True)
+        except OSError:
+            skipped["unreadable"] += 1
+            dirnames[:] = []
+            continue
+        if not _path_is_relative_to(resolved_skill_file, skills_root):
+            skipped["symlink"] += 1
+            dirnames[:] = []
+            continue
+        try:
+            file_info = _read_skill_text_file(resolved_skill_file, "SKILL.md")
+        except ProfileRouterError as exc:
+            if exc.code == "binary_file_not_supported":
+                skipped["binary"] += 1
+            else:
+                skipped["unreadable"] += 1
+            dirnames[:] = []
+            continue
+        frontmatter = _parse_skill_frontmatter(file_info["content"])
+        fallback_name = current.name
+        display_name = _safe_skill_display_name(frontmatter.get("name"), fallback_name)
+        description = _redact_context_text(str(frontmatter.get("description") or "")).strip()
+        if len(description) > MAX_SKILL_DESCRIPTION_CHARS:
+            description = description[:MAX_SKILL_DESCRIPTION_CHARS]
+        linked_files, linked_skipped = _list_skill_linked_files(current)
+        for key, value in linked_skipped.items():
+            skipped[key] = skipped.get(key, 0) + value
+        category = posixpath.dirname(public_id)
+        records.append(
+            ProfileSkillRecord(
+                skill_id=public_id,
+                name=display_name,
+                category=category,
+                description=description,
+                tags=_safe_skill_tags(frontmatter.get("tags")),
+                skill_dir=current,
+                skill_file=resolved_skill_file,
+                linked_files=linked_files,
+                content_truncated=bool(file_info["truncated"]),
+            )
+        )
+        dirnames[:] = []
+    return sorted(records, key=lambda record: record.skill_id), skipped
+
+
+def _find_profile_skill(ref: ProfileRef, name: str) -> tuple[ProfileSkillRecord, dict[str, int]]:
+    lookup = _normalize_skill_lookup_name(name)
+    profile_dir, skills_root = _resolve_profile_skills_root(ref)
+    del profile_dir
+    if "/" in lookup:
+        candidate_dir = skills_root / lookup
+        if candidate_dir.is_symlink():
+            raise ProfileRouterError(
+                "profile_skill_symlink_denied",
+                f"Profile skill directory may not be a symlink: {lookup}",
+            )
+        try:
+            resolved_candidate_dir = candidate_dir.resolve(strict=True)
+        except OSError as exc:
+            raise ProfileRouterError("skill_not_found", f"Skill not found: {lookup}") from exc
+        if not _path_is_relative_to(resolved_candidate_dir, skills_root):
+            raise ProfileRouterError("profile_skill_symlink_denied", "Profile skill directory escapes skills root")
+        if not (resolved_candidate_dir / "SKILL.md").exists():
+            raise ProfileRouterError("skill_not_found", f"Skill not found: {lookup}")
+    else:
+        direct_candidate_dir = skills_root / lookup
+        if direct_candidate_dir.is_symlink():
+            raise ProfileRouterError(
+                "profile_skill_symlink_denied",
+                f"Profile skill directory may not be a symlink: {lookup}",
+            )
+    records, skipped = _scan_profile_skills(ref)
+    matches = [
+        record
+        for record in records
+        if record.skill_id == lookup or record.name == lookup or posixpath.basename(record.skill_id) == lookup
+    ]
+    if not matches:
+        raise ProfileRouterError("skill_not_found", f"Skill not found: {lookup}")
+    if len(matches) > 1:
+        raise ProfileRouterError("skill_ambiguous", "Skill name is ambiguous; use the returned skill id")
+    return matches[0], skipped
+
+
+def list_profile_skills(profile_ref: str, *, limit: int | None = MAX_SKILLS_LIST_RESULTS) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy = _require_profile_context_policy(
+        profile_ref,
+        CONTEXT_SKILLS_READ_POLICY,
+    )
+    max_results = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_SKILLS_LIST_RESULTS,
+        minimum=1,
+        maximum=MAX_SKILLS_LIST_RESULTS,
+    )
+    records, skipped = _scan_profile_skills(ref)
+    selected = records[:max_results]
+    return {
+        "profile_ref": ref.value,
+        "skills": [_skill_record_summary(record) for record in selected],
+        "total_count": len(records),
+        "count": len(selected),
+        "limit": max_results,
+        "truncated": len(records) > max_results,
+        "skipped": skipped,
+        "audit": {"tool": "skills_list", "llm_calls": 0, "root_exposed": False},
+    }
+
+
+def view_profile_skill(profile_ref: str, name: str, *, file_path: str | None = None) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy, _router_policy = _require_profile_context_policy(
+        profile_ref,
+        CONTEXT_SKILLS_READ_POLICY,
+    )
+    record, skipped = _find_profile_skill(ref, name)
+    if file_path is None:
+        file_info = _read_skill_text_file(record.skill_file, "SKILL.md")
+    else:
+        normalized_file_path = _normalize_skill_file_path(file_path)
+        resolved_file = _safe_resolve_skill_child(record.skill_dir, normalized_file_path)
+        file_info = _read_skill_text_file(
+            resolved_file,
+            normalized_file_path,
+            reject_oversized=True,
+        )
+    return {
+        "profile_ref": ref.value,
+        "skill": _skill_record_summary(record),
+        "file": file_info,
+        "skipped": skipped,
+        "audit": {"tool": "skill_view", "llm_calls": 0, "root_exposed": False},
+    }
+
+
+def _normalize_session_search_query(query: str | None) -> str | None:
+    if query is None:
+        return None
+    if not isinstance(query, str):
+        raise ProfileRouterError("invalid_session_search_query", "query must be a string")
+    text = query.strip()
+    if not text:
+        return None
+    if len(text) > MAX_SESSION_SEARCH_QUERY_CHARS:
+        raise ProfileRouterError(
+            "invalid_session_search_query",
+            f"query must be <= {MAX_SESSION_SEARCH_QUERY_CHARS} characters",
+        )
+    return text
+
+
+def _normalize_session_search_sort(sort: str | None) -> str:
+    if sort is None:
+        return "newest"
+    if not isinstance(sort, str):
+        raise ProfileRouterError("invalid_session_search_sort", "sort must be newest or oldest")
+    normalized = sort.strip().lower() or "newest"
+    if normalized not in {"newest", "oldest"}:
+        raise ProfileRouterError("invalid_session_search_sort", "sort must be newest or oldest")
+    return normalized
+
+
+def _escape_sql_like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _redact_context_text(text: str, roots: Iterable[Path | str] = ()) -> str:
+    redacted = _redact_sensitive_text_fields(str(text or ""))
+    root_texts = sorted(
+        {
+            str(root)
+            for root in roots
+            if root is not None and len(str(root)) > 3
+        },
+        key=len,
+        reverse=True,
+    )
+    for root_text in root_texts:
+        redacted = redacted.replace(root_text, "[REDACTED_PATH]")
+    redacted = HOST_ROOT_PATH_RE.sub("[REDACTED_PATH]", redacted)
+    return re.sub(r"\s+", " ", redacted).strip()
+
+
+def _redact_session_text(text: str, roots: Iterable[Path | str]) -> str:
+    return _redact_context_text(text, roots)
+
+
+def _session_snippet(content: Any, *, query: str | None, roots: Iterable[Path | str]) -> str:
+    if isinstance(content, str):
+        text = content
+    else:
+        try:
+            text = json.dumps(content, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            text = str(content or "")
+    redacted = _redact_session_text(text, roots)
+    if len(redacted) <= MAX_SESSION_SNIPPET_CHARS:
+        return redacted
+    if query:
+        index = redacted.lower().find(query.lower())
+        if index >= 0:
+            start = max(0, index - (MAX_SESSION_SNIPPET_CHARS // 3))
+            end = min(len(redacted), start + MAX_SESSION_SNIPPET_CHARS)
+            start = max(0, end - MAX_SESSION_SNIPPET_CHARS)
+            return redacted[start:end]
+    return redacted[:MAX_SESSION_SNIPPET_CHARS]
+
+
+def _resolve_profile_session_db(ref: ProfileRef) -> tuple[Path, Path | None]:
+    profile_dir = _resolve_local_profile_dir(ref)
+    state_db_path = profile_dir / "state.db"
+    if not state_db_path.exists():
+        return profile_dir, None
+    if state_db_path.is_symlink():
+        raise ProfileRouterError(
+            "profile_session_db_symlink_denied",
+            f"Profile session database may not be a symlink: {ref.value}",
+        )
+    try:
+        resolved_state_db = state_db_path.resolve(strict=True)
+    except OSError as exc:
+        raise ProfileRouterError("session_db_unavailable", "Profile session database is not readable") from exc
+    if not _path_is_relative_to(resolved_state_db, profile_dir):
+        raise ProfileRouterError(
+            "profile_session_db_symlink_denied",
+            "Profile session database escapes profile root",
+        )
+    if not resolved_state_db.is_file():
+        raise ProfileRouterError("session_db_unavailable", "Profile session database is not a file")
+    return profile_dir, resolved_state_db
+
+
+def search_profile_sessions(
+    profile_ref: str,
+    *,
+    query: str | None = None,
+    limit: int | None = 3,
+    sort: str | None = None,
+) -> dict:
+    assert_default_tools_are_no_model()
+    ref, route_policy, _router_policy = _require_profile_context_policy(
+        profile_ref,
+        CONTEXT_SESSIONS_SEARCH_POLICY,
+    )
+    normalized_query = _normalize_session_search_query(query)
+    normalized_sort = _normalize_session_search_sort(sort)
+    max_results = _bounded_int(
+        limit,
+        "limit",
+        default=3,
+        minimum=1,
+        maximum=MAX_SESSION_SEARCH_RESULTS,
+    )
+    profile_dir, state_db_path = _resolve_profile_session_db(ref)
+    audit = {
+        "tool": "session_search",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "state_db_read_only": True,
+        "roles": ["user", "assistant"],
+    }
+    if state_db_path is None:
+        return {
+            "profile_ref": ref.value,
+            "state_db_present": False,
+            "query_supplied": normalized_query is not None,
+            "sort": normalized_sort,
+            "roles": ["user", "assistant"],
+            "results": [],
+            "count": 0,
+            "limit": max_results,
+            "truncated": False,
+            "audit": audit,
+        }
+
+    where = ["m.role IN (?, ?)", "COALESCE(m.active, 1) = 1"]
+    params: list[Any] = ["user", "assistant"]
+    if normalized_query is not None:
+        where.append("COALESCE(m.content, '') LIKE ? ESCAPE '\\'")
+        params.append(f"%{_escape_sql_like(normalized_query)}%")
+    order = "ASC" if normalized_sort == "oldest" else "DESC"
+    params.append(max_results + 1)
+    sql = f"""
+        SELECT
+            m.session_id,
+            m.role,
+            COALESCE(m.content, '') AS content,
+            m.timestamp,
+            s.source,
+            s.started_at AS session_started,
+            s.title
+        FROM messages m
+        JOIN sessions s ON s.id = m.session_id
+        WHERE {' AND '.join(where)}
+        ORDER BY m.timestamp {order}, m.id {order}
+        LIMIT ?
+    """
+    fts_sql = f"""
+        SELECT
+            m.session_id,
+            m.role,
+            COALESCE(m.content, '') AS content,
+            m.timestamp,
+            s.source,
+            s.started_at AS session_started,
+            s.title
+        FROM messages_fts
+        JOIN messages m ON m.id = messages_fts.rowid
+        JOIN sessions s ON s.id = m.session_id
+        WHERE messages_fts MATCH ?
+          AND m.role IN (?, ?)
+          AND COALESCE(m.active, 1) = 1
+        ORDER BY m.timestamp {order}, m.id {order}
+        LIMIT ?
+    """
+    roots: list[Path | str] = [profile_dir, *route_policy.allowed_roots]
+    try:
+        conn = sqlite3.connect(
+            f"file:{state_db_path}?mode=ro",
+            uri=True,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = None
+            if normalized_query is not None:
+                fts_present = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name = 'messages_fts' LIMIT 1"
+                ).fetchone()
+                if fts_present is not None:
+                    fts_query = '"' + normalized_query.replace('"', '""') + '"'
+                    try:
+                        rows = conn.execute(
+                            fts_sql,
+                            [fts_query, "user", "assistant", max_results + 1],
+                        ).fetchall()
+                    except sqlite3.DatabaseError:
+                        rows = None
+            if rows is None:
+                rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise ProfileRouterError("session_db_unavailable", "Profile session database is not readable") from exc
+
+    selected_rows = rows[:max_results]
+    results = []
+    for row in selected_rows:
+        title = _redact_session_text(row["title"] or "", roots)[:120]
+        results.append(
+            {
+                "session_id_hash": hashlib.sha256(
+                    str(row["session_id"] or "").encode("utf-8", errors="replace")
+                ).hexdigest()[:16],
+                "role": str(row["role"] or ""),
+                "snippet": _session_snippet(
+                    row["content"],
+                    query=normalized_query,
+                    roots=roots,
+                ),
+                "timestamp": row["timestamp"],
+                "session": {
+                    "source": str(row["source"] or ""),
+                    "started_at": row["session_started"],
+                    "title": title,
+                },
+            }
+        )
+    return {
+        "profile_ref": ref.value,
+        "state_db_present": True,
+        "query_supplied": normalized_query is not None,
+        "sort": normalized_sort,
+        "roles": ["user", "assistant"],
+        "results": results,
+        "count": len(results),
+        "limit": max_results,
+        "truncated": len(rows) > max_results,
+        "audit": audit,
+    }
+
+
+def _raise_context_tool_not_implemented(tool_name: str) -> NoReturn:
+    raise ProfileRouterError(
+        "tool_not_implemented",
+        (
+            f"{tool_name} has Phase 8 metadata and policy gates, but its bounded "
+            "reader is not implemented yet"
+        ),
+    )
+
+
+def _require_global_viking_context_policy() -> dict:
+    """Require at least one exposed local route to opt into global OpenViking read.
+
+    OpenViking is intentionally treated as a global memory surface for this
+    phase, but it still fails closed unless the operator enables the dedicated
+    deny-by-default ``context.viking.read`` flag on an exposed local profile.
+    """
+
+    router_policy = load_profile_router_policy()
+    if not router_policy.allow_global_viking_read:
+        raise ProfileRouterError(
+            "context_viking_read_not_allowed",
+            "global profile_router.context.viking.read is disabled",
+        )
+    authorized_routes = [
+        policy
+        for policy in router_policy.iter_profiles(active_only=True)
+        if policy.ref.host == LOCAL_HOST and _local_profile_exists(policy.ref.profile)
+    ]
+    if not authorized_routes:
+        raise ProfileRouterError(
+            "context_viking_read_not_allowed",
+            "global OpenViking read requires at least one exposed local profile_router profile",
+        )
+    return {
+        "type": "global",
+        "authorized_profiles_count": len(authorized_routes),
+        "profile_refs_exposed": False,
+    }
+
+
+def _validate_openviking_endpoint(endpoint: str) -> str:
+    text = str(endpoint or "").strip().rstrip("/")
+    parsed = urlparse(text)
+    if (
+        not text
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise ProfileRouterError(
+            "openviking_endpoint_invalid",
+            "OpenViking endpoint must be a server-configured local/private origin",
+        )
+
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ProfileRouterError(
+            "openviking_endpoint_invalid",
+            "OpenViking endpoint must be a server-configured local/private origin",
+        )
+    host_lower = hostname.lower()
+    is_private = host_lower == "localhost"
+    if not is_private:
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError as exc:
+            raise ProfileRouterError(
+                "openviking_endpoint_not_private",
+                "OpenViking endpoint host must be localhost or a private IP address",
+            ) from exc
+        is_private = bool(address.is_loopback or address.is_private or address.is_link_local)
+    if not is_private:
+        raise ProfileRouterError(
+            "openviking_endpoint_not_private",
+            "OpenViking endpoint host must be localhost or a private IP address",
+        )
+    return text
+
+
+def _openviking_endpoint() -> str:
+    endpoint = os.environ.get("OPENVIKING_ENDPOINT")
+    if not endpoint or not endpoint.strip():
+        raise ProfileRouterError(
+            "openviking_endpoint_unconfigured",
+            "OPENVIKING_ENDPOINT must be explicitly configured server-side",
+        )
+    return _validate_openviking_endpoint(endpoint)
+
+
+def _openviking_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-OpenViking-Agent": os.environ.get("OPENVIKING_AGENT", "hermes") or "hermes",
+        "X-OpenViking-Account": os.environ.get("OPENVIKING_ACCOUNT", "default") or "default",
+        "X-OpenViking-User": os.environ.get("OPENVIKING_USER", "default") or "default",
+    }
+    api_key = os.environ.get("OPENVIKING_API_KEY", "")
+    if api_key:
+        headers["X-API-Key"] = api_key
+        headers["Authorization"] = "Bearer " + api_key
+    return headers
+
+
+def _openviking_request_json(
+    method: str,
+    path: str,
+    *,
+    params: Mapping[str, Any] | None = None,
+    payload: Mapping[str, Any] | None = None,
+) -> dict:
+    if not path.startswith("/api/v1/") and path != "/health":
+        raise ProfileRouterError("openviking_request_invalid", "Invalid OpenViking API path")
+    endpoint = _openviking_endpoint()
+    url = f"{endpoint}{path}"
+    if params:
+        safe_params = {key: value for key, value in params.items() if value is not None}
+        if safe_params:
+            url = f"{url}?{urlencode(safe_params)}"
+    method_upper = method.upper()
+    data = None
+    if method_upper == "POST":
+        data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    request = Request(url, data=data, headers=_openviking_headers(), method=method_upper)
+    try:
+        with urlopen(request, timeout=OPENVIKING_REQUEST_TIMEOUT_SECONDS) as response:
+            raw = response.read(MAX_VIKING_HTTP_RESPONSE_BYTES + 1)
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        raise ProfileRouterError(
+            "openviking_request_failed",
+            "OpenViking request failed without exposing endpoint, headers, or query text",
+        ) from exc
+    if len(raw) > MAX_VIKING_HTTP_RESPONSE_BYTES:
+        raise ProfileRouterError(
+            "openviking_response_too_large",
+            "OpenViking response exceeded the profile-router bound",
+        )
+    try:
+        decoded = raw.decode("utf-8")
+        data_obj = json.loads(decoded) if decoded else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProfileRouterError(
+            "openviking_response_invalid",
+            "OpenViking response was not valid bounded JSON",
+        ) from exc
+    if not isinstance(data_obj, dict):
+        raise ProfileRouterError(
+            "openviking_response_invalid",
+            "OpenViking response must be a JSON object",
+        )
+    return data_obj
+
+
+def _unwrap_openviking_result(payload: Any) -> Any:
+    if isinstance(payload, MappingABC) and "result" in payload:
+        return payload.get("result")
+    return payload
+
+
+def _redact_viking_text(text: Any) -> str:
+    return _redact_context_text(str(text or ""))
+
+
+def _bounded_viking_text(text: Any, max_chars: int) -> tuple[str, bool]:
+    redacted = _redact_viking_text(text)
+    if len(redacted) <= max_chars:
+        return redacted, False
+    return redacted[:max_chars], True
+
+
+def _normalize_viking_query(query: str) -> str:
+    if not isinstance(query, str):
+        raise ProfileRouterError("invalid_viking_query", "query must be a string")
+    text = query.strip()
+    if not text:
+        raise ProfileRouterError("invalid_viking_query", "query is required")
+    if len(text) > MAX_VIKING_QUERY_CHARS:
+        raise ProfileRouterError(
+            "invalid_viking_query",
+            f"query must be <= {MAX_VIKING_QUERY_CHARS} characters",
+        )
+    return text
+
+
+def _normalize_viking_search_mode(mode: str | None) -> str:
+    if mode is None:
+        return "auto"
+    if not isinstance(mode, str):
+        raise ProfileRouterError("invalid_viking_mode", "mode must be auto, fast, or deep")
+    normalized = mode.strip().lower() or "auto"
+    if normalized not in OPENVIKING_ALLOWED_SEARCH_MODES:
+        raise ProfileRouterError("invalid_viking_mode", "mode must be auto, fast, or deep")
+    return normalized
+
+
+def _normalize_viking_read_level(level: str | None) -> str:
+    if level is None:
+        return "overview"
+    if not isinstance(level, str):
+        raise ProfileRouterError("invalid_viking_level", "level must be abstract, overview, or full")
+    normalized = level.strip().lower() or "overview"
+    if normalized not in OPENVIKING_ALLOWED_READ_LEVELS:
+        raise ProfileRouterError(
+            "invalid_viking_level", "level must be abstract, overview, or full"
+        )
+    return normalized
+
+
+def _validate_viking_uri(uri: str, *, allow_pseudo_summary: bool = True) -> str:
+    if not isinstance(uri, str):
+        raise ProfileRouterError("invalid_viking_uri", "uri must be a viking:// URI")
+    text = uri.strip()
+    if (
+        not text
+        or len(text) > MAX_VIKING_URI_CHARS
+        or "\x00" in text
+        or "\n" in text
+        or "\r" in text
+        or "\\" in text
+    ):
+        raise ProfileRouterError("invalid_viking_uri", "uri must be a safe viking:// URI")
+    parsed = urlparse(text)
+    if (
+        parsed.scheme != "viking"
+        or not parsed.netloc
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ProfileRouterError("invalid_viking_uri", "uri must be a viking:// URI without query or fragment")
+    raw_parts = [parsed.netloc, *[part for part in parsed.path.split("/") if part]]
+    parts: list[str] = []
+    for raw_part in raw_parts:
+        try:
+            part = unquote(raw_part, encoding="utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ProfileRouterError("invalid_viking_uri", "OpenViking URI encoding is invalid") from exc
+        if (
+            not part
+            or "%" in part
+            or "/" in part
+            or "\\" in part
+            or "\x00" in part
+            or part.strip() != part
+        ):
+            raise ProfileRouterError("invalid_viking_uri", "OpenViking URI path segment is invalid")
+        parts.append(part)
+    if len(parts) < 2:
+        raise ProfileRouterError("invalid_viking_uri", "broad OpenViking roots are not exposed")
+    for index, part in enumerate(parts):
+        if part in {"", ".", ".."} or ".." in part:
+            raise ProfileRouterError("invalid_viking_uri", "OpenViking URI traversal is not allowed")
+        is_allowed_pseudo = allow_pseudo_summary and index == len(parts) - 1 and part in OPENVIKING_PSEUDO_SUMMARY_FILES
+        if part.startswith(".") and not is_allowed_pseudo:
+            raise ProfileRouterError("invalid_viking_uri", "hidden OpenViking paths are not exposed")
+    normalized_path = "/".join(parts)
+    if _is_secret_path(normalized_path):
+        raise ProfileRouterError("secret_path_denied", "OpenViking URI is blocked by the secret denylist")
+    if re.search(r"(?i)(^|/)(users|home|etc|var|tmp)(/|$)", normalized_path):
+        raise ProfileRouterError("invalid_viking_uri", "host-root-looking OpenViking URIs are not exposed")
+    return text
+
+
+def _normalize_viking_summary_uri(uri: str) -> str:
+    for suffix in OPENVIKING_PSEUDO_SUMMARY_FILES:
+        if uri.endswith("/" + suffix):
+            return uri[: -len(suffix) - 1] or "viking://"
+    return uri
+
+
+def _openviking_is_directory_uri(uri: str) -> bool | None:
+    try:
+        payload = _openviking_request_json("GET", "/api/v1/fs/stat", params={"uri": uri})
+    except ProfileRouterError:
+        return None
+    result = _unwrap_openviking_result(payload)
+    if isinstance(result, MappingABC):
+        if "isDir" in result:
+            return bool(result.get("isDir"))
+        if "is_dir" in result:
+            return bool(result.get("is_dir"))
+        if result.get("type") == "dir":
+            return True
+        if result.get("type") == "file":
+            return False
+    return None
+
+
+def _extract_openviking_search_items(payload: Any) -> tuple[list[tuple[float, dict]], int]:
+    result = _unwrap_openviking_result(payload)
+    scored_entries: list[tuple[float, dict]] = []
+    skipped = 0
+    if not isinstance(result, MappingABC):
+        return [], 0
+
+    bucket_specs: list[tuple[str, Any]] = []
+    for bucket_name in ("memories", "resources", "skills"):
+        bucket_specs.append((bucket_name.rstrip("s"), result.get(bucket_name, [])))
+    if not any(bucket for _bucket_type, bucket in bucket_specs):
+        bucket_specs = [("item", result.get("results") or result.get("items") or [])]
+
+    for bucket_type, items in bucket_specs:
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, MappingABC):
+                skipped += 1
+                continue
+            raw_uri = str(item.get("uri") or "")
+            try:
+                safe_uri = _validate_viking_uri(raw_uri)
+            except ProfileRouterError:
+                skipped += 1
+                continue
+            raw_score = item.get("score")
+            try:
+                score = float(raw_score) if raw_score is not None else 0.0
+            except (TypeError, ValueError):
+                score = 0.0
+            abstract, abstract_truncated = _bounded_viking_text(
+                item.get("abstract") or item.get("summary") or item.get("content") or "",
+                MAX_VIKING_ABSTRACT_CHARS,
+            )
+            entry = {
+                "uri": safe_uri,
+                "type": str(item.get("type") or bucket_type),
+                "score": round(score, 3),
+                "abstract": abstract,
+                "abstract_truncated": abstract_truncated,
+            }
+            related = []
+            for relation in item.get("relations") or item.get("related") or []:
+                if not isinstance(relation, MappingABC):
+                    continue
+                try:
+                    related.append(_validate_viking_uri(str(relation.get("uri") or "")))
+                except ProfileRouterError:
+                    skipped += 1
+                if len(related) >= 3:
+                    break
+            if related:
+                entry["related"] = related
+            scored_entries.append((score, entry))
+    return scored_entries, skipped
+
+
+def search_openviking_context(
+    query: str,
+    *,
+    mode: str = "auto",
+    scope: str | None = None,
+    limit: int | None = 10,
+) -> dict:
+    assert_default_tools_are_no_model()
+    policy_scope = _require_global_viking_context_policy()
+    normalized_query = _normalize_viking_query(query)
+    normalized_mode = _normalize_viking_search_mode(mode)
+    max_results = _bounded_int(
+        limit,
+        "limit",
+        default=10,
+        minimum=1,
+        maximum=MAX_VIKING_SEARCH_RESULTS,
+    )
+    normalized_scope = _validate_viking_uri(scope, allow_pseudo_summary=False) if scope else None
+    payload: dict[str, Any] = {"query": normalized_query, "limit": max_results}
+    if normalized_mode != "auto":
+        payload["mode"] = normalized_mode
+    if normalized_scope:
+        payload["target_uri"] = normalized_scope
+
+    request_shape = "limit"
+    try:
+        response_payload = _openviking_request_json(
+            "POST", "/api/v1/search/find", payload=payload
+        )
+    except ProfileRouterError as first_error:
+        fallback_payload = dict(payload)
+        fallback_payload.pop("limit", None)
+        fallback_payload["top_k"] = max_results
+        request_shape = "top_k_fallback"
+        try:
+            response_payload = _openviking_request_json(
+                "POST", "/api/v1/search/find", payload=fallback_payload
+            )
+        except ProfileRouterError:
+            raise first_error
+
+    scored_entries, skipped = _extract_openviking_search_items(response_payload)
+    scored_entries.sort(key=lambda item: item[0], reverse=True)
+    selected = [entry for _score, entry in scored_entries[:max_results]]
+    result_obj = _unwrap_openviking_result(response_payload)
+    total = len(scored_entries)
+    if isinstance(result_obj, MappingABC):
+        raw_total = result_obj.get("total")
+        if isinstance(raw_total, int) and raw_total >= total:
+            total = raw_total
+    return {
+        "policy_scope": policy_scope,
+        "endpoint": {"server_configured": True, "local_private": True, "url_exposed": False},
+        "query_supplied": True,
+        "mode": normalized_mode,
+        "scope": normalized_scope,
+        "results": selected,
+        "count": len(selected),
+        "limit": max_results,
+        "total": total,
+        "truncated": total > len(selected),
+        "skipped": skipped,
+        "request_shape": request_shape,
+        "audit": {
+            "tool": "viking_search",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "endpoint_local_private": True,
+            "raw_query_logged": False,
+            "url_exposed": False,
+        },
+    }
+
+
+def read_openviking_context(uri: str, *, level: str = "overview") -> dict:
+    assert_default_tools_are_no_model()
+    policy_scope = _require_global_viking_context_policy()
+    normalized_uri = _validate_viking_uri(uri)
+    normalized_level = _normalize_viking_read_level(level)
+    summary_level = normalized_level in {"abstract", "overview"}
+    resolved_uri = _normalize_viking_summary_uri(normalized_uri) if summary_level else normalized_uri
+    used_fallback = False
+
+    if summary_level and resolved_uri == normalized_uri:
+        is_dir = _openviking_is_directory_uri(normalized_uri)
+        if is_dir is False:
+            used_fallback = True
+
+    endpoint = "/api/v1/content/read"
+    if not used_fallback:
+        if normalized_level == "abstract":
+            endpoint = "/api/v1/content/abstract"
+        elif normalized_level == "overview":
+            endpoint = "/api/v1/content/overview"
+    try:
+        response_payload = _openviking_request_json(
+            "GET", endpoint, params={"uri": resolved_uri}
+        )
+    except ProfileRouterError:
+        if not summary_level or resolved_uri != normalized_uri or used_fallback:
+            raise
+        endpoint = "/api/v1/content/read"
+        resolved_uri = normalized_uri
+        used_fallback = True
+        response_payload = _openviking_request_json(
+            "GET", endpoint, params={"uri": resolved_uri}
+        )
+
+    result = _unwrap_openviking_result(response_payload)
+    if isinstance(result, str):
+        content_value = result
+    elif isinstance(result, MappingABC):
+        content_value = result.get("content") or result.get("text") or result.get("abstract") or ""
+    else:
+        content_value = ""
+    cap = MAX_VIKING_FULL_CHARS
+    if normalized_level == "overview":
+        cap = MAX_VIKING_OVERVIEW_CHARS
+    elif normalized_level == "abstract":
+        cap = MAX_VIKING_ABSTRACT_CHARS
+    content, truncated = _bounded_viking_text(content_value, cap)
+    return {
+        "policy_scope": policy_scope,
+        "endpoint": {"server_configured": True, "local_private": True, "url_exposed": False},
+        "uri": normalized_uri,
+        "resolved_uri": resolved_uri,
+        "level": normalized_level,
+        "content": content,
+        "truncated": truncated,
+        "max_chars": cap,
+        "fallback": "content/read" if used_fallback else None,
+        "audit": {
+            "tool": "viking_read",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "endpoint_local_private": True,
+            "url_exposed": False,
+        },
+    }
 
 
 def _reject_disabled_powerful_tool_after_context(
@@ -3560,6 +4951,92 @@ def profile_context_get(profile_ref: str) -> str:
         )
     except ProfileRouterError as exc:
         return _tool_error("profile_context_get", exc)
+
+
+def skills_list(profile_ref: str, limit: int | None = MAX_SKILLS_LIST_RESULTS) -> str:
+    """MCP-ready wrapper: list bounded profile skills without invoking a model."""
+
+    try:
+        return _tool_envelope(
+            "skills_list",
+            {"ok": True, **list_profile_skills(profile_ref, limit=limit)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("skills_list", exc)
+
+
+def skill_view(profile_ref: str, name: str, file_path: str | None = None) -> str:
+    """MCP-ready wrapper: view a bounded profile skill file without a model."""
+
+    try:
+        return _tool_envelope(
+            "skill_view",
+            {"ok": True, **view_profile_skill(profile_ref, name, file_path=file_path)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("skill_view", exc)
+
+
+def session_search(
+    profile_ref: str,
+    query: str | None = None,
+    limit: int | None = 3,
+    sort: str | None = None,
+) -> str:
+    """MCP-ready wrapper: search bounded profile session snippets without a model."""
+
+    try:
+        return _tool_envelope(
+            "session_search",
+            {
+                "ok": True,
+                **search_profile_sessions(
+                    profile_ref,
+                    query=query,
+                    limit=limit,
+                    sort=sort,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("session_search", exc)
+
+
+def viking_search(
+    query: str,
+    mode: str = "auto",
+    scope: str | None = None,
+    limit: int | None = 10,
+) -> str:
+    """MCP-ready wrapper: search local/private OpenViking context without a model."""
+
+    try:
+        return _tool_envelope(
+            "viking_search",
+            {
+                "ok": True,
+                **search_openviking_context(
+                    query,
+                    mode=mode,
+                    scope=scope,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("viking_search", exc)
+
+
+def viking_read(uri: str, level: str = "overview") -> str:
+    """MCP-ready wrapper: read local/private OpenViking context without a model."""
+
+    try:
+        return _tool_envelope(
+            "viking_read",
+            {"ok": True, **read_openviking_context(uri, level=level)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("viking_read", exc)
 
 
 def workspace_instructions_get(workspace_id: str) -> str:

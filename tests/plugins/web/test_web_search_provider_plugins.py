@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, you, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -44,6 +44,8 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
+        "YOU_API_KEY",
+        "YDC_API_KEY",
         "XAI_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
@@ -68,9 +70,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_nine_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -84,6 +86,7 @@ class TestBundledPluginsRegister:
             "searxng",
             "tavily",
             "xai",
+            "you",
         ]
 
     @pytest.mark.parametrize(
@@ -96,6 +99,7 @@ class TestBundledPluginsRegister:
             ("parallel", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
+            ("you", True, False),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
         ],
@@ -116,7 +120,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "you", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +133,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "you", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -234,6 +238,19 @@ class TestIsAvailable:
         assert p is not None
         # Truthy or falsy, just must not raise.
         _ = bool(p.is_available())
+
+    def test_you_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("you")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("YOU_API_KEY", "real")
+        assert p.is_available() is True
+        monkeypatch.delenv("YOU_API_KEY", raising=False)
+        monkeypatch.setenv("YDC_API_KEY", "real")
+        assert p.is_available() is True
 
     def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
@@ -491,6 +508,17 @@ class TestErrorResponseShapes:
         from agent.web_search_registry import get_provider
 
         p = get_provider("xai")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    def test_you_search_returns_error_dict_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("you")
         assert p is not None
         result = p.search("test", limit=5)
         assert isinstance(result, dict)

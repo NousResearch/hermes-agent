@@ -1,0 +1,7 @@
+name: web-you
+version: 1.0.0
+description: "You.com Search API — search-only web backend for Hermes. Supports YOU_API_KEY or legacy YDC_API_KEY."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - you

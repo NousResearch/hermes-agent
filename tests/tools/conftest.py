@@ -27,6 +27,7 @@ def register_all_web_providers():
     from plugins.web.parallel.provider import ParallelWebSearchProvider
     from plugins.web.searxng.provider import SearXNGWebSearchProvider
     from plugins.web.tavily.provider import TavilyWebSearchProvider
+    from plugins.web.you.provider import YouWebSearchProvider
     from plugins.web.xai.provider import XAIWebSearchProvider
 
     _reset_for_tests()
@@ -38,6 +39,7 @@ def register_all_web_providers():
         ParallelWebSearchProvider,
         SearXNGWebSearchProvider,
         TavilyWebSearchProvider,
+        YouWebSearchProvider,
         XAIWebSearchProvider,
     ):
         register_provider(cls())

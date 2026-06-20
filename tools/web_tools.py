@@ -16,6 +16,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract)
+- You.com: https://you.com/docs/api-reference/search/v1-search (search only)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -149,7 +150,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "you", "ddgs", "xai"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -165,6 +166,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
+        ("you", _has_env("YOU_API_KEY") or _has_env("YDC_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -228,6 +230,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
+    if backend == "you":
+        return _has_env("YOU_API_KEY") or _has_env("YDC_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
     if backend == "xai":
@@ -283,6 +287,8 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "YOU_API_KEY",
+        "YDC_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
@@ -840,8 +846,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
+        # Dispatch through the web search registry. All 9 providers
+        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl,
+        # you, xai)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
@@ -1185,11 +1192,11 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "you", "ddgs", "xai"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "you", "searxng", "brave-free", "ddgs", "xai")
     )
 
 
@@ -1225,6 +1232,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "you":
+            print("   Using You.com Search API (search only)")
         elif backend == "searxng":
             print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":

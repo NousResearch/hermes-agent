@@ -24,7 +24,7 @@ from tests.tools.conftest import register_all_web_providers
 class TestWebProviderABCs:
     """The unified WebSearchProvider ABC enforces the interface contract.
 
-    After PR #25182, all seven providers are subclasses of
+    After PR #25182, all nine bundled providers are subclasses of
     :class:`agent.web_search_provider.WebSearchProvider`. The legacy
     in-tree ABCs at ``tools.web_providers.base`` (separate
     ``WebSearchProvider`` + ``WebExtractProvider``) were deleted in the
@@ -288,6 +288,9 @@ class TestUnconfiguredErrorEnvelopeParity:
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
             "TOOL_GATEWAY_DOMAIN",
+            "YOU_API_KEY",
+            "YDC_API_KEY",
+            "XAI_API_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 

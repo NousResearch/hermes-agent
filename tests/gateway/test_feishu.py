@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -31,6 +33,65 @@ def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder.build = Mock(return_value=object())
     mock_handler_class.builder = Mock(return_value=mock_builder)
     return mock_builder
+
+
+class TestFeishuSdkImportAvailability(unittest.TestCase):
+    def test_load_feishu_sdk_converts_sdk_attribute_error_to_import_error(self):
+        import builtins
+        from gateway.platforms import feishu
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "lark_oapi":
+                raise AttributeError(
+                    "module 'pkg_resources' has no attribute 'declare_namespace'"
+                )
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            with self.assertRaises(ImportError):
+                feishu._load_feishu_sdk()
+
+    def test_module_import_survives_sdk_attribute_error(self):
+        script = r"""
+import builtins
+real_import = builtins.__import__
+
+def fake_import(name, *args, **kwargs):
+    if name == "lark_oapi":
+        raise AttributeError(
+            "module 'pkg_resources' has no attribute 'declare_namespace'"
+        )
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = fake_import
+from gateway.platforms import feishu
+assert feishu.FEISHU_AVAILABLE is False
+assert feishu.lark is None
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[2],
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_check_requirements_returns_false_when_sdk_import_is_broken(self):
+        from gateway.platforms import feishu
+
+        with (
+            patch("gateway.platforms.feishu.FEISHU_AVAILABLE", False),
+            patch("tools.lazy_deps.ensure", return_value=None),
+            patch(
+                "gateway.platforms.feishu._load_feishu_sdk",
+                side_effect=ImportError("Feishu/Lark SDK is unavailable"),
+            ),
+        ):
+            self.assertFalse(feishu.check_feishu_requirements())
 
 
 class TestConfigEnvOverrides(unittest.TestCase):

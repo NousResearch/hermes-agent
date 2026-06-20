@@ -94,6 +94,8 @@ class TestMem0FiltersV2:
         call = client.captured_add[0]
         assert call["user_id"] == "u123"
         assert call["agent_id"] == "hermes"
+        # Default: auto_extract_facts=True, so infer should be True
+        assert call["infer"] is True
 
     def test_conclude_uses_write_filters(self, monkeypatch):
         client = FakeClientV2()
@@ -239,3 +241,110 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+    def test_default_auto_sync_turns_true(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test")
+
+        assert provider._auto_sync_turns is True
+
+    def test_default_auto_extract_facts_true(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test")
+
+        assert provider._auto_extract_facts is True
+
+
+# ---------------------------------------------------------------------------
+# Plan B knobs: auto_sync_turns + auto_extract_facts
+# ---------------------------------------------------------------------------
+
+
+class TestMem0SyncGating:
+    """auto_sync_turns and auto_extract_facts control sync_turn write behaviour."""
+
+    def _make_provider(self, monkeypatch, client, *, auto_sync_turns=True, auto_extract_facts=True):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._auto_sync_turns = auto_sync_turns
+        provider._auto_extract_facts = auto_extract_facts
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_sync_turn_noop_when_auto_sync_turns_false(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client, auto_sync_turns=False)
+
+        provider.sync_turn("user said this", "assistant replied", session_id="s1")
+        # No worker thread should have been started — but guard with a join if it was.
+        if provider._sync_thread is not None:
+            provider._sync_thread.join(timeout=2)
+
+        assert client.captured_add == []
+
+    def test_sync_turn_passes_infer_false_when_extract_disabled(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(
+            monkeypatch, client, auto_sync_turns=True, auto_extract_facts=False
+        )
+
+        provider.sync_turn("user said this", "assistant replied", session_id="s1")
+        provider._sync_thread.join(timeout=2)
+
+        assert len(client.captured_add) == 1
+        assert client.captured_add[0]["infer"] is False
+
+    def test_sync_turn_passes_infer_true_when_extract_enabled(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(
+            monkeypatch, client, auto_sync_turns=True, auto_extract_facts=True
+        )
+
+        provider.sync_turn("user said this", "assistant replied", session_id="s1")
+        provider._sync_thread.join(timeout=2)
+
+        assert len(client.captured_add) == 1
+        assert client.captured_add[0]["infer"] is True
+
+    def test_conclude_always_uses_infer_false_regardless_of_extract_flag(self, monkeypatch):
+        """mem0_conclude is the 'store verbatim' contract — must never run extraction."""
+        client = FakeClientV2()
+        provider = self._make_provider(
+            monkeypatch, client, auto_sync_turns=False, auto_extract_facts=True
+        )
+
+        provider.handle_tool_call("mem0_conclude", {"conclusion": "fact A"})
+
+        assert len(client.captured_add) == 1
+        assert client.captured_add[0]["infer"] is False
+
+    def test_config_load_picks_up_auto_sync_turns_from_json(self, monkeypatch, tmp_path):
+        """mem0.json overrides should set _auto_sync_turns on initialize()."""
+        import json as _json
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(_json.dumps({"auto_sync_turns": False}))
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test")
+
+        assert provider._auto_sync_turns is False
+
+    def test_config_load_picks_up_auto_extract_facts_from_json(self, monkeypatch, tmp_path):
+        import json as _json
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(_json.dumps({"auto_extract_facts": False}))
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test")
+
+        assert provider._auto_extract_facts is False

@@ -52,6 +52,15 @@ def _load_config() -> dict:
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
+        # Whether to write every turn to Mem0 for server-side fact extraction.
+        # Defaults to True (legacy behaviour). Set False to skip turn-by-turn
+        # writes entirely — only mem0_conclude() will store memories.
+        "auto_sync_turns": True,
+        # When auto_sync_turns is True, controls whether Mem0's server-side
+        # LLM extracts facts from the turn (True, legacy) or just stores
+        # the messages verbatim (False). Has no effect when auto_sync_turns
+        # is False.
+        "auto_extract_facts": True,
     }
 
     config_path = get_hermes_home() / "mem0.json"
@@ -127,6 +136,8 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
+        self._auto_sync_turns = True
+        self._auto_extract_facts = True
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -164,6 +175,8 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+            {"key": "auto_sync_turns", "description": "Write every turn to Mem0 (set false to only store via mem0_conclude)", "default": "true", "choices": ["true", "false"]},
+            {"key": "auto_extract_facts", "description": "Run Mem0 server-side LLM fact extraction on turn writes", "default": "true", "choices": ["true", "false"]},
         ]
 
     def _get_client(self):
@@ -209,6 +222,8 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
+        self._auto_sync_turns = bool(self._config.get("auto_sync_turns", True))
+        self._auto_extract_facts = bool(self._config.get("auto_extract_facts", True))
 
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
@@ -271,7 +286,16 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
+        """Send the turn to Mem0 for server-side fact extraction (non-blocking).
+
+        Gated by ``auto_sync_turns`` (default True). When False, this method
+        becomes a no-op and only explicit ``mem0_conclude`` calls write to
+        Mem0. ``auto_extract_facts`` (default True) controls whether the
+        Mem0 server runs LLM fact extraction on the turn (passed through
+        as the ``infer`` kwarg).
+        """
+        if not self._auto_sync_turns:
+            return
         if self._is_breaker_open():
             return
 
@@ -282,7 +306,11 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, **self._write_filters())
+                client.add(
+                    messages,
+                    **self._write_filters(),
+                    infer=self._auto_extract_facts,
+                )
                 self._record_success()
             except Exception as e:
                 self._record_failure()

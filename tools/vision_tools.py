@@ -584,12 +584,20 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
     # Check the provider's registered profile for the supports_vision flag.
-    # This covers vision-capable providers like xiaomi, minimax, etc. that
-    # aren't in the hardcoded list above.
+    # This covers vision-capable providers that aren't in the hardcoded list
+    # above.  However, ``supports_vision`` only means the model accepts
+    # images in *user* messages — some providers (e.g. Xiaomi MiMo) reject
+    # list-type tool content (400 "text is not set").  The profile's
+    # ``supports_vision_tool_messages`` flag explicitly tracks this: when it
+    # is False, the provider cannot handle images inside tool results.
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(p)
         if profile is not None and profile.supports_vision:
+            # If the profile explicitly declares tool-message incompatibility,
+            # respect it — otherwise assume compatible (backward compat).
+            if getattr(profile, "supports_vision_tool_messages", True) is False:
+                return False
             return True
     except Exception:
         pass
@@ -604,16 +612,29 @@ def _should_use_native_vision_fast_path() -> bool:
     """Whether vision tools should attach the image to the main model directly
     instead of routing through the auxiliary vision LLM.
 
-    True when image routing resolves to ``native`` AND either the provider is
-    known to accept images inside tool results, or the user explicitly declared
-    the model vision-capable via the ``model.supports_vision`` config override.
-    The override is the escape hatch for custom/local providers that aren't in
-    the static allowlist. Best-effort: any resolution failure returns False so
-    the caller falls back to the legacy aux-LLM path.
+    True when image routing resolves to ``native`` AND the provider is known
+    to accept images inside tool results.
+
+    Previously this also returned True when ``_lookup_supports_vision`` was
+    True (user override or profile), but that conflated two independent
+    capabilities: vision in *user* messages vs. vision in *tool-result*
+    messages.  Providers like Xiaomi MiMo support the former but reject
+    list-type tool content (400 "text is not set").  Enabling the native fast
+    path for such providers returns a multimodal tool-result envelope that
+    the agent loop immediately degrades to a text summary — defeating the
+    fast path entirely and wasting an API round-trip.  The legacy aux-LLM
+    path is correct for these providers because it sends the image inside a
+    *user* message, which they do accept.
+
+    The ``model.supports_vision`` config override is still respected for
+    providers that ARE in the ``_supports_media_in_tool_results`` allowlist
+    (e.g. custom/local OpenAI-compatible endpoints).  Best-effort: any
+    resolution failure returns False so the caller falls back to the legacy
+    aux-LLM path.
     """
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
 
         provider = _read_main_provider()
@@ -621,10 +642,11 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True
-        )
+        # The provider must actually accept images in tool-result messages.
+        # Without this, the native fast path returns a _multimodal envelope
+        # that the agent loop degrades to a text summary for providers like
+        # Xiaomi — wasting a round-trip and losing the image pixels.
+        return _supports_media_in_tool_results(provider, model)
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False
@@ -1199,11 +1221,14 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     question = args.get("question", "")
 
     # Fast path: when native image routing is in effect for the active main
-    # model (provider accepts images in tool results, or the user set the
-    # model.supports_vision override), short-circuit the auxiliary LLM and
-    # return the image bytes as a multimodal tool-result envelope. The main
-    # model sees the pixels directly on its next turn — no aux call, no
-    # information loss, no extra latency.
+    # model AND the provider accepts images in tool-result messages, short-
+    # circuit the auxiliary LLM and return the image bytes as a multimodal
+    # tool-result envelope. The main model sees the pixels directly on its
+    # next turn — no aux call, no information loss, no extra latency.
+    #
+    # Providers that support vision in user messages but reject list-type
+    # tool content (e.g. Xiaomi MiMo) fall through to the legacy aux-LLM
+    # path below, which sends the image inside a *user* message.
     if _should_use_native_vision_fast_path():
         logger.info("vision_analyze: native fast path")
         return _vision_analyze_native(image_url, question)

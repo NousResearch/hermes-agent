@@ -1235,7 +1235,10 @@ def _cross_process_init_lock(path: Path):
             else:
                 import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
         finally:
             handle.close()
 

@@ -2411,6 +2411,7 @@ def _make_spotify_callback_handler(expected_path: str) -> tuple[type[BaseHTTPReq
         "error": None,
         "error_description": None,
     }
+    result_lock = threading.Lock()
 
     class _SpotifyCallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -2422,15 +2423,25 @@ def _make_spotify_callback_handler(expected_path: str) -> tuple[type[BaseHTTPReq
                 return
 
             params = parse_qs(parsed.query)
-            result["code"] = params.get("code", [None])[0]
-            result["state"] = params.get("state", [None])[0]
-            result["error"] = params.get("error", [None])[0]
-            result["error_description"] = params.get("error_description", [None])[0]
+            incoming = {
+                "code": params.get("code", [None])[0],
+                "state": params.get("state", [None])[0],
+                "error": params.get("error", [None])[0],
+                "error_description": params.get("error_description", [None])[0],
+            }
+            # ThreadingHTTPServer handles each connection on its own thread.
+            # Once we have a terminal OAuth result (code or error), keep the
+            # first one so a concurrent or retry callback cannot overwrite
+            # state before _spotify_wait_for_callback() reads it.
+            if incoming["code"] or incoming["error"]:
+                with result_lock:
+                    if not (result["code"] or result["error"]):
+                        result.update(incoming)
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            if result["error"]:
+            if incoming["error"]:
                 body = "<html><body><h1>Spotify authorization failed.</h1>You can close this tab.</body></html>"
             else:
                 body = "<html><body><h1>Spotify authorization received.</h1>You can close this tab.</body></html>"
@@ -2450,8 +2461,9 @@ def _spotify_wait_for_callback(
     host, port, path = _spotify_validate_redirect_uri(redirect_uri)
     handler_cls, result = _make_spotify_callback_handler(path)
 
-    class _ReuseHTTPServer(HTTPServer):
+    class _ReuseHTTPServer(ThreadingHTTPServer):
         allow_reuse_address = True
+        daemon_threads = True
 
     try:
         server = _ReuseHTTPServer((host, port), handler_cls)

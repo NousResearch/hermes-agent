@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import urllib.request
+from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import auth as auth_mod
+from hermes_cli.auth import _make_spotify_callback_handler
 
 
 def test_store_provider_state_can_skip_active_provider() -> None:
@@ -181,3 +184,81 @@ def test_spotify_interactive_setup_empty_aborts(
     env_path = tmp_path / ".env"
     if env_path.exists():
         assert "HERMES_SPOTIFY_CLIENT_ID" not in env_path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Callback server — threading and result-latch regression tests
+# ---------------------------------------------------------------------------
+
+def _spotify_start_test_server() -> tuple[ThreadingHTTPServer, object, dict, str]:
+    """Spin up a Spotify callback server on a random port for testing."""
+    import threading
+    path = "/spotify/callback"
+    handler_cls, result = _make_spotify_callback_handler(path)
+
+    class _ReuseServer(ThreadingHTTPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    server = _ReuseServer(("127.0.0.1", 0), handler_cls)
+    port = server.server_address[1]
+    redirect_uri = f"http://127.0.0.1:{port}{path}"
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    return server, thread, result, redirect_uri
+
+
+def test_spotify_callback_server_accepts_threaded_connections():
+    """ThreadingHTTPServer must serve a second connection while a first is
+    still being processed.  A single-threaded HTTPServer would deadlock."""
+    import socket
+    import threading
+
+    server, thread, result, redirect_uri = _spotify_start_test_server()
+    try:
+        # Open a raw connection that keeps the socket alive without completing
+        # the HTTP request — simulates Chrome holding a loopback connection open.
+        stuck_sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=2)
+        stuck_sock.send(b"GET /spotify/callback HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+        # Do NOT send the final \r\n — server waits for the full request.
+
+        # The actual OAuth callback must still land on a different thread.
+        port = server.server_address[1]
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/spotify/callback?code=auth-code&state=s1",
+            timeout=3,
+        ) as response:
+            assert response.status == 200
+        assert result["code"] == "auth-code"
+    finally:
+        stuck_sock.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_spotify_callback_server_latches_first_terminal_callback_result():
+    """Once a terminal result (code or error) arrives, a later concurrent
+    callback must not overwrite it."""
+    server, thread, result, redirect_uri = _spotify_start_test_server()
+    try:
+        # First: valid authorization code.
+        with urllib.request.urlopen(f"{redirect_uri}?code=first-code&state=s1", timeout=2) as response:
+            assert response.status == 200
+        # Second: error callback arriving concurrently / as a retry.
+        with urllib.request.urlopen(
+            f"{redirect_uri}?error=access_denied&error_description=late&state=s2",
+            timeout=2,
+        ) as response:
+            body = response.read().decode()
+        assert response.status == 200
+        # Response page must reflect the *second* request's own error.
+        assert "authorization failed" in body
+        # But the latched result dict must still hold the first code.
+        assert result["code"] == "first-code"
+        assert result["state"] == "s1"
+        assert result["error"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)

@@ -3686,6 +3686,7 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
                 pricing=True,
                 capabilities=True,
                 refresh=bool(refresh),
+                probe_custom_providers=bool(refresh),
             )
     except HTTPException:
         raise

@@ -5500,6 +5500,7 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     live_fetch.assert_not_called()
     # list_authenticated_providers is the single source.
     assert listing.call_count == 1
+    assert listing.call_args.kwargs["probe_custom_providers"] is False
 
 
 def test_model_options_propagates_list_exception(monkeypatch):
@@ -5523,6 +5524,22 @@ def test_model_options_propagates_list_exception(monkeypatch):
 # ---------------------------------------------------------------------------
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------
+
+
+def test_model_options_refresh_allows_custom_provider_probes(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"providers": {}, "custom_providers": []},
+    )
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as listing:
+        resp = server._methods["model.options"](78, {"session_id": "", "refresh": True})
+
+    assert "result" in resp, resp
+    assert listing.call_args.kwargs["probe_custom_providers"] is True
 
 
 class _ImmediateThread:

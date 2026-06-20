@@ -9010,6 +9010,13 @@ def _(rid, params: dict) -> dict:
             {"type": "prefill", "message": target_text, "notice": notice},
         )
 
+    if name == "approval-status":
+        try:
+            from tools.approval import format_approval_status
+            return _ok(rid, {"type": "exec", "output": format_approval_status()})
+        except Exception as exc:
+            return _ok(rid, {"type": "exec", "output": f"Approval status unavailable: {exc}"})
+
     if name in {"blockers", "plan", "execute", "review", "verify", "fix-ci", "ship", "learn", "checkpoint"}:
         try:
             from hermes_cli.goal_os import GoalOSManager

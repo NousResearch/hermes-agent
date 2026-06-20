@@ -24,6 +24,15 @@ from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+_LAST_APPROVAL_REQUEST: dict[str, Any] = {
+    "category": "unknown",
+    "action": "",
+    "summary": "",
+    "reason": "No approval request recorded yet.",
+    "asked_niko": False,
+    "at": 0.0,
+}
+
 _CLIO_MVP_HARD_GATE_RE = re.compile(
     r"\b("
     r"provider\s*(call|run|test|credential|key|secret|api)|"
@@ -50,6 +59,9 @@ _CLIO_MVP_SAFE_COMMAND_RE = re.compile(
     r"uv\s+build\b|npm\s+(run\s+)?(test|lint|build|typecheck)\b|"
     r"pnpm\s+(test|lint|build|typecheck)\b|python\s+-m\s+py_compile\b|"
     r"grep\b|rg\b|find\b|ls\b|pwd\b|date\b|wc\b|sha256sum\b|"
+    r"ssh\s+[^\s]+\s+['\"]?sudo\s+-n\s+/usr/local/sbin/"
+    r"(?:buidl-staging-deploy-no-secret|buidl-staging-controlled-provider-setup)\s+"
+    r"(?:(?:--self-check)|(?:--dry-run\s+[0-9a-f]{40}.*)|(?:--apply\s+[0-9a-f]{40}.*))['\"]?|"
     r"systemctl\s+--user\s+(status|show|restart)\s+hermes-gateway\.service\b|"
     r"hermes\s+(status|doctor|config\s+(path|set\s+agent\.execution_profile\s+clio-mvp-execution-v1))\b"
     r")",
@@ -1118,6 +1130,55 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _record_approval_status(*, category: str, action: str, summary: str, reason: str, asked_niko: bool) -> None:
+    _LAST_APPROVAL_REQUEST.update({
+        "category": category,
+        "action": action,
+        "summary": str(summary or "")[:240],
+        "reason": reason,
+        "asked_niko": bool(asked_niko),
+        "at": time.time(),
+    })
+
+
+def approval_status_snapshot() -> dict[str, Any]:
+    """Return non-secret approval diagnostics for /approval-status."""
+    profile_active = False
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.clio_profile import is_clio_mvp_execution_enabled
+
+        profile_active = is_clio_mvp_execution_enabled(load_config())
+    except Exception:
+        profile_active = False
+    safe_active = _clio_mvp_safe_actions_enabled()
+    return {
+        "mvp_execution_profile_active": profile_active,
+        "safe_action_auto_approval_active": safe_active,
+        "hard_gates_active": True,
+        "last_approval_request_category": _LAST_APPROVAL_REQUEST.get("category", "unknown"),
+        "last_approval_request_action": _LAST_APPROVAL_REQUEST.get("action", ""),
+        "last_approval_request_summary": _LAST_APPROVAL_REQUEST.get("summary", ""),
+        "last_approval_asked_niko": bool(_LAST_APPROVAL_REQUEST.get("asked_niko", False)),
+        "why_it_asked_niko": _LAST_APPROVAL_REQUEST.get("reason", "No approval request recorded yet."),
+    }
+
+
+def format_approval_status() -> str:
+    status = approval_status_snapshot()
+    yes_no = lambda value: "yes" if value else "no"
+    return "\n".join([
+        "Approval status",
+        f"- MVP execution profile active: {yes_no(status['mvp_execution_profile_active'])}",
+        f"- Safe-action auto-approval active: {yes_no(status['safe_action_auto_approval_active'])}",
+        f"- Hard gates active: {yes_no(status['hard_gates_active'])}",
+        f"- Last approval request category: {status['last_approval_request_category']}",
+        f"- Last approval request action: {status['last_approval_request_action'] or 'none'}",
+        f"- Last approval request summary: {status['last_approval_request_summary'] or 'none'}",
+        f"- Asked Niko: {yes_no(status['last_approval_asked_niko'])}",
+        f"- Why it asked Niko: {status['why_it_asked_niko']}",
+    ])
+
 def _clio_mvp_safe_actions_enabled() -> bool:
     """Return True when Clio MVP standing safe-action approvals are active."""
     try:
@@ -1132,7 +1193,19 @@ def _clio_mvp_safe_actions_enabled() -> bool:
         return False
 
 
+def _is_approved_buidl_setup_or_provider_safe_wrapper(text: str) -> bool:
+    return bool(re.search(
+        r"ssh\s+[^\s]+\s+['\"]?sudo\s+-n\s+/usr/local/sbin/"
+        r"(?:buidl-staging-deploy-no-secret|buidl-staging-controlled-provider-setup)\s+"
+        r"(?:(?:--self-check)|(?:--dry-run\s+[0-9a-f]{40}.*)|(?:--apply\s+[0-9a-f]{40}.*))['\"]?",
+        text or "",
+        re.IGNORECASE,
+    ))
+
+
 def _contains_clio_mvp_hard_gate(text: str) -> bool:
+    if _is_approved_buidl_setup_or_provider_safe_wrapper(text):
+        return False
     return bool(_CLIO_MVP_HARD_GATE_RE.search(text or ""))
 
 
@@ -1178,14 +1251,21 @@ def _is_clio_mvp_safe_execute_code(code: str) -> bool:
 def _clio_mvp_auto_approve(action: str, payload: str, description: str) -> bool:
     """Auto-approve already delegated Clio MVP safe engineering actions."""
     if not _clio_mvp_safe_actions_enabled():
+        _record_approval_status(category="unknown", action=action, summary=payload, reason="Clio MVP safe-action auto-approval is not active.", asked_niko=False)
         return False
     if action == "terminal" and not _is_clio_mvp_safe_command(payload):
+        category = "hard_gate" if _contains_clio_mvp_hard_gate(payload + " " + description) else "unknown"
+        _record_approval_status(category=category, action=action, summary=payload, reason="Command is not in the Clio MVP safe-action allowlist or touches a hard gate.", asked_niko=category != "hard_gate")
         return False
     if action == "execute_code" and not _is_clio_mvp_safe_execute_code(payload):
+        category = "hard_gate" if _contains_clio_mvp_hard_gate(payload + " " + description) else "unknown"
+        _record_approval_status(category=category, action=action, summary=payload, reason="execute_code payload is not a recognized safe engineering helper or touches a hard gate.", asked_niko=category != "hard_gate")
         return False
     if action == "apply_patch" and _contains_clio_mvp_hard_gate(payload + " " + description):
+        _record_approval_status(category="hard_gate", action=action, summary=payload, reason="Patch request mentions a hard approval gate.", asked_niko=False)
         return False
     if action not in {"terminal", "execute_code", "apply_patch"}:
+        _record_approval_status(category="unknown", action=action, summary=payload, reason="Unknown approval action category.", asked_niko=True)
         return False
     logger.info(
         "Clio MVP safe-action auto-approved %s: %s (%s)",
@@ -1193,6 +1273,7 @@ def _clio_mvp_auto_approve(action: str, payload: str, description: str) -> bool:
         str(payload or "")[:200],
         str(description or "")[:200],
     )
+    _record_approval_status(category="safe", action=action, summary=payload, reason="Safe delegated engineering action auto-approved; Niko was not asked.", asked_niko=False)
     return True
 
 

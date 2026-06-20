@@ -129,6 +129,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[note]"),
 
     CommandDef("status", "Show session, model, token, and context info", "Session"),
+    CommandDef("approval-status", "Show Clio MVP approval gate diagnostics without secrets", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",

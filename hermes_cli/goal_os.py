@@ -19,6 +19,7 @@ from typing import Any, Literal
 GoalStatus = Literal["pursuing", "paused", "blocked", "achieved", "failed", "budget_limited", "cancelled"]
 CardStatus = Literal["backlog", "ready", "in_progress", "review", "verification", "blocked", "done", "cancelled"]
 ReportLabel = Literal["GREEN", "RED", "NOISE"]
+ControlledProviderStatus = Literal["PROVIDER_SAFE_READY", "CONTROLLED_SETUP_READY", "HUMAN_BLIND_PROMPT_REQUIRED", "PROMPT_RUN_REPORTED", "COUNTERS_VERIFIED", "PROVIDER_SAFE_RESTORED", "CHECKPOINT_ACCEPTED"]
 
 BLIND_PROMPT_PLACEHOLDER = "BLIND_PROMPT_CHOSEN_BY_NIKO_OR_STEVE_AT_TEST_TIME"
 
@@ -219,6 +220,23 @@ class GoalOSReport:
     goal: GoalContract | None = None
 
 
+@dataclass
+class GreenReadinessVerdict:
+    classification: ReportLabel
+    reason: str
+
+
+CONTROLLED_PROVIDER_STATUSES: tuple[ControlledProviderStatus, ...] = (
+    "PROVIDER_SAFE_READY",
+    "CONTROLLED_SETUP_READY",
+    "HUMAN_BLIND_PROMPT_REQUIRED",
+    "PROMPT_RUN_REPORTED",
+    "COUNTERS_VERIFIED",
+    "PROVIDER_SAFE_RESTORED",
+    "CHECKPOINT_ACCEPTED",
+)
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
@@ -316,6 +334,111 @@ def classify_report(text: str) -> ReportLabel:
     if any(term in lower for term in ("harmless", "non-blocking", "noise", "wording difference")):
         return "NOISE"
     return "GREEN"
+
+
+def _is_ui_or_browser_work(goal: GoalContract, card: TaskCard | None = None) -> bool:
+    haystack = " ".join([
+        goal.title,
+        goal.business_outcome,
+        *(goal.acceptance_criteria or []),
+        *((card.acceptance_criteria if card else []) or []),
+        card.title if card else "",
+    ]).lower()
+    return bool(re.search(r"\bui\b", haystack)) or any(marker in haystack for marker in ("browser", "product qa", "design qa", "design quality", "generated website", "live preview"))
+
+
+def _has_true_blocker(goal: GoalContract) -> bool:
+    return any(bool(blocker.get("true_blocker")) for blocker in goal.blockers)
+
+
+def _has_contradiction(goal: GoalContract) -> bool:
+    for item in goal.evidence_log:
+        if item.get("contradiction") is True:
+            return True
+        summary = str(item.get("summary", "")).lower()
+        if "browser still shows" in summary and "setup" in " ".join(str(x.get("summary", "")) for x in goal.evidence_log).lower():
+            return True
+        if "contradict" in summary:
+            return True
+    return False
+
+
+def _verifier_evidence_items(goal: GoalContract) -> list[dict[str, Any]]:
+    return [item for item in goal.evidence_log if str(item.get("role", "")).lower() == "verifier agent"]
+
+
+def _has_verifier_evidence(goal: GoalContract) -> bool:
+    for item in _verifier_evidence_items(goal):
+        if item.get("acceptance_checked") is True and (item.get("commands") or item.get("deploy_evidence") or item.get("browser_evidence") or item.get("summary")):
+            return True
+    return False
+
+
+def _has_product_qa_evidence(goal: GoalContract) -> bool:
+    return any(str(item.get("role", "")).lower() == "product qa agent" or item.get("product_qa") for item in goal.evidence_log)
+
+
+def _has_design_qa_evidence(goal: GoalContract) -> bool:
+    return any(str(item.get("role", "")).lower() == "design qa agent" or item.get("design_qa") for item in goal.evidence_log)
+
+
+def _has_memory_evidence(goal: GoalContract) -> bool:
+    return any(str(item.get("role", "")).lower() == "memory agent" or item.get("memory_agent") for item in goal.evidence_log)
+
+
+def _is_buidl_goal(goal: GoalContract) -> bool:
+    haystack = " ".join([goal.title, goal.business_outcome, *(goal.acceptance_criteria or [])]).lower()
+    return "buidl" in haystack
+
+
+def _has_browser_or_human_evidence(goal: GoalContract) -> bool:
+    return any(item.get("browser_evidence") or item.get("human_browser_report") for item in goal.evidence_log)
+
+
+def evaluate_goal_report_readiness(goal: GoalContract, *, requested_label: str) -> GreenReadinessVerdict:
+    label = str(requested_label or "").upper()
+    if label != "GREEN":
+        return GreenReadinessVerdict(classify_report(label), "GREEN guard not requested.")
+    if _has_true_blocker(goal):
+        return GreenReadinessVerdict("RED", "Unresolved RED blocker exists.")
+    if _has_contradiction(goal):
+        return GreenReadinessVerdict("RED", "Verifier evidence has a contradiction between browser state and setup state.")
+    if not _has_verifier_evidence(goal):
+        return GreenReadinessVerdict("RED", "GREEN requires verifier evidence from the Verifier Agent with acceptance criteria checked.")
+    required_missing = []
+    if _is_buidl_goal(goal):
+        if not _has_product_qa_evidence(goal):
+            required_missing.append("Product QA evidence")
+        if not _has_memory_evidence(goal):
+            required_missing.append("Memory Agent evidence")
+    if required_missing:
+        return GreenReadinessVerdict("RED", "GREEN for Buidl work requires " + ", ".join(required_missing) + ".")
+    if _is_ui_or_browser_work(goal):
+        missing = []
+        if not _has_product_qa_evidence(goal):
+            missing.append("Product QA evidence")
+        if not _has_design_qa_evidence(goal):
+            missing.append("Design QA evidence")
+        if "browser" in goal.title.lower() and not _has_browser_or_human_evidence(goal):
+            missing.append("browser or explicit human browser evidence")
+        if missing:
+            return GreenReadinessVerdict("RED", "GREEN for UI/browser work requires " + ", ".join(missing) + ".")
+    return GreenReadinessVerdict("GREEN", "Verifier evidence satisfies GREEN guard.")
+
+
+def controlled_provider_status_report(goal: GoalContract, statuses: list[str]) -> GoalOSReport:
+    normalized = [str(status).strip().upper() for status in statuses if str(status).strip()]
+    valid = [status for status in normalized if status in CONTROLLED_PROVIDER_STATUSES]
+    if "CHECKPOINT_ACCEPTED" in valid:
+        accepted_index = valid.index("CHECKPOINT_ACCEPTED")
+        missing_prior = [status for status in CONTROLLED_PROVIDER_STATUSES[:accepted_index] if status not in valid]
+        if missing_prior:
+            return GoalOSReport("RED", "RED: controlled provider workflow may not skip from setup to CHECKPOINT_ACCEPTED. Missing: " + ", ".join(missing_prior), goal)
+    if valid == ["CONTROLLED_SETUP_READY"] or ("CONTROLLED_SETUP_READY" in valid and "PROMPT_RUN_REPORTED" not in valid):
+        return GoalOSReport("NOISE", "NOISE: SETUP_READY. READY_FOR_BROWSER_TESTING=yes. HUMAN_BLIND_PROMPT_REQUIRED=yes. Product checkpoint has not passed.", goal)
+    if "CHECKPOINT_ACCEPTED" in valid:
+        return GoalOSReport("GREEN", "GREEN: CHECKPOINT_ACCEPTED with ordered provider status evidence.", goal)
+    return GoalOSReport("NOISE", "NOISE: controlled provider status: " + ", ".join(valid or ["unknown"]), goal)
 
 
 class GoalOSManager:
@@ -480,6 +603,52 @@ class GoalOSManager:
             goal.status = "blocked"
             goal.next_action = "Resolve true blocker or get explicit approval."
         self.save_goal(goal)
+
+    def close_card(self, card_id: str, *, actor_role: str, evidence: dict[str, Any]) -> GoalOSReport:
+        goal = None
+        card = None
+        for candidate in self.list_goals():
+            for candidate_card in candidate.cards:
+                if candidate_card.card_id == card_id:
+                    goal = candidate
+                    card = candidate_card
+                    break
+            if goal is not None:
+                break
+        if goal is None or card is None:
+            return GoalOSReport("RED", "RED: card not found for verifier close.")
+        if actor_role != "Verifier Agent":
+            card.status = "verification"
+            card.evidence.append({"role": actor_role, **dict(evidence or {}), "at": time.time()})
+            goal.evidence_log.append({"role": actor_role, "type": "self_report", **dict(evidence or {}), "at": time.time()})
+            goal.next_action = "Verifier Agent must review and close the card."
+            self.save_goal(goal)
+            return GoalOSReport("RED", "RED: Builder self-report cannot close a Goal OS card. Verifier Agent evidence is required.", goal)
+
+        evidence_payload = {"role": "Verifier Agent", "type": "verification", **dict(evidence or {}), "at": time.time()}
+        if evidence_payload.get("acceptance_checked") is not True:
+            return GoalOSReport("RED", "RED: verifier evidence must include acceptance_checked=true before card can be done.", goal)
+        if not (evidence_payload.get("commands") or evidence_payload.get("deploy_evidence") or evidence_payload.get("browser_evidence") or evidence_payload.get("summary")):
+            return GoalOSReport("RED", "RED: verifier evidence must include command, deploy, browser or summary evidence.", goal)
+
+        if _is_ui_or_browser_work(goal, card):
+            missing = []
+            if not evidence_payload.get("product_qa"):
+                missing.append("Product QA evidence")
+            if not evidence_payload.get("design_qa"):
+                missing.append("Design QA evidence")
+            if "browser" in (goal.title + " " + card.title).lower() and not evidence_payload.get("browser_evidence"):
+                missing.append("browser or explicit human browser evidence")
+            if missing:
+                return GoalOSReport("RED", "RED: UI/browser-facing card cannot close without " + ", ".join(missing) + ".", goal)
+
+        card.status = "done"
+        card.evidence.append(evidence_payload)
+        goal.evidence_log.append(evidence_payload)
+        goal.next_action = "Proceed to the next ready card or /ship after all cards are done."
+        self.save_goal(goal)
+        return GoalOSReport("GREEN", f"GREEN: verifier closed card {card.card_id} with evidence.", goal)
+
 
     def handle_command(
         self,

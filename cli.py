@@ -7938,6 +7938,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_goal_command(cmd_original)
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
+        elif canonical == "approval-status":
+            try:
+                from tools.approval import format_approval_status
+                _cprint(format_approval_status())
+            except Exception as exc:
+                _cprint(f"  Approval status unavailable: {exc}")
         elif canonical in {"blockers", "plan", "execute", "review", "verify", "fix-ci", "ship", "learn", "checkpoint"}:
             arg = cmd_original.split(None, 1)[1].strip() if len(cmd_original.split(None, 1)) > 1 else ""
             self._handle_goal_os_command(canonical, arg)

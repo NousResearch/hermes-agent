@@ -304,9 +304,15 @@ class SignalAdapter(BasePlatformAdapter):
         self._account_normalized = self.account.strip()
 
         # Track recently sent message timestamps to prevent echo-back loops
-        # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
+        # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds).
         self._recent_sent_timestamps: set = set()
         self._max_recent_timestamps = 50
+        # Keep a separate bounded cache of outbound Signal message timestamps.
+        # Signal quote.id is the timestamp of the quoted message, so this lets
+        # inbound replies identify that the user replied to a message sent by
+        # this bot even after the self-sync echo was filtered above.
+        self._sent_message_timestamps: set[str] = set()
+        self._max_sent_message_timestamps = 500
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
         # phone number to the corresponding UUID when signal-cli prefers it.
@@ -615,10 +621,16 @@ class SignalAdapter(BasePlatformAdapter):
                 )
                 return
 
-        # Extract quote (reply-to) context from Signal dataMessage
+        # Extract quote (reply-to) context from Signal dataMessage. Signal's
+        # quote.id is the timestamp of the quoted message; quote.author points
+        # at the quoted sender when available. Preserve both so the gateway can
+        # tell the agent when the user replied to a specific assistant message.
         quote_data = data_message.get("quote") or {}
         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
         reply_to_text = quote_data.get("text")
+        reply_to_author = self._extract_quote_author(quote_data)
+        reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
+        reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
 
         # Process attachments
         attachments_data = data_message.get("attachments", [])
@@ -703,9 +715,16 @@ class SignalAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             timestamp=timestamp,
-            raw_message={"sender": sender, "timestamp_ms": ts_ms},
+            raw_message={
+                "sender": sender,
+                "timestamp_ms": ts_ms,
+                "quote": quote_data if quote_data else None,
+            },
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_is_own_message=reply_to_is_own,
         )
 
         logger.debug("Signal: message from %s in %s: %s",
@@ -719,6 +738,51 @@ class SignalAdapter(BasePlatformAdapter):
             return
         self._recipient_uuid_by_number[number] = service_id
         self._recipient_number_by_uuid[service_id] = number
+
+    @staticmethod
+    def _extract_quote_author(quote_data: Any) -> Optional[str]:
+        """Return the best available Signal sender identifier from quote metadata."""
+        if not isinstance(quote_data, dict):
+            return None
+        for key in (
+            "author",
+            "authorNumber",
+            "authorUuid",
+            "authorAci",
+            "authorServiceId",
+            "authorServiceIdString",
+        ):
+            value = quote_data.get(key)
+            if value:
+                return str(value)
+        return None
+
+    def _quote_references_own_message(
+        self,
+        reply_to_id: Optional[str],
+        reply_to_author: Optional[str],
+    ) -> bool:
+        """True when a Signal quote points at this adapter's outbound message."""
+        if reply_to_id and str(reply_to_id) in self._sent_message_timestamps:
+            return True
+        if not reply_to_author:
+            return False
+        author = str(reply_to_author).strip()
+        if self._account_normalized and author == self._account_normalized:
+            return True
+        cached_uuid = self._recipient_uuid_by_number.get(self._account_normalized)
+        if cached_uuid and author == cached_uuid:
+            return True
+        cached_number = self._recipient_number_by_uuid.get(author)
+        return bool(cached_number and cached_number == self._account_normalized)
+
+    def _remember_sent_message_timestamp(self, timestamp: Any) -> None:
+        """Keep a bounded cache of outbound Signal timestamps for quote matching."""
+        if timestamp is None:
+            return
+        self._sent_message_timestamps.add(str(timestamp))
+        if len(self._sent_message_timestamps) > self._max_sent_message_timestamps:
+            self._sent_message_timestamps.pop()
 
     def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
         """Best-effort extraction of a Signal service ID from listContacts output."""
@@ -992,6 +1056,7 @@ class SignalAdapter(BasePlatformAdapter):
         ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
         if ts:
             self._recent_sent_timestamps.add(ts)
+            self._remember_sent_message_timestamp(ts)
             if len(self._recent_sent_timestamps) > self._max_recent_timestamps:
                 self._recent_sent_timestamps.pop()
 

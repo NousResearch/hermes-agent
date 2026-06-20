@@ -56,7 +56,9 @@ configuration.
 
 ## Terminal Backend Isolation
 
-The terminal backend is selected in `config.yaml`:
+The terminal backend is selected in `config.yaml`. The static config contract
+for the documented backend keys is captured in
+[`docs/plans/2026-06-20-004-terminal-backend-config-contract.md`](../plans/2026-06-20-004-terminal-backend-config-contract.md):
 
 ```yaml
 terminal:

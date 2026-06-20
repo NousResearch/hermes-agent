@@ -138,7 +138,7 @@ terminal:
 ```
 
 :::warning
-The agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, or switch to Docker for sandboxing. See [`docs/security/sandbox-approval-policy.md`](../../../docs/security/sandbox-approval-policy.md) for the approval-gate and sandbox-boundary contract.
+The agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, or switch to Docker for sandboxing. See [`docs/security/sandbox-approval-policy.md`](../../../docs/security/sandbox-approval-policy.md) for the approval-gate and sandbox-boundary contract, and [`docs/plans/2026-06-20-004-terminal-backend-config-contract.md`](../../../docs/plans/2026-06-20-004-terminal-backend-config-contract.md) for the static terminal-backend config contract.
 :::
 
 ### Docker Backend

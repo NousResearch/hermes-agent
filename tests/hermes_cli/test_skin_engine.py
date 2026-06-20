@@ -1,6 +1,7 @@
 """Tests for hermes_cli.skin_engine — the data-driven skin/theme system."""
 
 import subprocess
+import types
 
 import pytest
 
@@ -95,6 +96,34 @@ class TestBuiltinSkins:
 
         assert load_skin("auto").name == "daylight"
 
+    def test_auto_skin_resolves_windows_dark_to_default(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        monkeypatch.setattr(skin_engine.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(skin_engine, "_windows_app_uses_light_theme", lambda: False)
+
+        assert load_skin("auto").name == "default"
+
+    def test_windows_theme_probe_reads_app_theme_registry(self, monkeypatch):
+        from hermes_cli import skin_engine
+
+        class FakeKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        fake_winreg = types.SimpleNamespace(
+            HKEY_CURRENT_USER=object(),
+            OpenKey=lambda *_args: FakeKey(),
+            QueryValueEx=lambda _key, name: (1 if name == "AppsUseLightTheme" else 0, None),
+        )
+        monkeypatch.setitem(__import__("sys").modules, "winreg", fake_winreg)
+
+        assert skin_engine._windows_app_uses_light_theme() is True
+
     def test_auto_skin_resolves_linux_dark_to_default(self, monkeypatch):
         from hermes_cli import skin_engine
         from hermes_cli.skin_engine import load_skin
@@ -103,6 +132,46 @@ class TestBuiltinSkins:
         monkeypatch.setattr(skin_engine, "_linux_uses_light_theme", lambda: False)
 
         assert load_skin("auto").name == "default"
+
+    def test_linux_theme_probe_reads_portal_light_value(self, monkeypatch):
+        from hermes_cli import skin_engine
+
+        monkeypatch.setattr(skin_engine.shutil, "which", lambda command: f"/usr/bin/{command}")
+        monkeypatch.setattr(
+            skin_engine.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, stdout="(<uint32 2>,)\n", stderr=""
+            ),
+        )
+
+        assert skin_engine._linux_uses_light_theme() is True
+
+    def test_linux_theme_probe_falls_back_to_gsettings_dark(self, monkeypatch):
+        from hermes_cli import skin_engine
+
+        def fake_run(command, **_kwargs):
+            if command[0] == "gdbus":
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="unavailable")
+            return subprocess.CompletedProcess(
+                command, 0, stdout="'prefer-dark'\n", stderr=""
+            )
+
+        monkeypatch.setattr(skin_engine.shutil, "which", lambda command: f"/usr/bin/{command}")
+        monkeypatch.setattr(skin_engine.subprocess, "run", fake_run)
+
+        assert skin_engine._linux_uses_light_theme() is False
+
+    def test_theme_probe_skips_missing_commands(self, monkeypatch):
+        from hermes_cli import skin_engine
+
+        def fail_run(*_args, **_kwargs):
+            raise AssertionError("subprocess should not run when command is missing")
+
+        monkeypatch.setattr(skin_engine.shutil, "which", lambda command: None)
+        monkeypatch.setattr(skin_engine.subprocess, "run", fail_run)
+
+        assert skin_engine._run_theme_probe(["gdbus", "call"]) is None
 
     def test_auto_skin_falls_back_to_default_when_unknown(self, monkeypatch):
         from hermes_cli import skin_engine

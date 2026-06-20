@@ -5938,6 +5938,36 @@ def _kill_stale_dashboard_processes(
 _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
+def _repair_gateway_service_after_update() -> None:
+    """Re-register the gateway service if its script was lost during an update.
+
+    On Windows, ``hermes gateway install`` writes a ``.cmd`` wrapper into
+    ``<HERMES_HOME>/gateway-service/`` and registers a Scheduled Task (or
+    Startup-folder entry) pointing at it.  An aggressive update path (ZIP
+    fallback, ``git clean``, etc.) can silently remove the script while
+    leaving the Scheduled Task registered — the task reports "Ready" but
+    the target file no longer exists (issue #41255).
+
+    This function detects that state and regenerates the script so the
+    gateway survives the update without user intervention.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        from hermes_cli import gateway_windows
+
+        if not gateway_windows.is_installed():
+            return
+        script_path = gateway_windows.get_task_script_path()
+        if script_path.exists():
+            return  # script intact — nothing to repair
+        print("→ Repairing gateway service (script was removed during update)...")
+        gateway_windows._write_task_script()
+        print(f"  ✓ Gateway service script restored: {script_path}")
+    except Exception as exc:
+        logger.debug("Gateway service repair failed (non-fatal): %s", exc)
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -6015,7 +6045,10 @@ def _update_via_zip(args):
                     break
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        # Also preserve gateway-service/ — the Windows gateway install creates
+        # Scheduled Task scripts under HERMES_HOME/gateway-service/ which may
+        # live inside PROJECT_ROOT on some setups (issue #41255).
+        preserve = {"venv", "node_modules", ".git", ".env", "gateway-service"}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -6135,6 +6168,7 @@ def _update_via_zip(args):
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
     _kill_stale_dashboard_processes()
+    _repair_gateway_service_after_update()
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -10058,6 +10092,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # (no saved launch args) but we can stop it, and a hint is
         # printed for the user to re-launch.
         _kill_stale_dashboard_processes()
+        _repair_gateway_service_after_update()
 
         print()
         print("Tip: You can now select a provider and model:")

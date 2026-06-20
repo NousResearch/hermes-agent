@@ -4850,15 +4850,44 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         )
 
 
-def _resolve_worktree_workspace(task: Task) -> tuple[Path, str]:
-    """Resolve + materialize a linked git worktree for ``task``."""
+def _resolve_worktree_workspace(
+    task: Task, *, board: Optional[str] = None
+) -> tuple[Path, str]:
+    """Resolve + materialize a linked git worktree for ``task``.
+
+    When ``task.workspace_path`` is unset, the anchor is the board's
+    ``default_workdir`` (a persistent project checkout). This keeps every
+    worktree task under a meaningful, board-owned repo — ``<repo>/.worktrees/
+    <task-id>`` — instead of silently landing under the dispatcher's current
+    working directory (which is whatever directory the gateway happened to be
+    launched from, e.g. the Hermes checkout). If no anchor is configured
+    anywhere, we fail loudly rather than guess.
+    """
     branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
     if not task.workspace_path:
-        repo_root = _git_toplevel(Path.cwd())
-        if repo_root is None:
+        # Anchor on the board's configured default_workdir, not Path.cwd().
+        # The dispatcher's CWD is incidental (gateway launch dir) and using it
+        # scatters worktrees under whatever repo the gateway started in.
+        board_slug = board if board else get_current_board()
+        board_default = (read_board_metadata(board_slug).get("default_workdir") or "").strip()
+        if not board_default:
             raise ValueError(
                 f"task {task.id} has workspace_kind=worktree but no workspace_path, "
-                "and the dispatcher's current working directory is not inside a git repo"
+                f"and board {board_slug!r} has no default_workdir set. Set a board "
+                "default workdir (a git repo) or create the task with "
+                "--workspace worktree:<absolute-repo-path>."
+            )
+        anchor = Path(board_default).expanduser()
+        if not anchor.is_absolute():
+            raise ValueError(
+                f"board {board_slug!r} default_workdir {board_default!r} is not "
+                "absolute; use an absolute path to a git repo"
+            )
+        repo_root = _git_toplevel(anchor)
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but board "
+                f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
         target = repo_root / ".worktrees" / task.id
         _ensure_git_worktree(repo_root, target, branch_name)
@@ -4908,8 +4937,12 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     - ``worktree``: a real linked git worktree. If ``workspace_path`` names
       a repo root, Hermes treats it as an anchor and materializes a linked
       worktree at ``<repo>/.worktrees/<task-id>``. If ``workspace_path`` names
-      a concrete target path, Hermes creates/reuses that linked worktree. When
-      ``branch_name`` is empty, Hermes uses ``wt/<task-id>``.
+      a concrete target path, Hermes creates/reuses that linked worktree. With
+      no ``workspace_path``, Hermes anchors on the board's ``default_workdir``
+      and materializes ``<repo>/.worktrees/<task-id>`` per task; if no
+      ``default_workdir`` is configured it raises rather than guessing from the
+      dispatcher's CWD. When ``branch_name`` is empty, Hermes uses
+      ``wt/<task-id>``.
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
@@ -4945,7 +4978,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        p, _branch_name = _resolve_worktree_workspace(task)
+        p, _branch_name = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -6569,7 +6602,7 @@ def dispatch_once(
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed)
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
@@ -6661,7 +6694,7 @@ def dispatch_once(
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed)
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:

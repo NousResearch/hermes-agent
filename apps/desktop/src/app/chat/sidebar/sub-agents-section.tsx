@@ -6,7 +6,7 @@ import { listSubAgents, type SubAgentPeer } from '@/hermes'
 
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
-import { SubAgentChatDialog } from './sub-agent-chat-dialog'
+import { SubAgentChatDrawer } from './sub-agent-chat-drawer'
 
 // 下级在线状态由后台广播刷新(无 UI 信号),轮询让上/下线几秒内反映。
 const POLL_MS = 10_000
@@ -87,7 +87,7 @@ export function SidebarSubAgentsSection() {
           ))}
         </SidebarGroupContent>
       )}
-      <SubAgentChatDialog
+      <SubAgentChatDrawer
         onOpenChange={o => {
           if (!o) {
             setChatPeer(null)

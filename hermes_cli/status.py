@@ -144,7 +144,7 @@ def show_status(args):
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
         "FAL": "FAL_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
-        "GitHub": "GITHUB_TOKEN",
+        "GitHub": ("GITHUB_TOKEN", "GH_TOKEN"),
     }
 
     def _resolve_env(env_ref) -> str:

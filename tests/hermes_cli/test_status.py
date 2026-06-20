@@ -14,6 +14,22 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
+def test_show_status_includes_github_gh_token(monkeypatch, capsys, tmp_path):
+    # A user whose GitHub PAT lives in GH_TOKEN (the name the `gh` CLI exports)
+    # with GITHUB_TOKEN unset should still see GitHub as configured — matching
+    # `hermes doctor`, which resolves `GITHUB_TOKEN or GH_TOKEN`.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "ghp_testtoken1234567890")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    github_line = next(line for line in output.splitlines() if "GitHub" in line)
+    assert "(not set)" not in github_line
+    assert "ghp_...7890" in github_line
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

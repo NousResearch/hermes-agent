@@ -3129,7 +3129,12 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_text = None
+        if reply_to_message_id:
+            reply_to_text, reply_media_urls, reply_media_types = await self._fetch_message_full(reply_to_message_id)
+            # Merge reply media into current message media so the agent can see referenced images
+            media_urls.extend(reply_media_urls)
+            media_types.extend(reply_media_types)
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -4054,6 +4059,40 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _fetch_message_full(self, message_id: str) -> tuple[Optional[str], List[str], List[str]]:
+        """Fetch both text and media from a parent message for reply context."""
+        if not message_id:
+            return None, [], []
+        
+        # First get the text (using _fetch_message_text to support existing mocks)
+        text = await self._fetch_message_text(message_id)
+        
+        media_urls = []
+        media_types = []
+        
+        # Try to fetch media if client is available
+        if self._client:
+            try:
+                request = self._build_get_message_request(message_id)
+                response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+                if response and getattr(response, "success", lambda: False)():
+                    items = getattr(getattr(response, "data", None), "items", None) or []
+                    parent = items[0] if items else None
+                    body = getattr(parent, "body", None)
+                    msg_type = getattr(parent, "msg_type", "") or ""
+                    raw_content = getattr(body, "content", "") or ""
+                    
+                    # Extract and download media
+                    normalized = normalize_feishu_message(message_type=msg_type, raw_content=raw_content)
+                    media_urls, media_types = await self._download_feishu_message_resources(
+                        message_id=message_id,
+                        normalized=normalized,
+                    )
+            except Exception:
+                logger.warning("[Feishu] Failed to fetch media from parent message %s", message_id, exc_info=True)
+        
+        return text, media_urls, media_types
 
     def _extract_text_from_raw_content(
         self,

@@ -1432,6 +1432,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_watchdog_thread: Optional[threading.Thread] = None
+        self._ws_watchdog_stop: Optional[threading.Event] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
@@ -1681,6 +1683,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            self._start_websocket_watchdog()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
         except Exception as exc:
@@ -1693,6 +1696,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        self._stop_websocket_watchdog()
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -1747,6 +1751,90 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_text_batches.clear()
         self._pending_text_batch_counts.clear()
         self._pending_media_batches.clear()
+
+
+    # =========================================================================
+    # WebSocket watchdog — monitors connection and auto-reconnects on failure
+    # =========================================================================
+
+    def _start_websocket_watchdog(self) -> None:
+        """Start a background watchdog thread to monitor WS health and reconnect."""
+        if self._ws_watchdog_thread is not None and self._ws_watchdog_thread.is_alive():
+            return
+        self._ws_watchdog_stop = threading.Event()
+        self._ws_watchdog_thread = threading.Thread(
+            target=self._ws_watchdog_loop,
+            name="feishu-ws-watchdog",
+            daemon=True,
+        )
+        self._ws_watchdog_thread.start()
+        logger.debug("[Feishu] Watchdog thread started")
+
+    def _stop_websocket_watchdog(self) -> None:
+        """Signal the watchdog thread to stop."""
+        stop = self._ws_watchdog_stop
+        if stop is None:
+            return
+        stop.set()
+        self._ws_watchdog_stop = None
+        self._ws_watchdog_thread = None
+        logger.debug("[Feishu] Watchdog thread signalled to stop")
+
+    def _ws_watchdog_loop(self) -> None:
+        """
+        Background loop that monitors the WebSocket connection thread.
+        If the thread dies unexpectedly, reconnect with exponential backoff.
+        """
+        import time as time_module
+
+        reconnect_delay = self._ws_reconnect_interval
+        attempt = 0
+
+        while not (self._ws_watchdog_stop is not None and self._ws_watchdog_stop.is_set()):
+            time_module.sleep(reconnect_delay)
+
+            if self._ws_watchdog_stop is not None and self._ws_watchdog_stop.is_set():
+                break
+
+            # Check if the WS client thread (via _ws_future) is still running
+            ws_future = self._ws_future
+            if ws_future is None:
+                # No active connection — this is expected if not yet connected or cleanly disconnected
+                reconnect_delay = self._ws_reconnect_interval
+                attempt = 0
+                continue
+
+            if not ws_future.done():
+                # Thread is still alive and running — all good
+                reconnect_delay = self._ws_reconnect_interval
+                attempt = 0
+                continue
+
+            # Thread died — attempt reconnect with exponential back-off
+            if self._running:
+                logger.warning(
+                    "[Feishu] WebSocket thread died (attempt %d). Reconnecting in %ds...",
+                    attempt + 1,
+                    reconnect_delay,
+                )
+                try:
+                    loop = self._loop
+                    if loop is None or loop.is_closed():
+                        logger.warning("[Feishu] Adapter loop unavailable, skipping reconnect")
+                        break
+                    reconnect_delay = min(reconnect_delay * 2, 600)
+                    attempt += 1
+                    # Schedule reconnect on the adapter's event loop
+                    asyncio.run_coroutine_threadsafe(
+                        self._connect_with_retry(),
+                        loop,
+                    )
+                except Exception as exc:
+                    logger.warning("[Feishu] Watchdog reconnect failed: %s", exc)
+            else:
+                break
+
+        logger.debug("[Feishu] Watchdog loop exiting (running=%s)", self._running)
 
     def _disable_websocket_auto_reconnect(self) -> None:
         if self._ws_client is None:

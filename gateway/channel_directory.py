@@ -11,6 +11,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
 
@@ -137,6 +139,9 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             continue
         platforms[plat_name] = _build_from_sessions(plat_name)
 
+    if "telegram" in platforms:
+        _merge_configured_telegram_group_topics(platforms["telegram"])
+
     # Include plugin-registered platforms (dynamic enum members aren't in
     # Platform.__members__, so the loop above misses them).
     try:
@@ -198,6 +203,73 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     # Merge any DMs from session history
     channels.extend(_build_from_sessions("discord"))
     return channels
+
+
+def _merge_configured_telegram_group_topics(entries: List[Dict[str, Any]]) -> None:
+    """Merge configured Telegram forum topics into the directory cache.
+
+    Session discovery only sees topics after a user has spoken there. Configured
+    topics must still resolve for cron/send targets immediately after creation.
+    """
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return
+
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.debug("Channel directory: failed to read configured Telegram topics: %s", exc)
+        return
+
+    group_topics = (
+        config.get("platforms", {})
+        .get("telegram", {})
+        .get("extra", {})
+        .get("group_topics", [])
+    )
+    if not isinstance(group_topics, list):
+        return
+
+    seen_ids = {str(entry.get("id")) for entry in entries if entry.get("id") is not None}
+    chat_names: Dict[str, str] = {}
+    for entry in entries:
+        entry_id = str(entry.get("id", ""))
+        if not entry_id:
+            continue
+        chat_id = entry_id.split(":", 1)[0]
+        name = str(entry.get("name") or "")
+        if name:
+            chat_names.setdefault(chat_id, name.split(" / ", 1)[0])
+
+    for group in group_topics:
+        if not isinstance(group, dict):
+            continue
+        chat_id_raw = group.get("chat_id")
+        if chat_id_raw is None:
+            continue
+        chat_id = str(chat_id_raw)
+        chat_name = str(group.get("name") or group.get("chat_name") or chat_names.get(chat_id) or "Telegram")
+        topics = group.get("topics") or []
+        if not isinstance(topics, list):
+            continue
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            thread_id_raw = topic.get("thread_id")
+            if thread_id_raw is None:
+                continue
+            thread_id = str(thread_id_raw)
+            entry_id = f"{chat_id}:{thread_id}"
+            if entry_id in seen_ids:
+                continue
+            topic_name = str(topic.get("name") or f"topic {thread_id}")
+            entries.append({
+                "id": entry_id,
+                "name": f"{chat_name} / {topic_name}",
+                "type": "group",
+                "thread_id": thread_id,
+            })
+            seen_ids.add(entry_id)
 
 
 async def _build_slack(adapter) -> List[Dict[str, Any]]:

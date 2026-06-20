@@ -2491,6 +2491,58 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(captured["message_request"].request_body.msg_type, "audio")
         self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_audio_123"}')
 
+    def test_send_voice_routes_mp3_as_opus(self):
+        """MP3 files should be uploaded as file_type=opus when sent via send_voice,
+        even though .mp3 is not in _FEISHU_OPUS_UPLOAD_EXTENSIONS.  Feishu accepts
+        non-Opus audio uploaded as opus without codec validation."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_mp3_456"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["message_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_mp3_msg"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".mp3", delete=False) as tmp:
+            tmp.write(b"mp3")
+            audio_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(adapter.send_voice(chat_id="oc_chat", audio_path=audio_path))
+        finally:
+            os.unlink(audio_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["upload_request"].request_body.file_type, "opus")
+        self.assertEqual(captured["message_request"].request_body.msg_type, "audio")
+
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_extracts_title_and_links(self):
         from gateway.config import PlatformConfig

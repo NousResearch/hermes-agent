@@ -4865,6 +4865,12 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> tuple[str, str]:
         ext = Path(file_path).suffix.lower()
 
+        # If the caller explicitly requests audio, honor it.  Feishu accepts
+        # non-Opus audio uploaded as file_type=opus without codec validation,
+        # so MP3/WAV/M4A all render as voice bubbles when routed this way.
+        if requested_message_type == "audio":
+            return "opus", "audio"
+
         if ext in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
             return "opus", "audio"
 

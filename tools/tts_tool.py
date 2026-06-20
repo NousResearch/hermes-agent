@@ -2177,7 +2177,7 @@ def text_to_speech_tool(
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in {"telegram", "feishu"}
 
     # Determine output path
     if output_path:

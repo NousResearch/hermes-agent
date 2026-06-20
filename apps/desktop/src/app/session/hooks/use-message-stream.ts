@@ -144,6 +144,13 @@ function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
 // `scripts/profile-typing-lag.md` for the measurement work behind this.
 const STREAM_DELTA_FLUSH_MS = 33
 
+// Gateway transports can deliver `session.info running:false` just before the
+// terminal `message.complete` frame for the same turn. Treat that as a settle
+// signal, but give the final response event a short grace window before showing
+// the recovery bubble; otherwise successful provider calls can look like empty
+// turns in Desktop.
+const STREAM_SETTLED_NO_PAYLOAD_GRACE_MS = 1_500
+
 // Some failures deliver message.start (so the normal submit-start watchdog is
 // satisfied) but then never deliver any delta/tool/error/complete event. Keep
 // this bounded so the visible chat never stays locked behind the response timer
@@ -347,6 +354,80 @@ export function useMessageStream({
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
   const noPayloadWatchdogRef = useRef<Map<string, number>>(new Map())
+  const settledNoPayloadWatchdogRef = useRef<Map<string, number>>(new Map())
+
+  const clearSettledNoPayloadWatchdog = useCallback((sessionId?: string | null) => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    if (!sessionId) {
+      for (const id of settledNoPayloadWatchdogRef.current.values()) {
+        window.clearTimeout(id)
+      }
+      settledNoPayloadWatchdogRef.current.clear()
+
+      return
+    }
+
+    const id = settledNoPayloadWatchdogRef.current.get(sessionId)
+
+    if (id !== undefined) {
+      window.clearTimeout(id)
+      settledNoPayloadWatchdogRef.current.delete(sessionId)
+    }
+  }, [])
+
+  const armSettledNoPayloadWatchdog = useCallback(
+    (sessionId: string) => {
+      if (typeof window === 'undefined') {
+        return
+      }
+
+      clearSettledNoPayloadWatchdog(sessionId)
+      const timer = window.setTimeout(() => {
+        settledNoPayloadWatchdogRef.current.delete(sessionId)
+
+        updateSessionState(sessionId, state => {
+          if (!state.awaitingResponse || state.sawAssistantPayload) {
+            return state
+          }
+
+          if (activeSessionIdRef.current === sessionId) {
+            setBusy(false)
+            setAwaitingResponse(false)
+            setTurnStartedAt(null)
+          }
+
+          return {
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `assistant-missing-complete-${Date.now()}`,
+                role: 'assistant' as const,
+                parts: [],
+                error:
+                  'Hermes finished this turn without delivering a response event. The chat was unlocked; please retry the message or switch models if this repeats.',
+                pending: false,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ],
+            awaitingResponse: false,
+            busy: false,
+            pendingBranchGroup: null,
+            streamId: null,
+            sawAssistantPayload: true,
+            needsInput: false,
+            turnStartedAt: null
+          }
+        })
+      }, STREAM_SETTLED_NO_PAYLOAD_GRACE_MS)
+
+      settledNoPayloadWatchdogRef.current.set(sessionId, timer)
+    },
+    [activeSessionIdRef, clearSettledNoPayloadWatchdog, updateSessionState]
+  )
 
   const clearNoPayloadWatchdog = useCallback((sessionId?: string | null) => {
     if (typeof window === 'undefined') {
@@ -423,7 +504,13 @@ export function useMessageStream({
     [activeSessionIdRef, clearNoPayloadWatchdog, updateSessionState]
   )
 
-  useEffect(() => () => clearNoPayloadWatchdog(), [clearNoPayloadWatchdog])
+  useEffect(
+    () => () => {
+      clearNoPayloadWatchdog()
+      clearSettledNoPayloadWatchdog()
+    },
+    [clearNoPayloadWatchdog, clearSettledNoPayloadWatchdog]
+  )
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -890,30 +977,18 @@ export function useMessageStream({
             }
 
             if (state.awaitingResponse && !state.sawAssistantPayload) {
+              armSettledNoPayloadWatchdog(sessionId)
+
               // Recovery path for dropped/missed terminal stream events. The
               // backend is authoritative here: running=false means the turn is
               // over, so leaving the composer busy would permanently lock the
-              // chat until the Desktop app is restarted. Surface a visible
-              // inline error instead of silently spinning forever.
+              // chat until the Desktop app is restarted. Keep awaitingResponse
+              // true for a short grace period so a trailing message.complete can
+              // still land without a false inline error, but unlock busy UI now.
               return {
                 ...state,
-                messages: [
-                  ...state.messages,
-                  {
-                    id: `assistant-missing-complete-${Date.now()}`,
-                    role: 'assistant' as const,
-                    parts: [],
-                    error:
-                      'Hermes finished this turn without delivering a response event. The chat was unlocked; please retry the message or switch models if this repeats.',
-                    pending: false,
-                    branchGroupId: state.pendingBranchGroup ?? undefined
-                  }
-                ],
-                awaitingResponse: false,
+                awaitingResponse: true,
                 busy: false,
-                pendingBranchGroup: null,
-                streamId: null,
-                sawAssistantPayload: true,
                 needsInput: false,
                 turnStartedAt: null
               }
@@ -950,6 +1025,7 @@ export function useMessageStream({
           return
         }
 
+        clearSettledNoPayloadWatchdog(sessionId)
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
@@ -1001,6 +1077,7 @@ export function useMessageStream({
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
         setSessionCompacting(sessionId, false)
+        clearSettledNoPayloadWatchdog(sessionId)
         clearNoPayloadWatchdog(sessionId)
 
         flushQueuedDeltas(sessionId)
@@ -1234,6 +1311,7 @@ export function useMessageStream({
         if (sessionId) {
           clearAllPrompts(sessionId)
           setSessionCompacting(sessionId, false)
+          clearSettledNoPayloadWatchdog(sessionId)
           clearNoPayloadWatchdog(sessionId)
           compactedTurnRef.current.delete(sessionId)
         }
@@ -1275,7 +1353,9 @@ export function useMessageStream({
       appendReasoningDelta,
       activeSessionIdRef,
       armNoPayloadWatchdog,
+      armSettledNoPayloadWatchdog,
       clearNoPayloadWatchdog,
+      clearSettledNoPayloadWatchdog,
       completeAssistantMessage,
       failAssistantMessage,
       flushQueuedDeltas,

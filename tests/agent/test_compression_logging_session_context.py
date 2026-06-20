@@ -68,6 +68,8 @@ def test_logging_session_context_follows_compression_rotation(tmp_path: Path) ->
 
         # The id actually rotated (sanity — otherwise the assertion is vacuous).
         assert agent.session_id != parent_sid
+        assert agent._session_type == "compression_split"
+        assert agent._parent_session_id == parent_sid
 
         # The logging context must now match the NEW id, not the stale one.
         current = getattr(hermes_logging._session_context, "session_id", None)

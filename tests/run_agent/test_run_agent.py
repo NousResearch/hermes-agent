@@ -629,6 +629,51 @@ class TestSessionJsonSnapshotOptIn:
         assert hasattr(agent, "logs_dir")
 
 
+class TestSaveSessionLogTypeMetadata:
+    def _write_snapshot(self, agent, tmp_path, messages=None):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent._save_session_log(messages or [{"role": "user", "content": "hello"}])
+        return json.loads((tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8"))
+
+    def test_defaults_to_user_and_null_parent(self, agent, tmp_path):
+        snapshot = self._write_snapshot(agent, tmp_path)
+        assert snapshot["session_type"] == "user"
+        assert snapshot["parent_session_id"] is None
+
+    def test_uses_cron_platform_when_not_otherwise_classified(self, agent, tmp_path):
+        agent.platform = "cron"
+        snapshot = self._write_snapshot(agent, tmp_path)
+        assert snapshot["session_type"] == "cron"
+
+    def test_marks_background_review_from_write_origin(self, agent, tmp_path):
+        agent._memory_write_origin = "background_review"
+        agent._parent_session_id = "parent-123"
+        snapshot = self._write_snapshot(agent, tmp_path)
+        assert snapshot["session_type"] == "review_agent"
+        assert snapshot["parent_session_id"] == "parent-123"
+
+    def test_marks_subagent_from_id(self, agent, tmp_path):
+        agent._subagent_id = "subagent-7"
+        agent._parent_session_id = "parent-123"
+        snapshot = self._write_snapshot(agent, tmp_path)
+        assert snapshot["session_type"] == "subagent"
+        assert snapshot["parent_session_id"] == "parent-123"
+
+    def test_review_agent_wins_over_delegate_depth(self, agent, tmp_path):
+        agent._memory_write_context = "background_review"
+        agent._delegate_depth = 2
+        snapshot = self._write_snapshot(agent, tmp_path)
+        assert snapshot["session_type"] == "review_agent"
+
+    def test_explicit_override_marks_compression_split(self, agent, tmp_path):
+        agent._session_type = "compression_split"
+        agent._parent_session_id = "sid-before-compress"
+        snapshot = self._write_snapshot(agent, tmp_path)
+        assert snapshot["session_type"] == "compression_split"
+        assert snapshot["parent_session_id"] == "sid-before-compress"
+
+
 class TestSaveSessionLogRedactsSecrets:
     """Regression: session_*.json must not contain plaintext credentials (#19798, #19845)."""
 

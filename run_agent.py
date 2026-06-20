@@ -1940,6 +1940,26 @@ class AIAgent:
             return "***"
         return f"{key[:8]}...{key[-4:]}"
 
+    def _classify_session_type(self) -> str:
+        """Return a stable label for session JSON snapshots."""
+        explicit = getattr(self, "_session_type", None)
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit
+
+        if (
+            getattr(self, "_memory_write_origin", None) == "background_review"
+            or getattr(self, "_memory_write_context", None) == "background_review"
+        ):
+            return "review_agent"
+
+        if getattr(self, "_subagent_id", None) or int(getattr(self, "_delegate_depth", 0) or 0) > 0:
+            return "subagent"
+
+        if getattr(self, "platform", None) == "cron":
+            return "cron"
+
+        return "user"
+
     def _clean_error_message(self, error_msg: str) -> str:
         """
         Clean up error messages for user display, removing HTML content and truncating.
@@ -2350,6 +2370,8 @@ class AIAgent:
 
             entry = {
                 "session_id": self.session_id,
+                "session_type": self._classify_session_type(),
+                "parent_session_id": getattr(self, "_parent_session_id", None) or None,
                 "model": self.model,
                 "base_url": self.base_url,
                 "platform": self.platform,

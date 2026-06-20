@@ -1601,7 +1601,36 @@ def init_agent(
             if isinstance(t, dict)
         }
         for _schema in agent.context_compressor.get_tool_schemas():
+            # --- Validate before wrapping (#47707) ---
+            if not isinstance(_schema, dict):
+                logger.warning(
+                    "Context engine '%s' returned non-dict tool schema (type=%s); skipping",
+                    getattr(agent.context_compressor, "name", "unknown"),
+                    type(_schema).__name__,
+                )
+                continue
+            # Detect already-wrapped schemas — double-wrapping produces
+            # {"type":"function","function":{"type":"function","function":{...}}}
+            # which has no "name" at the top level and is rejected by strict
+            # providers (DeepSeek 400s the entire request).
+            if _schema.get("type") == "function" and isinstance(_schema.get("function"), dict):
+                logger.warning(
+                    "Context engine '%s' returned already-wrapped tool schema '%s'; "
+                    "unwrapping to avoid double-wrapping",
+                    getattr(agent.context_compressor, "name", "unknown"),
+                    _schema.get("function", {}).get("name", "<unnamed>"),
+                )
+                _schema = _schema["function"]
+            # --- End validation ---
             _tname = _schema.get("name", "")
+            if not _tname:
+                logger.warning(
+                    "Context engine '%s' returned tool schema without a top-level "
+                    "'name'; skipping — strict providers reject the entire request "
+                    "when any tool is malformed",
+                    getattr(agent.context_compressor, "name", "unknown"),
+                )
+                continue
             if _tname and _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
             _wrapped = {"type": "function", "function": _schema}

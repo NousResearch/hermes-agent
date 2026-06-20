@@ -1491,3 +1491,168 @@ class TestContextEngineToolsetGate:
         """Gate is moot without a context_compressor."""
         tools, names, engine_names = self._run_context_engine_injection(None, None)
         assert tools == []
+
+
+class TestContextEngineToolSchemaValidation:
+    """#47707: Malformed context-engine tool schemas are rejected instead of
+    producing invalid tools that cause strict providers (DeepSeek) to 400
+    the entire request."""
+
+    @staticmethod
+    def _inject(compressor, enabled_toolsets=None):
+        """Run the real injection path from agent_init.py with validation."""
+        tools = []
+        valid_tool_names = set()
+        engine_tool_names = set()
+
+        if compressor is not None and tools is not None and (
+            enabled_toolsets is None or "context_engine" in enabled_toolsets
+        ):
+            _existing = {
+                t.get("function", {}).get("name")
+                for t in tools
+                if isinstance(t, dict)
+            }
+            for _schema in compressor.get_tool_schemas():
+                # --- Validate before wrapping (#47707) ---
+                if not isinstance(_schema, dict):
+                    continue
+                if _schema.get("type") == "function" and isinstance(
+                    _schema.get("function"), dict
+                ):
+                    _schema = _schema["function"]
+                # --- End validation ---
+                _tname = _schema.get("name", "")
+                if not _tname:
+                    continue
+                if _tname and _tname in _existing:
+                    continue
+                tools.append({"type": "function", "function": _schema})
+                if _tname:
+                    valid_tool_names.add(_tname)
+                    engine_tool_names.add(_tname)
+                    _existing.add(_tname)
+
+        return tools, valid_tool_names, engine_tool_names
+
+    def test_already_wrapped_schema_unwrapped(self):
+        """An already-WRAPPED schema is unwrapped, not double-wrapped."""
+        comp = TestContextEngineToolsetGate._FakeCompressor(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "wrapped_tool",
+                        "description": "desc",
+                        "parameters": {},
+                    },
+                }
+            ]
+        )
+        tools, names, engine_names = self._inject(comp)
+        assert "wrapped_tool" in names
+        # Verify NOT double-wrapped
+        for t in tools:
+            inner = t["function"]
+            assert inner.get("type") != "function", (
+                "double-wrapped: outer function contains another function wrapper"
+            )
+            assert "name" in inner, "unwrapped inner schema must have a name"
+
+    def test_schema_without_name_skipped(self):
+        """A schema missing a top-level 'name' is skipped entirely."""
+        comp = TestContextEngineToolsetGate._FakeCompressor(
+            [
+                {"description": "no name here", "parameters": {}},
+                {"name": "valid_tool", "description": "desc", "parameters": {}},
+            ]
+        )
+        tools, names, engine_names = self._inject(comp)
+        assert names == {"valid_tool"}, (
+            "only the named schema should be injected; the nameless one skipped"
+        )
+
+    def test_non_dict_schema_skipped(self):
+        """Non-dict schema entries are skipped without crashing."""
+        comp = TestContextEngineToolsetGate._FakeCompressor(
+            [
+                "not a dict",
+                42,
+                {"name": "valid_after_bad", "description": "desc", "parameters": {}},
+            ]
+        )
+        tools, names, engine_names = self._inject(comp)
+        assert names == {"valid_after_bad"}
+
+    def test_duplicate_name_skipped(self):
+        """Two schemas with the same name only inject the first."""
+        comp = TestContextEngineToolsetGate._FakeCompressor(
+            [
+                {"name": "dup_tool", "description": "first", "parameters": {}},
+                {"name": "dup_tool", "description": "second", "parameters": {}},
+            ]
+        )
+        tools, names, engine_names = self._inject(comp)
+        assert names == {"dup_tool"}
+        assert len(tools) == 1
+
+
+class TestMemoryProviderToolSchemaValidation:
+    """#47707: Malformed memory-provider tool schemas are handled without
+    producing invalid tools that break the entire request."""
+
+    def test_already_wrapped_schema_unwrapped(self):
+        """An already-wrapped schema is unwrapped, not double-wrapped."""
+        provider = FakeMemoryProvider(
+            "bad_wrapper",
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "wrapped_mem_tool",
+                    "description": "desc",
+                    "parameters": {},
+                },
+            }],
+        )
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+
+        fake_agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=None,
+            tools=[{"type": "function", "function": {"name": "memory", "parameters": {}}}],
+            valid_tool_names={"memory"},
+        )
+        inject_memory_provider_tools(fake_agent)
+
+        # Should have unwrapped and registered the tool
+        assert "wrapped_mem_tool" in fake_agent.valid_tool_names
+        for t in fake_agent.tools:
+            if t.get("function", {}).get("name") == "wrapped_mem_tool":
+                inner = t["function"]
+                assert inner.get("type") != "function", (
+                    "double-wrapped: inner function still has type=function"
+                )
+
+    def test_valid_schemas_still_inject(self):
+        """Normal schemas pass through validation unchanged."""
+        provider = FakeMemoryProvider(
+            "normal",
+            tools=[
+                {"name": "tool_a", "description": "a", "parameters": {}},
+                {"name": "tool_b", "description": "b", "parameters": {}},
+            ],
+        )
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+
+        fake_agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=None,
+            tools=[{"type": "function", "function": {"name": "memory", "parameters": {}}}],
+            valid_tool_names={"memory"},
+        )
+        inject_memory_provider_tools(fake_agent)
+
+        assert "tool_a" in fake_agent.valid_tool_names
+        assert "tool_b" in fake_agent.valid_tool_names

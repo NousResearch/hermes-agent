@@ -103,3 +103,131 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_resolved_secret_cache_overlays_unresolved_op_refs(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    runtime_dir = tmp_path / "runtime"
+    cache_dir = runtime_dir / "hermes"
+    cache_dir.mkdir(parents=True)
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=op://vault/telegram/token\n",
+        encoding="utf-8",
+    )
+    (cache_dir / "resolved-secrets.env").write_text(
+        "TELEGRAM_BOT_TOKEN=123456:resolved-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "123456:resolved-token"
+
+
+def test_resolved_secret_cache_does_not_override_plaintext_user_env(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    cache_dir = home / "state" / "secrets-cache"
+    cache_dir.mkdir(parents=True)
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=123456:plaintext-token\n",
+        encoding="utf-8",
+    )
+    (cache_dir / "resolved.env").write_text(
+        "TELEGRAM_BOT_TOKEN=123456:cached-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "123456:plaintext-token"
+
+
+def test_runtime_resolved_secret_cache_beats_persistent_cache(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    runtime_dir = tmp_path / "runtime"
+    runtime_cache_dir = runtime_dir / "hermes"
+    persistent_cache_dir = home / "state" / "secrets-cache"
+    runtime_cache_dir.mkdir(parents=True)
+    persistent_cache_dir.mkdir(parents=True)
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=op://vault/telegram/token\n",
+        encoding="utf-8",
+    )
+    (runtime_cache_dir / "resolved-secrets.env").write_text(
+        "TELEGRAM_BOT_TOKEN=123456:runtime-token\n",
+        encoding="utf-8",
+    )
+    (persistent_cache_dir / "resolved.env").write_text(
+        "TELEGRAM_BOT_TOKEN=123456:persistent-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "123456:runtime-token"
+
+
+def test_resolved_secret_cache_ignores_blank_and_unresolved_values(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    cache_dir = home / "state" / "secrets-cache"
+    cache_dir.mkdir(parents=True)
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=op://vault/telegram/token\n",
+        encoding="utf-8",
+    )
+    (cache_dir / "resolved.env").write_text(
+        "TELEGRAM_BOT_TOKEN=op://vault/telegram/cached\n"
+        "OPENAI_API_KEY=\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "op://vault/telegram/token"
+    assert os.getenv("OPENAI_API_KEY") is None
+
+
+def test_managed_env_still_wins_after_cache_overlay(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    cache_dir = home / "state" / "secrets-cache"
+    cache_dir.mkdir(parents=True)
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=op://vault/telegram/token\n",
+        encoding="utf-8",
+    )
+    (cache_dir / "resolved.env").write_text(
+        "TELEGRAM_BOT_TOKEN=123456:cached-token\n",
+        encoding="utf-8",
+    )
+    (managed_dir / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=123456:managed-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "123456:managed-token"

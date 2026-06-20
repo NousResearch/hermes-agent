@@ -156,6 +156,69 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     _sanitize_loaded_credentials()
 
 
+def _parse_env_assignments(path: Path, *, encoding: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    with open(path, "r", encoding=encoding) as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            values[key] = value
+    return values
+
+
+def _read_env_assignments_with_fallback(path: Path) -> dict[str, str]:
+    try:
+        return _parse_env_assignments(path, encoding="utf-8")
+    except UnicodeDecodeError:
+        return _parse_env_assignments(path, encoding="latin-1")
+
+
+def _apply_resolved_secret_cache(home_path: Path) -> None:
+    """Overlay resolved cache values onto unresolved ``op://`` references.
+
+    Startup may already have a resolved secret cache from a previous 1Password
+    or runtime-secret resolution step. If ``~/.hermes/.env`` still contains the
+    raw ``op://...`` reference, python-dotenv would otherwise replace the live
+    resolved value with that unresolved literal on every gateway restart.
+
+    Only overlay when the current process env is missing the key entirely or
+    still holds an unresolved ``op://`` reference. Plaintext ``.env`` values
+    remain authoritative.
+    """
+    cache_paths: list[Path] = []
+    runtime_dir = os.getenv("XDG_RUNTIME_DIR", "").strip()
+    if runtime_dir:
+        cache_paths.append(Path(runtime_dir) / "hermes" / "resolved-secrets.env")
+    cache_paths.append(home_path / "state" / "secrets-cache" / "resolved.env")
+
+    for cache_path in cache_paths:
+        if not cache_path.exists():
+            continue
+        try:
+            cached_values = _read_env_assignments_with_fallback(cache_path)
+        except OSError:
+            continue
+        for key, cached_value in cached_values.items():
+            cached_value = cached_value.strip()
+            if not cached_value or cached_value.startswith("op://"):
+                continue
+            current = os.environ.get(key)
+            if current is None or current.startswith("op://"):
+                os.environ[key] = cached_value
+
+    _sanitize_loaded_credentials()
+
+
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it.
 
@@ -242,6 +305,7 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
+    _apply_resolved_secret_cache(home_path)
     _apply_external_secret_sources(home_path)
     _apply_managed_env()
 

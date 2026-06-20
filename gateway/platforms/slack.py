@@ -3511,8 +3511,12 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in {"hermes", ""}:
-            # Legacy /hermes <subcommand> [args] routing + free-form questions.
+        # The configurable catch-all (default "hermes"; per-instance for multi-tenant
+        # Slack, ADR-0037) routes the "/<name> <subcommand> [args]" + free-form form.
+        from hermes_cli.commands import slack_command_name as _slack_command_name
+
+        if slash_name in {_slack_command_name(), "hermes", ""}:
+            # /<name> <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
             from hermes_cli.commands import slack_subcommand_map

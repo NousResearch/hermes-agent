@@ -1071,6 +1071,51 @@ def _sanitize_slack_name(raw: str) -> str:
     return name[:_SLACK_NAME_LIMIT]
 
 
+def slack_command_name() -> str:
+    """The top-level Slack slash command name (the ``/<name> <subcommand>`` catch-all).
+
+    Defaults to ``hermes``. Make it per-instance so multiple Hermes agents can share
+    one Slack workspace without colliding: Slack slash commands are a workspace-global,
+    single-owner namespace (unlike Telegram's per-bot or Discord's per-app), so two
+    agents both claiming ``/hermes`` clash (sadee-and-co ADR-0037). Resolution order:
+    env ``HERMES_SLACK_COMMAND`` → config ``slack.command_name`` → ``hermes``.
+    """
+    raw = os.environ.get("HERMES_SLACK_COMMAND") or ""
+    if not raw:
+        try:
+            from hermes_cli.config import read_raw_config
+
+            cfg = read_raw_config()
+            slack_cfg = cfg.get("slack") if isinstance(cfg, dict) else None
+            if isinstance(slack_cfg, dict):
+                raw = str(slack_cfg.get("command_name") or "")
+        except Exception:
+            raw = ""
+    return _sanitize_slack_name(raw) or "hermes"
+
+
+def _slack_single_command_mode() -> bool:
+    """When true, expose ONLY the single :func:`slack_command_name` slash (its
+    subcommands still route via :func:`slack_subcommand_map`) instead of all ~50
+    commands — required for a Slack workspace shared by multiple Hermes agents
+    (ADR-0037), where 50 global slashes would each collide. Resolution: env
+    ``HERMES_SLACK_SINGLE_COMMAND`` → config ``slack.single_command`` → ``False``
+    (unchanged single-tenant behaviour)."""
+    env = os.environ.get("HERMES_SLACK_SINGLE_COMMAND")
+    if env not in (None, ""):
+        return is_truthy_value(env, default=False)
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        slack_cfg = cfg.get("slack") if isinstance(cfg, dict) else None
+        if isinstance(slack_cfg, dict):
+            return is_truthy_value(slack_cfg.get("single_command"), default=False)
+    except Exception:
+        pass
+    return False
+
+
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.
 
@@ -1096,9 +1141,18 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
-    # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
-    seen.add("hermes")
+    # Reserve the catch-all top-level command. Its name is configurable (default
+    # "hermes") so multiple Hermes agents can share one Slack workspace without
+    # colliding on a slash command (Slack slashes are workspace-global; ADR-0037).
+    cmd_name = slack_command_name()
+    entries.append((cmd_name, "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    seen.add(cmd_name)
+
+    # Multi-tenant Slack mode: expose ONLY the single catch-all slash. Its
+    # subcommands still route via slack_subcommand_map (e.g. "/welchman model ..."),
+    # so functionality is preserved while two agents in one workspace never collide.
+    if _slack_single_command_mode():
+        return entries
 
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)

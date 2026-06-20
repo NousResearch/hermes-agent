@@ -2457,9 +2457,19 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_info_cache.pop(chat_id, None)
 
     def _on_p2p_chat_entered(self, data: Any) -> None:
+        """Handle user entering P2P chat with bot.
+
+        This is a no-op handler to suppress "processor not found" error log spam
+        from the Feishu SDK when the event is received.
+        """
         logger.debug("[Feishu] User entered P2P chat with bot")
 
     def _on_message_recalled(self, data: Any) -> None:
+        """Handle message recalled event.
+
+        This is a no-op handler to suppress "processor not found" error log spam
+        from the Feishu SDK when a message is recalled by a user.
+        """
         logger.debug("[Feishu] Message recalled by user")
 
     def _on_drive_comment_event(self, data: Any) -> None:

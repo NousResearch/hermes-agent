@@ -192,6 +192,23 @@ _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
+
+# Adapter-level WebSocket reconnect (#31367).
+#
+# The lark_oapi SDK's receive loop frequently exits with
+# ``no close frame received or sent`` on Feishu's hosted WS server roughly
+# every 30 minutes (server-side keepalive cull).  The SDK's auto-reconnect
+# is unreliable for that error path — ``ws_client.start()`` returns and the
+# executor task completes — so without an adapter-level safety net the
+# adapter just sits there silently, which used to escalate to a full
+# gateway restart every half hour (all platforms disconnected, every
+# active session got the shutdown notification).
+#
+# These knobs tune how aggressively we try to recover the WS in-place
+# before falling back to the gateway-level fatal-error escalation path.
+_FEISHU_WS_RECONNECT_MAX_ATTEMPTS = 5
+_FEISHU_WS_RECONNECT_BASE_DELAY_SECONDS = 1.0
+_FEISHU_WS_RECONNECT_MAX_DELAY_SECONDS = 30.0
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
@@ -1432,6 +1449,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Guards against re-entrant adapter-level reconnect scheduling
+        # when ``_ws_future`` resolves multiple times during a single
+        # recovery (e.g. the new client we just spun up dies while the
+        # previous reconnect coroutine is still running).  Issue #31367.
+        self._ws_reconnect_in_progress: bool = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
@@ -4589,6 +4611,133 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        # Watch the executor for unexpected exit so we can reconnect at the
+        # adapter level instead of letting the gateway escalate to a full
+        # process restart when Feishu's WS server kicks us with
+        # ``no close frame received or sent`` every ~30min (#31367).
+        self._ws_future.add_done_callback(self._on_ws_thread_exit)
+
+    def _on_ws_thread_exit(self, future: "asyncio.Future[Any]") -> None:
+        """Done-callback for ``_ws_future`` — runs when the WS thread exits.
+
+        Two scenarios distinguish here:
+
+          * **Clean disconnect** — ``disconnect()`` ran first and called
+            ``_disable_websocket_auto_reconnect`` which clears
+            ``_ws_client``.  Nothing to do.
+          * **Unexpected death** — ``ws_client.start()`` returned because
+            the lark_oapi receive loop hit
+            ``no close frame received or sent`` and the SDK's own
+            reconnect logic gave up.  Schedule an adapter-level
+            reconnect on the main event loop so the gateway doesn't
+            have to restart every 30 minutes (#31367).
+
+        Idempotent and thread-safe: the callback fires from the executor
+        thread, so we hop back to the adapter's main loop via
+        ``call_soon_threadsafe`` before doing anything stateful.
+        """
+        if not self._running:
+            return
+        if self._ws_client is None:
+            return
+        if getattr(self, "_ws_reconnect_in_progress", False):
+            return
+
+        try:
+            exc = future.exception()
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            exc = None
+
+        main_loop = self._loop
+        if main_loop is None or main_loop.is_closed():
+            logger.warning(
+                "[Feishu] WebSocket thread exited but adapter loop is "
+                "unavailable; cannot schedule adapter-level reconnect."
+            )
+            return
+
+        logger.warning(
+            "[Feishu] WebSocket thread exited unexpectedly%s — "
+            "scheduling adapter-level reconnect (max %d attempts) "
+            "instead of escalating to a gateway restart (#31367).",
+            f" ({type(exc).__name__}: {exc})" if exc else "",
+            _FEISHU_WS_RECONNECT_MAX_ATTEMPTS,
+        )
+
+        def _schedule() -> None:
+            asyncio.ensure_future(
+                self._reconnect_websocket_after_unexpected_exit(),
+                loop=main_loop,
+            )
+
+        try:
+            main_loop.call_soon_threadsafe(_schedule)
+        except RuntimeError:
+            # Loop closed between the check and the schedule — give up
+            # silently; the gateway watcher will pick up the platform.
+            logger.debug(
+                "[Feishu] Could not schedule WS reconnect — main loop closed."
+            )
+
+    async def _reconnect_websocket_after_unexpected_exit(self) -> None:
+        """Re-establish the WS in-place; escalate to fatal only on full failure.
+
+        Replaces the prior every-30-minute gateway restart with a bounded
+        in-process recovery.  Tears down the dead executor + client refs,
+        then retries ``_connect_websocket`` with exponential backoff.
+        Only when every attempt fails do we set the platform's fatal
+        error retryable flag — the gateway's existing retryable-failure
+        watcher then queues the platform for background reconnection
+        (and the OTHER platforms keep running, unlike the previous
+        full-gateway-restart behavior).  Issue #31367.
+        """
+        if self._ws_reconnect_in_progress:
+            return
+        self._ws_reconnect_in_progress = True
+        try:
+            self._disable_websocket_auto_reconnect()
+            self._ws_future = None
+            self._ws_thread_loop = None
+
+            delay = _FEISHU_WS_RECONNECT_BASE_DELAY_SECONDS
+            for attempt in range(1, _FEISHU_WS_RECONNECT_MAX_ATTEMPTS + 1):
+                if not self._running:
+                    return
+                try:
+                    await self._connect_websocket()
+                    logger.info(
+                        "[Feishu] WebSocket reconnected after unexpected "
+                        "exit (attempt %d/%d).",
+                        attempt, _FEISHU_WS_RECONNECT_MAX_ATTEMPTS,
+                    )
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "[Feishu] WebSocket reconnect attempt %d/%d failed: %s",
+                        attempt, _FEISHU_WS_RECONNECT_MAX_ATTEMPTS, exc,
+                    )
+                if attempt < _FEISHU_WS_RECONNECT_MAX_ATTEMPTS:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, _FEISHU_WS_RECONNECT_MAX_DELAY_SECONDS)
+
+            message = (
+                f"Feishu WebSocket reconnect failed after "
+                f"{_FEISHU_WS_RECONNECT_MAX_ATTEMPTS} attempts; "
+                f"escalating to gateway-level recovery."
+            )
+            logger.error("[Feishu] %s", message)
+            self._set_fatal_error(
+                "feishu_ws_reconnect_failed", message, retryable=True,
+            )
+            try:
+                await self._notify_fatal_error()
+            except Exception as exc:
+                logger.debug(
+                    "[Feishu] _notify_fatal_error after WS reconnect "
+                    "exhaustion raised: %s", exc,
+                )
+        finally:
+            self._ws_reconnect_in_progress = False
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

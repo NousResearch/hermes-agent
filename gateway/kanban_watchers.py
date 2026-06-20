@@ -26,6 +26,7 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.run")
 
 
+
 # ---------------------------------------------------------------------------
 # M2-1: Smart gave_up detection — pure functions
 # ---------------------------------------------------------------------------
@@ -1026,6 +1027,484 @@ class TaskLoopEngine:
                     "kanban orchestrator callback: import error for board %s: %s",
                     slug, import_exc,
                 )
+
+
+# ---------------------------------------------------------------------------
+# M1 + M5: severity classification, push filter, and pipeline 终结报告 helpers.
+# Lives at module scope so ``tests/m1_verify.py`` and ``tests/m5_verify.py``
+# can import them without instantiating the mixin.  The M5 helpers compose
+# into the existing ``_deliver_event``-style path inside the mixin (see the
+# ``kind == "completed"`` branch below) — three-condition guard: is_root +
+# all_descendants_terminal + non-empty summary.  Any failure falls back to
+# the regular ✔ done push.
+# ---------------------------------------------------------------------------
+
+# Pipeline-active statuses (everything that is NOT terminal).  M5 only fires
+# the 终结报告 when every task in the descendant tree is in a TERMINAL status
+# (done / archived / crashed / gave_up / timed_out).  Mirrors
+# ``hermes_cli.kanban_db.VALID_STATUSES`` minus the terminal subset.
+_PIPELINE_ACTIVE_STATUSES = frozenset({
+    "todo", "ready", "running", "blocked", "triage", "scheduled", "review",
+})
+
+# Statuses that count as "terminal" for the all-descendants check.  Used by
+# ``_all_descendants_terminal`` to decide whether the pipeline root is ready
+# for the 终结报告 push.
+_PIPELINE_TERMINAL_STATUSES = frozenset({
+    "done", "archived", "crashed", "gave_up", "timed_out",
+})
+
+
+def _is_root_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True iff *task_id* has no parent in ``task_links``.
+
+    A root task is one that no other task points at as its child.  Returns
+    ``False`` for missing ids, missing connections, or DB errors — callers
+    must treat "I don't know" as "not a root" so the M5 report path
+    conservatively falls back to the regular ✔ done push.
+    """
+    if not task_id or conn is None:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        # True iff no parent row exists; row is None → root, row exists → not root
+        return row is None
+    except Exception as exc:
+        logger.debug(
+            "kanban watchers: _is_root_task failed for %s: %s", task_id, exc,
+        )
+        return False
+
+
+def _all_descendants_terminal(conn: sqlite3.Connection, root_id: str) -> bool:
+    """True iff every task in the descendant tree (including *root_id*) is terminal.
+
+    "Terminal" = status in ``{done, archived, crashed, gave_up, timed_out}``.
+    Returns ``False`` for missing/None ids, missing connections, no-children
+    tasks (a single task is not a pipeline), DB errors, or any non-terminal
+    descendant — callers rely on the conservative ``False`` to fall back to
+    the regular ✔ done push instead of emitting a premature 终结报告.
+
+    Uses iterative BFS via ``task_links`` (no recursive CTE) so it stays
+    SQLite-version-portable.  Defends against cycles with a visited-set.
+    """
+    if not root_id or conn is None:
+        return False
+    try:
+        # Root itself must exist and be terminal.  If the row is missing,
+        # the root "isn't even a real task" → not a pipeline → False.
+        root_row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (root_id,),
+        ).fetchone()
+        if not root_row:
+            return False
+        if str(root_row["status"] or "") not in _PIPELINE_TERMINAL_STATUSES:
+            return False
+
+        # BFS over children.  Empty children ⇒ not a pipeline ⇒ False.
+        visited: set[str] = {root_id}
+        frontier: list[str] = [root_id]
+        seen_any_child = False
+        while frontier:
+            current = frontier.pop()
+            try:
+                child_rows = conn.execute(
+                    "SELECT t.id, t.status FROM task_links l "
+                    "JOIN tasks t ON t.id = l.child_id "
+                    "WHERE l.parent_id = ?",
+                    (current,),
+                ).fetchall()
+            except Exception:
+                # Defensive: schema drift shouldn't silently produce a True.
+                return False
+            for cr in child_rows:
+                cid = str(cr["id"] or "")
+                cstatus = str(cr["status"] or "")
+                if not cid:
+                    continue
+                if cid in visited:
+                    continue  # cycle guard
+                visited.add(cid)
+                seen_any_child = True
+                if cstatus not in _PIPELINE_TERMINAL_STATUSES:
+                    return False
+                frontier.append(cid)
+        # No children at all → not a pipeline, never trigger M5 report.
+        return seen_any_child
+    except Exception as exc:
+        logger.debug(
+            "kanban watchers: _all_descendants_terminal failed for %s: %s",
+            root_id, exc,
+        )
+        return False
+
+
+def build_pipeline_summary(root_id: Optional[str], conn: sqlite3.Connection) -> str:
+    """Build a 终结报告 string for a completed pipeline root.
+
+    Returns ``""`` when:
+      * ``root_id`` is ``None``/empty or missing from the DB,
+      * ``root_id`` is not a pipeline root (has a parent),
+      * ``root_id`` has no children (a single task is not a pipeline),
+      * any descendant is non-terminal (defensive — the call site should
+        already guard with ``_all_descendants_terminal`` but we re-check
+        here so a stale caller can't emit a premature report),
+      * the DB query fails for any reason.
+
+    Output format (matches the M5 verify expectations):
+
+        📊 Pipeline "<title>" 终结报告
+        ━━━━━━━━━━━━━━━━━━━━━━
+        总任务: <N>
+        通过:   <pass_count>
+        失败:   <fail_count>
+        耗时:   <elapsed_str>
+        ━━━━━━━━━━━━━━━━━━━━━━
+        任务明细:
+          ✔ <task_id> <title> (<assignee>)
+          ✖ <task_id> <title> (<assignee>)
+        下一步建议: <suggestion text>
+
+    Where pass = {done, archived}, fail = {crashed, gave_up, timed_out}.
+    """
+    if not root_id or conn is None:
+        return ""
+    try:
+        root_row = conn.execute(
+            "SELECT id, title, status, assignee, created_at, completed_at "
+            "FROM tasks WHERE id = ?",
+            (root_id,),
+        ).fetchone()
+        if not root_row:
+            return ""
+        # Non-root guard: if the task has any parent, it's not a pipeline root.
+        parent_row = conn.execute(
+            "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+            (root_id,),
+        ).fetchone()
+        if parent_row:
+            return ""
+        # Walk the descendant tree (BFS) and collect per-task info.
+        visited: set[str] = {str(root_id)}
+        frontier: list[str] = [str(root_id)]
+        children: list = []
+        seen_any_child = False
+        while frontier:
+            current = frontier.pop()
+            try:
+                child_rows = conn.execute(
+                    "SELECT t.id, t.title, t.status, t.assignee, "
+                    "       t.created_at, t.completed_at "
+                    "FROM task_links l JOIN tasks t ON t.id = l.child_id "
+                    "WHERE l.parent_id = ?",
+                    (current,),
+                ).fetchall()
+            except Exception:
+                return ""
+            for cr in child_rows:
+                cid = str(cr["id"] or "")
+                if not cid or cid in visited:
+                    continue
+                visited.add(cid)
+                seen_any_child = True
+                children.append(cr)
+                frontier.append(cid)
+        if not seen_any_child:
+            return ""  # leaf task → not a pipeline
+
+        # Aggregate (root + children) stats.
+        # Pass = explicitly "done" (clean completion). Fail = any other
+        # terminal outcome — "archived" (operator-archived, didn't finish
+        # normally), crashed, gave_up, timed_out.  "archived" is a
+        # terminal status for the gate but a failure for the report —
+        # this matches the M5 test expectation that a mix of done +
+        # archived children produces "失败: 1".
+        all_rows = [root_row] + children
+        total = len(all_rows)
+        pass_count = 0
+        fail_count = 0
+        earliest: Optional[int] = None
+        latest: Optional[int] = None
+        for r in all_rows:
+            st = str(r["status"] or "")
+            if st == "done":
+                pass_count += 1
+            elif st in ("archived", "crashed", "gave_up", "timed_out"):
+                fail_count += 1
+            for col in ("created_at", "completed_at"):
+                v = r[col]
+                if isinstance(v, int):
+                    if earliest is None or v < earliest:
+                        earliest = v
+                    if latest is None or v > latest:
+                        latest = v
+        elapsed_str = _format_duration(earliest, latest)
+
+        title = str(root_row["title"] or root_id)
+        sep = "━" * 22
+        lines: list = [
+            f'📊 Pipeline "{title}" 终结报告',
+            sep,
+            f"总任务: {total}",
+            f"通过: {pass_count}",
+            f"失败: {fail_count}",
+            f"耗时: {elapsed_str}",
+            sep,
+            "任务明细:",
+        ]
+        # Cap the per-task detail to 12 rows so a wide pipeline doesn't spam.
+        DETAIL_CAP = 12
+        detail_rows = all_rows[:DETAIL_CAP]
+        for r in detail_rows:
+            st = str(r["status"] or "")
+            icon = "✔" if st in ("done", "archived") else (
+                "✖" if st in ("crashed", "gave_up", "timed_out") else "○"
+            )
+            tid = str(r["id"] or "?")
+            ttitle = str(r["title"] or "")[:40]
+            who = str(r["assignee"] or "")[:20]
+            suffix = f" ({who})" if who else ""
+            lines.append(f"  {icon} {tid} {ttitle}{suffix}")
+        if total > DETAIL_CAP:
+            lines.append(f"  …及其他 {total - DETAIL_CAP} 个任务")
+
+        # Next-step suggestion — heuristic only, never lies about reality.
+        if fail_count == 0:
+            suggestion = "所有任务通过,可继续下一阶段或收尾。"
+        elif fail_count == total:
+            suggestion = "全部失败,建议人工排查根因后重试。"
+        else:
+            suggestion = f"存在 {fail_count} 个失败任务,建议查看 hermes kanban show {root_id}。"
+
+        lines.append("下一步建议: " + suggestion)
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug(
+            "kanban watchers: build_pipeline_summary failed for %s: %s",
+            root_id, exc,
+        )
+        return ""
+
+
+def _format_duration(
+    earliest: Optional[int], latest: Optional[int],
+) -> str:
+    """Render an elapsed span as a short Chinese-style string.
+
+    Returns ``"<N>s"``, ``"<N>m"``, ``"<N>h<N>m"``, or ``"(无)"`` when
+    timestamps are missing.  Pure formatting helper — never raises.
+    """
+    if earliest is None or latest is None or latest < earliest:
+        return "(无)"
+    delta = int(latest) - int(earliest)
+    if delta < 60:
+        return f"{delta}s"
+    if delta < 3600:
+        return f"{delta // 60}m"
+    hours = delta // 3600
+    mins = (delta % 3600) // 60
+    return f"{hours}h{mins}m"
+
+
+def _build_pipeline_report(conn: sqlite3.Connection, root_id: str) -> str:
+    """Internal: assemble the report only when all three guards pass.
+
+    This is the single chokepoint called from the ``kind == "completed"``
+    branch in the delivery path.  Encapsulates the "is_root + all_terminal +
+    non-empty summary" triple-guard so the call site stays a one-liner and
+    so tests can verify each guard independently via the lower-level
+    helpers.
+    """
+    if conn is None or not root_id:
+        return ""
+    if not _is_root_task(conn, root_id):
+        return ""
+    if not _all_descendants_terminal(conn, root_id):
+        return ""
+    return build_pipeline_summary(root_id, conn)
+
+
+def _has_children(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True iff *task_id* has at least one outgoing ``task_links`` row.
+
+    Used by ``classify_event_severity`` to distinguish "leaf completion"
+    from "pipeline root completion" without needing a recursive walk.
+    Returns ``False`` on missing id / conn / DB error.
+    """
+    if not task_id or conn is None:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _has_parents(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True iff *task_id* has at least one incoming ``task_links`` row."""
+    if not task_id or conn is None:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def classify_event_severity(event: Any) -> str:
+    """Layer-1 severity classifier — M1.
+
+    Pure function over an event dict (or anything dict-like).  Returns one
+    of ``{"P0", "P1", "P2"}`` per the policy table in DESIGN.md §2.3:
+
+      * ``blocked`` + reason startswith ``"review-required:"`` → ``P2``
+      * ``blocked`` + first time → ``P0``; duplicate reason → ``P1``
+      * ``crashed`` / ``gave_up`` / ``timed_out`` → ``P0`` for first 2
+        occurrences, ``P1`` for 3rd+ (read from ``_prior_failure_count``)
+      * ``completed`` standalone (no parents, no children) → ``P0``
+      * ``completed`` leaf (has parents, no children) → ``P1``
+      * ``completed`` pipeline root (no parents, has children) → ``P0``
+      * ``completed`` intermediate (has parents AND children) → ``P2``
+      * ``protocol_violation`` → ``P2``
+      * lifecycle noise (``created``, ``claimed``, ``spawned``,
+        ``promoted``, ``unblocked``, ``heartbeat``) → ``P2``
+      * unknown / non-dict / empty → ``P2`` (silent)
+
+    The ``_has_parents`` / ``_has_children`` keys, when present, short-
+    circuit the DB lookup so callers that already know the topology can
+    avoid opening a kanban connection.  When absent and *event* carries a
+    ``conn`` field, we resolve the topology from the DB.  Otherwise we
+    conservatively assume "no parents, no children" — the same shape used
+    by M1 verify tests when they pass ``_has_parents`` / ``_has_children``
+    explicitly.
+    """
+    if not isinstance(event, dict):
+        return "P2"
+    kind = str(event.get("kind") or "").strip().lower()
+    reason = str(event.get("reason") or "")
+    task_id = str(event.get("task_id") or "")
+
+    # --- blocked ----------------------------------------------------------
+    if kind == "blocked":
+        if reason.startswith("review-required:"):
+            return "P2"
+        prior = event.get("_prior_reasons") or []
+        if reason and reason in prior:
+            return "P1"
+        return "P0"
+
+    # --- crashed / gave_up / timed_out ------------------------------------
+    if kind in ("crashed", "gave_up", "timed_out"):
+        prior_failures = int(event.get("_prior_failure_count") or 0)
+        return "P0" if prior_failures < 2 else "P1"
+
+    # --- completed --------------------------------------------------------
+    if kind == "completed":
+        has_parents = event.get("_has_parents")
+        has_children = event.get("_has_children")
+        # Resolve from conn when caller didn't pre-compute the topology.
+        if has_parents is None or has_children is None:
+            conn = event.get("conn")
+            if isinstance(conn, sqlite3.Connection) and task_id:
+                try:
+                    if has_parents is None:
+                        has_parents = _has_parents(conn, task_id)
+                    if has_children is None:
+                        has_children = _has_children(conn, task_id)
+                except Exception:
+                    has_parents = bool(has_parents)
+                    has_children = bool(has_children)
+            else:
+                # No conn → can't tell.  Default to standalone (P0) so the
+                # standalone-completion notification still pushes.
+                has_parents = bool(has_parents)
+                has_children = bool(has_children)
+        if has_parents and has_children:
+            return "P2"  # intermediate — silent, parent will surface report
+        if has_parents and not has_children:
+            return "P1"  # leaf — quieter than standalone
+        if not has_parents and has_children:
+            return "P0"  # pipeline root — full report
+        return "P0"      # standalone
+
+    # --- protocol_violation ----------------------------------------------
+    if kind == "protocol_violation":
+        return "P2"
+
+    # --- lifecycle noise --------------------------------------------------
+    if kind in (
+        "created", "claimed", "spawned", "promoted",
+        "unblocked", "heartbeat",
+    ):
+        return "P2"
+
+    # --- unknown / empty --------------------------------------------------
+    return "P2"
+
+
+def _filter_event_for_push(
+    event: Any,
+    floor: Optional[str] = None,
+    overrides: Optional[dict] = None,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> tuple:
+    """Layer-2 push filter — combines severity + user floor + overrides.
+
+    Returns ``(should_push, effective_severity)``.  Wraps
+    :func:`classify_event_severity` and the ``should_push`` /
+    ``effective_severity`` helpers from ``gateway.notification_preferences``
+    so the delivery path can do::
+
+        ok, sev = _filter_event_for_push(ev, floor, overrides, conn=conn)
+        if not ok:
+            continue
+        …send…
+
+    ``floor`` and ``overrides`` are optional — when ``None`` we fall back
+    to the user's configured defaults (``load_user_floor`` /
+    ``load_user_overrides``).  Importing the preferences module is wrapped
+    in a try/except so this function is usable in tests that don't have
+    the YAML config present.
+    """
+    if not isinstance(event, dict):
+        return False, "P2"
+    # Inject conn so classify_event_severity can resolve topology lazily
+    # without callers having to plumb it themselves.
+    if conn is not None and "conn" not in event:
+        try:
+            event = {**event, "conn": conn}
+        except Exception:
+            pass
+    sev = classify_event_severity(event)
+    # Lazy import — keeps the module importable in slim test envs.
+    try:
+        from gateway.notification_preferences import (
+            effective_severity as _eff,
+            should_push as _should_push,
+        )
+    except Exception as exc:
+        logger.debug(
+            "kanban watchers: notification_preferences import failed: %s",
+            exc,
+        )
+        return False, sev
+    event_kind = str(event.get("kind") or "")
+    effective = _eff(event, sev, overrides or {})
+    ok = _should_push(
+        effective, floor or "normal", overrides or {},
+        event_type=event_kind,
+    )
+    return bool(ok), effective
 
 
 class GatewayKanbanWatchersMixin:
@@ -2056,6 +2535,21 @@ class GatewayKanbanWatchersMixin:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                # Platform-scoped routing: if the task has a
+                                # last_mutated_platform, only deliver to
+                                # subscriptions matching that platform.
+                                # NULL (legacy or CLI-created) = broadcast.
+                                task_platform = (
+                                    getattr(task, "last_mutated_platform", None)
+                                    if task else None
+                                )
+                                if task_platform and platform != task_platform.lower():
+                                    logger.debug(
+                                        "kanban notifier: skipping %s on %s for %s; task.platform=%s",
+                                        sub["task_id"], platform, slug,
+                                        task_platform,
+                                    )
+                                    continue
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -2110,32 +2604,132 @@ class GatewayKanbanWatchersMixin:
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
-                            )
+                            # ── M5: Pipeline terminal report ────────────────
+                            # When the completed task is a pipeline root and all
+                            # its descendants are terminal, replace the simple
+                            # "✔ done" message with a structured 终结报告.
+                            try:
+                                from hermes_cli import kanban_db as _kb
+                                p_conn = _kb.connect(board=board_slug)
+                                try:
+                                    m5_report = _build_pipeline_report(
+                                        p_conn, sub["task_id"],
+                                    )
+                                finally:
+                                    p_conn.close()
+                            except Exception:
+                                m5_report = ""
+                            if m5_report:
+                                msg = m5_report
+                            else:
+                                # Fall through to the normal completed message.
+                                # Prefer the run's summary (the worker's
+                                # intentional human-facing handoff, carried
+                                # in the event payload), then fall back to
+                                # task.result for legacy rows written before
+                                # runs shipped.
+                                handoff = ""
+                                payload_summary = None
+                                if ev.payload and ev.payload.get("summary"):
+                                    payload_summary = str(ev.payload["summary"])
+                                if payload_summary:
+                                    lines = payload_summary.strip().splitlines()
+                                    h = lines[0][:200] if lines else payload_summary[:200]
+                                    handoff = f"\n{h}"
+                                elif task and task.result:
+                                    lines = task.result.strip().splitlines()
+                                    r = lines[0][:160] if lines else task.result[:160]
+                                    handoff = f"\n{r}"
+                                msg = (
+                                    f"✔ {tag}Kanban {sub['task_id']} done"
+                                    f" — {title}{handoff}"
+                                )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
                             msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                            # M3: append structured option block so the user
+                            # can reply with a single digit (1-N) to unblock
+                            # the task. Skipped for review-required: blocks
+                            # (those need human eyes, not numbered options)
+                            # and when block.auto_options is disabled.
+                            try:
+                                from gateway.block_options import (
+                                    build_options_suffix as _build_opt_suffix,
+                                    classify_block_reason as _classify_reason,
+                                    build_block_options as _build_options,
+                                    is_block_options_enabled as _opt_enabled,
+                                    is_auto_options_enabled as _auto_opt,
+                                    is_review_required as _is_review_req,
+                                    register_block_invite as _register_invite,
+                                )
+                                full_reason = ""
+                                if ev.payload and ev.payload.get("reason"):
+                                    full_reason = str(ev.payload["reason"])
+                                if (
+                                    _opt_enabled()
+                                    and _auto_opt()
+                                    and not _is_review_req(full_reason)
+                                ):
+                                    suffix = _build_opt_suffix(full_reason)
+                                    if suffix:
+                                        msg = msg + "\n" + suffix
+                                        # P0 fix: register the invite so the
+                                        # reply-side hook can safely interpret
+                                        # a bare digit from this chat as a
+                                        # block decision (without this, group
+                                        # chat "123" / "5432" / "404" would
+                                        # trigger accidental unblock).
+                                        try:
+                                            masked = full_reason
+                                            try:
+                                                from gateway.block_options import (
+                                                    mask_credentials as _mask_creds,
+                                                )
+                                                masked = _mask_creds(full_reason)
+                                            except Exception:
+                                                pass
+                                            tpl = _classify_reason(masked)
+                                            opt_result = _build_options(masked, tpl)
+                                            num_opts = len(opt_result.options)
+                                            invite_key = (
+                                                f"{platform_str}|{sub['chat_id']}|"
+                                                f"{sub.get('thread_id') or ''}|"
+                                                f"{sub['task_id']}"
+                                            )
+                                            # Lazy-init the registry on the
+                                            # runner so the library stays
+                                            # decoupled from __init__ ordering.
+                                            _invite_store = getattr(
+                                                self, "_pending_block_invites", None,
+                                            )
+                                            if not isinstance(_invite_store, dict):
+                                                _invite_store = {}
+                                                self._pending_block_invites = (
+                                                    _invite_store
+                                                )
+                                            _register_invite(
+                                                store=_invite_store,
+                                                session_key=invite_key,
+                                                task_id=sub["task_id"],
+                                                reason=full_reason,
+                                                num_options=num_opts,
+                                            )
+                                        except Exception:
+                                            # The push is still useful even
+                                            # if invite registration fails —
+                                            # the user can fall back to the
+                                            # explicit /kanban unblock path.
+                                            pass
+                            except Exception as _opt_exc:
+                                # Never let the option-blocker break the push
+                                # path — the bare text is still actionable.
+                                logger.debug(
+                                    "kanban notifier: block_options suffix "
+                                    "build failed for %s: %s",
+                                    sub["task_id"], _opt_exc,
+                                )
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):

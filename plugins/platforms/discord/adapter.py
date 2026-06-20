@@ -4264,6 +4264,35 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    async def _transcribe_history_attachments(self, msg: Any, fallback_line: str) -> str:
+        """Try to STT-transcribe audio attachments in a history message.
+
+        Returns a line like ``[Alice] [voice: hey there]``, or the original
+        ``fallback_line`` (which ends with ``(attachment)``) on any failure.
+        """
+        from tools.transcription_tools import transcribe_audio
+        prefix = fallback_line[: fallback_line.rfind("(attachment)")]
+        audio_transcripts = []
+        for att in msg.attachments:
+            ct = getattr(att, "content_type", None) or ""
+            if not ct.startswith("audio/"):
+                continue
+            try:
+                ext = "." + ct.split("/")[-1].split(";")[0]
+                if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
+                    ext = ".ogg"
+                cached_path = await self._cache_discord_audio(att, ext)
+                result = await asyncio.to_thread(transcribe_audio, cached_path)
+                if result.get("success"):
+                    transcript = result.get("transcript", "").strip()
+                    if transcript:
+                        audio_transcripts.append(f"[voice: {transcript}]")
+            except Exception as exc:
+                logger.debug("[Discord] History audio transcription failed: %s", exc)
+        if audio_transcripts:
+            return prefix + " ".join(audio_transcripts)
+        return fallback_line
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -4390,6 +4419,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 line = _keep(msg)
                 if line is None:
                     continue
+                if line.endswith("(attachment)") and msg.attachments:
+                    line = await self._transcribe_history_attachments(msg, line)
                 mid = str(getattr(msg, "id", ""))
                 collected.append((mid, line))
                 if mid:
@@ -4425,6 +4456,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     line = _keep(msg)
                     if line is None:
                         continue
+                    if line.endswith("(attachment)") and msg.attachments:
+                        line = await self._transcribe_history_attachments(msg, line)
                     mid = str(getattr(msg, "id", ""))
                     if mid and mid in seen_ids:
                         continue

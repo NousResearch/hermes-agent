@@ -1154,3 +1154,91 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
 
     adapter._fetch_channel_context.assert_not_awaited()
 
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_transcribes_voice_message(adapter, monkeypatch):
+    """Voice messages in history are transcribed via STT instead of shown as (attachment)."""
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    voice_att = SimpleNamespace(
+        content_type="audio/ogg",
+        url="https://cdn.discordapp.com/voice.ogg",
+        duration=3.0,
+        waveform="abc",
+    )
+    channel = FakeHistoryChannel(
+        [make_history_message(author=human, content="", msg_id=2, attachments=[voice_att])],
+        channel_id=123,
+    )
+
+    async def fake_cache_audio(att, ext):
+        return "/tmp/fake_voice.ogg"
+
+    monkeypatch.setattr(adapter, "_cache_discord_audio", fake_cache_audio)
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter.asyncio.to_thread",
+        AsyncMock(return_value={"success": True, "transcript": "hey can you help me"}),
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="@bot"))
+
+    assert "[voice: hey can you help me]" in result
+    assert "[Alice]" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_falls_back_when_transcription_fails(adapter, monkeypatch):
+    """Failed STT falls back to (attachment) instead of crashing."""
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    voice_att = SimpleNamespace(
+        content_type="audio/ogg",
+        url="https://cdn.discordapp.com/voice.ogg",
+        duration=3.0,
+        waveform="abc",
+    )
+    channel = FakeHistoryChannel(
+        [make_history_message(author=human, content="", msg_id=2, attachments=[voice_att])],
+        channel_id=123,
+    )
+
+    async def fake_cache_audio(att, ext):
+        raise RuntimeError("network error")
+
+    monkeypatch.setattr(adapter, "_cache_discord_audio", fake_cache_audio)
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="@bot"))
+
+    assert "(attachment)" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_skips_non_audio_attachments(adapter, monkeypatch):
+    """Non-audio attachments are not transcribed and appear as (attachment)."""
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    image_att = SimpleNamespace(
+        content_type="image/png",
+        url="https://cdn.discordapp.com/image.png",
+    )
+    channel = FakeHistoryChannel(
+        [make_history_message(author=human, content="", msg_id=2, attachments=[image_att])],
+        channel_id=123,
+    )
+
+    cache_called = []
+
+    async def fake_cache_audio(att, ext):
+        cache_called.append(att)
+        return "/tmp/fake.ogg"
+
+    monkeypatch.setattr(adapter, "_cache_discord_audio", fake_cache_audio)
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="@bot"))
+
+    assert cache_called == []
+    assert "(attachment)" in result
+

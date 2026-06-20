@@ -583,7 +583,14 @@ def _normalize_command_for_detection(command: str) -> str:
     # way they catch ~/.bashrc. Do not snapshot this at import time: tests and
     # profile/session launchers can set HOME after this module is imported.
     command = _rewrite_resolved_user_home(command)
-    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
+    # After Windows absolute-home rewrites, normalize separators in the
+    # synthetic ~/ prefix only. Keep general backslash-escape handling below.
+    command = re.sub(
+        r"~/(?:[^\s\"'`|;&<>]*)",
+        lambda match: match.group(0).replace("\\", "/"),
+        command,
+    )
+
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r\"\"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
@@ -599,14 +606,18 @@ def _rewrite_resolved_user_home(command: str) -> str:
     degenerate.
     """
     try:
+        env_home = os.getenv("HOME") or ""
         home = os.path.expanduser("~")
         candidates = [
+            env_home.rstrip("/"),
+            os.path.realpath(env_home).rstrip("/") if env_home else "",
             home.rstrip("/"),
             os.path.realpath(home).rstrip("/"),
         ]
     except Exception:
         return command
     seen: set[str] = set()
+
     for path in candidates:
         if not path:
             continue

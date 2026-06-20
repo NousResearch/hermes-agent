@@ -928,6 +928,44 @@ def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch
         assert kb.get_task(conn, t).status == "running"
 
 
+def test_terminate_worker_pid_uses_taskkill_tree_on_windows(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Result()
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+    info = kb._terminate_worker_pid(1234)
+
+    assert calls[0][0] == ["taskkill.exe", "/PID", "1234", "/T", "/F"]
+    assert info["termination_attempted"] is True
+    assert info["process_tree"] is True
+    assert info["termination_method"] == "taskkill_tree"
+    assert info["terminated"] is True
+
+
+def test_terminate_worker_pid_preserves_signal_hook(monkeypatch):
+    signals = []
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+    info = kb._terminate_worker_pid(5678, signal_fn=lambda pid, sig: signals.append((pid, sig)))
+
+    assert signals
+    assert signals[0][0] == 5678
+    assert info["process_tree"] is False
+    assert info["termination_method"] is None
+    assert info["terminated"] is True
+
+
 def test_heartbeat_extends_claim(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

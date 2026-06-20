@@ -5087,14 +5087,14 @@ def _terminate_reclaimed_worker(
     signal_fn=None,
 ) -> dict[str, Any]:
     """Best-effort host-local worker termination for reclaim paths."""
-    import signal
-
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "process_tree": False,
+        "termination_method": None,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -5103,6 +5103,62 @@ def _terminate_reclaimed_worker(
     if not str(claim_lock).startswith(host_prefix):
         return info
     info["host_local"] = True
+
+    info.update(_terminate_worker_pid(int(pid), signal_fn=signal_fn))
+    return info
+
+
+def _terminate_worker_pid(
+    pid: int,
+    *,
+    signal_fn=None,
+) -> dict[str, Any]:
+    """Terminate a Kanban worker, including descendants on Windows.
+
+    ``os.kill(pid, SIGTERM)`` on Windows maps to ``TerminateProcess`` for only
+    the direct process. Kanban workers often own stdio MCP children (Node, npx,
+    Playwright, AgentMemory); killing only the parent leaves those servers
+    orphaned. Use ``taskkill /T`` for real Windows runtime cleanup, while
+    preserving the signal hook path for unit tests.
+    """
+    import signal
+
+    info: dict[str, Any] = {
+        "termination_attempted": False,
+        "terminated": False,
+        "sigkill": False,
+        "process_tree": False,
+        "termination_method": None,
+    }
+    if pid <= 0:
+        return info
+
+    if signal_fn is None and _IS_WINDOWS:
+        info["termination_attempted"] = True
+        info["process_tree"] = True
+        info["termination_method"] = "taskkill_tree"
+        try:
+            proc = subprocess.run(
+                ["taskkill.exe", "/PID", str(int(pid)), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            info["taskkill_returncode"] = int(proc.returncode)
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            info["termination_method"] = "taskkill_tree_failed"
+            # Fall through to the stdlib kill path below.
+        else:
+            for _ in range(10):
+                if not _pid_alive(pid):
+                    info["terminated"] = True
+                    return info
+                time.sleep(0.5)
+            info["terminated"] = not _pid_alive(pid)
+            return info
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
@@ -5204,7 +5260,6 @@ def enforce_max_runtime(
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -5232,31 +5287,7 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
-        )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        termination = _terminate_worker_pid(pid, signal_fn=signal_fn)
 
         with write_txn(conn):
             cur = conn.execute(
@@ -5271,8 +5302,9 @@ def enforce_max_runtime(
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": int(row["max_runtime_seconds"]),
-                    "sigkill": killed,
+                    "sigkill": bool(termination.get("sigkill")),
                 }
+                payload.update(termination)
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
@@ -5295,7 +5327,12 @@ def enforce_max_runtime(
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed},
+                event_payload_extra={
+                    "pid": pid,
+                    "sigkill": bool(termination.get("sigkill")),
+                    "process_tree": bool(termination.get("process_tree")),
+                    "termination_method": termination.get("termination_method"),
+                },
             )
     return timed_out
 

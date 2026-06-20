@@ -267,7 +267,21 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "\n"
+    "## Repeated tool call prevention\n"
+    "If you find yourself about to call a tool with the same arguments you just used, "
+    "STOP and check:\n"
+    "1. Why did the previous call fail or not produce the expected result?\n"
+    "2. What is specifically different about this attempt compared to the last one?\n"
+    "3. If there is no concrete difference, do NOT call the tool again — change your "
+    "approach instead.\n"
+    "Tool-level success (exit code 0, status 'success') does not mean task-level "
+    "success. A command can run without error but still return an HTTP 400, a "
+    "connection error, or other task failure in its output. Inspect the output "
+    "content, not just the exit status.\n"
+    "If a tool has returned the same result multiple times, you are in a loop. "
+    "Break the loop by diagnosing the root cause rather than retrying unchanged."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

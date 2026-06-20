@@ -8498,10 +8498,29 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
+    #
+    # Configurable via platforms.telegram.extra in config.yaml:
+    #
+    #   reactions_on_receive: "👀"   # emoji shown when a message is received
+    #   reactions_on_success: "👍"   # emoji shown on successful completion
+    #   reactions_on_failure: "👎"   # emoji shown on failure
+    #
+    # Set any value to "clear" or "" to suppress that reaction.
+    # Master switch: env var TELEGRAM_REACTIONS=true (default false).
+
+    _REACTION_CLEAR_SENTINELS = {"clear", "none", ""}
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+
+    def _reaction_emoji(self, key: str, default: str) -> str | None:
+        """Return the configured emoji for *key*, or ``None`` to suppress."""
+        raw = self.config.extra.get(key, default) if getattr(self.config, "extra", None) else default
+        val = str(raw).strip()
+        if val.lower() in self._REACTION_CLEAR_SENTINELS:
+            return None
+        return val or None
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
@@ -8543,23 +8562,19 @@ class TelegramAdapter(BasePlatformAdapter):
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
             return
+        emoji = self._reaction_emoji("reactions_on_receive", "\U0001f440")  # 👀
+        if not emoji:
+            return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(chat_id, message_id, emoji)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
+        """Apply the configured reaction for the given outcome.
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
         replaces all existing reactions in one call — no remove step needed.
-
-        On CANCELLED outcomes (e.g. the user runs ``/stop``, or a session is
-        interrupted mid-flight), we explicitly clear the 👀 in-progress
-        reaction so it doesn't linger on the user's message indefinitely.
-        Without this clear, the only way to remove the 👀 was to wait for
-        another agent run to swap it to 👍/👎 — which never happens if the
-        cancellation was the last activity in the chat.
         """
         if not self._reactions_enabled():
             return
@@ -8569,12 +8584,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if outcome == ProcessingOutcome.CANCELLED:
             await self._clear_reactions(chat_id, message_id)
+        elif outcome == ProcessingOutcome.SUCCESS:
+            emoji = self._reaction_emoji("reactions_on_success", "\U0001f44d")  # 👍
+            if emoji:
+                await self._set_reaction(chat_id, message_id, emoji)
+            else:
+                await self._clear_reactions(chat_id, message_id)
         else:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
-            )
+            emoji = self._reaction_emoji("reactions_on_failure", "\U0001f44e")  # 👎
+            if emoji:
+                await self._set_reaction(chat_id, message_id, emoji)
+            else:
+                await self._clear_reactions(chat_id, message_id)
 
 
 # ──────────────────────────────────────────────────────────────────────────

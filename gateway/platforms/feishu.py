@@ -139,6 +139,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_bytes,
     cache_image_from_bytes,
+    resolve_channel_prompt,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1168,6 +1169,27 @@ def _unique_lines(lines: List[str]) -> List[str]:
         seen.add(line)
         unique.append(line)
     return unique
+
+
+# ---------------------------------------------------------------------------
+# Channel prompt composition
+# ---------------------------------------------------------------------------
+
+
+_FEISHU_AT_TUTORIAL = (
+    'To @-mention someone in this Feishu chat: '
+    '<at user_id="ou_xxx">Name</at> (Name optional)'
+)
+
+
+def _compose_channel_prompt_for_chat(
+    extra: Dict[str, Any],
+    chat_id: str,
+) -> str:
+    configured = resolve_channel_prompt(extra, chat_id) or ""
+    if configured:
+        return f"{configured}\n\n{_FEISHU_AT_TUTORIAL}"
+    return _FEISHU_AT_TUTORIAL
 
 
 # ---------------------------------------------------------------------------
@@ -3172,6 +3194,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
+            channel_prompt=_compose_channel_prompt_for_chat(self.config.extra, chat_id),
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)

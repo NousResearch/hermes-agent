@@ -84,8 +84,8 @@ pre.command-block { border-color: color-mix(in srgb, var(--hermes-accent) 36%, v
 code { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
 pre code { display: block; line-height: 1.45; tab-size: 2; }
 .code-actions { position:absolute; top:8px; right:8px; display:flex; gap:6px; z-index:1; }
-.copy, .apply-inline, .run-inline { font-size:10px; padding:4px 8px; opacity:.92; }
-.apply-inline, .run-inline { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+.copy, .apply-inline, .run-inline, .debug-inline { font-size:10px; padding:4px 8px; opacity:.92; }
+.apply-inline, .run-inline, .debug-inline { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
 .diff-block code span { display:block; min-height:1.35em; }
 .diff-add { color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950); background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #3fb950) 10%, transparent); }
 .diff-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #f85149) 10%, transparent); }

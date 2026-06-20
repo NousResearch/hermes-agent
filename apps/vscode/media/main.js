@@ -69,7 +69,7 @@ function renderMarkdown(text) {
       const runnable = isRunnableBlock(lang, code);
       codeBlocks.set(id, code);
       const rendered = diff ? renderDiff(code) : escapeHtml(code);
-      const runButton = runnable ? '<button class="run-inline" data-run-code="' + id + '">Run</button>' : '';
+      const runButton = runnable ? '<button class="run-inline" data-run-code="' + id + '">Run</button><button class="debug-inline" data-debug-code="' + id + '">Debug</button>' : '';
       const applyButton = diff ? '<button class="apply-inline" data-apply-code="' + id + '">Apply</button>' : '';
       html += '<pre class="' + (diff ? 'diff-block' : runnable ? 'command-block' : '') + '"><div class="code-actions"><button class="copy" data-copy="code" data-code-id="' + id + '">Copy</button>' + runButton + applyButton + '</div><code data-lang="' + escapeHtml(lang) + '">' + rendered + '</code></pre>';
       i++;
@@ -193,6 +193,9 @@ document.addEventListener('click', (e) => {
   }
   if (e.target.dataset.runCode) {
     vscode.postMessage({ type: 'runInlineCommand', value: codeBlocks.get(e.target.dataset.runCode) || '' });
+  }
+  if (e.target.dataset.debugCode) {
+    vscode.postMessage({ type: 'debugInlineCommand', value: codeBlocks.get(e.target.dataset.debugCode) || '' });
   }
   if (e.target.dataset.retry) {
     const last = [...messages.querySelectorAll('.user')].pop();

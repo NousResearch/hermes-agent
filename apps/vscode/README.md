@@ -29,6 +29,7 @@ This extension intentionally keeps the Hermes brain outside VS Code. It launches
 - **Maintainable webview assets** split into dedicated `media/main.css` and `media/main.js` files instead of a monolithic inline template.
 - **Readable diff blocks** with inline Apply/Copy controls and colored add/delete/hunk metadata in assistant responses.
 - **Runnable command blocks** with inline Run/Copy controls that send shell-like snippets directly to the VS Code integrated terminal.
+- **Terminal debugging loop** with inline Debug controls that run shell-like snippets with captured stdout/stderr and send failures back to Hermes with workspace context.
 - **Suggested starter prompts** in the empty state for diff review, file explanation, and test discovery.
 
 ## Requirements

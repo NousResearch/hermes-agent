@@ -79,6 +79,7 @@ class HermesChatProvider {
         if (message.type === 'applyPatch') await this.applyLastPatch();
         if (message.type === 'applyInlinePatch') await this.applyInlinePatch(message.value || '');
         if (message.type === 'runInlineCommand') await this.runInlineCommand(message.value || '');
+        if (message.type === 'debugInlineCommand') await this.debugInlineCommand(message.value || '');
         if (message.type === 'copyPatch') await this.copyLastPatch();
         if (message.type === 'discardPatch') await this.discardLastPatch();
         if (message.type === 'revertPatch') await this.revertLastPatch();
@@ -206,6 +207,24 @@ class HermesChatProvider {
 
   async runInlineCommand(commandText) {
     this.runCommandsInTerminal(commandText, 'Hermes Commands');
+  }
+
+  async debugInlineCommand(commandText) {
+    const workspace = getWorkspaceFolder();
+    if (!workspace) return vscode.window.showWarningMessage('Open a workspace before debugging terminal commands.');
+    const command = String(commandText || '').trim();
+    if (!command) return vscode.window.showWarningMessage('No command text found to debug.');
+    const cwd = workspace.uri.fsPath;
+    this.post('status', `Running captured command: ${command.split('\n')[0]}`);
+    this.post('tool', `Running captured terminal command for analysis:\n\n\`\`\`sh\n${command}\n\`\`\``);
+    this.output.appendLine(`\n[${new Date().toISOString()}] Hermes captured terminal command:\n${command}`);
+    const result = await runShellCommand(command, cwd, getMaxTestOutputChars()).catch((error) => ({ code: 1, stdout: '', stderr: error.message || String(error) }));
+    const combined = [result.stdout, result.stderr].filter(Boolean).join('\n');
+    this.output.appendLine(combined || '(command produced no output)');
+    const status = result.code === 0 ? 'succeeded' : `failed with exit ${result.code}`;
+    this.post('tool', `Command ${status}. Sending captured output to Hermes for debugging.`);
+    const prompt = `The terminal command below ${status}. Analyze the captured output, identify likely root cause, and recommend the smallest next fix. If a code change is needed, return a unified diff.\n\nCommand:\n\n\`\`\`sh\n${command}\n\`\`\`\n\nOutput:\n\n\`\`\`text\n${truncate(combined || '(no output)', getMaxTestOutputChars())}\n\`\`\``;
+    await this.ask(prompt, { includeFile: true, includeSelection: true, includeDiagnostics: true, includeGitDiff: true, includeInstructions: true, wantsPatch: result.code !== 0, mode: result.code === 0 ? 'test' : 'debug' });
   }
 
   async inspectContext(options = {}) {

@@ -94,6 +94,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -1356,10 +1357,26 @@ class DingTalkAdapter(BasePlatformAdapter):
             if body:
                 url = getattr(body, "download_url", None)
                 if url:
+                    # The DingTalk download URL is a short-lived OSS link. The
+                    # native image pipeline treats media_urls entries as local
+                    # filesystem paths, so a bare URL is skipped as unreadable
+                    # (see #31857). Cache it locally while the URL is still
+                    # valid and store the cache path instead; fall back to the
+                    # raw URL if caching fails so media is never silently lost.
+                    resolved = url
+                    try:
+                        resolved = await cache_image_from_url(url)
+                    except Exception as cache_exc:
+                        logger.warning(
+                            "[%s] Could not cache DingTalk media locally, "
+                            "passing through remote URL: %s",
+                            self.name,
+                            cache_exc,
+                        )
                     if hasattr(obj, key):
-                        setattr(obj, key, url)
+                        setattr(obj, key, resolved)
                     elif isinstance(obj, dict):
-                        obj[key] = url
+                        obj[key] = resolved
             else:
                 logger.warning(
                     "[%s] Failed to download media: empty response for code %s",

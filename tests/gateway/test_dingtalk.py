@@ -1169,3 +1169,75 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Inbound media caching (#31857): resolved DingTalk OSS URLs must be cached
+# to a local path, because the native image pipeline treats media_urls
+# entries as local filesystem paths and skips bare remote URLs as unreadable.
+# ---------------------------------------------------------------------------
+
+
+class TestFetchDownloadUrlCaches:
+    @pytest.mark.asyncio
+    async def test_resolved_url_is_cached_to_local_path(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={"client_id": "cid", "client_secret": "sec"},
+        )
+        adapter = DingTalkAdapter(config)
+
+        remote_url = "https://dingtalk-oss.example.com/tmp/abc123?sig=x"
+        local_path = "/home/u/.hermes/cache/images/img_deadbeef.jpg"
+
+        body = SimpleNamespace(download_url=remote_url)
+        response = SimpleNamespace(body=body)
+        adapter._robot_sdk = MagicMock()
+        adapter._robot_sdk.robot_message_file_download_with_options_async = AsyncMock(
+            return_value=response
+        )
+
+        obj = {"downloadCode": "code-1"}
+        with patch(
+            "gateway.platforms.dingtalk.cache_image_from_url",
+            new=AsyncMock(return_value=local_path),
+        ) as mock_cache:
+            await adapter._fetch_download_url(
+                "code-1", "robot", "token", obj, "downloadCode"
+            )
+
+        mock_cache.assert_awaited_once_with(remote_url)
+        # The local cache path must replace the remote URL, not the URL itself.
+        assert obj["downloadCode"] == local_path
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_url_when_caching_fails(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={"client_id": "cid", "client_secret": "sec"},
+        )
+        adapter = DingTalkAdapter(config)
+
+        remote_url = "https://dingtalk-oss.example.com/tmp/zzz?sig=y"
+        body = SimpleNamespace(download_url=remote_url)
+        response = SimpleNamespace(body=body)
+        adapter._robot_sdk = MagicMock()
+        adapter._robot_sdk.robot_message_file_download_with_options_async = AsyncMock(
+            return_value=response
+        )
+
+        obj = {"downloadCode": "code-2"}
+        with patch(
+            "gateway.platforms.dingtalk.cache_image_from_url",
+            new=AsyncMock(side_effect=RuntimeError("network down")),
+        ):
+            await adapter._fetch_download_url(
+                "code-2", "robot", "token", obj, "downloadCode"
+            )
+
+        # Media must never be lost: fall back to the remote URL on cache failure.
+        assert obj["downloadCode"] == remote_url

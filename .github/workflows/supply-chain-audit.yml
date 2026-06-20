@@ -176,14 +176,26 @@ jobs:
 
           $(cat /tmp/findings.md)
 
+          After review, add the \`supply-chain-reviewed\` label and re-run this check.
+
           ---
           *Scanner only fires on high-signal indicators: .pth files, base64+exec/eval combos, subprocess with encoded commands, or install-hook files. Low-signal warnings were removed intentionally — if you're seeing this comment, the finding is worth inspecting.*"
 
           gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
 
-      - name: Fail on critical findings
+      - name: Require explicit supply-chain review label
         if: steps.scan.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
+          if echo "$LABELS" | grep -Fxq 'supply-chain-reviewed'; then
+            echo "Supply-chain review label present."
+            exit 0
+          fi
+
           echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
           exit 1
 

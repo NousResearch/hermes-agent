@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -73,6 +74,20 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_ACTIVE_WAKE_MEDIA_DIRECTIVE_RE = re.compile(r"(?i)MEDIA:[^\s`'\"<>),\]}]+")
+_ACTIVE_WAKE_LOCAL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:~|\.{1,2}|/(?:tmp|var/tmp|home|Users|mnt|media|opt|workspace|private/tmp))"
+    r"/[^\s`'\"<>),\]}]+"
+)
+_ACTIVE_WAKE_TOKEN_FRAGMENT_RE = re.compile(
+    r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9][A-Za-z0-9_-]{6,}\b"
+    r"|\b(?:sk|pk)_(?:liv|tes)\.\.\.[A-Za-z0-9_-]{2,}\b"
+    r"|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"
+    r"|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{2,}\.\.\.[A-Za-z0-9_]{2,}\b"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}\b"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{1,}\.\.\.[A-Za-z0-9-]{2,}\b",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_error_text(text) -> str:
@@ -81,6 +96,28 @@ def _sanitize_error_text(text) -> str:
     redacted = _URL_SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}***", redacted)
     redacted = _GENERIC_SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=***", redacted)
     return redacted
+
+
+def _sanitize_active_wake_text(text: str) -> str:
+    """Strictly sanitize text before injecting it as an internal wake event.
+
+    ``BasePlatformAdapter.extract_media`` intentionally preserves protected
+    spans for visible sends and passive mirrors. Active-wake is different: the
+    sanitized text becomes synthetic inbound model context, so raw attachment
+    directives, local artifact paths, and token-looking fragments must not
+    survive even inside inline code, fenced blocks, blockquotes, or JSON.
+    """
+    redacted = redact_sensitive_text(text or "")
+    redacted = _URL_SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}***", redacted)
+    redacted = _GENERIC_SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=***", redacted)
+    redacted = _ACTIVE_WAKE_MEDIA_DIRECTIVE_RE.sub("", redacted)
+    redacted = _ACTIVE_WAKE_LOCAL_PATH_RE.sub("[redacted-path]", redacted)
+    redacted = _ACTIVE_WAKE_TOKEN_FRAGMENT_RE.sub("[redacted-token]", redacted)
+
+    # Drop lines that only contained a stripped MEDIA directive. This preserves
+    # user-visible prose ("hello") while avoiding synthetic wake clutter.
+    cleaned_lines = [line.rstrip() for line in redacted.splitlines() if line.strip()]
+    return "\n".join(cleaned_lines).strip()
 
 
 def _error(message: str) -> dict:
@@ -93,6 +130,18 @@ def _display_chat_id(platform_name: str, chat_id: str) -> str:
     if platform_name == "signal" and str(chat_id).startswith("group:"):
         return "group:***"
     return chat_id
+
+
+def _stable_correlation_id(platform: str, chat_id: str, thread_id: str | None, message: str) -> str:
+    """Return a deterministic, non-secret correlation ID for a send attempt.
+
+    The ID is stable for the same (platform, chat, thread, message) tuple so
+    retries and idempotent callers observe the same receipt correlation without
+    needing to generate UUIDs or persist state. The message content is hashed
+    so raw text never leaks into the correlation value.
+    """
+    key = f"{platform}:{chat_id}:{thread_id or ''}:{message}"
+    return f"wake_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -171,6 +220,14 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "trigger_agent": {
+                "type": "boolean",
+                "description": "When true and the gateway has a live adapter for the target platform, request an active-wake turn on the target session after the visible send. The caller (e.g. AgentFlow) remains the policy owner; Hermes only exposes the attempt result in the receipt fields."
+            },
+            "correlation_id": {
+                "type": "string",
+                "description": "Optional caller-owned correlation ID for the active-wake receipt. When omitted, a stable deterministic correlation ID is generated from the target and message content."
             }
         },
         "required": []
@@ -299,6 +356,8 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    trigger_agent = bool(args.get("trigger_agent", False))
+    correlation_id = (args.get("correlation_id") or "").strip() or None
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -446,8 +505,16 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror the sent message into the target's gateway session
-        if isinstance(result, dict) and result.get("success") and mirror_text:
+        # Mirror passive sends into the target's gateway session. Active-wake
+        # sends are represented by the synthetic inbound event below; mirroring
+        # them too would create a duplicate transcript entry and could let a
+        # visible send alone masquerade as an origin-return close signal.
+        if (
+            isinstance(result, dict)
+            and result.get("success")
+            and mirror_text
+            and not trigger_agent
+        ):
             try:
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
@@ -467,9 +534,152 @@ def _handle_send(args):
 
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
+
+        # Active-wake receipt envelope: gateway-owned primitive, policy owner
+        # remains the caller (AgentFlow). Do not persist raw transcripts or
+        # secrets here; only expose deterministic classification fields.
+        if trigger_agent:
+            active_wake_text = _sanitize_active_wake_text(mirror_text)
+            result = _attach_active_wake_receipt(
+                result,
+                platform_name=platform_name,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                message=active_wake_text,
+                correlation_id=correlation_id,
+            )
+        elif correlation_id:
+            # correlation_id is meaningless without active-wake tracking; still
+            # echo it back when provided so callers don't lose their trace ID.
+            result["receipt_correlation"] = correlation_id
+
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _attach_active_wake_receipt(
+    send_result: dict,
+    *,
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+    message: str,
+    correlation_id: str | None,
+) -> dict:
+    """Attach an active-wake receipt to a visible send result.
+
+    This is a thin gateway-owned primitive. It does NOT decide when active wake
+    is appropriate; the caller owns that policy. Hermes only reports whether a
+    wake was accepted by the live gateway and what the visible send outcome was,
+    using fields that AgentFlow can use for delivery_attempt classification:
+
+      - success/error            visible platform send status
+      - triggered_agent          true iff a wake turn was accepted/scheduled
+      - trigger_error            SEND_FAILED, NOT_WIRED, or sanitized failure
+      - message_id               platform message id when the send returned one
+      - receipt_correlation      caller correlation or a deterministic stable id
+    """
+    receipt = dict(send_result)
+    effective_correlation = correlation_id or _stable_correlation_id(
+        platform_name, chat_id, thread_id, message
+    )
+    receipt["receipt_correlation"] = effective_correlation
+
+    visible_success = bool(receipt.get("success"))
+    visible_error = receipt.get("error")
+    receipt["success"] = visible_success
+    if visible_error:
+        receipt["error"] = _sanitize_error_text(visible_error)
+
+    if not visible_success:
+        # A failed visible send must never active-wake/close an origin_return.
+        receipt["triggered_agent"] = False
+        receipt["trigger_error"] = "SEND_FAILED"
+        return receipt
+
+    trigger_result = _trigger_gateway_agent(
+        platform_name=platform_name,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        message=message,
+    )
+    receipt.update(trigger_result)
+    return receipt
+
+
+def _trigger_gateway_agent(
+    *,
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+    message: str,
+) -> dict:
+    """Request an internal gateway wake for a sent cross-channel message.
+
+    The tool may run in a worker thread while the gateway adapter belongs to the
+    main gateway asyncio loop. Schedule onto ``runner._gateway_loop`` instead of
+    running the adapter coroutine on an unrelated helper loop.
+    """
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    try:
+        from gateway.config import Platform
+        platform = Platform(platform_name)
+    except Exception:
+        platform = None
+
+    adapter = None
+    if runner is not None and platform is not None:
+        try:
+            adapter = runner.adapters.get(platform)
+        except Exception:
+            adapter = None
+
+    loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
+    if platform is None or adapter is None or loop is None:
+        return {"triggered_agent": False, "trigger_error": "NOT_WIRED"}
+
+    try:
+        from gateway.session import SessionSource
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        source = SessionSource(
+            platform=platform,
+            chat_id=str(chat_id),
+            chat_type="group",
+            thread_id=str(thread_id) if thread_id else None,
+            user_id="hermes-active-wake",
+            user_name="Hermes Active Wake",
+            is_bot=False,
+            message_id=None,
+        )
+        wake_event = MessageEvent(
+            text=message,
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        from agent.async_utils import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(
+            adapter.handle_message(wake_event),
+            loop,
+            logger=logger,
+            log_message="active_wake request scheduling failed",
+        )
+        if future is None:
+            return {"triggered_agent": False, "trigger_error": "NOT_WIRED"}
+        return {"triggered_agent": True}
+    except Exception as exc:
+        logger.debug("active_wake request failed for %s:%s: %s", platform_name, chat_id, exc)
+        return {
+            "triggered_agent": False,
+            "trigger_error": _sanitize_error_text(str(exc)) or "ACTIVE_WAKE_FAILED",
+        }
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

@@ -6,8 +6,8 @@ import unittest
 from tools.registry import registry
 
 # Trigger tool discovery so feishu tools get registered
-importlib.import_module("tools.feishu_doc_tool")
-importlib.import_module("tools.feishu_drive_tool")
+doc_tool = importlib.import_module("tools.feishu_doc_tool")
+drive_tool = importlib.import_module("tools.feishu_drive_tool")
 
 
 class TestFeishuToolRegistration(unittest.TestCase):
@@ -56,6 +56,28 @@ class TestFeishuToolRegistration(unittest.TestCase):
             props = entry.schema["parameters"].get("properties", {})
             self.assertIn("file_token", props, f"{tool_name} missing file_token param")
             self.assertIn("file_type", props, f"{tool_name} missing file_type param")
+
+
+class TestFeishuToolClientFallback(unittest.TestCase):
+    def tearDown(self):
+        doc_tool.set_client(None)
+        doc_tool.set_shared_client(None)
+        drive_tool.set_client(None)
+        drive_tool.set_shared_client(None)
+
+    def test_doc_tool_uses_shared_client_when_thread_local_missing(self):
+        shared = object()
+        doc_tool.set_shared_client(shared)
+
+        self.assertIs(doc_tool.get_client(), shared)
+
+    def test_drive_tool_prefers_thread_local_over_shared(self):
+        shared = object()
+        local = object()
+        drive_tool.set_shared_client(shared)
+        drive_tool.set_client(local)
+
+        self.assertIs(drive_tool.get_client(), local)
 
 
 if __name__ == "__main__":

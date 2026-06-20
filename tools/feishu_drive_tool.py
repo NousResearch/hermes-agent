@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Thread-local storage for the lark client injected by feishu_comment handler.
 _local = threading.local()
+_shared_client = None
 
 
 def set_client(client):
@@ -22,9 +23,18 @@ def set_client(client):
     _local.client = client
 
 
+def set_shared_client(client):
+    """Store a process-wide fallback client for Feishu DM/gateway tool calls."""
+    global _shared_client
+    _shared_client = client
+
+
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return the thread-local client, or the shared fallback when present."""
+    client = getattr(_local, "client", None)
+    if client is not None:
+        return client
+    return _shared_client
 
 
 def _check_feishu():

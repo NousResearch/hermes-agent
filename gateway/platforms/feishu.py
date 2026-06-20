@@ -1729,6 +1729,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
+        self._client = None
+        self._set_tool_clients(None)
         self._persist_seen_message_ids()
         await self._release_app_lock()
 
@@ -4569,6 +4571,7 @@ class FeishuAdapter(BasePlatformAdapter):
             raise RuntimeError("websockets not installed; websocket mode unavailable")
         domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
         self._client = self._build_lark_client(domain)
+        self._set_tool_clients(self._client)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
             raise RuntimeError("failed to build Feishu event handler")
@@ -4595,6 +4598,7 @@ class FeishuAdapter(BasePlatformAdapter):
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
         domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
         self._client = self._build_lark_client(domain)
+        self._set_tool_clients(self._client)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
             raise RuntimeError("failed to build Feishu event handler")
@@ -4615,6 +4619,14 @@ class FeishuAdapter(BasePlatformAdapter):
             .log_level(lark.LogLevel.WARNING)
             .build()
         )
+
+    @staticmethod
+    def _set_tool_clients(client: Any) -> None:
+        from tools.feishu_doc_tool import set_shared_client as set_doc_client
+        from tools.feishu_drive_tool import set_shared_client as set_drive_client
+
+        set_doc_client(client)
+        set_drive_client(client)
 
     async def _feishu_send_with_retry(
         self,

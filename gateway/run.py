@@ -1177,8 +1177,6 @@ def _home_target_env_var(platform_name: str) -> str:
     registry via ``cron.scheduler._resolve_home_env_var``, then falls back
     to ``<PLATFORM>_HOME_CHANNEL`` for unknown names.
     """
-    from cron.scheduler import _resolve_home_env_var
-
     resolved = _resolve_home_env_var(platform_name)
     if resolved:
         return resolved
@@ -1603,6 +1601,14 @@ _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in {".", "auto", "cwd"}:
     _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
     os.environ["TERMINAL_CWD"] = _fallback
+
+# Import cron modules at module level, BEFORE any gateway.platforms.* imports.
+# Platform adapters (discord, raft) insert their plugins/ parent into
+# sys.path[0] at import time, which shadows the real cron/ package with
+# plugins/cron/.  Pre-loading here ensures the correct module is cached in
+# sys.modules before any sys.path mutation occurs.  See issue #49410.
+from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+from cron.scheduler import _resolve_home_env_var
 
 from gateway.config import (
     Platform,
@@ -17100,7 +17106,6 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     longer runs gateway housekeeping — that moved to
     ``_start_gateway_housekeeping``.
     """
-    from cron.scheduler_provider import InProcessCronScheduler
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
@@ -17502,7 +17507,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # historical in-process 60s ticker; an external provider (e.g. chronos)
     # may arm a schedule and return. Pass the event loop so cron delivery can
     # use live adapters (E2EE support).
-    from cron.scheduler_provider import resolve_cron_scheduler
     cron_stop = threading.Event()
     cron_provider = resolve_cron_scheduler()
     cron_thread = threading.Thread(

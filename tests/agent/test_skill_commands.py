@@ -127,6 +127,80 @@ class TestScanSkillCommands:
         assert "/knowledge-brain" in result
         assert result["/knowledge-brain"]["name"] == "knowledge-brain"
 
+    def test_excludes_archived_only_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "active-skill")
+            _make_skill(tmp_path / ".archive", "archived-only")
+
+            result = scan_skill_commands()
+
+        assert "/active-skill" in result
+        assert "/archived-only" not in result
+
+    def test_exposes_provenance_for_shadowed_bundle(self, tmp_path):
+        profile_root = tmp_path / "profile"
+        bundled_root = tmp_path / "bundled"
+        profile_root.mkdir()
+        bundled_root.mkdir()
+        _make_skill(profile_root, "shared-skill", body="PROFILE")
+        _make_skill(bundled_root, "shared-skill", body="BUNDLED")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", profile_root),
+            patch(
+                "tools.skills_tool._normalize_source_roots",
+                return_value=[
+                    {
+                        "root": profile_root,
+                        "source_type": "profile",
+                        "resolved_root": profile_root.resolve(),
+                    },
+                    {
+                        "root": bundled_root,
+                        "source_type": "bundled",
+                        "resolved_root": bundled_root.resolve(),
+                    },
+                ],
+            ),
+        ):
+            result = scan_skill_commands()
+
+        assert "/shared-skill" in result
+        command = result["/shared-skill"]
+        assert command["source_type"] == "profile"
+        assert command["active_source"].endswith("profile/shared-skill/SKILL.md")
+        assert command["shadowed_sources"][0]["source_type"] == "bundled"
+
+    def test_unresolved_profile_external_collision_is_not_command(self, tmp_path):
+        profile_root = tmp_path / "profile"
+        external_root = tmp_path / "external"
+        profile_root.mkdir()
+        external_root.mkdir()
+        _make_skill(profile_root, "shared-skill", body="PROFILE")
+        _make_skill(external_root, "shared-skill", body="EXTERNAL")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", profile_root),
+            patch(
+                "tools.skills_tool._normalize_source_roots",
+                return_value=[
+                    {
+                        "root": profile_root,
+                        "source_type": "profile",
+                        "resolved_root": profile_root.resolve(),
+                    },
+                    {
+                        "root": external_root,
+                        "source_type": "external",
+                        "resolved_root": external_root.resolve(),
+                    },
+                ],
+            ),
+        ):
+            result = scan_skill_commands()
+
+        assert "/shared-skill" not in result
+
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""
         external_root = tmp_path / "external"

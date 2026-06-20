@@ -65,9 +65,15 @@ def is_excluded_skill_path(path) -> bool:
     except AttributeError:
         from pathlib import PurePath
         parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
-        path
-    )
+    if any(part in EXCLUDED_SKILL_DIRS for part in parts):
+        return True
+    try:
+        resolved_parts = Path(path).resolve().parts
+    except (OSError, RuntimeError):
+        resolved_parts = ()
+    if any(part in EXCLUDED_SKILL_DIRS for part in resolved_parts):
+        return True
+    return is_skill_support_path(path)
 
 
 def is_skill_support_path(path) -> bool:
@@ -712,7 +718,9 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         if filename in files:
-            matches.append(Path(root) / filename)
+            candidate = Path(root) / filename
+            if not is_excluded_skill_path(candidate):
+                matches.append(candidate)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path
 

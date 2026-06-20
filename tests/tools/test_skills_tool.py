@@ -13,6 +13,7 @@ from tools.skills_tool import (
     _parse_frontmatter,
     _parse_tags,
     _get_category_from_path,
+    _find_all_skill_records,
     _find_all_skills,
     skill_matches_platform,
     skills_list,
@@ -307,6 +308,153 @@ class TestFindAllSkills:
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
 
+    def test_excludes_direct_archive_directory(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "active-skill")
+            _make_skill(tmp_path / ".archive", "archived-only")
+
+            skills = _find_all_skills()
+
+        assert {skill["name"] for skill in skills} == {"active-skill"}
+
+    def test_excludes_nested_archive_directory(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "active-skill")
+            _make_skill(tmp_path / "old" / ".archive", "archived-nested")
+
+            skills = _find_all_skills()
+
+        assert {skill["name"] for skill in skills} == {"active-skill"}
+
+    def test_archive_duplicate_does_not_shadow_bundled_fallback(self, tmp_path):
+        profile_root = tmp_path / "profile"
+        bundled_root = tmp_path / "bundled"
+        profile_root.mkdir()
+        bundled_root.mkdir()
+        _make_skill(profile_root / ".archive", "shared-skill", body="ARCHIVED")
+        _make_skill(bundled_root, "shared-skill", body="BUNDLED")
+
+        with patch("tools.skills_tool.SKILLS_DIR", profile_root):
+            records = _find_all_skill_records(
+                source_roots=[
+                    {"root": profile_root, "source_type": "profile"},
+                    {"root": bundled_root, "source_type": "bundled"},
+                ]
+            )
+
+        assert [record["name"] for record in records] == ["shared-skill"]
+        assert records[0]["source_type"] == "bundled"
+        assert records[0]["shadowed_sources"] == []
+
+    def test_active_profile_duplicate_wins_over_archived_copy(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "shared-skill", body="ACTIVE")
+            _make_skill(tmp_path / ".archive", "shared-skill", body="ARCHIVED")
+
+            records = _find_all_skill_records()
+
+        assert [record["name"] for record in records] == ["shared-skill"]
+        assert records[0]["source_type"] == "profile"
+        assert records[0]["shadowed_sources"] == []
+
+    def test_profile_source_wins_over_bundled_duplicate(self, tmp_path):
+        profile_root = tmp_path / "profile"
+        bundled_root = tmp_path / "bundled"
+        profile_root.mkdir()
+        bundled_root.mkdir()
+        _make_skill(profile_root, "shared-skill", body="PROFILE")
+        _make_skill(bundled_root, "shared-skill", body="BUNDLED")
+
+        with patch("tools.skills_tool.SKILLS_DIR", profile_root):
+            records = _find_all_skill_records(
+                source_roots=[
+                    {"root": bundled_root, "source_type": "bundled"},
+                    {"root": profile_root, "source_type": "profile"},
+                ]
+            )
+
+        assert [record["name"] for record in records] == ["shared-skill"]
+        assert records[0]["source_type"] == "profile"
+        assert records[0]["shadowed_sources"][0]["source_type"] == "bundled"
+        assert "profile" in records[0]["resolution_reason"].lower()
+
+    def test_repeated_resolution_is_deterministic(self, tmp_path):
+        profile_root = tmp_path / "profile"
+        bundled_root = tmp_path / "bundled"
+        profile_root.mkdir()
+        bundled_root.mkdir()
+        _make_skill(profile_root, "shared-skill")
+        _make_skill(bundled_root, "shared-skill")
+        source_roots = [
+            {"root": bundled_root, "source_type": "bundled"},
+            {"root": profile_root, "source_type": "profile"},
+        ]
+
+        with patch("tools.skills_tool.SKILLS_DIR", profile_root):
+            first = _find_all_skill_records(source_roots=source_roots)
+            second = _find_all_skill_records(source_roots=list(reversed(source_roots)))
+
+        def _signature(records):
+            return [
+                (
+                    record["name"],
+                    record["active_source"],
+                    record["source_type"],
+                    record["shadowed_sources"],
+                )
+                for record in records
+            ]
+
+        assert _signature(first) == _signature(second)
+
+    def test_same_physical_skill_root_is_not_counted_twice(self, tmp_path):
+        real_root = tmp_path / "real"
+        real_root.mkdir()
+        _make_skill(real_root, "shared-skill")
+        symlink_root = tmp_path / "linked"
+        try:
+            symlink_root.symlink_to(real_root, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", real_root):
+            records = _find_all_skill_records(
+                source_roots=[
+                    {"root": real_root, "source_type": "profile"},
+                    {"root": symlink_root, "source_type": "external"},
+                ]
+            )
+
+        assert [record["name"] for record in records] == ["shared-skill"]
+        assert records[0]["shadowed_sources"] == []
+
+    def test_profile_external_collision_is_not_active_list_record(self, tmp_path):
+        profile_root = tmp_path / "profile"
+        external_root = tmp_path / "external"
+        profile_root.mkdir()
+        external_root.mkdir()
+        _make_skill(profile_root, "shared-skill", body="PROFILE")
+        _make_skill(external_root, "shared-skill", body="EXTERNAL")
+
+        with patch("tools.skills_tool.SKILLS_DIR", profile_root):
+            records = _find_all_skill_records(
+                source_roots=[
+                    {"root": profile_root, "source_type": "profile"},
+                    {"root": external_root, "source_type": "external"},
+                ]
+            )
+            skills = _find_all_skills(
+                source_roots=[
+                    {"root": profile_root, "source_type": "profile"},
+                    {"root": external_root, "source_type": "external"},
+                ]
+            )
+
+        assert [record["name"] for record in records] == ["shared-skill"]
+        assert "ambiguous_sources" in records[0]
+        assert len(records[0]["ambiguous_sources"]) == 2
+        assert skills == []
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -356,6 +504,44 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
+
+    def test_lists_source_provenance_for_shadowed_duplicate(self, tmp_path):
+        profile_root = tmp_path / "profile"
+        bundled_root = tmp_path / "bundled"
+        profile_root.mkdir()
+        bundled_root.mkdir()
+        _make_skill(profile_root, "shared-skill", body="PROFILE")
+        _make_skill(bundled_root, "shared-skill", body="BUNDLED")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", profile_root),
+            patch(
+                "tools.skills_tool._normalize_source_roots",
+                return_value=[
+                    {
+                        "root": profile_root,
+                        "source_type": "profile",
+                        "resolved_root": profile_root.resolve(),
+                    },
+                    {
+                        "root": bundled_root,
+                        "source_type": "bundled",
+                        "resolved_root": bundled_root.resolve(),
+                    },
+                ],
+            ),
+        ):
+            raw = skills_list()
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 1
+        skill = result["skills"][0]
+        assert skill["name"] == "shared-skill"
+        assert skill["source_type"] == "profile"
+        assert skill["active_source"].endswith("profile/shared-skill/SKILL.md")
+        assert skill["shadowed_sources"][0]["source_type"] == "bundled"
+        assert "profile" in skill["resolution_reason"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1125,21 +1311,7 @@ Do the legacy thing.
 
 
 class TestSkillViewCollisionDetection:
-    """Regression tests for skill_view name collision handling.
-
-    When a skill name resolves to multiple paths across the local skills
-    dir and external_dirs, skill_view must refuse to guess. Silent
-    shadowing — where ``/skills`` shows the local version but
-    ``skill_view`` loads the external one — is the bug class this guards
-    against. Reproduces with `skills.external_dirs` registered in
-    config.yaml and a same-name skill nested under a category locally.
-
-    Adapted from a regression suite originally proposed by @polkn in PR
-    #6136 (which used local-first precedence). The collision-refusal
-    behavior preserves the same protection without silently picking a
-    side, and gives the user an actionable hint (use the categorized
-    path) to recover.
-    """
+    """Regression tests for legacy skill_view ambiguity handling."""
 
     def _patch_dirs(self, local_dir, external_dirs):
         """Patch SKILLS_DIR (module-level) and get_external_skills_dirs at source."""
@@ -1152,8 +1324,7 @@ class TestSkillViewCollisionDetection:
         )
 
     def test_nested_local_collides_with_top_level_external(self, tmp_path):
-        """The original bug scenario: nested local + top-level external,
-        same name. Now refuses with both paths surfaced."""
+        """Nested profile + top-level external remains ambiguous."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1176,14 +1347,12 @@ class TestSkillViewCollisionDetection:
         assert "Ambiguous skill name 'explore-codebase'" in result["error"]
         assert "matches" in result
         assert len(result["matches"]) == 2
-        # Both paths surfaced
         assert any("foundations/runtime" in p for p in result["matches"])
         assert any("external" in p for p in result["matches"])
         assert "hint" in result
 
     def test_top_level_local_collides_with_external(self, tmp_path):
-        """Top-level local + top-level external with the same name also
-        refuses — same-name shadowing is ambiguous regardless of nesting."""
+        """Top-level profile + external with the same name is ambiguous."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1202,8 +1371,7 @@ class TestSkillViewCollisionDetection:
         assert len(result["matches"]) == 2
 
     def test_collision_resolvable_via_categorized_path(self, tmp_path):
-        """User can recover from a collision by passing the full
-        categorized path — the bare name is ambiguous, the path is not."""
+        """The full categorized path still resolves the same local skill."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1326,9 +1494,8 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is True
         assert "EXTERNAL BODY" in result["content"]
 
-    def test_two_externals_same_name_also_refuse(self, tmp_path):
-        """Collision detection is symmetric — two external dirs with
-        same-name skills also trigger the refusal."""
+    def test_two_externals_same_name_refuse_ambiguity(self, tmp_path):
+        """Same-precedence external duplicates do not resolve by path order."""
         local_dir = tmp_path / "local"
         ext_a = tmp_path / "ext_a"
         ext_b = tmp_path / "ext_b"
@@ -1346,6 +1513,79 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is False
         assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2
+
+    def test_reversing_external_root_order_keeps_ambiguity_output(self, tmp_path):
+        """External duplicate reporting is deterministic, not root-order based."""
+        local_dir = tmp_path / "local"
+        ext_a = tmp_path / "ext_a"
+        ext_b = tmp_path / "ext_b"
+        local_dir.mkdir()
+        ext_a.mkdir()
+        ext_b.mkdir()
+
+        _make_skill(ext_a, "pr", body="EXT_A VERSION")
+        _make_skill(ext_b, "pr", body="EXT_B VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [ext_a, ext_b])
+        with p1, p2:
+            first = json.loads(skill_view("pr"))
+        p1, p2 = self._patch_dirs(local_dir, [ext_b, ext_a])
+        with p1, p2:
+            second = json.loads(skill_view("pr"))
+
+        assert first["success"] is False
+        assert second["success"] is False
+        assert first["matches"] == second["matches"]
+        assert "EXT_A VERSION" not in json.dumps(first)
+
+    def test_profile_shadows_bundled_without_ambiguity(self, tmp_path):
+        """Profile-over-bundled is the explicit safe automatic winner rule."""
+        profile_root = tmp_path / "profile"
+        bundled_root = tmp_path / "bundled"
+        profile_root.mkdir()
+        bundled_root.mkdir()
+        _make_skill(profile_root, "shared-skill", body="PROFILE VERSION")
+        _make_skill(bundled_root, "shared-skill", body="BUNDLED VERSION")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", profile_root),
+            patch(
+                "tools.skills_tool._normalize_source_roots",
+                return_value=[
+                    {
+                        "root": bundled_root,
+                        "source_type": "bundled",
+                        "resolved_root": bundled_root.resolve(),
+                    },
+                    {
+                        "root": profile_root,
+                        "source_type": "profile",
+                        "resolved_root": profile_root.resolve(),
+                    },
+                ],
+            ),
+        ):
+            result = json.loads(skill_view("shared-skill"))
+
+        assert result["success"] is True
+        assert result["source_type"] == "profile"
+        assert "PROFILE VERSION" in result["content"]
+        assert len(result["shadowed_sources"]) == 1
+        assert result["shadowed_sources"][0]["source_type"] == "bundled"
+
+    def test_two_profile_sources_same_name_refuse_ambiguity(self, tmp_path):
+        """Multiple distinct profile candidates with the same name are ambiguous."""
+        profile_root = tmp_path / "profile"
+        profile_root.mkdir()
+        _make_skill(profile_root, "shared-name", category="a", body="A VERSION")
+        _make_skill(profile_root, "shared-name", category="b", body="B VERSION")
+
+        with patch("tools.skills_tool.SKILLS_DIR", profile_root):
+            result = json.loads(skill_view("shared-name"))
+
+        assert result["success"] is False
+        assert "Ambiguous skill name 'shared-name'" in result["error"]
         assert len(result["matches"]) == 2
 
     def test_local_only_skill_loads_normally(self, tmp_path):

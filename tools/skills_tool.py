@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home, get_bundled_skills_dir
 import os
 import re
 from enum import Enum
@@ -80,8 +80,9 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
+    is_excluded_skill_path as _is_excluded_skill_path,
     is_skill_support_path as _is_skill_support_path,
+    iter_skill_index_files as _iter_skill_index_files,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,12 @@ SKILLS_DIR = HERMES_HOME / "skills"
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+_SOURCE_PRIORITY = {
+    "profile": 0,
+    "external": 1,
+    "bundled": 2,
+}
+_NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
 # Platform identifiers for the 'platforms' frontmatter field.
 # Maps user-friendly names to sys.platform prefixes.
@@ -599,7 +606,384 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _source_priority(source_type: str) -> int:
+    return _SOURCE_PRIORITY.get(str(source_type or ""), 50)
+
+
+def _resolve_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path.absolute()
+
+
+def _get_bundled_skill_root() -> Path:
+    return get_bundled_skills_dir(Path(__file__).resolve().parent.parent / "skills")
+
+
+def _should_include_default_bundled_skills() -> bool:
+    """Include bundled fallback only for the real profile skills dir.
+
+    Most unit tests patch ``SKILLS_DIR`` to a temporary directory and expect a
+    hermetic discovery surface. Runtime discovery keeps bundled skills visible
+    behind profile/external sources for synced profiles unless the profile opts
+    out. A scratch ``HERMES_HOME`` without a bundled manifest has not gone
+    through bundled-skill sync, so falling back to repo skills there would make
+    tests and isolated profiles non-hermetic.
+    """
+    if (get_hermes_home() / _NO_BUNDLED_SKILLS_MARKER).exists():
+        return False
+    if not (SKILLS_DIR / ".bundled_manifest").exists():
+        return False
+    return _resolve_path(SKILLS_DIR) == _resolve_path(get_hermes_home() / "skills")
+
+
+def _normalize_source_roots(source_roots: list | None = None) -> List[Dict[str, Any]]:
+    """Return deterministic, de-duplicated skill roots with source metadata."""
+    if source_roots is None:
+        source_roots = []
+        if SKILLS_DIR.exists():
+            source_roots.append({"root": SKILLS_DIR, "source_type": "profile"})
+        try:
+            from agent.skill_utils import get_external_skills_dirs
+
+            for external_dir in get_external_skills_dirs():
+                source_roots.append({"root": external_dir, "source_type": "external"})
+        except Exception:
+            pass
+        try:
+            bundled_root = _get_bundled_skill_root()
+            if _should_include_default_bundled_skills():
+                source_roots.append({"root": bundled_root, "source_type": "bundled"})
+        except Exception:
+            pass
+
+    normalized: List[Dict[str, Any]] = []
+    for entry in source_roots:
+        if isinstance(entry, dict):
+            root_raw = entry.get("root") or entry.get("path")
+            source_type = str(entry.get("source_type") or "profile")
+        elif isinstance(entry, tuple) and len(entry) >= 2:
+            root_raw, source_type = entry[0], str(entry[1])
+        else:
+            root_raw, source_type = entry, "profile"
+        if not root_raw:
+            continue
+        root = Path(root_raw).expanduser()
+        resolved_root = _resolve_path(root)
+        if ".archive" in root.parts or ".archive" in resolved_root.parts:
+            continue
+        if not root.is_dir():
+            continue
+        normalized.append(
+            {
+                "root": root,
+                "source_type": source_type,
+                "resolved_root": resolved_root,
+            }
+        )
+
+    normalized.sort(
+        key=lambda item: (
+            _source_priority(item["source_type"]),
+            str(item["resolved_root"]),
+            str(item["root"]),
+        )
+    )
+    deduped: List[Dict[str, Any]] = []
+    seen_roots: Set[Path] = set()
+    for item in normalized:
+        if item["resolved_root"] in seen_roots:
+            continue
+        seen_roots.add(item["resolved_root"])
+        deduped.append(item)
+    return deduped
+
+
+def _read_bundled_manifest_names() -> Set[str]:
+    manifest = SKILLS_DIR / ".bundled_manifest"
+    if not manifest.exists():
+        return set()
+    names: Set[str] = set()
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            name, _, _hash = line.partition(":")
+            if name.strip():
+                names.add(name.strip())
+    except OSError:
+        return set()
+    return names
+
+
+def _read_curator_suppressed_names() -> Set[str]:
+    suppressed = SKILLS_DIR / ".curator_suppressed"
+    if not suppressed.exists():
+        return set()
+    names: Set[str] = set()
+    try:
+        for line in suppressed.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                names.add(line)
+    except OSError:
+        return set()
+    return names
+
+
+def _category_from_source_root(skill_md: Path, source_root: Path) -> Optional[str]:
+    try:
+        rel_path = skill_md.relative_to(source_root)
+        if len(rel_path.parts) >= 3:
+            return rel_path.parts[0]
+    except ValueError:
+        pass
+    return _get_category_from_path(skill_md)
+
+
+def _describe_source(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "source_type": candidate["source_type"],
+        "path": str(candidate["skill_md"]),
+        "skill_dir": str(candidate["skill_dir"]) if candidate.get("skill_dir") else None,
+        "source_root": str(candidate["source_root"]),
+        "canonical_path": str(candidate["canonical_path"]),
+    }
+
+
+def _candidate_sort_key(candidate: Dict[str, Any]) -> tuple:
+    return (
+        _source_priority(candidate["source_type"]),
+        str(candidate["canonical_path"]),
+        str(candidate["skill_md"]),
+    )
+
+
+def _candidate_report_sort_key(candidate: Dict[str, Any]) -> tuple:
+    return (
+        str(candidate["canonical_path"]),
+        _source_priority(candidate["source_type"]),
+        str(candidate["skill_md"]),
+    )
+
+
+def _resolution_reason(winner: Dict[str, Any], shadowed: List[Dict[str, Any]]) -> str:
+    if not shadowed:
+        return f"Only active {winner['source_type']} source matched."
+    if winner["source_type"] == "profile" and all(
+        s["source_type"] == "bundled" for s in shadowed
+    ):
+        return "Active profile source selected over bundled duplicate sources."
+    return "Resolved unique active source."
+
+
+def _filter_uninstalled_bundled_candidates(
+    name: str,
+    candidates: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    manifest_names = _read_bundled_manifest_names()
+    has_non_bundled = any(c["source_type"] != "bundled" for c in candidates)
+    filtered: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        if candidate["source_type"] == "bundled" and name in manifest_names and not has_non_bundled:
+            canonical_dest = SKILLS_DIR / candidate["relative_skill_dir"]
+            if not canonical_dest.exists():
+                continue
+        filtered.append(candidate)
+    return filtered
+
+
+def _resolve_skill_candidate_group(
+    candidates: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Resolve only unique candidates and the safe profile-over-bundled overlay."""
+    ordered = sorted(candidates, key=_candidate_sort_key)
+    if not ordered:
+        return None, [], []
+    if len(ordered) == 1:
+        return ordered[0], [], []
+
+    profiles = [c for c in ordered if c["source_type"] == "profile"]
+    non_bundled = [c for c in ordered if c["source_type"] != "bundled"]
+    if len(profiles) == 1 and len(non_bundled) == 1:
+        winner = profiles[0]
+        shadowed = [c for c in ordered if c is not winner]
+        return winner, shadowed, []
+
+    return None, [], sorted(ordered, key=_candidate_report_sort_key)
+
+
+def _ambiguous_skill_response(name: str, candidates: List[Dict[str, Any]]) -> str:
+    ordered = sorted(candidates, key=_candidate_report_sort_key)
+    paths = [str(c["skill_md"]) for c in ordered]
+    logging.getLogger(__name__).warning(
+        "Skill name collision for '%s': %d candidates — %s",
+        name,
+        len(ordered),
+        "; ".join(paths),
+    )
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"Ambiguous skill name '{name}': {len(ordered)} skills "
+                "match across your local skills dir and external_dirs. "
+                "Refusing to guess — load one explicitly by its categorized path."
+            ),
+            "matches": paths,
+            "hint": (
+                "Pass the full relative path instead of the bare name "
+                "(e.g., 'category/skill-name'), or rename one of the "
+                "colliding skills so each name is unique."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _is_ambiguous_skill_record(record: Dict[str, Any]) -> bool:
+    return bool(record.get("ambiguous_sources"))
+
+
+def _discover_skill_candidates(
+    *,
+    skip_disabled: bool = False,
+    source_roots: list | None = None,
+) -> List[Dict[str, Any]]:
+    """Collect active skill candidates before duplicate resolution."""
+    candidates: List[Dict[str, Any]] = []
+    seen_paths: Set[Path] = set()
+    disabled = _get_disabled_skill_names() if not skip_disabled else set()
+    suppressed = _read_curator_suppressed_names()
+
+    for source in _normalize_source_roots(source_roots):
+        source_root = source["root"]
+        source_type = source["source_type"]
+        for skill_md in _iter_skill_index_files(source_root, "SKILL.md"):
+            if _is_excluded_skill_path(skill_md):
+                continue
+            canonical_path = _resolve_path(skill_md)
+            if canonical_path in seen_paths:
+                continue
+            seen_paths.add(canonical_path)
+
+            skill_dir = skill_md.parent
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:4000]
+                frontmatter, body = _parse_frontmatter(content)
+            except (UnicodeDecodeError, PermissionError) as e:
+                logger.debug("Failed to read skill file %s: %s", skill_md, e)
+                continue
+            except Exception as e:
+                logger.debug(
+                    "Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True
+                )
+                continue
+
+            if not skill_matches_platform(frontmatter):
+                continue
+            if not skill_matches_environment(frontmatter):
+                continue
+
+            raw_name = str(frontmatter.get("name", skill_dir.name)).strip()
+            if not raw_name:
+                raw_name = skill_dir.name
+            if raw_name in disabled:
+                continue
+            if source_type == "bundled" and raw_name in suppressed:
+                continue
+
+            description = str(frontmatter.get("description", ""))
+            if not description:
+                for line in body.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        description = line
+                        break
+            if len(description) > MAX_DESCRIPTION_LENGTH:
+                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+            try:
+                relative_skill_dir = str(skill_dir.relative_to(source_root))
+            except ValueError:
+                relative_skill_dir = skill_dir.name
+
+            candidates.append(
+                {
+                    "name": raw_name[:MAX_NAME_LENGTH],
+                    "description": description,
+                    "category": _category_from_source_root(skill_md, source_root),
+                    "skill_md": skill_md,
+                    "skill_dir": skill_dir,
+                    "source_root": source_root,
+                    "source_type": source_type,
+                    "canonical_path": canonical_path,
+                    "relative_skill_dir": relative_skill_dir,
+                }
+            )
+
+    return candidates
+
+
+def _find_all_skill_records(
+    *,
+    skip_disabled: bool = False,
+    source_roots: list | None = None,
+) -> List[Dict[str, Any]]:
+    """Return resolved skill records with deterministic source provenance."""
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for candidate in _discover_skill_candidates(
+        skip_disabled=skip_disabled,
+        source_roots=source_roots,
+    ):
+        grouped.setdefault(candidate["name"], []).append(candidate)
+
+    resolved: List[Dict[str, Any]] = []
+    for name in sorted(grouped):
+        filtered = _filter_uninstalled_bundled_candidates(name, grouped[name])
+        if not filtered:
+            continue
+
+        winner, shadowed_candidates, ambiguous = _resolve_skill_candidate_group(filtered)
+        if ambiguous:
+            resolved.append(
+                {
+                    "name": name,
+                    "description": "",
+                    "category": None,
+                    "ambiguous_sources": [_describe_source(c) for c in ambiguous],
+                }
+            )
+            continue
+        if winner is None:
+            continue
+
+        shadowed = [_describe_source(c) for c in shadowed_candidates]
+        resolved.append(
+            {
+                "name": winner["name"],
+                "description": winner["description"],
+                "category": winner["category"],
+                "active_source": str(winner["skill_md"]),
+                "source_type": winner["source_type"],
+                "shadowed_sources": shadowed,
+                "resolution_reason": _resolution_reason(winner, shadowed_candidates),
+                "skill_md_path": str(winner["skill_md"]),
+                "skill_dir": str(winner["skill_dir"]),
+                "source_root": str(winner["source_root"]),
+            }
+        )
+
+    return _sort_skills(resolved)
+
+
+def _find_all_skills(
+    *,
+    skip_disabled: bool = False,
+    source_roots: list | None = None,
+) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
@@ -610,73 +994,23 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
-
-    skills = []
-    seen_names: set = set()
-
-    # Load disabled set once (not per-skill)
-    disabled = set() if skip_disabled else _get_disabled_skill_names()
-
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
-
-    for scan_dir in dirs_to_scan:
-        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                continue
-
-            skill_dir = skill_md.parent
-
-            try:
-                content = skill_md.read_text(encoding="utf-8")[:4000]
-                frontmatter, body = _parse_frontmatter(content)
-
-                if not skill_matches_platform(frontmatter):
-                    continue
-
-                if not skill_matches_environment(frontmatter):
-                    continue
-
-                name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
-                if name in seen_names:
-                    continue
-                if name in disabled:
-                    continue
-
-                description = frontmatter.get("description", "")
-                if not description:
-                    for line in body.strip().split("\n"):
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            description = line
-                            break
-
-                if len(description) > MAX_DESCRIPTION_LENGTH:
-                    description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
-
-                category = _get_category_from_path(skill_md)
-
-                seen_names.add(name)
-                skills.append({
-                    "name": name,
-                    "description": description,
-                    "category": category,
-                })
-
-            except (UnicodeDecodeError, PermissionError) as e:
-                logger.debug("Failed to read skill file %s: %s", skill_md, e)
-                continue
-            except Exception as e:
-                logger.debug(
-                    "Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True
-                )
-                continue
-
-    return skills
+    records = _find_all_skill_records(
+        skip_disabled=skip_disabled,
+        source_roots=source_roots,
+    )
+    return [
+        {
+            "name": record["name"],
+            "description": record["description"],
+            "category": record["category"],
+            "active_source": record["active_source"],
+            "source_type": record["source_type"],
+            "shadowed_sources": record["shadowed_sources"],
+            "resolution_reason": record["resolution_reason"],
+        }
+        for record in records
+        if not _is_ambiguous_skill_record(record)
+    ]
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -964,8 +1298,6 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
-
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
         if local_category_name:
@@ -980,13 +1312,9 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-        # Build list of all skill directories to search
-        all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
-        all_dirs.extend(get_external_skills_dirs())
-
-        if not all_dirs:
+        source_roots = _normalize_source_roots()
+        all_dirs = [source["root"] for source in source_roots]
+        if not source_roots:
             return json.dumps(
                 {
                     "success": False,
@@ -998,68 +1326,63 @@ def skill_view(
         skill_dir = None
         skill_md = None
 
-        # Collision detection: collect ALL candidates across every dir using
-        # every lookup strategy (direct path, recursive by parent dir name,
-        # legacy flat <name>.md). If more than one matches, refuse and tell
-        # the caller — silent shadowing of a local skill by a same-named
-        # external skill is a real bug class (`/skills` shows one, agent
-        # loaded the other) so we surface it loudly instead of guessing.
-        from agent.skill_utils import iter_skill_index_files
+        candidates: List[Dict[str, Any]] = []
+        seen_md: Set[Path] = set()
 
-        candidates: List[Tuple[Optional[Path], Path]] = []  # (skill_dir, skill_md)
-        seen_md: set = set()
-
-        def _record(sd: Optional[Path], smd: Path) -> None:
-            try:
-                key = smd.resolve()
-            except Exception:
-                key = smd
+        def _record(
+            sd: Optional[Path],
+            smd: Path,
+            source: Dict[str, Any],
+        ) -> None:
+            if _is_excluded_skill_path(smd):
+                return
+            key = _resolve_path(smd)
             if key in seen_md:
                 return
             seen_md.add(key)
-            candidates.append((sd, smd))
+            source_root = source["root"]
+            try:
+                relative_skill_dir = str(sd.relative_to(source_root)) if sd else smd.name
+            except ValueError:
+                relative_skill_dir = sd.name if sd else smd.name
+            candidates.append(
+                {
+                    "skill_dir": sd,
+                    "skill_md": smd,
+                    "source_root": source_root,
+                    "source_type": source["source_type"],
+                    "canonical_path": key,
+                    "relative_skill_dir": relative_skill_dir,
+                }
+            )
 
-        for search_dir in all_dirs:
-            # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
-            # at the top of the dir).
-            direct_path = search_dir / name
-            if (
-                not _is_skill_support_path(direct_path)
-                and direct_path.is_dir()
-                and (direct_path / "SKILL.md").exists()
-            ):
-                _record(direct_path, direct_path / "SKILL.md")
-            elif direct_path.with_suffix(".md").exists() and not _is_skill_support_path(
-                direct_path.with_suffix(".md")
-            ):
-                _record(None, direct_path.with_suffix(".md"))
+        def _record_lookup_path(search_dir: Path, lookup_name: str, source: Dict[str, Any]) -> None:
+            direct_path = search_dir / lookup_name
+            skill_index = direct_path / "SKILL.md"
+            if direct_path.is_dir() and skill_index.exists():
+                _record(direct_path, skill_index, source)
+                return
+            flat_md = direct_path.with_suffix(".md")
+            if flat_md.exists() and not _is_skill_support_path(flat_md):
+                _record(None, flat_md, source)
 
-            # Strategy 1b: categorized form for plugin namespace fall-through
-            # (e.g., a "myplugin:explore" name with no plugin registered also
-            # tries the on-disk path "myplugin/explore").
+        for source in source_roots:
+            search_dir = source["root"]
+            _record_lookup_path(search_dir, name, source)
+
+            # Categorized fall-through form for plugin namespace fallback
+            # (e.g., "myplugin:explore" also tries "myplugin/explore").
             if local_category_name:
-                categorized_path = search_dir / local_category_name
-                if (
-                    not _is_skill_support_path(categorized_path)
-                    and categorized_path.is_dir()
-                    and (categorized_path / "SKILL.md").exists()
-                ):
-                    _record(categorized_path, categorized_path / "SKILL.md")
-                elif categorized_path.with_suffix(
-                    ".md"
-                ).exists() and not _is_skill_support_path(
-                    categorized_path.with_suffix(".md")
-                ):
-                    _record(None, categorized_path.with_suffix(".md"))
+                _record_lookup_path(search_dir, local_category_name, source)
 
             # Strategy 2: recursive by directory name (catches nested skills
             # like "foundations/runtime/explore-codebase" called by bare name),
             # plus frontmatter `name:` lookup. `skills_list()` exposes the
             # frontmatter name, so `skill_view(name)` must accept it too even
             # when the on-disk directory is a shorter category/alias.
-            for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+            for found_skill_md in _iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
-                    _record(found_skill_md.parent, found_skill_md)
+                    _record(found_skill_md.parent, found_skill_md, source)
                     continue
                 try:
                     fm_content = found_skill_md.read_text(encoding="utf-8")
@@ -1067,7 +1390,7 @@ def skill_view(
                 except Exception:
                     fm = {}
                 if fm.get("name") == name:
-                    _record(found_skill_md.parent, found_skill_md)
+                    _record(found_skill_md.parent, found_skill_md, source)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             # Exclude skill support docs: references/templates/assets/scripts
@@ -1077,34 +1400,24 @@ def skill_view(
                 if found_md.name != "SKILL.md" and not _is_skill_support_path(
                     found_md
                 ):
-                    _record(None, found_md)
-
-        if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
-            logging.getLogger(__name__).warning(
-                "Skill name collision for '%s': %d candidates — %s",
-                name, len(candidates), "; ".join(paths),
-            )
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        f"Ambiguous skill name '{name}': {len(candidates)} skills "
-                        "match across your local skills dir and external_dirs. "
-                        "Refusing to guess — load one explicitly by its categorized path."
-                    ),
-                    "matches": paths,
-                    "hint": (
-                        "Pass the full relative path instead of the bare name "
-                        "(e.g., 'category/skill-name'), or rename one of the "
-                        "colliding skills so each name is unique."
-                    ),
-                },
-                ensure_ascii=False,
-            )
+                    _record(None, found_md, source)
 
         if candidates:
-            skill_dir, skill_md = candidates[0]
+            candidates = _filter_uninstalled_bundled_candidates(name, candidates)
+
+        active_candidate: Optional[Dict[str, Any]] = None
+        shadowed_sources: List[Dict[str, Any]] = []
+        resolution_reason = ""
+        if candidates:
+            active_candidate, shadowed_candidates, ambiguous = _resolve_skill_candidate_group(
+                candidates
+            )
+            if ambiguous:
+                return _ambiguous_skill_response(name, ambiguous)
+            shadowed_sources = [_describe_source(c) for c in shadowed_candidates]
+            resolution_reason = _resolution_reason(active_candidate, shadowed_candidates)
+            skill_dir = active_candidate["skill_dir"]
+            skill_md = active_candidate["skill_md"]
 
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
@@ -1133,9 +1446,10 @@ def skill_view(
         # Security: warn if skill is loaded from outside trusted directories
         # (local skills dir + configured external_dirs are all trusted)
         _outside_skills_dir = True
-        _trusted_dirs = [SKILLS_DIR.resolve()]
+        _trusted_dirs = [source["resolved_root"] for source in source_roots]
         try:
-            _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
+            if SKILLS_DIR.resolve() not in _trusted_dirs:
+                _trusted_dirs.append(SKILLS_DIR.resolve())
         except Exception:
             pass
         for _td in _trusted_dirs:
@@ -1275,6 +1589,11 @@ def skill_view(
                         "file": file_path,
                         "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
                         "is_binary": True,
+                        "skill_dir": str(skill_dir) if skill_dir else None,
+                        "active_source": str(skill_md),
+                        "source_type": active_candidate["source_type"] if active_candidate else None,
+                        "shadowed_sources": shadowed_sources,
+                        "resolution_reason": resolution_reason,
                     },
                     ensure_ascii=False,
                 )
@@ -1286,6 +1605,11 @@ def skill_view(
                     "file": file_path,
                     "content": content,
                     "file_type": target_file.suffix,
+                    "skill_dir": str(skill_dir) if skill_dir else None,
+                    "active_source": str(skill_md),
+                    "source_type": active_candidate["source_type"] if active_candidate else None,
+                    "shadowed_sources": shadowed_sources,
+                    "resolution_reason": resolution_reason,
                 },
                 ensure_ascii=False,
             )
@@ -1459,6 +1783,10 @@ def skill_view(
             "content": rendered_content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
+            "active_source": str(skill_md),
+            "source_type": active_candidate["source_type"] if active_candidate else None,
+            "shadowed_sources": shadowed_sources,
+            "resolution_reason": resolution_reason,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files

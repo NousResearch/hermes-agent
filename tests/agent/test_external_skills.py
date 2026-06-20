@@ -118,8 +118,8 @@ class TestExternalSkillsInFindAll:
         names = [s["name"] for s in skills]
         assert "my-external-skill" in names
 
-    def test_local_takes_precedence(self, hermes_home, external_skills_dir):
-        """If the same skill name exists locally and externally, local wins."""
+    def test_local_external_collision_is_ambiguous(self, hermes_home, external_skills_dir):
+        """Same-named local and external skills require an explicit path."""
         local_skills = hermes_home / "skills"
         local_skill = local_skills / "my-external-skill"
         local_skill.mkdir(parents=True)
@@ -133,11 +133,15 @@ class TestExternalSkillsInFindAll:
             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
-            from tools.skills_tool import _find_all_skills
+            from tools.skills_tool import _find_all_skills, skill_view
+
             skills = _find_all_skills()
+            viewed = json.loads(skill_view("my-external-skill"))
         matching = [s for s in skills if s["name"] == "my-external-skill"]
-        assert len(matching) == 1
-        assert matching[0]["description"] == "Local version"
+        assert matching == []
+        assert viewed["success"] is False
+        assert "Ambiguous skill name 'my-external-skill'" in viewed["error"]
+        assert len(viewed["matches"]) == 2
 
 
 class TestExternalSkillView:

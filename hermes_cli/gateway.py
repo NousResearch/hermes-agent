@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +47,11 @@ from hermes_cli.setup import (
     prompt_yes_no,
 )
 from hermes_cli.colors import Colors, color
+
+try:
+    from langfuse_runtime import start_langfuse_run
+except Exception:  # pragma: no cover - optional local helper
+    start_langfuse_run = None
 
 logger = logging.getLogger(__name__)
 
@@ -4095,32 +4101,88 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         absorb_windows_console_controls=_absorb_windows_console_controls,
     )
 
+    langfuse_run = None
+    if start_langfuse_run is not None:
+        langfuse_run = start_langfuse_run(
+            trace_id=f"gateway-{os.getpid()}-{uuid.uuid4().hex[:8]}",
+            name="hermes.gateway.run",
+            input_payload={
+                "verbose": verbose,
+                "quiet": quiet,
+                "replace": replace,
+                "force": force,
+                "stdin_is_tty": _stdin_is_tty,
+                "absorb_windows_console_controls": _absorb_windows_console_controls,
+                "platform": sys.platform,
+            },
+            metadata={
+                "project_root": str(PROJECT_ROOT),
+                "gateway_pid": os.getpid(),
+            },
+        )
+    langfuse_result: dict[str, object] = {
+        "success": False,
+        "exit_code": None,
+        "reason": "unknown",
+    }
+
     def _atexit_hook() -> None:
         _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info()))
 
     _atexit.register(_atexit_hook)
 
-    success = False
     try:
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+        langfuse_result["success"] = bool(success)
+        langfuse_result["exit_code"] = 0 if success else 1
+        langfuse_result["reason"] = "completed" if success else "start_gateway_returned_false"
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
+        langfuse_result["success"] = False
+        langfuse_result["exit_code"] = 130
+        langfuse_result["reason"] = "keyboard_interrupt"
         # On Windows-detached runs this shouldn't fire (we absorb SIGINT above),
         # but keep the handler for console runs.
         _exit_diag(
             "asyncio.run.KeyboardInterrupt",
             traceback=_traceback.format_exc(),
         )
+        if langfuse_run is not None:
+            langfuse_run.finish(
+                output=langfuse_result,
+                metadata={
+                    "gateway_pid": os.getpid(),
+                    "project_root": str(PROJECT_ROOT),
+                },
+                status_message=str(langfuse_result["reason"]),
+                level="ERROR",
+            )
         print("\nGateway stopped.")
         return
     except SystemExit as e:
+        langfuse_result["success"] = False
+        langfuse_result["exit_code"] = getattr(e, "code", None)
+        langfuse_result["reason"] = "system_exit"
         _exit_diag(
             "asyncio.run.SystemExit",
             code=getattr(e, "code", None),
             traceback=_traceback.format_exc(),
         )
+        if langfuse_run is not None:
+            langfuse_run.finish(
+                output=langfuse_result,
+                metadata={
+                    "gateway_pid": os.getpid(),
+                    "project_root": str(PROJECT_ROOT),
+                },
+                status_message=str(langfuse_result["reason"]),
+                level="ERROR",
+            )
         raise
     except BaseException as e:
+        langfuse_result["success"] = False
+        langfuse_result["exit_code"] = 1
+        langfuse_result["reason"] = type(e).__name__
         # Absolutely everything else: Exception, asyncio.CancelledError,
         # even exotic BaseException subclasses. We want the cause logged.
         _exit_diag(
@@ -4129,11 +4191,42 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             exc_repr=repr(e),
             traceback=_traceback.format_exc(),
         )
+        if langfuse_run is not None:
+            langfuse_run.finish(
+                output=langfuse_result,
+                metadata={
+                    "gateway_pid": os.getpid(),
+                    "project_root": str(PROJECT_ROOT),
+                },
+                status_message=str(langfuse_result["reason"]),
+                level="ERROR",
+            )
         raise
-    if not success:
+    if not langfuse_result["success"]:
+        langfuse_result["exit_code"] = 1 if langfuse_result["exit_code"] in (None, 0) else langfuse_result["exit_code"]
         _exit_diag("gateway.exit_nonzero")
+        if langfuse_run is not None:
+            langfuse_run.finish(
+                output=langfuse_result,
+                metadata={
+                    "gateway_pid": os.getpid(),
+                    "project_root": str(PROJECT_ROOT),
+                },
+                status_message=str(langfuse_result["reason"]),
+                level="ERROR",
+            )
         sys.exit(1)
     _exit_diag("gateway.exit_clean")
+    if langfuse_run is not None:
+        langfuse_run.finish(
+            output=langfuse_result,
+            metadata={
+                "gateway_pid": os.getpid(),
+                "project_root": str(PROJECT_ROOT),
+            },
+            status_message=str(langfuse_result["reason"]),
+            level="DEFAULT",
+        )
 
 
 # =============================================================================

@@ -1,12 +1,39 @@
 """Tests for hermes_cli.gateway."""
 
 import argparse
+import importlib
 import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 import hermes_cli.gateway as gateway
+
+
+def test_gateway_import_does_not_depend_on_local_langfuse_runtime(
+    monkeypatch, tmp_path
+):
+    original_gateway = sys.modules.get("hermes_cli.gateway")
+    original_langfuse_runtime = sys.modules.get("langfuse_runtime")
+    original_sys_path = list(sys.path)
+
+    sys.modules.pop("hermes_cli.gateway", None)
+    sys.modules.pop("langfuse_runtime", None)
+    sys.path[:] = [
+        entry for entry in sys.path if not entry.endswith("/.local/lib")
+    ]
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    try:
+        reloaded = importlib.import_module("hermes_cli.gateway")
+        assert reloaded is not None
+    finally:
+        sys.path[:] = original_sys_path
+        sys.modules.pop("hermes_cli.gateway", None)
+        if original_gateway is not None:
+            sys.modules["hermes_cli.gateway"] = original_gateway
+        if original_langfuse_runtime is not None:
+            sys.modules["langfuse_runtime"] = original_langfuse_runtime
 
 
 def _install_fake_gateway_run(monkeypatch, start_gateway):

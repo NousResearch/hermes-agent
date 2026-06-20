@@ -4317,7 +4317,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if is_network_accessible(self._host) and self._api_key:
                 try:
                     from hermes_cli.auth import has_usable_secret
-                    if not has_usable_secret(self._api_key, min_length=8):
+                    if not has_usable_secret(self._api_key, min_length=32):
                         logger.error(
                             "[%s] Refusing to start: API_SERVER_KEY is set to a "
                             "placeholder value. Generate a real secret "

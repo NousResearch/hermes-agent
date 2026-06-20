@@ -530,6 +530,51 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # DM Topics config from extra.dm_topics
+        self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Generic script-button handlers: prefix → {script, actions: {verb → label}}
+        self._button_handlers: Dict[str, dict] = {}
+        self._load_button_handlers()
+
+    def _load_button_handlers(self) -> None:
+        """Load script-button handlers from platforms.telegram.extra.button_handlers.
+
+        ``button_handlers`` is a LIST of handler entries; each entry carries a
+        ``prefix`` (used in callback data), a ``script`` path, and an
+        ``actions`` map of verb → label::
+
+            button_handlers:
+              - prefix: na
+                script: ~/.hermes/scripts/news_action_button_handler.py
+                actions:
+                  st: Story
+                  x: "𝕏"
+
+        On dispatch a callback ``na:st:42`` matches prefix ``na``, extracts
+        verb ``st`` and arg ``42``, and spawns
+        ``script --action st --action-id 42``. Entries without a ``prefix`` are
+        skipped with a warning.
+
+        Built-in callback prefixes take precedence and must be avoided. The
+        bare model-picker tokens ``mb`` and ``mx`` match without a trailing
+        colon, so any prefix starting with ``mb`` or ``mx`` (e.g. ``mboard``)
+        is silently shadowed by the model picker; such entries are skipped
+        with a warning.
+        """
+        raw: List[Dict[str, Any]] = self.config.extra.get("button_handlers", [])
+        for entry in raw:
+            prefix = entry.get("prefix")
+            if not prefix:
+                logger.warning("[%s] button_handler missing 'prefix', skipping: %s", self.name, entry)
+                continue
+            if prefix.startswith(("mb", "mx")):
+                logger.warning(
+                    "[%s] button_handler prefix %r is shadowed by the built-in "
+                    "model picker (mb/mx), skipping",
+                    self.name, prefix,
+                )
+                continue
+            self._button_handlers[prefix] = entry
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -3936,6 +3981,86 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _run_script_button(
+        self,
+        handler: dict,
+        verb: str,
+        arg: str,
+        chat_id: str,
+        reply_to_message_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> None:
+        """Run a generic script-button handler out-of-band.
+
+        ``handler`` is the button_handlers entry from config, e.g.::
+
+            {
+              "script": "~/.hermes/scripts/news_action_button_handler.py",
+              "actions": {"st": "Story", "x": "𝕏", ...}
+            }
+
+        The script receives at least: ``--action <verb> --action-id <arg>``.
+        Additional per-dispatch context (chat_id, thread, reply_to) is always
+        appended so the script can route its reply correctly.
+        """
+        script = os.path.expanduser(handler.get("script", ""))
+        if not script:
+            logger.error("[%s] script-button handler has no script path: %s", self.name, handler)
+            return
+
+        actions: dict = handler.get("actions", {})
+        label = actions.get(verb, verb)
+
+        cmd = [
+            sys.executable,
+            script,
+            "--action",
+            verb,
+            "--action-id",
+            arg,
+            "--chat-id",
+            str(chat_id),
+        ]
+        if reply_to_message_id is not None:
+            cmd.extend(["--reply-to-message-id", str(reply_to_message_id)])
+        if thread_id is not None:
+            cmd.extend(["--thread-id", str(thread_id)])
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = (stderr or stdout or b"").decode("utf-8", errors="replace")[-1800:]
+                logger.error("[%s] script-button %s failed (%s %s): %s", self.name, label, verb, arg, err)
+                if self._bot:
+                    await self._send_message_with_thread_fallback(
+                        chat_id=int(chat_id),
+                        text=f"⚠️ {label} failed for `{arg}`:\n\n{err}",
+                        parse_mode=None,
+                        reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
+                        **({"message_thread_id": int(thread_id)} if thread_id else {}),
+                    )
+                return
+            out = stdout.decode("utf-8", errors="replace").strip()
+            logger.info("[%s] script-button %s completed (%s %s): %s", self.name, label, verb, arg, out)
+        except Exception as exc:
+            logger.error("[%s] script-button %s crashed (%s %s): %s", self.name, label, verb, arg, exc, exc_info=True)
+            if self._bot:
+                try:
+                    await self._send_message_with_thread_fallback(
+                        chat_id=int(chat_id),
+                        text=f"⚠️ {label} crashed for `{arg}`: {exc}",
+                        parse_mode=None,
+                        reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
+                        **({"message_thread_id": int(thread_id)} if thread_id else {}),
+                    )
+                except Exception:
+                    pass
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4244,6 +4369,52 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Generic script-button callbacks (<prefix>:<verb>:<arg>) ---
+        # Placed AFTER all built-in prefix handlers so those always take
+        # precedence — a configured prefix can never shadow gt:/ea:/sc:/cl:/etc.
+        for prefix, handler in self._button_handlers.items():
+            if not data.startswith(prefix + ":"):
+                continue
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                # Malformed callback data: still answer to clear the spinner.
+                await query.answer()
+                return
+            verb, arg = parts[1], parts[2]
+            # Only authorized users may spawn handler scripts.
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to use this action.")
+                return
+            # Verb allow-list: only dispatch verbs the handler declares.
+            if verb not in handler.get("actions", {}):
+                await query.answer(text="Unknown action.")
+                return
+            # reply_to and thread from the prompt message that carries the
+            # button keyboard.
+            prompt_message_id = getattr(query.message, "reply_to_message", None)
+            prompt_message_id = getattr(prompt_message_id, "message_id", None)
+            task = asyncio.create_task(
+                self._run_script_button(
+                    handler,
+                    verb,
+                    arg,
+                    str(query_chat_id),
+                    reply_to_message_id=str(prompt_message_id) if prompt_message_id is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                )
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            await query.answer()
             return
 
         # --- Update prompt callbacks ---

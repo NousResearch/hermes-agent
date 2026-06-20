@@ -45,6 +45,47 @@ from utils import (
 logger = logging.getLogger("gateway.run")
 
 
+def _persist_model_to_config(config_path, *, new_model, provider, base_url):
+    """Persist a model switch to the nested ``model:`` block in ``config.yaml``.
+
+    Shared by the text ``/model <name>`` command and the inline-keyboard picker
+    callback so the read-modify-write and its scalar→dict coercion invariant
+    live in one place (#49268). The coercion guard is non-trivial: a flat
+    ``model: <name>`` (string) value would otherwise raise
+    ``TypeError: 'str' object does not support item assignment`` on the first
+    nested assignment, so callers that touch only one copy would drift.
+
+    ``provider`` controls credential hygiene: switching to a non-``custom``
+    provider clears any inline endpoint credentials left over from a previous
+    custom endpoint (matching the original per-call-site behaviour).
+    """
+    import yaml
+
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    else:
+        cfg = {}
+    raw_model = cfg.get("model")
+    if isinstance(raw_model, dict):
+        model_cfg = raw_model
+    elif isinstance(raw_model, str) and raw_model.strip():
+        model_cfg = {"default": raw_model.strip()}
+        cfg["model"] = model_cfg
+    else:
+        model_cfg = {}
+        cfg["model"] = model_cfg
+    model_cfg["default"] = new_model
+    model_cfg["provider"] = provider
+    if base_url:
+        model_cfg["base_url"] = base_url
+    if str(provider or "").strip().lower() != "custom":
+        clear_model_endpoint_credentials(model_cfg)
+    from hermes_cli.config import save_config
+
+    save_config(cfg)
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -1221,28 +1262,12 @@ class GatewaySlashCommandsMixin:
                         # model survives across sessions like a typed one (#49066).
                         if persist_global:
                             try:
-                                if config_path.exists():
-                                    with open(config_path, encoding="utf-8") as f:
-                                        _persist_cfg = yaml.safe_load(f) or {}
-                                else:
-                                    _persist_cfg = {}
-                                _raw_model = _persist_cfg.get("model")
-                                if isinstance(_raw_model, dict):
-                                    _persist_model_cfg = _raw_model
-                                elif isinstance(_raw_model, str) and _raw_model.strip():
-                                    _persist_model_cfg = {"default": _raw_model.strip()}
-                                    _persist_cfg["model"] = _persist_model_cfg
-                                else:
-                                    _persist_model_cfg = {}
-                                    _persist_cfg["model"] = _persist_model_cfg
-                                _persist_model_cfg["default"] = result.new_model
-                                _persist_model_cfg["provider"] = result.target_provider
-                                if result.base_url:
-                                    _persist_model_cfg["base_url"] = result.base_url
-                                if str(result.target_provider or "").strip().lower() != "custom":
-                                    clear_model_endpoint_credentials(_persist_model_cfg)
-                                from hermes_cli.config import save_config
-                                save_config(_persist_cfg)
+                                _persist_model_to_config(
+                                    config_path,
+                                    new_model=result.new_model,
+                                    provider=result.target_provider,
+                                    base_url=result.base_url,
+                                )
                             except Exception as e:
                                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -1407,34 +1432,12 @@ class GatewaySlashCommandsMixin:
             # Persist to config (default) unless --session opted out
             if persist_global:
                 try:
-                    if config_path.exists():
-                        with open(config_path, encoding="utf-8") as f:
-                            cfg = yaml.safe_load(f) or {}
-                    else:
-                        cfg = {}
-                    # Coerce scalar/None ``model:`` into a dict before mutation —
-                    # otherwise ``cfg.setdefault("model", {})`` returns the existing
-                    # scalar and the next assignment raises
-                    # ``TypeError: 'str' object does not support item assignment``.
-                    # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
-                    # string) instead of the proper nested ``model: {default: ...}``.
-                    raw_model = cfg.get("model")
-                    if isinstance(raw_model, dict):
-                        model_cfg = raw_model
-                    elif isinstance(raw_model, str) and raw_model.strip():
-                        model_cfg = {"default": raw_model.strip()}
-                        cfg["model"] = model_cfg
-                    else:
-                        model_cfg = {}
-                        cfg["model"] = model_cfg
-                    model_cfg["default"] = result.new_model
-                    model_cfg["provider"] = result.target_provider
-                    if result.base_url:
-                        model_cfg["base_url"] = result.base_url
-                    if str(result.target_provider or "").strip().lower() != "custom":
-                        clear_model_endpoint_credentials(model_cfg)
-                    from hermes_cli.config import save_config
-                    save_config(cfg)
+                    _persist_model_to_config(
+                        config_path,
+                        new_model=result.new_model,
+                        provider=result.target_provider,
+                        base_url=result.base_url,
+                    )
                 except Exception as e:
                     logger.warning("Failed to persist model switch: %s", e)
 

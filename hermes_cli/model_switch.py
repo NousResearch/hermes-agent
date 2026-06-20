@@ -164,6 +164,32 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
     )
 
 
+_MODEL_DISCOVERY_ERRORS = (ImportError, OSError, RuntimeError, TimeoutError, TypeError, ValueError)
+
+
+def _fetch_picker_live_models(
+    api_key: str,
+    api_url: str,
+    native_catalog_provider: str,
+    preserve_native_models: bool,
+    headers: dict[str, str] | None = None,
+) -> list[str] | None:
+    """Fetch live picker models while preserving explicit local Ollama lists."""
+    from hermes_cli.models import (
+        fetch_api_models,
+        fetch_ollama_local_models,
+        should_use_ollama_native_catalog,
+    )
+
+    if should_use_ollama_native_catalog(
+        native_catalog_provider, api_url, headers=headers
+    ):
+        return [] if preserve_native_models else fetch_ollama_local_models(
+            api_url, headers=headers
+        )
+    return fetch_api_models(api_key, api_url, headers=headers)
+
+
 # ---------------------------------------------------------------------------
 # Non-agentic model warning
 # ---------------------------------------------------------------------------
@@ -933,6 +959,7 @@ def switch_model(
         detect_provider_for_model,
         validate_requested_model,
         opencode_model_api_mode,
+        _get_ollama_request_headers,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1254,6 +1281,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    validation_headers: dict[str, str] = {}
 
     if provider_changed or explicit_provider:
         import os
@@ -1278,6 +1306,7 @@ def switch_model(
                 _kenv = str(_ucfg.get("key_env", "") or "").strip()
                 if _kenv:
                     _ukey = os.environ.get(_kenv, "").strip()
+            validation_headers = _extra_headers_from_config(_ucfg)
             try:
                 runtime = resolve_runtime_provider(
                     requested=target_provider,
@@ -1288,6 +1317,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "") or _ukey
                 base_url = runtime.get("base_url", "") or _user_pdef.base_url
                 api_mode = runtime.get("api_mode", "")
+                validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
@@ -1305,6 +1335,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -1317,20 +1348,38 @@ def switch_model(
                     ),
                 )
     else:
-        try:
-            runtime = resolve_runtime_provider(
-                requested=current_provider,
-                target_model=new_model,
-            )
-            # If resolution fell through to "custom" (e.g. named custom provider like
-            # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
-            # credentials. Otherwise use the resolved values (picks up credential rotation,
-            # base_url adjustments for OpenCode, etc.).
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
-        except Exception:
-            pass
+        keep_current_ollama_endpoint = False
+        if current_provider == "custom" and current_base_url:
+            try:
+                from hermes_cli.models import should_use_ollama_native_catalog
+                keep_current_ollama_endpoint = should_use_ollama_native_catalog(
+                    current_provider,
+                    current_base_url,
+                    headers=_get_ollama_request_headers(),
+                )
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+                keep_current_ollama_endpoint = False
+        if keep_current_ollama_endpoint:
+            # Mid-session `/model <name>` on a local Ollama-compatible endpoint
+            # must keep the endpoint the session is already using. Re-resolving
+            # bare `custom` from config can fall through to an unrelated default
+            # provider, causing validation to probe the wrong model-list URL.
+            api_key = current_api_key or "no-key-required"
+            base_url = current_base_url
+            api_mode = determine_api_mode(current_provider, base_url)
+            validation_headers = _get_ollama_request_headers()
+        else:
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=current_provider,
+                    target_model=new_model,
+                )
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
+                validation_headers = runtime.get("extra_headers") or validation_headers
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
@@ -1368,6 +1417,11 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
             api_mode=api_mode or None,
+            headers=validation_headers or (
+                _extra_headers_from_config(user_providers.get(target_provider))
+                if user_providers and target_provider in user_providers
+                else None
+            ),
         )
     except Exception as e:
         validation = {
@@ -2160,7 +2214,8 @@ def list_authenticated_providers(
             # Also include the full models list from config.
             # Hermes writes ``models:`` as a dict keyed by model id, but older
             # or hand-edited configs may use strings or ``[{id: ...}]`` rows.
-            for model_id in _declared_model_ids(ep_cfg.get("models", [])):
+            declared_models = _declared_model_ids(ep_cfg.get("models", []))
+            for model_id in declared_models:
                 if model_id not in models_list:
                     models_list.append(model_id)
 
@@ -2189,7 +2244,10 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            has_explicit_models = bool(models_list)
+            # A singular ``model``/``default_model`` is only the active
+            # selection.  Only an explicit ``models:`` catalog narrows live
+            # discovery (especially important for local Ollama /api/tags).
+            has_explicit_models = bool(declared_models)
             _ep_url_norm = str(api_url).strip().rstrip("/").lower()
             _ep_slug_norm = str(ep_name).strip().lower()
             _ep_custom_slug_norm = custom_provider_slug(display_name).lower()
@@ -2207,15 +2265,21 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(
+                    native_catalog_provider = (
+                        ep_name
+                        if str(ep_name or "").strip().lower() == "ollama"
+                        else "custom"
+                    )
+                    live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
+                        native_catalog_provider,
+                        bool(declared_models),
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
                         models_list = live_models
-                except Exception:
+                except _MODEL_DISCOVERY_ERRORS:
                     pass
 
             results.append({
@@ -2263,12 +2327,18 @@ def list_authenticated_providers(
         _models = [current_model] if current_model else []
         if refresh or probe_current_custom_provider:
             try:
-                from hermes_cli.models import fetch_api_models
-
-                _live_models = fetch_api_models("", str(current_base_url).strip().rstrip("/"))
+                # ``current_model`` is the active selection, not an explicit
+                # catalog restriction. Let local Ollama refresh the complete
+                # native catalog while ordinary custom endpoints keep /models.
+                _live_models = _fetch_picker_live_models(
+                    "",
+                    str(current_base_url).strip().rstrip("/"),
+                    "custom",
+                    False,
+                )
                 if _live_models:
                     _models = _live_models
-            except Exception:
+            except _MODEL_DISCOVERY_ERRORS:
                 pass
         results.append({
             "slug": "custom",
@@ -2483,11 +2553,11 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-
-                    live_models = fetch_api_models(
+                    live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
+                        "custom",
+                        bool(grp.get("has_explicit_models")),
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:
@@ -2499,7 +2569,7 @@ def list_authenticated_providers(
                         _save_discovered_models_to_config(
                             api_url, live_models
                         )
-                except Exception:
+                except _MODEL_DISCOVERY_ERRORS:
                     pass
             results.append({
                 "slug": slug,

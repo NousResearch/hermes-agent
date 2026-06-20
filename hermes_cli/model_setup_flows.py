@@ -1420,14 +1420,19 @@ def _model_flow_azure_foundry(config, current_model=""):
 def _model_flow_named_custom(config, provider_info):
     """Handle a named custom provider from config.yaml custom_providers list.
 
-    Always probes the endpoint's /models API to let the user pick a model.
+    Probes the endpoint's model catalog to let the user pick a model, using
+    native ``/api/tags`` for endpoints conservatively identified as Ollama.
     If a model was previously saved, it is pre-selected in the menu.
     Falls back to the saved model if probing fails.
     """
     from hermes_cli.main import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import load_config, save_config
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models import (
+        fetch_api_models,
+        fetch_ollama_local_models,
+        should_use_ollama_native_catalog,
+    )
 
     name = provider_info["name"]
     base_url = provider_info["base_url"]
@@ -1467,16 +1472,38 @@ def _model_flow_named_custom(config, provider_info):
         print(f"  Current:  {saved_model}")
     print()
 
-    if not discover and configured_models:
-        # Discovery disabled with an explicit list — use it verbatim, no probe.
-        print(f"Using configured models (discover_models: false): {len(configured_models)}")
-        models = configured_models
+    if not discover:
+        # Discovery disabled: never probe, even when only the singular active
+        # model is configured. The active model is useful as the sole picker
+        # choice, but it is not an endpoint catalog.
+        models = configured_models or ([saved_model] if saved_model else [])
+        print(
+            "Using configured models (discover_models: false): "
+            f"{len(models)}"
+        )
     else:
         print("Fetching available models...")
         fetch_kwargs = {"timeout": 8.0}
         if api_mode:
             fetch_kwargs["api_mode"] = api_mode
-        models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+        native_catalog_provider = (
+            "ollama"
+            if provider_key.lower() == "ollama" or name.strip().lower() == "ollama"
+            else "custom"
+        )
+        native_headers = provider_info.get("extra_headers") or None
+        if should_use_ollama_native_catalog(
+            native_catalog_provider, base_url, headers=native_headers
+        ):
+            # Match the slash-command picker guardrail: an explicit models:
+            # list remains authoritative instead of being replaced by tags.
+            models = configured_models or fetch_ollama_local_models(
+                base_url,
+                timeout=8.0,
+                headers=provider_info.get("extra_headers") or None,
+            )
+        else:
+            models = fetch_api_models(api_key, base_url, **fetch_kwargs)
         # If the probe came back empty but the operator configured an explicit
         # list, fall back to it rather than forcing manual entry.
         if not models and configured_models:

@@ -156,6 +156,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
           'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
           item.className
         )}
+		title={item.title}
       >
         {content}
       </div>

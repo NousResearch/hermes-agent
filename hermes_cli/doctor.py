@@ -28,7 +28,7 @@ from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
 
-def _run_text_subprocess(cmd, **kwargs):
+def _run_text_subprocess(cmd, *, timeout=None, **kwargs):
     """Run a subprocess capturing decoded text without crashing on locale codecs.
 
     ``subprocess.run(..., text=True)`` decodes child output with the system
@@ -40,11 +40,17 @@ def _run_text_subprocess(cmd, **kwargs):
     deterministic across locales and undecodable bytes degrade to the
     replacement character instead of raising. Callers may override either
     value via *kwargs*.
+
+    ``timeout`` is a keyword-only argument forwarded as a literal kwarg to
+    ``subprocess.run`` so the CLI subprocess-timeout guardrail
+    (tests/hermes_cli/test_subprocess_timeouts.py) can verify it statically.
+    Callers should always pass an explicit timeout; the ``None`` default
+    exists only so the helper's own unit tests can exercise decoding behavior.
     """
     kwargs.setdefault("encoding", "utf-8")
     kwargs.setdefault("errors", "replace")
     kwargs.pop("text", None)
-    return subprocess.run(cmd, **kwargs)
+    return subprocess.run(cmd, timeout=timeout, **kwargs)
 
 
 _PROVIDER_ENV_HINTS = (

@@ -2809,6 +2809,14 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
+        # Periodic [MEMORY] heartbeat in gateway.log — an RSS/GC/thread
+        # snapshot every interval_seconds. Doubles as a log-freshness signal
+        # for external watchdogs during idle periods. See
+        # gateway/memory_monitor.py; started by the gateway runtime.
+        "memory_monitor": {
+            "enabled": True,
+            "interval_seconds": 300,
+        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches

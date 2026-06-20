@@ -30,8 +30,10 @@ called from the terminal toolset; they don't appear in `always_load`.
 | `claude-design` | Design one-off HTML artifacts (landing, deck, prototype) | Concept artist for product video style frames; storyboarder for UI-heavy content |
 | `design-md` | Design markdown docs | Concept artist documenting visual specs |
 | `popular-web-designs` | Reference patterns for popular web designs | Concept artist; cinematographer when matching a known UI aesthetic |
+| `sketch` | Throwaway HTML mockups (2-3 design variants to compare) | Concept artist exploring directions; storyboarder for UI flows |
 | `excalidraw` | Excalidraw-style hand-drawn diagrams | Storyboarder; concept artist for sketch-style frames |
-| `html-artifact` | Self-contained HTML artifacts: throwaway mockup variants, explainers, dark-tech architecture + educational SVG diagrams | Concept artist exploring directions; storyboarder for UI flows + technical/educational explainer scenes |
+| `architecture-diagram` | Software architecture diagrams | Storyboarder for technical content; explainer scenes about systems |
+| `concept-diagrams` *(optional)* | Flat, minimal SVG diagrams (educational visual language; physics, chemistry, math, anatomy, etc.) | Renderer / storyboarder for explainer scenes with clean educational diagrams |
 | `pretext` | Mathematical/scientific content authoring | Writer / cinematographer for technical-explainer pretexts |
 | `creative-ideation` | Constraint-driven project ideation | Director / cinematographer when the brief is wide-open and needs framing |
 | `humanizer` | Strip AI-isms from text, add real voice | Writer / copywriter post-process to avoid AI-tells in scripts and VO copy |

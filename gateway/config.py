@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
-from utils import is_truthy_value
+from utils import env_int, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -545,6 +545,13 @@ class GatewayConfig:
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
 
+    # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
+    # When True, the default profile's gateway serves inbound messages for every
+    # profile on the host: profiles are stamped into session keys and (in later
+    # phases) per-profile adapters/credentials are resolved. When False, the
+    # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
+    multiplex_profiles: bool = False
+
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -650,6 +657,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
+            "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -695,7 +703,12 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        if multiplex_profiles is None and isinstance(nested_gateway, dict):
+            # Also honor gateway.multiplex_profiles written by
+            # ``hermes config set gateway.multiplex_profiles true``.
+            multiplex_profiles = nested_gateway.get("multiplex_profiles")
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"
@@ -732,6 +745,7 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -796,6 +810,14 @@ def load_gateway_config() -> GatewayConfig:
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
 
+            # Managed scope: overlay administrator-pinned values so the gateway
+            # honors them too. This loader builds its own dict instead of going
+            # through hermes_cli.config.load_config, so without this a managed
+            # session_reset / quick_commands / stt / model would be ignored by
+            # the messaging gateway. Fail-open via the shared helper.
+            from hermes_cli import managed_scope
+            yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
@@ -822,6 +844,13 @@ def load_gateway_config() -> GatewayConfig:
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+
+            # Multiplexing flag: accept both the top-level key and the nested
+            # gateway.multiplex_profiles form (from_dict resolves the nested
+            # fallback, but surface the top-level key here for parity with the
+            # other session-scope flags above).
+            if "multiplex_profiles" in yaml_cfg:
+                gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
 
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
@@ -1831,7 +1860,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "token": os.getenv("WECOM_CALLBACK_TOKEN", ""),
             "encoding_aes_key": os.getenv("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
             "host": os.getenv("WECOM_CALLBACK_HOST", "0.0.0.0"),
-            "port": int(os.getenv("WECOM_CALLBACK_PORT", "8645")),
+            "port": env_int("WECOM_CALLBACK_PORT", 8645),
         })
 
     # Weixin (personal WeChat via iLink Bot API)
@@ -1887,7 +1916,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
             "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
-            "webhook_port": int(os.getenv("BLUEBUBBLES_WEBHOOK_PORT", "8645")),
+            "webhook_port": env_int("BLUEBUBBLES_WEBHOOK_PORT", 8645),
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in {"true", "1", "yes"},
         })

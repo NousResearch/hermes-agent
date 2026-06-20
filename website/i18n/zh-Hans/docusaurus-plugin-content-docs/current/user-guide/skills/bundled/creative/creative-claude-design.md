@@ -21,7 +21,7 @@ description: "设计一次性 HTML 制品（落地页、幻灯片、原型）"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `design`, `html`, `prototype`, `ux`, `ui`, `creative`, `artifact`, `deck`, `motion`, `design-system` |
-| 相关 skill | [`design-md`](/user-guide/skills/bundled/creative/creative-design-md), [`popular-web-designs`](/user-guide/skills/bundled/creative/creative-popular-web-designs), [`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw), [`html-artifact`](/user-guide/skills/bundled/creative/creative-html-artifact) |
+| 相关 skill | [`design-md`](/user-guide/skills/bundled/creative/creative-design-md), [`popular-web-designs`](/user-guide/skills/bundled/creative/creative-popular-web-designs), [`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/user-guide/skills/bundled/creative/creative-architecture-diagram) |
 
 ## 参考：完整 SKILL.md
 

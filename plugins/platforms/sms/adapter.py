@@ -377,3 +377,117 @@ class SmsAdapter(BasePlatformAdapter):
             text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
             content_type="application/xml",
         )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the SMS (Twilio) adapter moved from gateway/platforms/sms.py into
+# this bundled plugin. register() exposes the platform via the registry,
+# replacing the Platform.SMS elif in gateway/run.py, the
+# _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _PLATFORMS["sms"]
+# static dict in hermes_cli/gateway.py, and the _send_sms dispatch in
+# tools/send_message_tool.py. TWILIO_* env→PlatformConfig seeding stays in core.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _strip_markdown_for_sms(message: str) -> str:
+    """Strip markdown — SMS renders it as literal characters."""
+    message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"_(.+?)_", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"```[a-z]*\n?", "", message)
+    message = re.sub(r"`(.+?)`", r"\1", message)
+    message = re.sub(r"^#{1,6}\s+", "", message, flags=re.MULTILINE)
+    message = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", message)
+    message = re.sub(r"\n{3,}", "\n\n", message)
+    return message.strip()
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process SMS delivery via the Twilio REST API. Implements the
+    standalone_sender_fn contract; replaces the legacy _send_sms helper."""
+    auth_token = getattr(pconfig, "api_key", None) or os.getenv("TWILIO_AUTH_TOKEN", "")
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    import base64
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    if not account_sid or not auth_token or not from_number:
+        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+
+    message = _strip_markdown_for_sms(message)
+
+    def _redacted_error(text):
+        try:
+            from tools.send_message_tool import _error as _e
+            return _e(text)
+        except Exception:
+            return {"error": text}
+
+    try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        creds = f"{account_sid}:{auth_token}"
+        encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+        headers = {"Authorization": f"Basic {encoded}"}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            form_data = aiohttp.FormData()
+            form_data.add_field("From", from_number)
+            form_data.add_field("To", chat_id)
+            form_data.add_field("Body", message)
+            async with session.post(url, data=form_data, headers=headers, **_req_kw) as resp:
+                body = await resp.json()
+                if resp.status >= 400:
+                    error_msg = body.get("message", str(body))
+                    return _redacted_error(f"Twilio API error ({resp.status}): {error_msg}")
+                return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": body.get("sid", "")}
+    except Exception as e:
+        return _redacted_error(f"SMS send failed: {e}")
+
+
+def _is_connected(config) -> bool:
+    """SMS is connected when Twilio credentials are present. Mirrors the legacy
+    _PLATFORM_CONNECTED_CHECKERS[Platform.SMS] = bool(TWILIO_ACCOUNT_SID)."""
+    import hermes_cli.gateway as gateway_mod
+    return bool((gateway_mod.get_env_value("TWILIO_ACCOUNT_SID") or "").strip())
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs SmsAdapter from a PlatformConfig."""
+    return SmsAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="sms",
+        label="SMS (Twilio)",
+        adapter_factory=_build_adapter,
+        check_fn=check_sms_requirements,
+        is_connected=_is_connected,
+        required_env=["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
+        install_hint="pip install aiohttp",
+        allowed_users_env="SMS_ALLOWED_USERS",
+        allow_all_env="SMS_ALLOW_ALL_USERS",
+        cron_deliver_env_var="SMS_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=MAX_SMS_LENGTH,
+        pii_safe=True,
+        emoji="📱",
+        allow_update_command=True,
+    )

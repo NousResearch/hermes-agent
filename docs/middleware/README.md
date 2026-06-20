@@ -46,7 +46,7 @@ Supported middleware kinds:
 | --- | --- | --- | --- |
 | `llm_request` | `request`, `original_request` | `{"request": {...}}` | Replace effective provider kwargs before provider execution. |
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
-| `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
+| `llm_execution` | `request`, `original_request`, `next_call`, `streaming`, `emit_status`, `register_on_first_delta` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
 
 Request middleware can return optional trace fields:
@@ -213,6 +213,28 @@ def time_llm_execution(**kwargs):
 Return the same response shape Hermes expects from the provider adapter. Do not
 wrap the response in a plugin-specific envelope unless the rest of the runtime
 expects that envelope.
+
+`llm_execution` middleware may also surface transient driver status while the
+provider call is open. This is useful for custom OpenAI-compatible GPU
+backends that accept a request while a box is cold-starting or a model is still
+loading into VRAM:
+
+```python
+def wait_for_model_backend(**kwargs):
+    emit_status = kwargs["emit_status"]
+    emit_status("backend: warming")
+
+    # Clear or replace the warmup label as soon as real stream output starts.
+    kwargs["register_on_first_delta"](lambda: emit_status("backend: ready"))
+
+    return kwargs["next_call"](kwargs["request"])
+```
+
+`emit_status(text, kind="status")` is fail-open and routes through the active
+driver's transient status channel; it does not add assistant messages or mutate
+conversation history. `register_on_first_delta(callback)` runs callbacks only
+for streaming provider calls, so check `streaming` before relying on it for
+non-streaming backends.
 
 ### Tool Execution Middleware
 

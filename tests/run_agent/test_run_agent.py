@@ -3540,6 +3540,59 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_llm_execution_middleware_status_clears_on_first_stream_delta(self, agent):
+        self._setup_agent(agent)
+        agent.client = object()
+        agent._has_stream_consumers = lambda: True
+        statuses = []
+        seen_context = {}
+        agent.status_callback = (
+            lambda kind, text=None: statuses.append((kind, text))
+        )
+
+        def middleware_runner(request, next_call, **context):
+            seen_context["streaming"] = context["streaming"]
+            seen_context["has_emit_status"] = callable(context["emit_status"])
+            seen_context["has_first_delta"] = callable(
+                context["register_on_first_delta"]
+            )
+            context["emit_status"]("backend: warming")
+            context["register_on_first_delta"](
+                lambda: context["emit_status"]("backend: ready")
+            )
+            return next_call(request)
+
+        def stream_call(api_kwargs, *, on_first_delta=None):
+            assert on_first_delta is not None
+            on_first_delta()
+            return _mock_response(content="Done", finish_reason="stop")
+
+        with (
+            patch(
+                "hermes_cli.middleware.run_llm_execution_middleware",
+                side_effect=middleware_runner,
+            ),
+            patch.object(
+                agent, "_interruptible_streaming_api_call", side_effect=stream_call
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Done"
+        assert result["completed"] is True
+        assert seen_context == {
+            "streaming": True,
+            "has_emit_status": True,
+            "has_first_delta": True,
+        }
+        assert statuses == [
+            ("status", "backend: warming"),
+            ("status", "backend: ready"),
+        ]
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

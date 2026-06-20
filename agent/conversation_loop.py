@@ -1111,6 +1111,28 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
+                _first_delta_callbacks = []
+
+                def _emit_llm_execution_status(text, kind="status"):
+                    if not text or not agent.status_callback:
+                        return
+                    try:
+                        agent.status_callback(str(kind or "status"), str(text))
+                    except Exception:
+                        logger.debug("llm execution status_callback error", exc_info=True)
+
+                def _register_on_first_delta(callback):
+                    if callable(callback):
+                        _first_delta_callbacks.append(callback)
+
+                def _handle_first_delta():
+                    for callback in list(_first_delta_callbacks):
+                        try:
+                            callback()
+                        except Exception:
+                            logger.debug("llm execution first-delta callback error", exc_info=True)
+                    _stop_spinner()
+
                 _use_streaming = True
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
@@ -1138,7 +1160,7 @@ def run_conversation(
                 def _perform_api_call(next_api_kwargs):
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
+                            next_api_kwargs, on_first_delta=_handle_first_delta
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
 
@@ -1158,6 +1180,9 @@ def run_conversation(
                     base_url=agent.base_url,
                     api_mode=agent.api_mode,
                     api_call_count=api_call_count,
+                    streaming=_use_streaming,
+                    emit_status=_emit_llm_execution_status,
+                    register_on_first_delta=_register_on_first_delta,
                     middleware_trace=list(_llm_middleware_trace),
                 )
                 

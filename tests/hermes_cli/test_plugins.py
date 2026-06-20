@@ -25,6 +25,7 @@ from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
     apply_llm_request_middleware,
     apply_tool_request_middleware,
+    run_llm_execution_middleware,
     run_tool_execution_middleware,
 )
 
@@ -148,6 +149,42 @@ class TestPluginDiscovery:
             run_tool_execution_middleware("terminal", {"command": "false"}, terminal)
 
         assert calls == [{"command": "false"}]
+
+    def test_llm_execution_middleware_receives_transient_status_context(self, monkeypatch):
+        statuses = []
+        callbacks = []
+        seen = {}
+
+        def middleware(**kwargs):
+            seen["streaming"] = kwargs["streaming"]
+            kwargs["emit_status"]("backend: warming")
+            kwargs["register_on_first_delta"](
+                lambda: kwargs["emit_status"]("backend: ready")
+            )
+            return kwargs["next_call"](kwargs["request"])
+
+        manager = types.SimpleNamespace(_middleware={"llm_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = run_llm_execution_middleware(
+            {"messages": []},
+            lambda request: {"ok": request},
+            streaming=True,
+            emit_status=lambda text, kind="status": statuses.append((kind, text)),
+            register_on_first_delta=callbacks.append,
+        )
+
+        assert result == {"ok": {"messages": []}}
+        assert seen == {"streaming": True}
+        assert statuses == [("status", "backend: warming")]
+        assert len(callbacks) == 1
+
+        callbacks[0]()
+
+        assert statuses == [
+            ("status", "backend: warming"),
+            ("status", "backend: ready"),
+        ]
 
     def test_middleware_helpers_skip_no_listener_work(self, monkeypatch):
         manager = types.SimpleNamespace(_middleware={})

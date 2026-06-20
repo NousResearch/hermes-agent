@@ -41,6 +41,7 @@ def _run_apply_profile_override(
         monkeypatch.setenv("HERMES_HOME", hermes_home)
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_FEISHU_CARD_PROFILE_ID", raising=False)
 
     monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
 
@@ -213,6 +214,22 @@ class TestApplyProfileOverrideHermesHomeGuard:
         assert result.endswith("coder")
         assert sys.argv == ["hermes", "chat", "-q", "hello"]
 
+    def test_explicit_named_profile_sets_feishu_card_profile_env(
+        self, tmp_path, monkeypatch
+    ):
+        """The Feishu streaming-card hook runtime needs the active profile id."""
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "-p", "coder", "gateway", "run"],
+        )
+
+        assert result is not None
+        assert result.endswith("coder")
+        assert os.environ.get("HERMES_FEISHU_CARD_PROFILE_ID") == "coder"
+
     def test_top_level_profile_after_value_flag_is_consumed(self, tmp_path, monkeypatch):
         """Top-level --profile still works after other top-level value flags."""
         result = _run_apply_profile_override(
@@ -322,4 +339,3 @@ class TestSupervisedChildIgnoresStickyProfile:
         result = os.environ.get("HERMES_HOME")
         assert result is not None
         assert result.endswith("coder")
-

@@ -1201,8 +1201,11 @@ def _cross_process_init_lock(path: Path):
     lock keeps header validation, integrity probing, WAL activation, and
     additive migrations single-file/single-writer across the whole host while
     leaving normal post-init DB usage concurrent under SQLite WAL.
+
+    NOTE: does NOT auto-create the parent directory.  Callers must ensure
+    the directory exists before calling connect() — typically via init_db().
+    This prevents archived boards from being resurrected (see issue #35211).
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
     handle = lock_path.open("a+b")
     try:
@@ -1449,7 +1452,13 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # NOTE: intentionally does NOT auto-create the parent directory.
+    # Directory creation is the responsibility of init_db() and
+    # create_board().  connect() is a read-then-write entry point;
+    # silently creating the directory would resurrect archived boards
+    # (see issue #35211).  Callers that need the directory to exist
+    # must ensure it does before calling connect() -- typically by
+    # calling init_db() first.
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
@@ -4684,16 +4693,31 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
+
+    Refuses to delete a task with an active run or live claim. Operators
+    must reclaim or archive it first so the worker lifecycle stays visible
+    and the in-flight run is closed explicitly.
     """
     with write_txn(conn):
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        if cur.rowcount != 1:
+        row = conn.execute(
+            "SELECT status, claim_lock, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
             return False
+        if row["status"] == "running" or row["claim_lock"] is not None or row["current_run_id"] is not None:
+            raise RuntimeError(
+                f"cannot delete {task_id}: task is currently running or has an active run. "
+                "Reclaim or archive it first."
+            )
         conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if cur.rowcount != 1:
+            return False
     recompute_ready(conn)
     return True
 

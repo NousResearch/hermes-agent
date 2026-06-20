@@ -1804,16 +1804,19 @@ class TestBuildSafeEnv:
 
         fake_env = {
             "PATH": r"C:\Windows\System32",
-            "ProgramFiles": r"C:\Program Files",
-            "ProgramData": r"C:\ProgramData",
-            "ProgramW6432": r"C:\Program Files",
+            "PROGRAMFILES": r"C:\Program Files",
+            "PROGRAMDATA": r"C:\ProgramData",
+            "PROGRAMW6432": r"C:\Program Files",
             "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
             "APPDATA": r"C:\Users\alice\AppData\Roaming",
             "USERPROFILE": r"C:\Users\alice",
             "GITHUB_TOKEN": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             "OPENAI_API_KEY": "sk-proj-abc123",
         }
-        with patch.dict("os.environ", fake_env, clear=True):
+        with (
+            patch("tools.mcp_tool.os.name", "nt"),
+            patch.dict("os.environ", fake_env, clear=True),
+        ):
             result = _build_safe_env(None)
 
         assert result["ProgramFiles"] == r"C:\Program Files"
@@ -1824,6 +1827,20 @@ class TestBuildSafeEnv:
         assert result["USERPROFILE"] == r"C:\Users\alice"
         assert "GITHUB_TOKEN" not in result
         assert "OPENAI_API_KEY" not in result
+
+    def test_posix_preserves_uppercase_windows_location_var_spelling(self):
+        """POSIX environments retain source case for allowed Windows names."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_env = {"PROGRAMFILES": "/opt/windows-program-files"}
+        with (
+            patch("tools.mcp_tool.os.name", "posix"),
+            patch.dict("os.environ", fake_env, clear=True),
+        ):
+            result = _build_safe_env(None)
+
+        assert result["PROGRAMFILES"] == "/opt/windows-program-files"
+        assert "ProgramFiles" not in result
 
 
 # ---------------------------------------------------------------------------

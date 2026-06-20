@@ -380,11 +380,10 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 
     def line_value(label: str) -> str:
         prefix = f"{label}:"
-        value = ""
         for line in prompt.splitlines():
             if line.startswith(prefix):
-                value = line[len(prefix):].strip()
-        return value
+                return line[len(prefix):].strip()
+        return ""
 
     stored_model = line_value("Model")
     current_model = str(getattr(agent, "model", "") or "").strip()

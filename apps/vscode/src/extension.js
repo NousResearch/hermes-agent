@@ -77,6 +77,7 @@ class HermesChatProvider {
         if (message.type === 'discardPatch') await this.discardLastPatch();
         if (message.type === 'revertPatch') await this.revertLastPatch();
         if (message.type === 'runTests') await this.runDetectedTests();
+        if (message.type === 'runTestsAndAnalyze') await this.runTestsAndAnalyze();
         if (message.type === 'inspectContext') await this.inspectContext(message.options || {});
         if (message.type === 'reviewDiff') await this.reviewDiff();
         if (message.type === 'diagnostics') await this.explainDiagnostics();
@@ -429,6 +430,23 @@ class HermesChatProvider {
     this.post('tool', `Running tests: ${command}`);
   }
 
+  async runTestsAndAnalyze() {
+    const workspace = getWorkspaceFolder();
+    if (!workspace) return vscode.window.showWarningMessage('Open a workspace before running tests.');
+    const cwd = workspace.uri.fsPath;
+    const command = await detectTestCommand(cwd);
+    this.post('status', `Running tests: ${command}`);
+    this.post('tool', `Running captured test command: ${command}`);
+    this.output.appendLine(`\n[${new Date().toISOString()}] Hermes captured tests: ${command}`);
+    const result = await runShellCommand(command, cwd, getMaxTestOutputChars()).catch((error) => ({ code: 1, stdout: '', stderr: error.message || String(error) }));
+    const combined = [result.stdout, result.stderr].filter(Boolean).join('\n');
+    this.output.appendLine(combined || '(test command produced no output)');
+    const status = result.code === 0 ? 'passed' : `failed with exit ${result.code}`;
+    this.post('tool', `Tests ${status}: ${command}`);
+    const prompt = `The detected test command \`${command}\` ${status}. Analyze this output, identify likely root cause, and recommend the smallest next fix. If a code change is needed, return a unified diff.\n\n\`\`\`text\n${truncate(combined || '(no output)', getMaxTestOutputChars())}\n\`\`\``;
+    await this.ask(prompt, { includeFile: true, includeSelection: true, includeDiagnostics: true, includeGitDiff: true, includeInstructions: true, wantsPatch: result.code !== 0, mode: result.code === 0 ? 'test' : 'debug' });
+  }
+
   html() {
     const nonce = String(Date.now());
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';"><style>
@@ -481,7 +499,7 @@ class HermesChatProvider {
       .file-row span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .delta-plus { color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950); }
       .delta-minus { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); }
-    </style></head><body><header><div class="brand"><div class="orb">✦</div><div><div class="title">Hermes Code</div><div class="subtitle">Workspace-aware coding copilot</div></div></div><span class="status" id="status">Ready</span></header><main id="messages"><div class="msg assistant" data-role="Hermes"><p>Ask Hermes to inspect, explain, edit, or review this workspace. Use the context menu for selection-aware commands.</p><div class="prompt-buttons"><button data-prompt="Review the current diff for risk, likely breakage, missing tests, and concrete fixes." class="secondary">Review diff</button><button data-prompt="Explain the active file and call out important risks or improvements." class="secondary">Explain file</button><button data-prompt="Find missing tests or weak coverage for the selected code or active file." class="secondary">Find tests</button></div></div></main><footer><div id="contextPanel" class="context-panel"><strong>Context inspector</strong><div id="contextSummary" class="panel-summary">Click Context to inspect what Hermes will see.</div></div><div id="patchPanel" class="patch-panel"><strong>Patch review</strong><div id="patchSummary" class="panel-summary">Patch summary unavailable.</div><div id="patchFiles" class="file-list"></div><div class="actions"><button class="secondary" id="preview">Preview</button><button id="apply">Apply</button><button class="secondary" id="copy">Copy</button><button class="secondary" id="discard">Discard</button><button class="secondary" id="runTests">Run tests</button><button class="secondary" id="revert">Revert</button></div></div><div class="composer-top"><select id="mode"><option value="ask">Ask</option><option value="explain">Explain</option><option value="edit">Edit</option><option value="review">Review</option><option value="test">Test</option><option value="debug">Debug</option><option value="refactor">Refactor</option><option value="security">Security</option><option value="commit">Commit</option></select><textarea id="input" placeholder="Ask Hermes to edit, explain, test, or review…  ⌘/Ctrl+Enter"></textarea></div><div class="toggles"><div class="toggle-group"><label><input id="ctxFile" type="checkbox" checked> file</label><label><input id="ctxSel" type="checkbox" checked> selection</label><label><input id="ctxDiag" type="checkbox" checked> diagnostics</label><label><input id="ctxGit" type="checkbox"> git diff</label><label><input id="ctxInst" type="checkbox" checked> instructions</label></div><span class="patch-pill" id="patchState">No patch yet</span></div><div class="actions"><button id="send">Send</button><button class="secondary" id="review">Review diff</button><button class="secondary" id="diag">Diagnostics</button><button class="secondary" id="term">Terminal</button><button class="secondary" id="context">Context</button><button class="secondary" id="stop">Stop</button><button class="secondary" id="clear">Clear</button><button class="secondary" id="config">Config</button></div></footer><script nonce="${nonce}">
+    </style></head><body><header><div class="brand"><div class="orb">✦</div><div><div class="title">Hermes Code</div><div class="subtitle">Workspace-aware coding copilot</div></div></div><span class="status" id="status">Ready</span></header><main id="messages"><div class="msg assistant" data-role="Hermes"><p>Ask Hermes to inspect, explain, edit, or review this workspace. Use the context menu for selection-aware commands.</p><div class="prompt-buttons"><button data-prompt="Review the current diff for risk, likely breakage, missing tests, and concrete fixes." class="secondary">Review diff</button><button data-prompt="Explain the active file and call out important risks or improvements." class="secondary">Explain file</button><button data-prompt="Find missing tests or weak coverage for the selected code or active file." class="secondary">Find tests</button></div></div></main><footer><div id="contextPanel" class="context-panel"><strong>Context inspector</strong><div id="contextSummary" class="panel-summary">Click Context to inspect what Hermes will see.</div></div><div id="patchPanel" class="patch-panel"><strong>Patch review</strong><div id="patchSummary" class="panel-summary">Patch summary unavailable.</div><div id="patchFiles" class="file-list"></div><div class="actions"><button class="secondary" id="preview">Preview</button><button id="apply">Apply</button><button class="secondary" id="copy">Copy</button><button class="secondary" id="discard">Discard</button><button class="secondary" id="runTests">Run tests</button><button class="secondary" id="runAnalyze">Run + analyze</button><button class="secondary" id="revert">Revert</button></div></div><div class="composer-top"><select id="mode"><option value="ask">Ask</option><option value="explain">Explain</option><option value="edit">Edit</option><option value="review">Review</option><option value="test">Test</option><option value="debug">Debug</option><option value="refactor">Refactor</option><option value="security">Security</option><option value="commit">Commit</option></select><textarea id="input" placeholder="Ask Hermes to edit, explain, test, or review…  ⌘/Ctrl+Enter"></textarea></div><div class="toggles"><div class="toggle-group"><label><input id="ctxFile" type="checkbox" checked> file</label><label><input id="ctxSel" type="checkbox" checked> selection</label><label><input id="ctxDiag" type="checkbox" checked> diagnostics</label><label><input id="ctxGit" type="checkbox"> git diff</label><label><input id="ctxInst" type="checkbox" checked> instructions</label></div><span class="patch-pill" id="patchState">No patch yet</span></div><div class="actions"><button id="send">Send</button><button class="secondary" id="review">Review diff</button><button class="secondary" id="diag">Diagnostics</button><button class="secondary" id="term">Terminal</button><button class="secondary" id="context">Context</button><button class="secondary" id="stop">Stop</button><button class="secondary" id="clear">Clear</button><button class="secondary" id="config">Config</button></div></footer><script nonce="${nonce}">
       const vscode = acquireVsCodeApi(); const messages = document.getElementById('messages'); const input = document.getElementById('input'); const status = document.getElementById('status'); const patchState = document.getElementById('patchState'); const patchPanel = document.getElementById('patchPanel'); const patchSummary = document.getElementById('patchSummary'); const patchFiles = document.getElementById('patchFiles'); const contextPanel = document.getElementById('contextPanel'); const contextSummary = document.getElementById('contextSummary'); const modeSelect = document.getElementById('mode'); let partial;
       function escapeHtml(text){ return (text||'').replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch])); }
       function renderMarkdown(text){ const tick=String.fromCharCode(96); const fence=tick+tick+tick; const parts = String(text||'').split(new RegExp(fence+'([\\w.+-]*)\\n([\\s\\S]*?)'+fence,'g')); let html=''; for(let i=0;i<parts.length;i++){ if(i%3===0){ html += escapeHtml(parts[i]).replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>').replace(new RegExp(tick+'([^'+tick+']+)'+tick,'g'),'<code>$1</code>').replace(/\n/g,'<br>'); } else if(i%3===1){ const lang=escapeHtml(parts[i]||'text'); const code=escapeHtml(parts[i+1]||''); html += '<pre><button class="copy" data-copy="code">Copy</button><code data-lang="'+lang+'">'+code+'</code></pre>'; i++; } } return html; }
@@ -504,6 +522,7 @@ class HermesChatProvider {
       document.getElementById('copy').onclick=()=>vscode.postMessage({type:'copyPatch'});
       document.getElementById('discard').onclick=()=>vscode.postMessage({type:'discardPatch'});
       document.getElementById('runTests').onclick=()=>vscode.postMessage({type:'runTests'});
+      document.getElementById('runAnalyze').onclick=()=>vscode.postMessage({type:'runTestsAndAnalyze'});
       document.getElementById('revert').onclick=()=>vscode.postMessage({type:'revertPatch'});
       document.getElementById('stop').onclick=()=>vscode.postMessage({type:'stop'});
       document.getElementById('clear').onclick=()=>vscode.postMessage({type:'clear'});
@@ -524,6 +543,10 @@ function getWorkspaceFolder() {
 
 function getMaxContextChars() {
   return vscode.workspace.getConfiguration('hermesCode').get('maxContextChars', 32000);
+}
+
+function getMaxTestOutputChars() {
+  return vscode.workspace.getConfiguration('hermesCode').get('maxTestOutputChars', 30000);
 }
 
 async function collectEditorContext(options = {}, output) {
@@ -751,6 +774,16 @@ async function detectTestCommand(cwd) {
 function runCommand(command, args, cwd, maxBuffer = 100000) {
   return new Promise((resolve, reject) => {
     cp.execFile(command, args, { cwd, maxBuffer }, (error, stdout, stderr) => {
+      const result = { code: error?.code || 0, stdout, stderr };
+      if (error && error.code === undefined) reject(error);
+      else resolve(result);
+    });
+  });
+}
+
+function runShellCommand(command, cwd, maxBuffer = 100000) {
+  return new Promise((resolve, reject) => {
+    cp.exec(command, { cwd, maxBuffer }, (error, stdout, stderr) => {
       const result = { code: error?.code || 0, stdout, stderr };
       if (error && error.code === undefined) reject(error);
       else resolve(result);

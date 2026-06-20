@@ -2,7 +2,7 @@
   "name": "hermes-vscode",
   "displayName": "Hermes Code",
   "description": "Use Hermes Agent from a Claude-like VS Code/Cursor sidebar with editor, diagnostics, terminal, and patch/diff workflows.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "nousresearch",
   "license": "MIT",
   "repository": {
@@ -135,6 +135,12 @@
           "default": 24000,
           "minimum": 2000,
           "description": "Maximum characters of editor/diff context sent to Hermes for one request."
+        },
+        "hermesCode.maxTestOutputChars": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 2000,
+          "description": "Maximum characters of captured test output sent back to Hermes for analysis."
         }
       }
     }

@@ -25,6 +25,7 @@ This extension intentionally keeps the Hermes brain outside VS Code. It launches
 - **Patch Review panel** with Preview, Apply, Copy, Discard, Run tests, and Revert actions after Hermes emits a unified diff.
 - **Context Inspector** that shows the active workspace/file, selected text size, diagnostics count, Git status file count, discovered instruction files, included context toggles, and context budget before sending.
 - **Patch metadata** showing changed files, hunk counts, and additions/deletions inside the review panel.
+- **Captured test feedback loop** via `Run + analyze`, which runs the detected test command, captures stdout/stderr, and sends the result back to Hermes with debug/test context.
 - **Suggested starter prompts** in the empty state for diff review, file explanation, and test discovery.
 
 ## Requirements

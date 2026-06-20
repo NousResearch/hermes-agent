@@ -34,6 +34,7 @@ const {
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
@@ -2928,20 +2929,7 @@ function runRenderTitleJob(rawUrl) {
     }
 
     try {
-      window = new BrowserWindow({
-        show: false,
-        width: 1280,
-        height: 800,
-        webPreferences: {
-          backgroundThrottling: false,
-          contextIsolation: true,
-          javascript: true,
-          nodeIntegration: false,
-          sandbox: true,
-          session: partitionSession,
-          webSecurity: true
-        }
-      })
+      window = createLinkTitleWindow(BrowserWindow, partitionSession)
     } catch {
       return finish('')
     }

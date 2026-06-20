@@ -377,7 +377,7 @@ Edit with `hermes config edit` or `hermes config set section.key value`.
 
 | Section | Key options |
 |---------|-------------|
-| `model` | `default`, `provider`, `base_url`, `api_key`, `context_length` |
+| `model` | `default`, `provider`, `base_url`, `api_key`, `context_length` (explicit override; clear to `""` for auto-detect from server `/v1/models`) |
 | `agent` | `max_turns` (90), `tool_use_enforcement` |
 | `terminal` | `backend` (local/docker/ssh/modal), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
@@ -875,6 +875,22 @@ hermes config set auxiliary.vision.model <model_name>
 ```
 
 ---
+### Context window shows wrong size
+
+If Hermes reports a smaller context window than your local model supports
+(e.g., 128k when llama-server has `-c 262144`):
+
+**Check if `model.context_length` is explicitly set.** Hermes uses a
+multi-source resolution chain (highest priority first):
+
+1. `model.context_length` in config.yaml — **blocks auto-detection if set**
+2. Custom provider per-model setting
+3. Persistent cache (survives restarts)
+4. `/v1/models` endpoint from your server — auto-detected when nothing
+   above overrides it
+
+**Fix:** Clear the override so auto-detection falls through:
+
 
 ## Where to Find Things
 

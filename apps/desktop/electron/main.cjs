@@ -18,8 +18,6 @@ const {
 } = require('electron')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
-const http = require('node:http')
-const https = require('node:https')
 const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
@@ -41,7 +39,8 @@ const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-reques
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
-const { isBlockedUrl, MAX_DOWNLOAD_BYTES, MAX_FETCH_BYTES } = require('./url-guard.cjs')
+const { isBlockedUrl } = require('./url-guard.cjs')
+const { resourceBufferFromUrl } = require('./resource-buffer.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
@@ -3056,46 +3055,6 @@ function fetchLinkTitle(rawUrl) {
 
   titleInflight.set(key, pending)
   return pending
-}
-
-async function resourceBufferFromUrl(rawUrl) {
-  if (!rawUrl) throw new Error('Missing URL')
-  if (rawUrl.startsWith('data:')) {
-    const match = rawUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
-    if (!match) throw new Error('Invalid data URL')
-    const mimeType = match[1] || 'application/octet-stream'
-    const encoded = match[3] || ''
-    const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
-    return { buffer, mimeType }
-  }
-  if (/^file:/i.test(rawUrl)) {
-    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
-    const buffer = await fs.promises.readFile(resolvedPath)
-    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
-  }
-
-  if (isBlockedUrl(rawUrl)) throw new Error("Blocked: private URL")
-  const parsed = new URL(rawUrl)
-  const client = parsed.protocol === 'https:' ? https : http
-  return new Promise((resolve, reject) => {
-    const req = client.get(parsed, res => {
-      if ((res.statusCode || 500) >= 400) {
-        reject(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
-        res.resume()
-        return
-      }
-      const chunks = []
-      res.on('error', reject)
-      res.on('data', chunk => chunks.push(chunk))
-      res.on('end', () => {
-        resolve({
-          buffer: Buffer.concat(chunks),
-          mimeType: res.headers['content-type'] || 'application/octet-stream'
-        })
-      })
-    })
-    req.on('error', reject)
-  })
 }
 
 async function copyImageFromUrl(rawUrl) {

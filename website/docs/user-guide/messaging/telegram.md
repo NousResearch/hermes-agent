@@ -1219,6 +1219,43 @@ Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, top
 
 Numeric YAML keys are automatically normalized to strings.
 
+### Per-topic prompts via `group_topics`
+
+If you already declare topics in `platforms.telegram.extra.group_topics`, you can put the prompt directly on the topic entry. This is the recommended path for multi-supergroup bots: the `(chat_id, thread_id)` pair in `group_topics` is unique by construction, so the General-topic / low-thread-id collision described in [#13256](https://github.com/NousResearch/hermes-agent/issues/13256) cannot occur.
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      group_topics:
+      - chat_id: -1003742888118
+        topics:
+        - name: ops
+          thread_id: 5
+          skill: foreman-ops
+          prompt: |
+            AI Villa operations — invoices, contracts, vendors, permits.
+            Docs: /shared/projects/ai-villa/ops/
+        - name: tech
+          thread_id: 6
+          prompt: AI Villa technical documentation.
+      - chat_id: -1003953149701
+        topics:
+        - name: ai-villa
+          thread_id: 5    # same numeric thread_id as ops above — disambiguated by chat_id
+          prompt: AI Villa design files and technical drawings.
+```
+
+Which mechanism to use:
+
+| Setup | Use |
+|---|---|
+| Multi-supergroup deployment with `group_topics` | Per-topic `prompt:` (collision-free) |
+| Single supergroup, no `group_topics` | `channel_prompts:` flat keys |
+| Cross-platform config you reuse for Discord too | `channel_prompts:` flat keys |
+
+If both `group_topics[].prompt` and a matching `channel_prompts` entry are set for the same topic, the per-topic value wins. To override per-topic via `channel_prompts`, remove the `prompt:` field from the `group_topics` entry.
+
 ## Troubleshooting
 
 | Problem | Solution |

@@ -334,6 +334,51 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+def resolve_topic_prompt(
+    extra: dict,
+    chat_id: str,
+    thread_id: str | None,
+) -> str | None:
+    """Resolve a per-topic ephemeral prompt from telegram group_topics config.
+
+    Walks ``extra.group_topics`` for the entry matching (chat_id, thread_id);
+    returns its ``prompt`` field if non-blank. Caller falls back to
+    ``resolve_channel_prompt`` for flat-key channel_prompts configs.
+
+    Both ``chat_id`` and ``thread_id`` are compared as strings to tolerate
+    int-typed YAML keys — the config bridge at ``gateway/config.py:589-594``
+    stringifies flat ``channel_prompts`` keys but does not normalise nested
+    ``group_topics`` keys, so this coercion is the sole safeguard.
+
+    Returns the prompt string or ``None``. Never raises.
+    """
+    if not isinstance(extra, dict) or not thread_id:
+        return None
+    group_topics = extra.get("group_topics") or []
+    if not isinstance(group_topics, list):
+        return None
+    for group in group_topics:
+        if not isinstance(group, dict):
+            continue
+        if str(group.get("chat_id")) != str(chat_id):
+            continue
+        topics = group.get("topics") or []
+        if not isinstance(topics, list):
+            continue
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            if str(topic.get("thread_id")) != str(thread_id):
+                continue
+            prompt = topic.get("prompt")
+            if prompt is None:
+                continue
+            prompt = str(prompt).strip()
+            if prompt:
+                return prompt
+    return None
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -6788,11 +6833,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
-        _channel_prompt = resolve_channel_prompt(
-            self.config.extra,
-            thread_id_str or _chat_id_str,
-            _chat_id_str if thread_id_str else None,
-        )
+
+        # 1. Per-topic prompt from group_topics (most specific, structurally validated, #13256).
+        _channel_prompt = resolve_topic_prompt(self.config.extra, _chat_id_str, thread_id_str)
+
+        # 2. Fall back to channel_prompts dict (cross-platform; includes composite key after #13272).
+        if not _channel_prompt:
+            _channel_prompt = resolve_channel_prompt(
+                self.config.extra,
+                thread_id_str or _chat_id_str,
+                _chat_id_str if thread_id_str else None,
+            )
 
         return MessageEvent(
             text=message.text or "",

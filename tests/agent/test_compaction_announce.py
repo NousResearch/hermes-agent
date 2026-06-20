@@ -459,3 +459,49 @@ class TestDoneSiteWiringBuiltin:
         assert announce == [], f"aborted summary must not announce success: {announce}"
 
 
+# ─────────────── Task 8: Telegram filter pass-through (Phase 5) ───────────────
+
+class TestTelegramFilter:
+    def _completion_lines(self):
+        return [
+            "🗜️ Context compacted: 207→33 messages · ~323K→~15K tokens · claude-api-proxy/claude-opus-4-8 · engine: lcm",
+            "↩ nothing lost — raw turns preserved in lcm.db · recover with lcm_grep / lcm_expand",
+            "🗜️ Context compacted after model fallback: 286→34 messages · ~571K→~54K tokens · openai-codex/gpt-5.5 · window 1M→272K · engine: lcm",
+        ]
+
+    def test_completion_announce_not_suppressed(self):
+        from gateway.run import _TELEGRAM_NOISY_STATUS_RE as R
+
+        for line in self._completion_lines():
+            assert not R.search(line), f"completion announce must reach Telegram: {line!r}"
+
+    def test_transient_start_line_still_suppressed(self):
+        # the noisy transient start status SHOULD stay filtered (unchanged policy)
+        from gateway.run import _TELEGRAM_NOISY_STATUS_RE as R
+        from agent.conversation_compression import COMPACTION_STATUS
+
+        assert R.search(COMPACTION_STATUS), "transient 'Compacting context — summarizing' stays suppressed"
+
+
+# ─────────────── Task 8: reactive path shares the one done-site ──────────────
+
+class TestSingleDoneSite:
+    def test_all_compress_callers_route_through_compress_context(self):
+        """Reactive overflow callers (conversation_loop) and the proactive caller
+        (turn_context) all funnel through agent._compress_context → compress_context,
+        so the announce fires once and dedup is structural — no second emit site."""
+        import inspect
+        import agent.conversation_loop as loop
+        import agent.turn_context as tc
+
+        loop_src = inspect.getsource(loop)
+        tc_src = inspect.getsource(tc)
+        # every compaction caller uses the single _compress_context entry
+        assert "_compress_context(" in loop_src
+        assert "_compress_context(" in tc_src
+        # and there is no second compaction-announce emit site outside the done-site
+        assert "_emit_compaction_announce" not in loop_src
+        assert "_emit_compaction_announce" not in tc_src
+
+
+

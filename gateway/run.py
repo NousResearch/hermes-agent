@@ -1901,6 +1901,7 @@ _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
+_INTERRUPT_REASON_MESSAGE_RECALLED = "Message recalled"
 
 _CONTROL_INTERRUPT_MESSAGES = frozenset(
     {
@@ -1910,6 +1911,7 @@ _CONTROL_INTERRUPT_MESSAGES = frozenset(
         _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
         _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
         _INTERRUPT_REASON_GATEWAY_RESTART.lower(),
+        _INTERRUPT_REASON_MESSAGE_RECALLED.lower(),
     }
 )
 
@@ -2526,6 +2528,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        self._inbound_message_sessions: Dict[str, str] = {}
+        self._recalled_inbound_messages: Dict[str, float] = {}
         # Startup restore gate: while restart-interrupted sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
         # with the synthetic resume turns for the same session.  The queued
@@ -3550,6 +3554,145 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
         return depth
+
+    @staticmethod
+    def _inbound_message_key(platform: Any, message_id: Any) -> str:
+        platform_name = getattr(platform, "value", platform)
+        return f"{str(platform_name or '').lower()}:{str(message_id or '')}"
+
+    @staticmethod
+    def _event_message_ids(event: MessageEvent) -> List[str]:
+        message_ids: List[str] = []
+
+        def add(message_id: Any) -> None:
+            value = str(message_id or "")
+            if value and value not in message_ids:
+                message_ids.append(value)
+
+        add(getattr(event, "message_id", None))
+        for attr in ("_feishu_batch_items", "_platform_batch_items"):
+            items = getattr(event, attr, None)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    add(item.get("message_id"))
+                else:
+                    add(getattr(item, "message_id", None))
+        return message_ids
+
+    def _prune_recalled_inbound_messages(self) -> None:
+        recalled = getattr(self, "_recalled_inbound_messages", None)
+        if not isinstance(recalled, dict):
+            self._recalled_inbound_messages = {}
+            return
+        now = time.time()
+        ttl = 10 * 60
+        for key, recalled_at in list(recalled.items()):
+            if now - float(recalled_at or 0) > ttl:
+                recalled.pop(key, None)
+        while len(recalled) > 4096:
+            try:
+                oldest = min(recalled, key=recalled.get)
+            except ValueError:
+                break
+            recalled.pop(oldest, None)
+
+    def _mark_inbound_message_recalled(self, platform: Any, message_id: Any) -> str:
+        key = self._inbound_message_key(platform, message_id)
+        if not key.endswith(":"):
+            if not isinstance(getattr(self, "_recalled_inbound_messages", None), dict):
+                self._recalled_inbound_messages = {}
+            self._recalled_inbound_messages[key] = time.time()
+            self._prune_recalled_inbound_messages()
+        return key
+
+    def _is_inbound_message_recalled(self, platform: Any, message_id: Any) -> bool:
+        if not message_id:
+            return False
+        self._prune_recalled_inbound_messages()
+        recalled = getattr(self, "_recalled_inbound_messages", {})
+        return self._inbound_message_key(platform, message_id) in recalled
+
+    def _register_inbound_message_for_run(self, event: MessageEvent, session_key: str) -> Optional[str]:
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        message_ids = self._event_message_ids(event)
+        if not message_ids or not platform or not session_key:
+            return None
+        if not isinstance(getattr(self, "_inbound_message_sessions", None), dict):
+            self._inbound_message_sessions = {}
+        first_key = None
+        for message_id in message_ids:
+            key = self._inbound_message_key(platform, message_id)
+            self._inbound_message_sessions[key] = session_key
+            first_key = first_key or key
+        return first_key
+
+    def _clear_inbound_message_mappings_for_session(self, session_key: str) -> None:
+        mapping = getattr(self, "_inbound_message_sessions", None)
+        if not isinstance(mapping, dict) or not session_key:
+            return
+        for key, mapped_session in list(mapping.items()):
+            if mapped_session == session_key:
+                mapping.pop(key, None)
+
+    def _message_recalled_for_event(self, event: MessageEvent) -> bool:
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        return any(
+            self._is_inbound_message_recalled(platform, message_id)
+            for message_id in self._event_message_ids(event)
+        )
+
+    async def _handle_message_recalled(self, platform: Any, message_id: str) -> bool:
+        """Cancel the active gateway turn tied to a recalled platform message."""
+        if not message_id:
+            return False
+        key = self._mark_inbound_message_recalled(platform, message_id)
+        mapping = getattr(self, "_inbound_message_sessions", {})
+        session_key = mapping.get(key) if isinstance(mapping, dict) else None
+        if not session_key:
+            logger.debug(
+                "Message recall had no active gateway turn: platform=%s message_id=%s",
+                getattr(platform, "value", platform),
+                message_id,
+            )
+            return False
+
+        running_agent = getattr(self, "_running_agents", {}).get(session_key)
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                running_agent.interrupt(_INTERRUPT_REASON_MESSAGE_RECALLED)
+            except Exception:
+                logger.debug("Failed to interrupt recalled-message run", exc_info=True)
+
+        adapter = getattr(self, "adapters", {}).get(platform)
+        if adapter is not None:
+            pending = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending, dict):
+                pending.pop(session_key, None)
+            active = getattr(adapter, "_active_sessions", None)
+            if isinstance(active, dict):
+                interrupt_event = active.get(session_key)
+                if interrupt_event is not None:
+                    try:
+                        interrupt_event.set()
+                    except Exception:
+                        pass
+            discard = getattr(adapter, "_discard_text_debounce", None)
+            if callable(discard):
+                try:
+                    discard(session_key)
+                except Exception:
+                    pass
+        logger.info(
+            "Recalled inbound message cancelled active turn: platform=%s message_id=%s session=%s",
+            getattr(platform, "value", platform),
+            message_id,
+            session_key,
+        )
+        return True
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -5464,6 +5607,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter.set_message_recall_handler(self._handle_message_recalled)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -6231,6 +6375,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    adapter.set_message_recall_handler(self._handle_message_recalled)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8367,6 +8512,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        if self._message_recalled_for_event(event):
+            logger.info(
+                "Dropping recalled inbound message before agent start: platform=%s message_id=%s",
+                getattr(source.platform, "value", source.platform),
+                getattr(event, "message_id", None),
+            )
+            return None
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -8390,6 +8543,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._active_session_leases[_quick_key] = _active_session_lease
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
+        self._register_inbound_message_for_run(event, _quick_key)
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
@@ -9440,6 +9594,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation,
         )
 
+        if self._message_recalled_for_event(event):
+            logger.info(
+                "Suppressing recalled inbound message before agent run: platform=%s message_id=%s session=%s",
+                getattr(source.platform, "value", source.platform),
+                getattr(event, "message_id", None),
+                session_key,
+            )
+            return None
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -9463,6 +9626,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
+                event_message_ids=self._event_message_ids(event),
                 channel_prompt=event.channel_prompt,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -9475,6 +9639,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await _typing_adapter.stop_typing(source.chat_id)
             except Exception:
                 pass
+
+            if self._message_recalled_for_event(event):
+                logger.info(
+                    "Suppressing agent result for recalled inbound message: platform=%s message_id=%s session=%s",
+                    getattr(source.platform, "value", source.platform),
+                    getattr(event, "message_id", None),
+                    session_key,
+                )
+                _stale_adapter = self.adapters.get(source.platform)
+                if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
+                    _stale_adapter.pop_post_delivery_callback(
+                        _quick_key,
+                        generation=run_generation,
+                    )
+                elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
+                    _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
+                return None
 
             if not self._is_session_run_current(_quick_key, run_generation):
                 logger.info(
@@ -13467,6 +13648,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        self._clear_inbound_message_mappings_for_session(session_key)
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -14202,6 +14384,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        event_message_ids: Optional[List[str]] = None,
         channel_prompt: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -15551,6 +15734,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.thinking_progress = _thinking_enabled
             # Store agent reference for interrupt support
             agent_holder[0] = agent
+            recalled_check_ids = event_message_ids or ([event_message_id] if event_message_id else [])
+            if any(
+                self._is_inbound_message_recalled(source.platform, message_id)
+                for message_id in recalled_check_ids
+            ):
+                agent.interrupt(_INTERRUPT_REASON_MESSAGE_RECALLED)
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
             
@@ -16698,6 +16887,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_source = source
                 next_message = pending
                 next_message_id = None
+                next_message_ids = []
                 next_channel_prompt = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
@@ -16715,6 +16905,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if next_message is None:
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
+                    next_message_ids = self._event_message_ids(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 
                 # Restart typing indicator so the user sees activity while
@@ -16740,6 +16931,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    event_message_ids=next_message_ids,
                     channel_prompt=next_channel_prompt,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)

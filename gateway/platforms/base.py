@@ -1837,6 +1837,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._message_recall_handler: Optional[Callable[[Platform, str], Awaitable[None] | None]] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2246,6 +2247,13 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_message_recall_handler(
+        self,
+        handler: Optional[Callable[[Platform, str], Awaitable[None] | None]],
+    ) -> None:
+        """Set the handler for platform message recall/delete events."""
+        self._message_recall_handler = handler
 
     def set_topic_recovery_fn(
         self,

@@ -4916,6 +4916,62 @@ class TestDeleteEmptySessionsEndpoint:
             "hermes_cli/web_server.py."
         )
 
+    def test_bulk_archive_sessions(self):
+        """POST /api/sessions/bulk-archive archives multiple sessions at once."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="bulk1", source="cli")
+            db.create_session(session_id="bulk2", source="cli")
+            db.create_session(session_id="bulk3", source="cli")
+        finally:
+            db.close()
+
+        # Archive bulk1 and bulk2, leave bulk3 unarchived
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-archive",
+            json={"ids": ["bulk1", "bulk2", "bulk3", "nonexistent"], "archived": True}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["archived"] == 3  # nonexistent is silently skipped
+
+        # Verify sessions are archived
+        db = SessionDB()
+        try:
+            assert db.get_session("bulk1")["archived"] == 1
+            assert db.get_session("bulk2")["archived"] == 1
+            assert db.get_session("bulk3")["archived"] == 1
+        finally:
+            db.close()
+
+    def test_bulk_unarchive_sessions(self):
+        """POST /api/sessions/bulk-archive with archived=false restores sessions."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="unarch1", source="cli")
+            db.create_session(session_id="unarch2", source="cli")
+            db.set_session_archived("unarch1", True)
+            db.set_session_archived("unarch2", True)
+        finally:
+            db.close()
+
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-archive",
+            json={"ids": ["unarch1", "unarch2"], "archived": False}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["archived"] == 2
+
+        db = SessionDB()
+        try:
+            assert db.get_session("unarch1")["archived"] == 0
+            assert db.get_session("unarch2")["archived"] == 0
+        finally:
+            db.close()
+
 
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""

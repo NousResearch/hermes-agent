@@ -206,6 +206,16 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   })
 }
 
+// Bulk archive/unarchive multiple sessions by ID
+export function archiveSessions(ids: string[], archived = true, profile?: string | null): Promise<{ ok: boolean; archived: number }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number }>({
+    ...(profile ? { profile } : {}),
+    path: '/api/sessions/bulk-archive',
+    method: 'POST',
+    body: { ids, archived }
+  })
+}
+
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
   return window.hermesDesktop.api<SessionSearchResponse>({
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`

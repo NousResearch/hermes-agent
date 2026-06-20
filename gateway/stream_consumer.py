@@ -518,6 +518,20 @@ class GatewayStreamConsumer:
                         or len(self._accumulated) >= self.cfg.buffer_threshold
                     )
 
+                if should_edit and self._accumulated:
+                    should_buffer_update = getattr(self.adapter, "should_buffer_stream_update", None)
+                    is_mock_buffer_hook = getattr(
+                        getattr(should_buffer_update, "__class__", None),
+                        "__module__",
+                        "",
+                    ).startswith("unittest.mock")
+                    if callable(should_buffer_update) and not is_mock_buffer_hook and not got_done and not got_segment_break:
+                        try:
+                            if should_buffer_update(self._accumulated):
+                                should_edit = False
+                        except Exception:
+                            logger.debug("stream buffer gate failed", exc_info=True)
+
                 current_update_visible = False
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform

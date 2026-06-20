@@ -28,7 +28,9 @@ Use one of these:
 - `kanban_list(assignee="<some-name>")` — sanity-check a single name. Returns an empty list (rather than an error) for an unknown assignee, so this only confirms a name you're already considering.
 - **Just ask the user.** "What profiles do you have set up?" is a fine first turn when the goal needs more than one specialist.
 
-Cache the result in your working memory for the rest of the conversation. Re-asking every turn wastes a tool call.
+After listing profiles, read each profile's description with `hermes profile describe <profile-name>`. Descriptions convey the intended role and capabilities of each profile — use them to match tasks with the right specialist. If no description exists, infer the role from the profile name.
+
+Cache both the profile names and their descriptions in your working memory for the rest of the conversation. Re-asking every turn wastes a tool call.
 
 ## When to use the board (vs. just doing the work)
 

@@ -1373,5 +1373,5 @@ registry.register(
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",
-    max_result_size_chars=100_000,
+    max_result_size_chars=20_000,
 )

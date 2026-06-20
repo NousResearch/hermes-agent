@@ -781,4 +781,5 @@ registry.register(
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",
+    max_result_size_chars=20_000,
 )

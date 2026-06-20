@@ -497,12 +497,12 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
     After ``handle_ws`` detaches a disconnected client it points the session at
-    ``_detached_ws_transport``. A session left on that transport (and not
-    mid-turn) is genuinely orphaned and safe to reap.
+    ``_detached_ws_transport``. A session left on that transport is genuinely
+    orphaned and safe to reap. We allow reaping even when session.get("running")
+    is True to prevent lingering/zombie _SlashWorker processes when a client
+    disconnects permanently mid-turn.
     """
     if not session or session.get("_finalized"):
-        return False
-    if session.get("running"):
         return False
     return session.get("transport") is _detached_ws_transport
 

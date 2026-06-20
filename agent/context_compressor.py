@@ -2015,6 +2015,7 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
+        protect_last_n: int | None = None,
     ) -> int:
         """Walk backward from the end of messages, accumulating tokens until
         the budget is reached. Returns the index where the tail starts.
@@ -2040,7 +2041,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         # ``protect_last_n`` remains a minimum up to the cap; the cap avoids
         # preserving a whole run of bulky tool outputs on every compaction.
         available_tail = max(0, n - head_end - 1)
-        min_tail_floor = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+        actual_protect_last_n = protect_last_n if protect_last_n is not None else self.protect_last_n
+        min_tail_floor = max(3, min(actual_protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
         # Leave at least two non-head messages available to summarize on short
         # transcripts; otherwise compression can replace a tiny middle with a
         # summary and save no messages at all.
@@ -2198,9 +2200,16 @@ This compaction should PRIORITISE preserving all information related to the focu
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
+        effective_tail_count = self.protect_last_n
+        effective_tail_tokens = self.tail_token_budget
+        if self._ineffective_compression_count >= 1:
+            effective_tail_count = max(8, self.protect_last_n // 2)
+            if effective_tail_tokens is not None:
+                effective_tail_tokens = effective_tail_tokens // 2
+
         messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n,
-            protect_tail_tokens=self.tail_token_budget,
+            messages, protect_tail_count=effective_tail_count,
+            protect_tail_tokens=effective_tail_tokens,
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
@@ -2210,7 +2219,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        if self._ineffective_compression_count >= 1:
+            try:
+                compress_end = self._find_tail_cut_by_tokens(
+                    messages, compress_start,
+                    token_budget=effective_tail_tokens,
+                    protect_last_n=effective_tail_count,
+                )
+            except TypeError:
+                compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        else:
+            compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
             # No compressable window — the entire transcript fits within

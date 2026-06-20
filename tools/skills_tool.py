@@ -1635,4 +1635,5 @@ registry.register(
     handler=_skill_view_with_bump,
     check_fn=check_skills_requirements,
     emoji="📚",
+    max_result_size_chars=20_000,
 )

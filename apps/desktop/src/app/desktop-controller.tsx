@@ -340,11 +340,16 @@ export function DesktopController() {
 
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
+          // Sanitize key (allowlist) and value (strip control chars) before
+          // building the slash command — both reach the composer verbatim.
+          const cleanKey = String(k || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64)
+          if (!cleanKey) return ""
           const cleanVal = String(v || "").replace(/[\r\n\x00-\x1f]/g, "")
-          const sval = /\s/.test(String(v || "") ? `"${v.replace(/"/g, '\\"')}"` : v
+          const sval = /\s/.test(cleanVal) ? `"${cleanVal.replace(/"/g, '\\"')}"` : cleanVal
 
-          return `${k}=${sval}`
+          return `${cleanKey}=${sval}`
         })
+        .filter(Boolean)
         .join(' ')
 
       const command = `/blueprint ${sanitizedName}${slots ? ' ' + slots : ''}`

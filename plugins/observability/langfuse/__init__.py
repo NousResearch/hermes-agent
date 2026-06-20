@@ -640,7 +640,15 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+    # Langfuse trace ids are deterministic for a seed. Include the scoped
+    # turn/request key so repeated turns in one gateway session do not collapse
+    # into one exported trace even though in-process state is isolated.
+    trace_seed = (
+        f"{session_id or 'sessionless'}::"
+        f"{task_id or 'taskless'}::"
+        f"{turn_id or api_request_id or task_key}"
+    )
+    trace_id = client.create_trace_id(seed=trace_seed)
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
@@ -32,7 +33,16 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
     result = await runner._handle_message(event)
 
-    assert result == "⏳ Draining 1 active agent(s) before restart..."
+    expected = t("gateway.draining", count=1)
+    assert result == expected
+    # Guard against the silent-degradation regression in #22266: if the i18n
+    # catalog cannot be resolved (e.g. xdist workers losing the locales path)
+    # then ``t("gateway.draining", count=1)`` returns the bare key
+    # ``"gateway.draining"`` instead of the formatted English string, and both
+    # sides of the equality above would still match. Assert on the catalog
+    # output explicitly so a broken locale resolution fails loudly here.
+    assert expected != "gateway.draining"
+    assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
@@ -106,6 +116,39 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
 
 
+def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
+
+    # No knobs set → follows busy_input_mode, which defaults to interrupt.
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
+
+    # busy_input_mode=queue propagates to text handling (single source of truth).
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: queue\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    # Legacy explicit busy_text_mode still wins for backward compat.
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: interrupt\n  busy_text_mode: queue\n",
+        encoding="utf-8",
+    )
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    # Legacy env override wins too.
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: interrupt\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue")
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    # Bogus legacy value is ignored → falls through to busy_input_mode (interrupt).
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
+
+
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
     tmp_path, monkeypatch, caplog
 ):
@@ -154,8 +197,10 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     runner, _adapter = make_restart_runner()
     popen_calls = []
 
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
 
     def fake_popen(cmd, **kwargs):
@@ -172,6 +217,72 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]
     assert kwargs["start_new_session"] is True
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    # The watcher must NOT inherit the gateway marker, or the CLI's
+    # self-restart loop guard refuses to run `hermes gateway restart`.
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+
+
+def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    pth_extra = tmp_path / "pywin32_system32"
+    site_packages.mkdir(parents=True)
+    pth_extra.mkdir()
+    (site_packages / "pywin32.pth").write_text(str(pth_extra), encoding="utf-8")
+    project_root = str(gateway_run.Path(gateway_run.__file__).resolve().parent.parent)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+    monkeypatch.setenv("PYTHONPATH", "already-there")
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert gateway_run.sys.path[:2] == [project_root, str(site_packages)]
+    assert str(pth_extra) in gateway_run.sys.path
+    assert gateway_run.os.environ["VIRTUAL_ENV"] == str(venv_dir.resolve())
+    pythonpath = gateway_run.os.environ["PYTHONPATH"].split(gateway_run.os.pathsep)
+    assert pythonpath[:3] == [project_root, str(site_packages), "already-there"]
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {},
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[-3:] == ["hermes", "gateway", "restart"]
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+    assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
+    assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
 

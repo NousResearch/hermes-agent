@@ -23,8 +23,6 @@ from tools.checkpoint_manager import (
     _project_meta_path,
     _touch_project,
     format_checkpoint_list,
-    DEFAULT_EXCLUDES,
-    CHECKPOINT_BASE,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,
     store_status,

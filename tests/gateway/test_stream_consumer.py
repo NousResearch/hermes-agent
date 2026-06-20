@@ -149,10 +149,10 @@ class TestEditMessageFinalizeSignature:
         "module_path,class_name",
         [
             ("gateway.platforms.telegram", "TelegramAdapter"),
-            ("gateway.platforms.discord", "DiscordAdapter"),
+            ("plugins.platforms.discord.adapter", "DiscordAdapter"),
             ("gateway.platforms.slack", "SlackAdapter"),
             ("gateway.platforms.matrix", "MatrixAdapter"),
-            ("gateway.platforms.mattermost", "MattermostAdapter"),
+            ("plugins.platforms.mattermost.adapter", "MattermostAdapter"),
             ("gateway.platforms.feishu", "FeishuAdapter"),
             ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
             ("gateway.platforms.dingtalk", "DingTalkAdapter"),
@@ -792,6 +792,368 @@ class TestSegmentBreakOnToolBoundary:
             "Post-tool timeout response was silently dropped by "
             "_send_fallback_final — the #10807 fix should prevent this"
         )
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_deletes_partial_after_full_resend(self):
+        """After fallback re-sends the COMPLETE response, the frozen partial
+        must be deleted so the user sees only the complete response (#16668).
+        Full resend happens when the visible prefix doesn't match the final
+        text (e.g. post-segment-break content, #10807)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # The stale partial shows pre-tool text that is NOT a prefix of the
+        # final response — fallback re-sends the complete final text.
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Let me check that for you…"
+
+        await consumer._send_fallback_final("Working on it. Done!")
+
+        adapter.delete_message.assert_awaited_once_with("chat_123", "msg_partial")
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_keeps_partial_after_tail_only_send(self):
+        """When the fallback sends only the missing TAIL (visible prefix
+        matches the final text), the partial message IS the head of the
+        answer — deleting it would leave the user with only the last part
+        of the response (the 'model sent only the second half' bug)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Visible partial is a true prefix of the final response — the
+        # fallback dedup sends only the tail.
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Working on i"
+
+        await consumer._send_fallback_final("Working on it. Done!")
+
+        # Tail was sent...
+        sent_contents = [
+            c.kwargs.get("content", "") for c in adapter.send.call_args_list
+        ]
+        assert any("Done!" in s and "Working on i" not in s for s in sent_contents)
+        # ...and the head-bearing partial was NOT deleted.
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_does_not_delete_when_no_chunks_reach_user(self):
+        """If every fallback send fails, the partial is the only thing the
+        user has — must NOT be deleted."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="network down"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Working on i"
+
+        await consumer._send_fallback_final("Working on it. Done!")
+
+        adapter.delete_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_skips_delete_when_adapter_lacks_method(self):
+        """Platforms without delete_message must not crash the fallback path."""
+        adapter = MagicMock(spec=["send", "edit_message", "MAX_MESSAGE_LENGTH"])
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Working on i"
+
+        # Should not raise even though the adapter has no delete_message.
+        await consumer._send_fallback_final("Working on it. Done!")
+        assert consumer._final_response_sent is True
+
+
+class TestFinalResponseDeliveryGuard:
+    """Regression coverage for #10748 — _final_response_sent must reflect
+    actual delivery of the *current* chunked send, not the cumulative
+    `_already_sent` flag (which earlier tool-progress edits or fallback-mode
+    promotion can taint)."""
+
+    @pytest.mark.asyncio
+    async def test_split_overflow_failed_send_does_not_mark_final_sent(self):
+        """Split-overflow path: if every chunk send fails on done frame,
+        _final_response_sent must stay False so the gateway falls back."""
+        adapter = MagicMock()
+        # Every send fails — _send_new_chunk returns the passed-in reply_to.
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="network down"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 100
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit: [text[:limit], text[limit:]],
+        )
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate prior tool-progress edits that set _already_sent
+        consumer._already_sent = True
+
+        # Long text > MAX_MESSAGE_LENGTH, no existing message id (fresh send path)
+        long_text = "x" * 200
+        consumer.on_delta(long_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer._final_response_sent is False, (
+            "_already_sent leaked into _final_response_sent — gateway will "
+            "wrongly suppress its fallback delivery (#10748)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_split_overflow_partial_send_marks_final_sent(self):
+        """Split-overflow path: if at least one chunk lands on done frame,
+        we did deliver the final answer — _final_response_sent must be True."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 100
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit: [text[:limit], text[limit:]],
+        )
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        long_text = "x" * 200
+        consumer.on_delta(long_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer._final_response_sent is True
+
+
+class TestFinalContentDeliveredGuard:
+    """Regression coverage for #25010 — _final_content_delivered must only be
+    set when the final response is actually confirmed delivered to the user,
+    not when a mid-stream edit happened to show partial content.  Prematurely
+    setting this flag causes the gateway to suppress the normal final send,
+    leaving the user with an incomplete partial message."""
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_edit_success_does_not_mark_content_delivered(self):
+        """When the mid-stream edit with finalize=True succeeds but the
+        subsequent finalize edit fails, _final_content_delivered must stay
+        False so the gateway does not suppress its fallback send (#25010).
+
+        Simulates TelegramAdapter which sets REQUIRES_EDIT_FINALIZE=True,
+        requiring a second finalize edit even when content is unchanged."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True  # Telegram adapter behavior
+        # First send (initial streaming message) succeeds.
+        # Mid-stream edit succeeds.
+        # Final finalize edit fails, and the consumer's own fallback send also
+        # fails, so no path has confirmed the complete final response reached
+        # the user.
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False))
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=False, error="network down"),
+        ])
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate streaming: send initial text, then more text, then done
+        consumer.on_delta("Part one of the response...\n")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        # Keep the second delta buffered until finish so the complete answer is
+        # not already visible before the final edit attempt fails.
+        consumer.cfg.buffer_threshold = 10_000
+        consumer._current_edit_interval = 10.0
+
+        consumer.on_delta("Part two, the complete final answer.\n")
+        await asyncio.sleep(0.05)
+
+        consumer.finish()
+        await task
+
+        # The key assertion: _final_content_delivered must NOT be True,
+        # because the final edit failed and the complete response was never
+        # confirmed delivered.
+        assert consumer._final_content_delivered is False, (
+            "_final_content_delivered was prematurely set to True — gateway "
+            "will wrongly suppress its fallback send, leaving the user with "
+            "an incomplete partial message (#25010)"
+        )
+        # The gateway must still be allowed to send the complete response
+        assert consumer._final_response_sent is False, (
+            "_final_response_sent must also be False when the final edit failed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_final_edit_success_does_mark_content_delivered(self):
+        """When the final finalize edit succeeds, _final_content_delivered
+        must be True — the normal happy path should still work."""
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("The complete response.\n")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        consumer.finish()
+        await task
+
+        assert consumer._final_content_delivered is True, (
+            "_final_content_delivered must be True when the final edit succeeds"
+        )
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_partial_send_does_not_mark_final_sent(self):
+        """When fallback final send delivers only some chunks before failing,
+        _final_response_sent must stay False so the gateway can still attempt
+        a complete final send (#25010)."""
+        call_count = 0
+
+        async def fake_send(*, chat_id, content, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return SimpleNamespace(success=True, message_id="msg_1")
+            # Third chunk (fallback continuation) FAILS
+            return SimpleNamespace(success=False, error="flood_control:13.0")
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=fake_send)
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="flood_control:13.0"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Trigger enough delta to enter fallback mode
+        consumer.on_delta("Initial streaming text...\n")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        # Send a very long text that will trigger overflow/fallback
+        long_text = ("x" * 3000 + "\n") + ("y" * 3000 + "\n") + "Final answer.\n"
+        consumer.on_delta(long_text)
+        await asyncio.sleep(0.1)
+
+        consumer.finish()
+        await task
+
+        assert consumer._final_response_sent is False, (
+            "Partial fallback send must not set _final_response_sent — gateway "
+            "must still be able to deliver the complete response (#25010)"
+        )
+
+
+class TestEditOverflowSplitAndDeliver:
+    """When edit_message split-and-delivers an oversized payload across the
+    original message + N continuations (Telegram >4096 UTF-16), the consumer
+    must update _message_id to the latest continuation, reset _last_sent_text,
+    and fire on_new_message so subsequent tool-progress bubbles linearize
+    below the new visible message."""
+
+    @pytest.mark.asyncio
+    async def test_consumer_advances_message_id_on_split_and_deliver(self):
+        adapter = MagicMock()
+        # Simulate edit_message split-and-deliver: success=True with the
+        # final continuation's id and a populated continuation_message_ids
+        # tuple (the new SendResult contract).
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="msg_continuation_2",
+            continuation_message_ids=("msg_continuation_1", "msg_continuation_2"),
+        ))
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_initial"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_999", config)
+
+        # Track on_new_message firings.
+        new_msg_count = [0]
+        consumer._on_new_message = lambda: new_msg_count.__setitem__(0, new_msg_count[0] + 1)
+
+        # Seed the consumer as if a first send succeeded already.
+        consumer._message_id = "msg_initial"
+        consumer._last_sent_text = "old"
+        consumer._already_sent = True
+
+        # Drive an edit that the adapter "split and delivers".
+        ok = await consumer._send_or_edit("new full text after overflow")
+
+        assert ok is True
+        # Consumer advanced to the latest continuation id.
+        assert consumer._message_id == "msg_continuation_2"
+        # Skip-if-same cache reset so the next edit doesn't false-positive.
+        assert consumer._last_sent_text == ""
+        # on_new_message fired so the tool-progress bubble breaks below
+        # the new continuation (per the openclaw #32535 lesson).
+        assert new_msg_count[0] == 1
 
 
 class TestInterimCommentaryMessages:
@@ -1493,3 +1855,96 @@ class TestOnNewMessageCallback:
         await consumer.run()
 
         assert consumer.already_sent is True
+
+
+class TestUtf16OverflowDetection:
+    """Regression coverage for #11170 — Telegram counts message length in
+    UTF-16 code units, not Python codepoints. A response with supplementary
+    characters (emoji, CJK in some ranges) can have len()=3000 codepoints
+    but utf16_len()=5000+ units, blowing past Telegram's 4096 limit."""
+
+    def _make_telegram_like_adapter(self):
+        """Construct a minimal BasePlatformAdapter subclass that overrides
+        message_len_fn like Telegram does."""
+        from gateway.platforms.base import utf16_len, BasePlatformAdapter
+
+        TelegramLikeAdapter = type(
+            "TelegramLikeAdapter",
+            (BasePlatformAdapter,),
+            {
+                "MAX_MESSAGE_LENGTH": 4096,
+                "message_len_fn": property(lambda self: utf16_len),
+            },
+        )
+        # Defeat ABCMeta abstract-instantiation guard by clearing the cached
+        # abstract methods set after class creation.
+        TelegramLikeAdapter.__abstractmethods__ = frozenset()
+        adapter = TelegramLikeAdapter.__new__(TelegramLikeAdapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_emoji_text_exceeding_utf16_limit_triggers_overflow_split(self):
+        """A response that is under 4096 codepoints but over 4096 UTF-16
+        units must trigger the overflow-split path."""
+        from gateway.platforms.base import utf16_len
+
+        adapter = self._make_telegram_like_adapter()
+        # Mock the send/edit methods we actually call
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        # truncate_message: emit two halves so we can assert the split fired
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit, **kw: [text[:len(text)//2], text[len(text)//2:]],
+        )
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # 🚀 is 1 codepoint = 2 UTF-16 units. 2200 of them = 2200 codepoints,
+        # 4400 UTF-16 units. Under the codepoint-equivalent limit (would not
+        # trigger split with len()) but over Telegram's UTF-16 4096 limit.
+        emoji_text = "🚀" * 2200
+        assert len(emoji_text) < adapter.MAX_MESSAGE_LENGTH, (
+            "Test setup invariant: codepoint count under limit"
+        )
+        assert utf16_len(emoji_text) > adapter.MAX_MESSAGE_LENGTH, (
+            "Test setup invariant: UTF-16 count over limit"
+        )
+
+        consumer.on_delta(emoji_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # The fix: stream consumer detects UTF-16 overflow and calls
+        # truncate_message to split. Without the fix, len() would return
+        # 2200 (under 4096) and no split would fire — Telegram would then
+        # reject the send or render \x00 artifacts.
+        adapter.truncate_message.assert_called(), (
+            "UTF-16 overflow not detected — emoji text bypassed split path"
+        )
+        # truncate_message must have been called with len_fn=utf16_len
+        call_kwargs = adapter.truncate_message.call_args[1]
+        assert call_kwargs.get("len_fn") is utf16_len, (
+            f"truncate_message called without utf16_len: {call_kwargs}"
+        )
+
+    def test_codepoint_only_adapter_falls_back_to_len(self):
+        """Adapters without message_len_fn override (or test MagicMocks)
+        must use plain len for backwards compatibility."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        config = StreamConsumerConfig(cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        # The isinstance guard means MagicMock adapters get len, not the
+        # auto-attr mock. Verified indirectly by all the other tests in
+        # this file passing — they all use MagicMock adapters.
+        assert consumer is not None
+

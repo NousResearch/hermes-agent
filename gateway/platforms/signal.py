@@ -99,11 +99,11 @@ def _guess_extension(data: bytes) -> str:
 
 
 def _is_image_ext(ext: str) -> bool:
-    return ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
+    return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _is_audio_ext(ext: str) -> bool:
-    return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
+    return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
 _EXT_TO_MIME = {
@@ -191,6 +191,14 @@ class SignalAdapter(BasePlatformAdapter):
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
+
+        # Mention filter — only respond in groups when the bot account is @mentioned.
+        # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
+        _rm_cfg = extra.get("require_mention")
+        if _rm_cfg is not None:
+            self.require_mention = bool(_rm_cfg)
+        else:
+            self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
         # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
         # Stored here so the reaction hooks can skip unauthorized senders
@@ -446,7 +454,9 @@ class SignalAdapter(BasePlatformAdapter):
                 if sent_msg and isinstance(sent_msg, dict):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
-                    if dest == self._account_normalized:
+                    sent_msg_group_info = sent_msg.get("groupInfo") or {}
+                    sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
+                    if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
                             self._recent_sent_timestamps.discard(sent_ts)
@@ -516,6 +526,23 @@ class SignalAdapter(BasePlatformAdapter):
         if text and mentions:
             text = _render_mentions(text, mentions)
 
+        # Mention filter: in groups, only process messages that @mention the bot account
+        if is_group and self.require_mention:
+            account_norm = self._account_normalized
+            # Check rendered mention tags OR raw mention metadata
+            mentioned_in_text = account_norm and (
+                f"@{account_norm}" in (text or "")
+            )
+            mentioned_in_metadata = any(
+                m.get("number") == account_norm or m.get("uuid") == account_norm
+                for m in (data_message.get("mentions") or [])
+            )
+            if not mentioned_in_text and not mentioned_in_metadata:
+                logger.debug(
+                    "Signal: ignoring group message (require_mention=true, bot not mentioned)"
+                )
+                return
+
         # Extract quote (reply-to) context from Signal dataMessage
         quote_data = data_message.get("quote") or {}
         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
@@ -575,6 +602,14 @@ class SignalAdapter(BasePlatformAdapter):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
+            elif any(mt.startswith("video/") for mt in media_types):
+                msg_type = MessageType.VIDEO
+            else:
+                # Catch-all: application/*, text/*, and unknown MIME types are
+                # treated as documents so run.py's document-context injection
+                # surfaces the cached file path to the agent (same pattern as
+                # WhatsApp/Slack/BlueBubbles/Mattermost).
+                msg_type = MessageType.DOCUMENT
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -761,7 +796,16 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.debug("Signal RPC error (%s): %s", method, err)
                 return None
 
-            return data.get("result")
+            result = data.get("result")
+            if isinstance(result, dict) and raise_on_rate_limit:
+                results = result.get("results")
+                if isinstance(results, list):
+                    for r in results:
+                        if isinstance(r, dict) and r.get("type") == "RATE_LIMIT_FAILURE":
+                            retry_after = r.get("retryAfterSeconds")
+                            raise SignalRateLimitError("Rate limit exceeded for recipient", retry_after=retry_after)
+
+            return result
 
         except SignalRateLimitError:
             raise
@@ -925,6 +969,29 @@ class SignalAdapter(BasePlatformAdapter):
         # Our send() override bypasses this entirely.
         return content
 
+    def _validate_send_result(self, result: Any) -> tuple[bool, Optional[str]]:
+        """Validate signal-cli send response results.
+
+        Returns (success, error_message).
+        """
+        if not result or not isinstance(result, dict):
+            return True, None
+
+        results = result.get("results")
+        if isinstance(results, list):
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                rtype = r.get("type")
+                if rtype and rtype != "SUCCESS":
+                    return False, str(rtype)
+                if "success" in r and not r.get("success"):
+                    fail = r.get("failure")
+                    if fail:
+                        return False, str(fail)
+                    return False, "Recipient delivery failed"
+        return True, None
+
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
@@ -957,9 +1024,13 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
+        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
         result = await self._rpc("send", params)
 
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
@@ -1136,14 +1207,33 @@ class SignalAdapter(BasePlatformAdapter):
                     )
                     _rpc_duration = time.monotonic() - _rpc_t0
                     if result is not None:
-                        self._track_sent_timestamp(result)
-                        await scheduler.report_rpc_duration(_rpc_duration, n)
-                        logger.info(
-                            "Signal batch %d/%d: %d attachments sent in %.1fs "
-                            "(attempt %d/%d)",
-                            idx + 1, len(att_batches), n, _rpc_duration,
-                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
-                        )
+                        success, err_msg = self._validate_send_result(result)
+                        if success:
+                            self._track_sent_timestamp(result)
+                            await scheduler.report_rpc_duration(_rpc_duration, n)
+                            logger.info(
+                                "Signal batch %d/%d: %d attachments sent in %.1fs "
+                                "(attempt %d/%d)",
+                                idx + 1, len(att_batches), n, _rpc_duration,
+                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                            )
+                        else:
+                            logger.error(
+                                "Signal: RPC send failed for batch %d/%d (%d attachments, "
+                                "attempt %d/%d, rpc_duration=%.1fs): %s",
+                                idx + 1, len(att_batches), n,
+                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                                _rpc_duration, err_msg,
+                            )
+                            # Retry transient (non-rate-limit) failures once
+                            if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                                backoff = 2.0 ** attempt
+                                logger.info(
+                                    "Signal: retrying batch %d/%d after %.1fs backoff",
+                                    idx + 1, len(att_batches), backoff,
+                                )
+                                await asyncio.sleep(backoff)
+                                continue
                     else:
                         # Assume the server didn't accept the batch, don't deduce tokens
                         logger.error(
@@ -1242,6 +1332,9 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
@@ -1281,6 +1374,9 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
@@ -1449,7 +1545,7 @@ class SignalAdapter(BasePlatformAdapter):
            contacts from seeing the 👀 reaction (which fires before run.py's
            auth gate and would otherwise reveal that a bot is listening).
         """
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in ("false", "0", "no"):
+        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
             sender = getattr(getattr(event, "source", None), "user_id", None)

@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -41,16 +40,18 @@ def _find_chrome() -> str:
 
 
 @pytest.fixture
-def chrome_cdp(worker_id):
+def chrome_cdp(request):
     """Start a headless Chrome with --remote-debugging-port, yield its WS URL.
 
     Uses a unique port per xdist worker to avoid cross-worker collisions.
     Always launches with ``--site-per-process`` so cross-origin iframes
     become real OOPIFs (needed by the iframe interaction tests).
     """
-    import socket
 
     # xdist worker_id is "master" in single-process mode or "gw0".."gwN" otherwise.
+    # Under subprocess-per-file isolation there's no xdist, so we fall back
+    # to "master" via the session-scoped fixture below.
+    worker_id = request.getfixturevalue("worker_id") if "worker_id" in request.fixturenames else "master"
     if worker_id == "master":
         port_offset = 0
     else:
@@ -86,18 +87,45 @@ def chrome_cdp(worker_id):
         except Exception:
             time.sleep(0.25)
     if ws_url is None:
-        proc.terminate()
-        proc.wait(timeout=5)
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, AssertionError, Exception):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except (AssertionError, Exception):
+                pass
         shutil.rmtree(profile, ignore_errors=True)
         pytest.skip("Chrome didn't expose CDP in time")
 
     yield ws_url, port
 
-    proc.terminate()
+    # Tear down Chrome. The stdlib `subprocess._wait()` POSIX implementation
+    # has a known race (https://bugs.python.org/issue38630): when SIGCHLD
+    # arrives concurrently with `proc.wait()`, `_try_wait(WNOHANG)` can
+    # return a foreign pid and the `assert pid == self.pid or pid == 0`
+    # fires. We saw this in CI on slice 1 after this fixture's teardown
+    # (PR #33661 follow-up). Swallow the stdlib race + force-kill if wait
+    # hangs, then always reap so we don't leak a zombie.
+    try:
+        proc.terminate()
+    except Exception:
+        pass
     try:
         proc.wait(timeout=3)
-    except Exception:
-        proc.kill()
+    except (subprocess.TimeoutExpired, AssertionError, Exception):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except (AssertionError, Exception):
+            pass
     shutil.rmtree(profile, ignore_errors=True)
 
 
@@ -561,3 +589,80 @@ def test_bridge_captures_prompt_and_returns_reply_text(chrome_cdp, supervisor_re
 
     value = asyncio.run(nav_and_read())
     assert value == "AGENT-SUPPLIED-REPLY", f"expected AGENT-SUPPLIED-REPLY, got {value!r}"
+
+
+def test_evaluate_runtime_primitive(chrome_cdp, supervisor_registry):
+    """evaluate_runtime returns primitive values via the supervisor's live WS."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-1", cdp_url=cdp_url)
+
+    # Need a page to evaluate against.
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("1 + 41")
+    assert out["ok"] is True
+    assert out["result"] == 42
+    assert out["result_type"] == "number"
+
+
+def test_evaluate_runtime_object(chrome_cdp, supervisor_registry):
+    """Plain objects come back JSON-serialized via returnByValue=True."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-2", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime('({foo: "bar", n: 7})')
+    assert out["ok"] is True
+    assert out["result"] == {"foo": "bar", "n": 7}
+    assert out["result_type"] == "object"
+
+
+def test_evaluate_runtime_js_exception(chrome_cdp, supervisor_registry):
+    """JS exceptions surface as ok=False with the exception message."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-3", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("nonExistentVar.nope")
+    assert out["ok"] is False
+    assert "ReferenceError" in out["error"] or "not defined" in out["error"]
+
+
+def test_evaluate_runtime_dom_node_returns_empty_object(chrome_cdp, supervisor_registry):
+    """DOM nodes with returnByValue=true serialize to ``{}`` (Chrome quirk).
+
+    This is honest — DOM nodes can't be deeply JSON-serialized — and matches
+    DevTools console behaviour for the same expression.  Documenting the
+    contract here so a future change that "fixes" it (e.g. switching to
+    returnByValue=false + DOM.describeNode) doesn't break callers expecting
+    the current shape.
+    """
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-4", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("document.querySelector('h1')")
+    assert out["ok"] is True
+    assert out["result_type"] == "object"
+    # Empty dict — Chrome can't deeply-serialize a DOM node through returnByValue.
+    assert out["result"] == {}
+
+
+def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
+    """``Infinity``/``NaN``/``BigInt`` come back via ``unserializableValue``."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-5", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("Infinity")
+    assert out["ok"] is True
+    assert out["result"] == "Infinity"

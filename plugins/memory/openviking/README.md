@@ -14,6 +14,10 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 hermes memory setup    # select "openviking"
 ```
 
+The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current
+connection values into Hermes, or create a minimal `ovcli.conf` when one does
+not exist.
+
 Or manually:
 ```bash
 hermes config set memory.provider openviking
@@ -27,7 +31,14 @@ All config via environment variables in `.env`:
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
-| `OPENVIKING_API_KEY` | (none) | API key (optional) |
+| `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
+| `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
+| `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
+| `OPENVIKING_AGENT` | `hermes` | Hermes peer ID in OpenViking, used for peer-scoped memories |
+
+When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
+identity from the key. In local or trusted deployments without an API key,
+Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 
 ## Tools
 

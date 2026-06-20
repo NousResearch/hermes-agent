@@ -1,7 +1,6 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -772,6 +771,153 @@ class TestSignalMediaExtraction:
 
 
 # ---------------------------------------------------------------------------
+# Inbound attachment message type classification
+# ---------------------------------------------------------------------------
+
+def _make_dm_envelope(sender: str, attachments: list, text: str = "") -> dict:
+    """Build a minimal signal-cli DM envelope with the given attachments."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Test User",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": text,
+                "expiresInSeconds": 0,
+                "viewOnce": False,
+                "attachments": attachments,
+            },
+        }
+    }
+
+
+class TestSignalInboundMessageTypeClassification:
+    """_handle_envelope must set MessageType.DOCUMENT for application/* and text/* attachments.
+
+    Before the fix, PDFs and other documents left msg_type as MessageType.TEXT,
+    so run.py's document-context injection (which gates on MessageType.DOCUMENT)
+    silently dropped the file and the agent never saw it.
+    """
+
+    async def _dispatch_single_attachment(self, monkeypatch, content_type: str,
+                                          att_id: str, fetch_path: str, fetch_ext: str):
+        """Helper: run _handle_envelope with one attachment and return the dispatched event."""
+        envelope = _make_dm_envelope(
+            sender="+15559876543",
+            attachments=[{
+                "contentType": content_type,
+                "id": att_id,
+                "size": 1024,
+                "filename": None,
+                "width": None,
+                "height": None,
+                "caption": None,
+                "uploadTimestamp": 1700000000000,
+            }],
+        )
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        adapter._fetch_attachment = AsyncMock(return_value=(fetch_path, fetch_ext))
+        await adapter._handle_envelope(envelope)
+        assert dispatched, "_handle_envelope did not dispatch any event"
+        return dispatched[0]
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_sets_document_type(self, monkeypatch):
+        """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="application/pdf",
+            att_id="6zLO3b-6Yf3zVWeLDctA.pdf",
+            fetch_path="/tmp/report.pdf",
+            fetch_ext=".pdf",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "PDFs must be classified as DOCUMENT so run.py injects file context."
+        )
+        assert "/tmp/report.pdf" in event.media_urls
+
+    @pytest.mark.asyncio
+    async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
+        """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/plain",
+            att_id="notes.txt",
+            fetch_path="/tmp/notes.txt",
+            fetch_ext=".txt",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/plain must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_text_html_attachment_sets_document_type(self, monkeypatch):
+        """A text/html attachment must produce MessageType.DOCUMENT (covers the text/* wildcard)."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/html",
+            att_id="page.html",
+            fetch_path="/tmp/page.html",
+            fetch_ext=".html",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/html must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_video_attachment_sets_video_type(self, monkeypatch):
+        """A video/mp4 attachment must produce MessageType.VIDEO."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="video/mp4",
+            att_id="clip.mp4",
+            fetch_path="/tmp/clip.mp4",
+            fetch_ext=".mp4",
+        )
+
+        assert event.message_type == MessageType.VIDEO
+
+    @pytest.mark.asyncio
+    async def test_unknown_mime_attachment_falls_back_to_document(self, monkeypatch):
+        """Unknown/exotic MIME types fall through to DOCUMENT (catch-all),
+        matching the WhatsApp/Slack/BlueBubbles classification pattern."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="chemical/x-pdb",
+            att_id="molecule.pdb",
+            fetch_path="/tmp/molecule.pdb",
+            fetch_ext=".pdb",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT
+
+
+# ---------------------------------------------------------------------------
 # send_document now routes through _send_attachment (#5105 bonus)
 # ---------------------------------------------------------------------------
 
@@ -861,6 +1007,97 @@ class TestSignalSendReturnsMessageId:
 
         assert result.success is True
         assert result.message_id is None
+
+
+class TestSignalSendResultValidation:
+    """Verify that send() validates recipient-level delivery results."""
+
+    @pytest.mark.asyncio
+    async def test_send_success_when_results_has_success(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "type": "SUCCESS"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_failure_when_results_has_failure_type(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "type": "UNREGISTERED_FAILURE"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is False
+        assert result.error == "UNREGISTERED_FAILURE"
+
+    @pytest.mark.asyncio
+    async def test_send_failure_when_results_has_success_false(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "success": False,
+                    "failure": "Some connection error"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is False
+        assert result.error == "Some connection error"
+
+    @pytest.mark.asyncio
+    async def test_rpc_raises_rate_limit_on_results_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "jsonrpc": "2.0",
+            "result": {
+                "timestamp": 1712345678000,
+                "results": [
+                    {
+                        "recipientAddress": {"number": "+155****4567"},
+                        "type": "RATE_LIMIT_FAILURE",
+                        "retryAfterSeconds": 15
+                    }
+                ]
+            },
+            "id": "1"
+        }
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter.client = mock_client
+
+        from gateway.platforms.signal_rate_limit import SignalRateLimitError
+        with pytest.raises(SignalRateLimitError) as exc_info:
+            await adapter._rpc("send", {"recipient": ["+155****4567"]}, raise_on_rate_limit=True)
+
+        assert "Rate limit exceeded for recipient" in str(exc_info.value)
+        assert exc_info.value.retry_after == 15
 
 
 # ---------------------------------------------------------------------------

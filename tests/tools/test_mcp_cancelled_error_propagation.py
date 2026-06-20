@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-import pytest
 
 
 async def _hanging_run(self, cfg):
@@ -62,7 +61,7 @@ class TestCancelledErrorPropagation:
                 return "clean_return"
 
         outcome = asyncio.run(drive())
-        assert outcome in ("cancelled_cleanly", "clean_return"), (
+        assert outcome in {"cancelled_cleanly", "clean_return"}, (
             f"MCPServerTask.run wedged on cancel (outcome={outcome}) — "
             f"#9930 regression"
         )

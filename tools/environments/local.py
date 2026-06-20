@@ -12,10 +12,31 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+
+def _msys_to_windows_path(cwd: str) -> str:
+    """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
+    native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
+    ``subprocess.Popen(..., cwd=...)`` can find it.
+
+    No-ops on non-Windows hosts or for paths that aren't in MSYS form.
+    Returns the input unchanged when no translation applies. This is
+    idempotent — calling it on an already-Windows path returns it as-is.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
+    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).upper()
+    tail = (m.group(2) or "").replace('/', '\\')
+    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -24,12 +45,18 @@ def _resolve_safe_cwd(cwd: str) -> str:
     path can't find any existing directory (effectively never on a healthy
     filesystem, but cheap belt-and-braces).
 
+    On Windows, also normalizes Git Bash / MSYS-style POSIX paths
+    (``/c/Users/x``) to native Windows form before the isdir check so a
+    perfectly valid ``pwd -P`` result from bash doesn't get rejected as
+    "missing" (see ``_msys_to_windows_path``).
+
     Used by ``_run_bash`` to recover when the configured cwd is gone — most
     commonly because a previous tool call deleted its own working directory
     (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
     raises ``FileNotFoundError`` before bash starts, wedging every subsequent
     terminal call until the gateway restarts.
     """
+    cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
     if cwd and os.path.isdir(cwd):
         return cwd
     parent = os.path.dirname(cwd) if cwd else ""
@@ -48,6 +75,27 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
+# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
+# providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
+# Bedrock-specific bearer token, which is a Hermes inference secret exactly
+# analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
+# ``boto3`` toolchain off it, so stripping it from terminal/execute_code
+# subprocesses costs no user capability.
+#
+# The GENERAL AWS credential chain (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# AWS_SESSION_TOKEN, AWS_PROFILE, and the config/role pointers) is INTENTIONALLY
+# left inheritable.  Per SECURITY.md §3.2 the local terminal is the user's
+# trusted operator shell; the agent having the same general AWS access the
+# user's own shell has is the intended posture, not a leak.  Hard-blocklisting
+# those vars would (a) regress every user who runs aws/terraform/cdk/boto3 in
+# the agent terminal — not just Bedrock users, since the registry is iterated
+# unconditionally — and (b) be unrecoverable, because env_passthrough.py
+# refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
+# issue #32314 discussion.
+_AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
+    "AWS_BEARER_TOKEN_BEDROCK",
+})
+
 
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
@@ -57,6 +105,8 @@ def _build_provider_env_blocklist() -> frozenset:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
+            if pconfig.auth_type == "aws_sdk":
+                blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
     except ImportError:
@@ -125,6 +175,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_SMTP_HOST",
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
+        "HERMES_DASHBOARD_SESSION_TOKEN",
         "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
         "GITHUB_APP_ID",
@@ -133,15 +184,23 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
-        "VERCEL_OIDC_TOKEN",
-        "VERCEL_TOKEN",
-        "VERCEL_PROJECT_ID",
-        "VERCEL_TEAM_ID",
     })
     return frozenset(blocked)
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+
+def _inject_context_hermes_home(env: dict) -> None:
+    """Bridge the context-local Hermes home override into subprocess env."""
+    try:
+        from hermes_constants import get_hermes_home_override
+
+        value = get_hermes_home_override()
+        if value:
+            env["HERMES_HOME"] = value
+    except Exception:
+        pass
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
@@ -166,11 +225,10 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
-    # Per-profile HOME isolation for background processes (same as _make_run_env).
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        sanitized["HOME"] = _profile_home
+    _inject_context_hermes_home(sanitized)
+
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(sanitized)
 
     return sanitized
 
@@ -239,6 +297,72 @@ _SANE_PATH = (
 )
 
 
+def _append_missing_sane_path_entries(existing_path: str) -> str:
+    """Return a normalised POSIX PATH with missing sane entries appended.
+
+    On POSIX the caller-supplied PATH is rewritten (not merely appended to):
+    empty entries and duplicate entries are dropped, preserving
+    first-occurrence order, then each missing ``_SANE_PATH`` entry is appended
+    once at the end so existing entries keep their precedence.
+
+    Two intentional normalisations beyond the bare "add Homebrew dirs" fix:
+
+    - **Empty entries are stripped.** A leading/trailing/double ``:`` encodes
+      an empty PATH element, which POSIX shells interpret as the current
+      working directory — a mild foot-gun in a default terminal environment.
+      We drop these rather than carry them through.
+    - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
+      that already contains repeats is not propagated verbatim.
+
+    For a well-formed PATH (no empties, no duplicates) the leading segment is
+    byte-identical to the input and ordering is preserved; only the missing
+    sane entries are appended. On Windows this is a no-op passthrough (the
+    separator is ``;`` and the native PATH must not be touched).
+    """
+    if _IS_WINDOWS:
+        return existing_path
+
+    sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
+    if not existing_path:
+        return ":".join(sane_entries)
+
+    # De-duplicate the caller PATH (first occurrence wins) and drop empty
+    # entries before merging in the sane fallbacks.
+    seen: set[str] = set()
+    ordered_entries: list[str] = []
+    for entry in existing_path.split(":"):
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        ordered_entries.append(entry)
+
+    # _SANE_PATH is a static, duplicate-free constant, so a membership check
+    # against the caller entries is sufficient — no need to track `seen` here.
+    for entry in sane_entries:
+        if entry not in seen:
+            ordered_entries.append(entry)
+
+    return ":".join(ordered_entries)
+
+
+def _path_env_key(run_env: dict) -> str | None:
+    """Return the PATH env key to update without altering Windows casing.
+
+    Note: this is deliberately a *second* Windows guard, distinct from the
+    early-return in ``_append_missing_sane_path_entries``. Its job is to pick
+    the correctly-cased key (``Path`` vs ``PATH``) so completion writes back to
+    the key the caller already used; the helper's guard makes that helper safe
+    to call standalone (it is, e.g. in the Windows unit tests). Both are
+    intentional.
+    """
+    if not _IS_WINDOWS:
+        return "PATH"
+    for key in run_env:
+        if key.upper() == "PATH":
+            return key
+    return None
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
@@ -254,25 +378,25 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
-    existing_path = run_env.get("PATH", "")
-    # The "/usr/bin not already present → inject sane POSIX path" heuristic
-    # only makes sense on POSIX.  On Windows the PATH separator is ";"
-    # (the split(":") above turns a full Windows PATH into a single
-    # unrecognisable chunk, which then triggers prepending POSIX paths
-    # to a Windows PATH — completely wrong).  Skip the injection entirely
-    # on Windows; the native PATH already points at whatever shell
-    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
-    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
-    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    path_key = _path_env_key(run_env)
+    if path_key is not None:
+        run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
 
-    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
-    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
-    # subprocess sees the override — the Python process keeps the real HOME.
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        run_env["HOME"] = _profile_home
+    _inject_context_hermes_home(run_env)
+
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(run_env)
+
+    # Inject ContextVar-based session vars into subprocess env.
+    # ContextVars don't propagate to child processes, so we bridge them here.
+    try:
+        from gateway.session_context import _UNSET, _VAR_MAP
+        for var_name, var in _VAR_MAP.items():
+            value = var.get()
+            if value is not _UNSET and value:
+                run_env[var_name] = value
+    except Exception:
+        pass
 
     return run_env
 
@@ -444,21 +568,29 @@ class LocalEnvironment(BaseEnvironment):
         # (issue #17558).  Popen would otherwise raise FileNotFoundError on
         # the cwd before bash starts, wedging every subsequent call until the
         # gateway restarts.
+        #
+        # On Windows, ``_resolve_safe_cwd`` also normalises Git Bash-style
+        # POSIX paths (``/c/Users/...``) to native form so a perfectly valid
+        # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
+        # and spammed as a warning on every command.
         safe_cwd = _resolve_safe_cwd(self.cwd)
         if safe_cwd != self.cwd:
-            logger.warning(
-                "LocalEnvironment cwd %r is missing on disk; "
-                "falling back to %r so terminal commands keep working.",
-                self.cwd,
-                safe_cwd,
-            )
+            # MSYS → Windows translation alone shouldn't surface as a warning
+            # (it's a benign normalization, not a recovery). Only warn when
+            # the directory really doesn't exist on disk.
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if safe_cwd != normalized:
+                logger.warning(
+                    "LocalEnvironment cwd %r is missing on disk; "
+                    "falling back to %r so terminal commands keep working.",
+                    self.cwd,
+                    safe_cwd,
+                )
             self.cwd = safe_cwd
 
-        # On Windows, self.cwd may be a Git Bash-style path (/c/Users/...)
-        # from pwd output. subprocess.Popen needs a native Windows path.
         _popen_cwd = self.cwd
-        if _IS_WINDOWS and _popen_cwd and re.match(r'^/[a-zA-Z]/', _popen_cwd):
-            _popen_cwd = _popen_cwd[1].upper() + ':' + _popen_cwd[2:].replace('/', '\\')
+
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
             args,
@@ -471,6 +603,7 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=_popen_cwd,
+            **_popen_kwargs,
         )
         if not _IS_WINDOWS:
             try:
@@ -560,10 +693,19 @@ class LocalEnvironment(BaseEnvironment):
         ``pwd -P`` on a deleted cwd can leave a stale value in the marker
         file, and propagating it would re-wedge the next ``Popen``.  The
         ``_run_bash`` recovery path will resolve a safe fallback if needed.
+
+        On Windows, the value written by Git Bash's ``pwd -P`` is in
+        MSYS form (``/c/Users/x``). Translate it to native Windows form
+        before validating with ``os.path.isdir`` and before storing on
+        ``self.cwd``; otherwise the isdir check rejects every valid
+        result and ``_run_bash`` later prints a misleading "cwd is
+        missing" warning on every command.
         """
         try:
             with open(self._cwd_file, encoding="utf-8") as f:
                 cwd_path = f.read().strip()
+            if _IS_WINDOWS:
+                cwd_path = _msys_to_windows_path(cwd_path)
             if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
@@ -571,6 +713,30 @@ class LocalEnvironment(BaseEnvironment):
 
         # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
+
+    def _extract_cwd_from_output(self, result: dict):
+        """Same semantics as the base class, but on Windows the value
+        emitted by ``pwd -P`` inside Git Bash is in MSYS form
+        (``/c/Users/x``). Normalize to native Windows form and validate
+        the directory exists before assigning to ``self.cwd`` — otherwise
+        ``_run_bash``'s safe-cwd recovery would warn on every subsequent
+        command.
+
+        Always defers to the base class for stripping the marker text from
+        ``result["output"]`` so output formatting is identical.
+        """
+        # Snapshot pre-existing cwd, defer to base for parsing + marker
+        # stripping, then validate / normalize whatever it assigned.
+        prev_cwd = self.cwd
+        super()._extract_cwd_from_output(result)
+        if self.cwd != prev_cwd:
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if normalized and os.path.isdir(normalized):
+                self.cwd = normalized
+            else:
+                # Stale / non-existent path — keep previous cwd; _run_bash
+                # will resolve a safe fallback on the next call if needed.
+                self.cwd = prev_cwd
 
     def cleanup(self):
         """Clean up temp files."""

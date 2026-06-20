@@ -20,6 +20,9 @@ def _bare_agent() -> AIAgent:
     agent._memory_store = object()
     agent._memory_enabled = True
     agent._user_profile_enabled = False
+    agent._cached_system_prompt = "test-cached-system-prompt"
+    import datetime as _dt
+    agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
@@ -71,6 +74,80 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         "shutdown_memory_provider",
         "close",
     ]
+
+
+def test_background_review_summarizer_receives_captured_messages_after_close(monkeypatch):
+    """The action summarizer must see review messages even after close cleanup.
+
+    Regression for the bug where ``review_messages`` was snapshot AFTER
+    ``review_agent.close()``. close() is allowed to clean per-session state
+    (including ``_session_messages``), so the summarizer would receive an
+    empty list and the user-visible self-improvement summary would silently
+    disappear. The fix snapshots ``_session_messages`` before teardown.
+    """
+    import json
+    import agent.background_review as bg_review
+
+    review_tool_message = {
+        "role": "tool",
+        "tool_call_id": "call_bg",
+        "content": json.dumps(
+            {"success": True, "message": "Entry added", "target": "memory"}
+        ),
+    }
+    captured: dict = {}
+    events: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append("run_conversation")
+            self._session_messages = [review_tool_message]
+
+        def shutdown_memory_provider(self):
+            events.append("shutdown_memory_provider")
+
+        def close(self):
+            events.append("close")
+            # close() is allowed to clean _session_messages — the fix
+            # must have snapshot them before this runs.
+            self._session_messages = []
+
+    def fake_summarize(review_messages, prior_snapshot, notification_mode="on"):
+        events.append("summarize")
+        captured["review_messages"] = list(review_messages)
+        captured["prior_snapshot"] = list(prior_snapshot)
+        captured["notification_mode"] = notification_mode
+        return []
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        bg_review,
+        "summarize_background_review_actions",
+        fake_summarize,
+    )
+
+    messages_snapshot = [{"role": "user", "content": "hi"}]
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=messages_snapshot,
+        review_memory=True,
+    )
+
+    assert events == [
+        "run_conversation",
+        "shutdown_memory_provider",
+        "close",
+        "summarize",
+    ]
+    assert captured["review_messages"] == [review_tool_message]
+    assert captured["prior_snapshot"] == messages_snapshot
+    assert captured["notification_mode"] == "on"
 
 
 def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
@@ -190,3 +267,165 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
         captured_bg_callback[0]
     )
+
+
+def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
+    """The background review fork must NOT touch external memory plugins.
+
+    Without skip_memory=True on the fork constructor, AIAgent.__init__
+    rebuilds its own _memory_manager from config, scoped to the parent's
+    session_id.  The review fork's run_conversation() then leaks the
+    harness prompt into the user's real memory namespace via three
+    ingestion sites: on_turn_start (cadence + turn message),
+    prefetch_all (recall query), and sync_all (harness prompt + review
+    output recorded as a (user, assistant) turn pair).  The fix is a
+    single kwarg on the fork constructor — this test guards it.
+    """
+    captured_kwargs: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert captured_kwargs.get("skip_memory") is True, (
+        "Background review fork must be constructed with skip_memory=True "
+        "so AIAgent.__init__ does not rebuild a _memory_manager wired to "
+        "external plugins (honcho, mem0, supermemory, ...).  Without this "
+        "the fork leaks harness prompts into the user's real memory "
+        "namespace via on_turn_start / prefetch_all / sync_all."
+    )
+
+
+# ---------------------------------------------------------------------------
+# memory_notifications mode: off | on | verbose
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+from agent.background_review import summarize_background_review_actions
+
+
+def _memory_add_review():
+    """A minimal review transcript: one memory add (assistant call + tool result)."""
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_mem1",
+                    "function": {
+                        "name": "memory",
+                        "arguments": _json.dumps(
+                            {
+                                "action": "add",
+                                "target": "memory",
+                                "content": "User prefers terse replies",
+                            }
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_mem1",
+            "content": _json.dumps(
+                {"success": True, "message": "Entry added.", "target": "memory"}
+            ),
+        },
+    ]
+
+
+def _skill_patch_review():
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_skill1",
+                    "function": {
+                        "name": "skill_manage",
+                        "arguments": _json.dumps(
+                            {"action": "patch", "name": "demo", "old_string": "a", "new_string": "b"}
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_skill1",
+            "content": _json.dumps(
+                {
+                    "success": True,
+                    "message": "Patched SKILL.md in skill 'demo' (1 replacement).",
+                    "_change": {"old": "a", "new": "b"},
+                }
+            ),
+        },
+    ]
+
+
+def test_memory_notifications_off_returns_nothing():
+    actions = summarize_background_review_actions(
+        _memory_add_review(), [], notification_mode="off"
+    )
+    assert actions == []
+
+
+def test_memory_notifications_on_returns_generic_line():
+    actions = summarize_background_review_actions(
+        _memory_add_review(), [], notification_mode="on"
+    )
+    assert actions == ["Memory updated"]
+
+
+def test_memory_notifications_verbose_includes_content_preview():
+    actions = summarize_background_review_actions(
+        _memory_add_review(), [], notification_mode="verbose"
+    )
+    assert len(actions) == 1
+    # Verbose surfaces the actual content that was saved.
+    assert "User prefers terse replies" in actions[0]
+    assert actions[0] != "Memory updated"
+
+
+def test_memory_notifications_default_is_on():
+    """No mode passed → behaves like 'on' (generic line, not empty/verbose)."""
+    actions = summarize_background_review_actions(_memory_add_review(), [])
+    assert actions == ["Memory updated"]
+
+
+def test_skill_patch_off_silent_verbose_shows_diff():
+    assert (
+        summarize_background_review_actions(
+            _skill_patch_review(), [], notification_mode="off"
+        )
+        == []
+    )
+    verbose = summarize_background_review_actions(
+        _skill_patch_review(), [], notification_mode="verbose"
+    )
+    assert len(verbose) == 1
+    assert "demo" in verbose[0] and "→" in verbose[0]

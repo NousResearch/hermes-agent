@@ -74,3 +74,28 @@ class TestClientCacheIsolation:
 
     def test_b_client_cache_is_clean_for_next_test(self):
         assert aux._client_cache == {}
+
+
+class TestAnthropicKeychainBlocked:
+    """The macOS Keychain Claude-Code credential read must be blocked by the
+    tests/agent/conftest.py autouse fixture so a dev Mac's live OAuth token
+    can't leak into credential-resolution assertions."""
+
+    def test_keychain_read_returns_none_by_default(self):
+        # The conftest fixture defaults the adapter's platform to non-Darwin,
+        # so the real `security find-generic-password` call never fires.
+        import agent.anthropic_adapter as aa
+
+        assert aa._read_claude_code_credentials_from_keychain() is None
+
+
+class TestRealHomeEnvStripped:
+    """HERMES_REAL_HOME must be stripped by the hermetic fixture so a
+    developer shell's value can't leak into get_real_home() and defeat a
+    test's monkeypatch.setenv("HOME", tmp)."""
+
+    def test_hermes_real_home_not_in_env(self):
+        import os
+
+        assert os.getenv("HERMES_REAL_HOME") in (None, "")
+

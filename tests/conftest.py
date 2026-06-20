@@ -198,6 +198,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    # The OS-account home that get_real_home() hands to child processes.
+    # If a developer shell / gateway exports it, it leaks past a test's
+    # monkeypatch.setenv("HOME", tmp) (get_real_home prefers HERMES_REAL_HOME
+    # over HOME) and breaks copilot_acp_client real-home assertions. CI never
+    # exports it; force-clear so local matches CI.
+    "HERMES_REAL_HOME",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to

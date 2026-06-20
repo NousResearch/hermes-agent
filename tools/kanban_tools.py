@@ -634,6 +634,57 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(f"kanban_block: {e}")
 
 
+def _handle_request_review(args: dict, **kw) -> str:
+    """Submit the current task for review (running → review)."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    reviewer = args.get("reviewer")
+    metadata = args.get("metadata")
+    reason = args.get("reason")
+    if not (summary or reason):
+        return tool_error(
+            "provide at least one of: summary (preferred), reason"
+        )
+    if metadata is not None and not isinstance(metadata, dict):
+        return tool_error(
+            f"metadata must be an object/dict, got {type(metadata).__name__}"
+        )
+    metadata = _stamp_worker_session_metadata(tid, metadata)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.request_review(
+                conn, tid,
+                reviewer=reviewer,
+                summary=summary,
+                metadata=metadata,
+                reason=reason,
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not submit {tid} for review "
+                    f"(unknown id, not running, or already terminal)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(task_id=tid, status="review", run_id=run.id if run else None)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_request_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_request_review failed")
+        return tool_error(f"kanban_request_review: {e}")
+
+
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal that the worker is still alive during a long operation.
 
@@ -1198,6 +1249,68 @@ KANBAN_BLOCK_SCHEMA = {
     },
 }
 
+KANBAN_REQUEST_REVIEW_SCHEMA = {
+    "name": "kanban_request_review",
+    "description": (
+        "Submit your current task for review instead of completing it. "
+        "Transitions the task to ``review`` status so the dispatcher "
+        "spawns a dedicated reviewer agent. Use this when your work "
+        "needs independent verification before it counts as done "
+        "(most coding tasks, config changes, anything with acceptance "
+        "criteria). The reviewer will verify your work and either "
+        "approve (→ done) or request changes. Pass ``summary`` with "
+        "the same structured handoff you would use for "
+        "``kanban_complete`` — changed_files, tests_run, diff "
+        "summary, etc — so the reviewer knows what to check. "
+        "Optionally pass ``reviewer`` to route the review to a "
+        "specific profile; omit it to let the same assignee review "
+        "in a fresh session."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Structured handoff for the reviewer: what you "
+                    "changed, how to verify, acceptance criteria "
+                    "status. Same format as kanban_complete summary."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": (
+                    "Optional profile name to assign as reviewer. "
+                    "If omitted, the current assignee reviews in a "
+                    "fresh session. Use this when a different "
+                    "profile should verify the work."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Free-form structured facts — changed_files, "
+                    "tests_run, diff_path, etc. Forwarded to the "
+                    "reviewer alongside summary."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Optional short note for the event log / "
+                    "dashboard. Separate from summary."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [],
+    },
+}
+
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
@@ -1482,6 +1595,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_request_review",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_REVIEW_SCHEMA,
+    handler=_handle_request_review,
+    check_fn=_check_kanban_mode,
+    emoji="🔍",
 )
 
 registry.register(

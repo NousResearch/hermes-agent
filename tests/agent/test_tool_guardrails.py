@@ -200,7 +200,7 @@ def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_defaul
         decision = controller.after_call("read_file", args, result, failed=False)
 
     assert decision.action == "warn"
-    assert decision.code == "idempotent_no_progress_warning"
+    assert decision.code == "no_progress_warning"
     assert controller.before_call("read_file", args).action == "allow"
     assert controller.halt_decision is None
 
@@ -221,11 +221,11 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert controller.before_call("read_file", args).action == "allow"
     warn = controller.after_call("read_file", args, result, failed=False)
     assert warn.action == "warn"
-    assert warn.code == "idempotent_no_progress_warning"
+    assert warn.code == "no_progress_warning"
 
     blocked = controller.before_call("read_file", args)
     assert blocked.action == "block"
-    assert blocked.code == "idempotent_no_progress_block"
+    assert blocked.code == "no_progress_block"
 
 
 def test_mutating_tools_also_trigger_no_progress_warning_when_repeated():
@@ -304,6 +304,16 @@ def test_terminal_exit_code_zero_with_task_failure_output_is_detected():
     # Normal success output should NOT be flagged
     result = json.dumps({"exit_code": 0, "output": "File written successfully"})
     is_fail, suffix = classify_tool_failure("terminal", result)
+    assert is_fail is False
+
+    # "0 failed" should NOT be flagged
+    result = json.dumps({"exit_code": 0, "output": "pytest summary: 10 passed, 0 failed"})
+    is_fail, _ = classify_tool_failure("terminal", result)
+    assert is_fail is False
+
+    # "404 page test passed" should NOT be flagged
+    result = json.dumps({"exit_code": 0, "output": "404 page test passed"})
+    is_fail, _ = classify_tool_failure("terminal", result)
     assert is_fail is False
 
 

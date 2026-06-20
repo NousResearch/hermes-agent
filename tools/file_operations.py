@@ -312,6 +312,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         A/B, while dropping numbers regressed line-referencing."""
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
+        # A trailing newline terminates the final line — it does not start a new,
+        # empty one. Splitting without dropping it rendered a phantom "<N+1>|"
+        # gutter line on every newline-terminated file (`cat -n` semantics).
+        # Exactly ONE terminator is dropped, so a genuinely selected trailing
+        # blank line in a page keeps its own number.
+        if content.endswith('\n'):
+            content = content[:-1]
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))

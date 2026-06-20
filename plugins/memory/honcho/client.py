@@ -692,8 +692,17 @@ class HonchoClientConfig:
         if not cwd:
             cwd = os.getcwd()
 
+        def _normalize_session_path(path: str) -> str:
+            return os.path.normcase(os.path.abspath(os.path.expanduser(path)))
+
         # Manual override always wins
+        normalized_cwd = _normalize_session_path(cwd)
         manual = self.sessions.get(cwd)
+        if not manual:
+            for configured_cwd, override in self.sessions.items():
+                if _normalize_session_path(configured_cwd) == normalized_cwd:
+                    manual = override
+                    break
         if manual:
             return manual
 

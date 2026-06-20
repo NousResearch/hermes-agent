@@ -165,6 +165,14 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
         assert result == "pinned"
 
+    def test_manual_override_matches_equivalent_cwd_spelling(self):
+        cfg = HonchoClientConfig(
+            session_strategy="per-session",
+            sessions={"/tmp/project": "pinned"},
+        )
+        result = cfg.resolve_session_name("/tmp/project/", session_id="20260309_175514_9797dd")
+        assert result == "pinned"
+
     def test_global_strategy_returns_workspace(self):
         cfg = HonchoClientConfig(session_strategy="global", workspace_id="my-workspace")
         result = cfg.resolve_session_name("/some/dir")
@@ -457,4 +465,3 @@ class TestPrefetchCacheAccessors:
 
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
-

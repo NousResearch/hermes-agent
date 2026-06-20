@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import time
+import wave
 import unittest
 from collections import OrderedDict
 from pathlib import Path
@@ -2481,15 +2482,42 @@ class TestAdapterBehavior(unittest.TestCase):
             audio_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch.object(adapter, "_probe_audio_duration_ms", return_value=1234),
+            ):
                 result = asyncio.run(adapter.send_voice(chat_id="oc_chat", audio_path=audio_path))
         finally:
             os.unlink(audio_path)
 
         self.assertTrue(result.success)
         self.assertEqual(captured["upload_request"].request_body.file_type, "opus")
+        self.assertEqual(captured["upload_request"].request_body.duration, 1234)
         self.assertEqual(captured["message_request"].request_body.msg_type, "audio")
         self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_audio_123"}')
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_probe_audio_duration_uses_wav_header(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".wav", delete=False) as tmp:
+            wav_path = tmp.name
+
+        try:
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(8000)
+                wf.writeframes(b"\x00\x00" * 800)
+
+            duration_ms = adapter._probe_audio_duration_ms(wav_path)
+        finally:
+            os.unlink(wav_path)
+
+        self.assertEqual(duration_ms, 100)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_extracts_title_and_links(self):

@@ -57,8 +57,11 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
 import threading
 import time
+import wave
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -4407,11 +4410,15 @@ class FeishuAdapter(BasePlatformAdapter):
             requested_message_type=outbound_message_type,
         )
         try:
+            duration_ms: Optional[int] = None
+            if resolved_message_type == "audio":
+                duration_ms = self._probe_audio_duration_ms(file_path)
             with open(file_path, "rb") as file_obj:
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
+                    duration=duration_ms,
                 )
                 request = self._build_file_upload_request(body)
                 upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
@@ -4831,16 +4838,30 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
-    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+    def _build_file_upload_body(
+        *,
+        file_type: str,
+        file_name: str,
+        file: Any,
+        duration: Optional[int] = None,
+    ) -> Any:
         if "CreateFileRequestBody" in globals():
-            return (
+            builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
                 .file(file)
-                .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+            if duration is not None:
+                try:
+                    builder = builder.duration(duration)
+                except AttributeError:
+                    pass
+            return builder.build()
+        payload = SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+        if duration is not None:
+            payload.duration = duration
+        return payload
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:
@@ -4856,6 +4877,57 @@ class FeishuAdapter(BasePlatformAdapter):
         content = payload.setdefault("zh_cn", {}).setdefault("content", [])
         content.append([media_tag])
         return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _probe_audio_duration_ms(file_path: str) -> Optional[int]:
+        """Best-effort audio duration probe for Feishu upload metadata."""
+        ext = Path(file_path).suffix.lower()
+
+        if ext == ".wav":
+            try:
+                with wave.open(file_path, "rb") as wav_file:
+                    frame_rate = wav_file.getframerate()
+                    if frame_rate > 0:
+                        duration_ms = round(wav_file.getnframes() * 1000 / frame_rate)
+                        return max(1, int(duration_ms))
+            except Exception:
+                pass
+
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe:
+            try:
+                proc = subprocess.run(
+                    [
+                        ffprobe,
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "format=duration",
+                        "-of",
+                        "default=noprint_wrappers=1:nokey=1",
+                        file_path,
+                    ],
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                )
+                duration_s = float((proc.stdout or "").strip())
+                if duration_s > 0:
+                    return max(1, int(round(duration_s * 1000)))
+            except Exception:
+                pass
+
+        try:
+            from mutagen import File as _mutagen_file  # type: ignore
+
+            audio = _mutagen_file(file_path)
+            duration_s = getattr(getattr(audio, "info", None), "length", None)
+            if duration_s and duration_s > 0:
+                return max(1, int(round(float(duration_s) * 1000)))
+        except Exception:
+            pass
+
+        return None
 
     @staticmethod
     def _resolve_outbound_file_routing(

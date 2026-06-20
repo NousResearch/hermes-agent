@@ -118,7 +118,7 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
-        on_new_message: Optional[callable] = None,
+        on_new_message: Optional[Callable[[], None]] = None,
         initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter

@@ -861,9 +861,10 @@ def refresh_user_numbers(
     assigned: Optional[str] = cached_assigned
     if user:
         user_id = user.get("id")
-        dashboard_phone = _normalize_phone(str(user.get("phoneNumber") or ""))
-        if E164_RE.match(dashboard_phone):
-            phone = dashboard_phone
+        # Do NOT overwrite local phone with API value — the API returns
+        # masked numbers (e.g. +861****2796) which would corrupt the
+        # stored full number and cause gateway user-rejection.  The local
+        # phone is set once during setup and remains the source of truth.
         assigned = user_assigned_line(user)
 
     dashboard_id = load_dashboard_project_id()

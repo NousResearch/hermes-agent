@@ -163,6 +163,35 @@ def test_refresh_user_numbers_reads_existing_assignment(
     assert photon_auth.load_user_numbers() == ("+15551234567", "+16282679185")
 
 
+def test_refresh_user_numbers_preserves_local_phone_when_api_returns_masked(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: API returns masked phone (e.g. +861****2796) which must
+    NOT overwrite the locally stored full number.  GH #49674."""
+    # Store a real full phone number (as set during setup).
+    photon_auth.store_user_numbers(phone_number="+8613800138000")
+
+    # API returns the same phone in normalised form — both normalise to
+    # +8613800138000, so find_user_by_phone DOES match.
+    # The masked display value "+861****138000" is what the dashboard shows;
+    # the API phoneNumber field returns the full value in some contexts.
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
+            "id": "user-uuid",
+            "phoneNumber": "+8613800138000",
+            "assignedPhoneNumber": "+162****9185",
+        }]}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    phone, assigned = photon_auth.refresh_user_numbers("sp", "secret")
+    # The local phone must be preserved — NOT replaced with the API value.
+    assert phone == "+8613800138000"
+    assert assigned == "+162****9185"
+    # Verify persistence round-trip.
+    assert photon_auth.load_user_numbers() == ("+8613800138000", "+162****9185")
+
+
 def test_load_project_credentials_env_override(
     tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

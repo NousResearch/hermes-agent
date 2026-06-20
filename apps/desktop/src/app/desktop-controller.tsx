@@ -8,12 +8,14 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
+import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
-import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { storedSessionIdForNotification } from '../lib/session-ids'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -52,7 +54,10 @@ import {
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
+  $messages,
   $messagingSessions,
+  $resumeFailedSessionId,
+  $resumeExhaustedSessionId,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
@@ -199,6 +204,8 @@ export function DesktopController() {
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
+  const resumeFailedSessionId = useStore($resumeFailedSessionId)
+  const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -271,16 +278,20 @@ export function DesktopController() {
     }
   }, [])
 
-  // Notification click: the main process already focused the window; jump to its session.
+  // Notification click: the main process already focused the window; jump to its
+  // session. Notifications are tagged with the gateway *runtime* session id, but
+  // the chat route is keyed by the *stored* id — navigating with the runtime id
+  // resumes a non-existent stored session ("session not found") and strands the
+  // user. Translate runtime -> stored before navigating.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        navigate(sessionRoute(sessionId))
+        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current)))
       }
     })
 
     return () => unsubscribe?.()
-  }, [navigate])
+  }, [navigate, runtimeIdByStoredSessionIdRef])
 
   // Notification action button (Approve/Reject) — resolve in place, no navigation.
   useEffect(() => {
@@ -736,6 +747,49 @@ export function DesktopController() {
     [branchCurrentSession, refreshSessions]
   )
 
+  // Clear a failed turn's red error banner from the transcript. Errors are
+  // renderer-local state (never persisted), so dismissing is purely a view +
+  // session-cache edit. A message that errored before emitting any visible
+  // text is a bare error placeholder → drop it entirely; one that streamed
+  // partial output then failed keeps its content and just sheds the error.
+  // Both the per-runtime cache AND the live $messages view must be updated:
+  // `preserveLocalAssistantErrors` re-grafts any still-errored message it
+  // finds in the view onto the next session.info flush, so clearing only the
+  // cache would let the heartbeat resurrect the banner.
+  const dismissError = useCallback(
+    (messageId: string) => {
+      const runtimeSessionId = activeSessionIdRef.current
+
+      if (!runtimeSessionId) {
+        return
+      }
+
+      const clearErrorIn = (messages: ChatMessage[]): ChatMessage[] =>
+        messages.flatMap(message => {
+          if (message.id !== messageId || !message.error) {
+            return [message]
+          }
+
+          if (!chatMessageText(message).trim() && !message.parts.some(part => part.type !== 'text')) {
+            return []
+          }
+
+          return [{ ...message, error: undefined, pending: false }]
+        })
+
+      // View first: the flush below reads $messages as the "current" baseline
+      // for error preservation, so the banner must be gone from it before the
+      // cache update triggers a re-sync.
+      setMessages(clearErrorIn($messages.get()))
+
+      updateSessionState(runtimeSessionId, state => ({
+        ...state,
+        messages: clearErrorIn(state.messages)
+      }))
+    },
+    [activeSessionIdRef, updateSessionState]
+  )
+
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
       startFreshSessionDraft()
@@ -845,6 +899,8 @@ export function DesktopController() {
     gatewayState,
     locationPathname: location.pathname,
     resumeSession,
+    resumeFailedSessionId,
+    resumeExhaustedSessionId,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
@@ -901,6 +957,7 @@ export function DesktopController() {
 
   const overlays = (
     <>
+      <RemoteDisplayBanner />
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
       {!isSecondaryWindow() && (
         <DesktopOnboardingOverlay
@@ -994,6 +1051,7 @@ export function DesktopController() {
           void removeSession(selectedStoredSessionId)
         }
       }}
+      onDismissError={dismissError}
       onEdit={editMessage}
       onPasteClipboardImage={() => void composer.pasteClipboardImage()}
       onPickFiles={() => void composer.pickContextPaths('file')}
@@ -1002,6 +1060,7 @@ export function DesktopController() {
       onReload={reloadFromMessage}
       onRemoveAttachment={id => void composer.removeAttachment(id)}
       onRestoreToMessage={restoreToMessage}
+      onRetryResume={sessionId => void resumeSession(sessionId, true)}
       onSteer={steerPrompt}
       onSubmit={submitText}
       onThreadMessagesChange={handleThreadMessagesChange}

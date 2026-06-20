@@ -319,28 +319,85 @@ class TestSend:
 
         assert result.success is True
         payload = mock_client.post.call_args.kwargs["json"]
-        assert payload["msgtype"] == "markdown"
-        assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
+        assert payload["msgtype"] == "image"
+        assert payload["image"]["picURL"] == "https://example.com/demo.png"
 
     @pytest.mark.asyncio
-    async def test_send_image_file_returns_explicit_unsupported_error(self):
+    async def test_send_image_file_uploads_and_sends_markdown_media_id(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._send_webhook_json = AsyncMock(return_value=MagicMock(success=True))
+        adapter._upload_media = AsyncMock(return_value="@image-media")
 
-        result = await adapter.send_image_file("chat-123", "/tmp/demo.png")
+        result = await adapter.send_image_file(
+            "chat-123",
+            "/tmp/demo.png",
+            caption="Preview",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
 
-        assert result.success is False
-        assert result.error and "do not support local image uploads" in result.error
+        assert result.success is True
+        adapter._upload_media.assert_awaited_once_with("/tmp/demo.png", media_type="image")
+        payload = adapter._send_webhook_json.await_args.kwargs["payload"]
+        assert payload["msgtype"] == "markdown"
+        assert "Preview" in payload["markdown"]["text"]
+        assert "![image](@image-media)" in payload["markdown"]["text"]
 
     @pytest.mark.asyncio
-    async def test_send_document_returns_explicit_unsupported_error(self):
+    async def test_send_document_uploads_and_sends_file_attachment(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._send_webhook_json = AsyncMock(return_value=MagicMock(success=True))
+        adapter._upload_media = AsyncMock(return_value="@file-media")
+
+        result = await adapter.send_document(
+            "chat-123",
+            "/tmp/demo.pdf",
+            file_name="report.pdf",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        adapter._upload_media.assert_awaited_once_with("/tmp/demo.pdf", media_type="file")
+        payload = adapter._send_webhook_json.await_args.kwargs["payload"]
+        assert payload["msgtype"] == "file"
+        assert payload["file"]["mediaId"] == "@file-media"
+        assert payload["file"]["fileName"] == "report.pdf"
+        assert payload["file"]["fileType"] == "pdf"
+
+    @pytest.mark.asyncio
+    async def test_send_document_fails_without_webhook(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
 
         assert result.success is False
-        assert result.error and "do not support local file attachments" in result.error
+        assert "session_webhook" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_stops_when_upload_fails(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._send_webhook_json = AsyncMock()
+        adapter._upload_media = AsyncMock(return_value=None)
+
+        result = await adapter.send_image_file(
+            "chat-123",
+            "/tmp/demo.png",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is False
+        adapter._send_webhook_json.assert_not_awaited()
+
+    def test_guess_file_type_defaults_to_bin(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        assert DingTalkAdapter._guess_file_type("README") == "bin"
 
 
 # ---------------------------------------------------------------------------

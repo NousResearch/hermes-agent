@@ -1,4 +1,6 @@
-"""Tests for tui_gateway/ws.py — WebSocket transport layer."""
+"""Tests for tui_gateway/ws.py — WebSocket transport layer.
+
+Covers WSTransport, _ws_peer_label, _disable_nagle, and handle_ws."""
 
 from __future__ import annotations
 

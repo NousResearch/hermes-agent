@@ -370,6 +370,77 @@ async def test_send_home_channel_startup_notification_ignores_false_send_result(
     adapter.send.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_gateway_online_notifications_send_home_on_plain_startup(tmp_path, monkeypatch):
+    """Plain gateway startup emits the configured home-channel online ping."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    await runner._send_gateway_online_notifications()
+
+    adapter.send.assert_called_once_with(
+        "home-42",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_online_notifications_skip_duplicate_restart_home_target(
+    tmp_path, monkeypatch
+):
+    """If /restart already notified the exact home target, do not double-send."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_notify.json").write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "home-42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="restart"))
+
+    await runner._send_gateway_online_notifications()
+
+    assert adapter.send.call_count == 1
+    adapter.send.assert_called_once_with(
+        "home-42",
+        "♻ Gateway restarted successfully. Your session continues.",
+        metadata=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_online_notifications_clears_planned_restart_marker(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_pending.json"
+    marker.write_text("{}")
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    await runner._send_gateway_online_notifications()
+
+    assert not marker.exists()
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 

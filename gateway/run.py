@@ -5682,22 +5682,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if connected_count > 0:
             await asyncio.sleep(1.0)
 
-        # Notify the chat that initiated /restart that the gateway is back.
-        planned_restart_notification_pending = _planned_restart_notification_pending()
-        await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
+        # Notify the chat that initiated /restart that the gateway is back, then
+        # emit the configured home-channel startup notification. This is an
+        # event-driven lifecycle ping (sent once from the gateway startup path),
+        # not a cron/heartbeat poll. If the precise /restart target is also the
+        # home channel, skip that exact target to avoid duplicate messages.
+        await self._send_gateway_online_notifications()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -12422,6 +12412,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exit_code_path.unlink(missing_ok=True)
 
         return True
+
+    async def _send_gateway_online_notifications(self) -> None:
+        """Send gateway-online lifecycle notifications after startup.
+
+        Sends at most one precise /restart notification (when a chat requested
+        the restart) and one configured home-channel startup notification per
+        platform. This is intentionally tied to gateway startup/reconnect, not a
+        heartbeat poll.
+        """
+        planned_restart_notification_pending = _planned_restart_notification_pending()
+        restart_target = await self._send_restart_notification()
+        skip_targets = {restart_target} if restart_target else None
+
+        try:
+            await self._send_home_channel_startup_notifications(
+                skip_targets=skip_targets,
+            )
+        finally:
+            if planned_restart_notification_pending:
+                _clear_planned_restart_notification()
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""

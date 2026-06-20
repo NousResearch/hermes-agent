@@ -1975,6 +1975,96 @@ class TestSendTyping:
 
 
 # ---------------------------------------------------------------------------
+# TestNativeSlackStreaming
+# ---------------------------------------------------------------------------
+
+
+class TestNativeSlackStreaming:
+    def test_requires_user_metadata_for_native_streaming(self, adapter):
+        adapter._app.client.chat_startStream = AsyncMock()
+
+        assert not adapter.supports_draft_streaming(metadata={"thread_id": "parent_ts"})
+        assert adapter.supports_draft_streaming(
+            metadata={"thread_id": "parent_ts", "user_id": "U123"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_draft_start_append_and_final_send_stops_stream(self, adapter):
+        adapter._channel_team["C123"] = "T123"
+        adapter._app.client.chat_startStream = AsyncMock(return_value={"ts": "stream_ts"})
+        adapter._app.client.chat_appendStream = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_stopStream = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "posted_ts"})
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = "parent_ts"
+        metadata = {"thread_id": "parent_ts", "user_id": "U123"}
+
+        first = await adapter.send_draft("C123", 1, "Hel ▉", metadata=metadata)
+        second = await adapter.send_draft("C123", 1, "Hello ▉", metadata=metadata)
+        final = await adapter.send("C123", "Hello", metadata=metadata)
+
+        assert first.success
+        assert second.success
+        assert final.success
+        assert final.message_id == "stream_ts"
+        adapter._app.client.chat_startStream.assert_awaited_once_with(
+            channel="C123",
+            thread_ts="parent_ts",
+            recipient_user_id="U123",
+            recipient_team_id="T123",
+            markdown_text="Hel",
+        )
+        adapter._app.client.chat_appendStream.assert_awaited_once_with(
+            channel="C123",
+            ts="stream_ts",
+            markdown_text="lo",
+        )
+        adapter._app.client.chat_stopStream.assert_awaited_once_with(
+            channel="C123",
+            ts="stream_ts",
+        )
+        adapter._app.client.chat_postMessage.assert_not_called()
+        adapter._app.client.assistant_threads_setStatus.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+        assert not adapter._native_streams
+
+    @pytest.mark.asyncio
+    async def test_send_draft_rejects_missing_team_id_without_starting_stream(self, adapter):
+        adapter._app.client.chat_startStream = AsyncMock(return_value={"ts": "stream_ts"})
+
+        result = await adapter.send_draft(
+            "C123",
+            1,
+            "Hello ▉",
+            metadata={"thread_id": "parent_ts", "user_id": "U123"},
+        )
+
+        assert not result.success
+        assert "team_id" in result.error
+        adapter._app.client.chat_startStream.assert_not_called()
+        assert not adapter._native_streams
+
+    @pytest.mark.asyncio
+    async def test_send_draft_api_error_clears_active_stream_for_edit_fallback(self, adapter):
+        adapter._channel_team["C123"] = "T123"
+        adapter._app.client.chat_startStream = AsyncMock(side_effect=Exception("missing_scope"))
+
+        result = await adapter.send_draft(
+            "C123",
+            1,
+            "Hello ▉",
+            metadata={"thread_id": "parent_ts", "user_id": "U123"},
+        )
+
+        assert not result.success
+        assert "missing_scope" in result.error
+        assert not adapter._native_streams
+
+
+# ---------------------------------------------------------------------------
 # TestFormatMessage — Markdown → mrkdwn conversion
 # ---------------------------------------------------------------------------
 

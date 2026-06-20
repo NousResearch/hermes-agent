@@ -11964,13 +11964,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
+        if metadata is not None and getattr(source, "platform", None) == Platform.SLACK:
+            user_id = getattr(source, "user_id", None)
+            if user_id:
+                metadata["user_id"] = str(user_id)
+            chat_id = getattr(source, "chat_id", None)
+            adapter = self.adapters.get(Platform.SLACK)
+            team_id = getattr(adapter, "_channel_team", {}).get(chat_id) if adapter else None
+            if team_id:
+                metadata["team_id"] = str(team_id)
+        return metadata
 
     def _thread_metadata_for_target(
         self,

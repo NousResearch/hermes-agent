@@ -954,6 +954,67 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
+    """Resuming a rotated-out parent id must load the continuation's messages.
+
+    Regression for the desktop "I came back and the reply isn't there" report:
+    auto-compression ends the live session and forks a continuation child, so a
+    resume on the parent id (the desktop's routed id when the chat was opened
+    before it rotated) used to reload the pre-compression transcript and drop
+    the response generated after compression. session.resume must follow the
+    compression tip via resolve_resume_session_id.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    base = int(time.time()) - 10_000
+    db.create_session("parent_root", source="tui")
+    db.append_message("parent_root", role="user", content="pre-compression turn")
+    db.end_session("parent_root", "compression")
+    db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
+    db.append_message("cont_tip", role="assistant", content="post-compression reply")
+    conn = db._conn
+    assert conn is not None
+    conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'parent_root'",
+        (base, base + 50),
+    )
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,))
+    conn.commit()
+
+    captured = {}
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured["agent_session_id"] = session_id
+        return types.SimpleNamespace(model="test", provider="test")
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        server, "_session_info", lambda agent, *a: {"model": "test", "tools": {}, "skills": {}}
+    )
+    monkeypatch.setattr(
+        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": "parent_root"}}
+        )
+    finally:
+        db.close()
+
+    # The agent must bind to the continuation tip, and the returned transcript
+    # must include the post-compression reply (which lives only in the tip).
+    assert resp["result"]["session_key"] == "cont_tip"
+    assert captured["agent_session_id"] == "cont_tip"
+    texts = [m.get("text") for m in resp["result"]["messages"]]
+    assert "post-compression reply" in texts
+
+
 def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     captured = {}
 
@@ -1763,7 +1824,82 @@ def test_init_session_fires_reset_hook(monkeypatch):
         server._sessions.pop(sid, None)
 
 
-def test_session_title_queues_when_db_row_not_ready(monkeypatch):
+def test_session_title_creates_row_and_sets_immediately_when_not_ready(monkeypatch):
+    """An explicit /title before the first message must persist NOW, not queue.
+
+    Regression: the desktop deferred the DB row to the first prompt, so a
+    /title typed before any message only stashed ``pending_title`` and relied
+    on a post-turn apply block. When that turn never landed under the session
+    key, the title was silently lost and the sidebar fell back to the message
+    preview. The handler now creates the row up front (mirroring the messaging
+    gateway) so an explicit /title takes effect immediately.
+    """
+    state = {"row": None, "title": None, "ensured": False}
+
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return state["title"]
+
+        def get_session(self, _key):
+            return state["row"]
+
+        def set_session_title(self, _key, title):
+            # Mirrors SessionDB: UPDATE affects 0 rows until the row exists.
+            if state["row"] is None:
+                return False
+            state["title"] = title
+            return True
+
+    fake_db = _FakeDB()
+
+    def _fake_ensure_row(_session):
+        # The real _ensure_session_db_row does an INSERT OR IGNORE.
+        state["ensured"] = True
+        state["row"] = {"id": "session-key", "title": None}
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
+    server._sessions["sid"] = _session(pending_title=None)
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_ensure_session_db_row", _fake_ensure_row)
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    try:
+        set_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "my-custom-name"},
+            }
+        )
+
+        # No longer queued — the row is created and the title set immediately.
+        assert set_resp["result"]["pending"] is False
+        assert set_resp["result"]["title"] == "my-custom-name"
+        assert state["ensured"] is True, "the row must be created up front"
+        assert state["title"] == "my-custom-name"
+        assert server._sessions["sid"]["pending_title"] is None
+
+        # A subsequent read reflects the persisted title.
+        get_resp = server.handle_request(
+            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert get_resp["result"]["title"] == "my-custom-name"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_falls_back_to_queue_when_row_create_fails(monkeypatch):
+    """If row creation can't take (DB down / racing writer), keep the queue.
+
+    The post-turn apply block is still the recovery path, so a /title that
+    can't persist up front must not be dropped — it falls back to
+    ``pending_title`` exactly as before.
+    """
+
     class _FakeDB:
         def get_session_title(self, _key):
             return None
@@ -1774,8 +1910,22 @@ def test_session_title_queues_when_db_row_not_ready(monkeypatch):
         def set_session_title(self, _key, _title):
             return False
 
+    fake_db = _FakeDB()
+
+    def _fake_ensure_row(_session):
+        # Simulate a persist that didn't take — row still absent.
+        pass
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
     server._sessions["sid"] = _session(pending_title=None)
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_ensure_session_db_row", _fake_ensure_row)
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
     try:
         set_resp = server.handle_request(
             {
@@ -1863,6 +2013,25 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
 
     assert created == [
         {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
+    ]
+
+
+def test_ensure_session_db_row_persists_session_source(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
+
+    assert created == [
+        {"key": "k1", "source": "tool", "model": "test-model", "model_config": None, "cwd": None}
     ]
 
 
@@ -6801,6 +6970,8 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
 
 def test_notification_poller_delivers_completion(monkeypatch):
     """Poller picks up completion events and triggers agent turns."""
+    import queue as _queue_mod
+
     from tools.process_registry import process_registry
 
     turns = []
@@ -6827,16 +6998,23 @@ def test_notification_poller_delivers_completion(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-    # Clear queue
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
+    # Isolate the completion queue for the duration of this test. The poller
+    # reads process_registry.completion_queue by attribute at runtime; the
+    # event below carries no session_key, so any *other* poller (a leaked
+    # daemon thread from another test, or a concurrent one in the same xdist
+    # worker) is allowed to dequeue and dispatch it to its own session — whose
+    # agent may be a fixture double without run_conversation. A fresh Queue
+    # here fully isolates this test; monkeypatch restores the original on
+    # teardown. (Same pattern as test_notification_poller_requeues_when_busy.)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_poller_test")
 
     stop = threading.Event()
 
     # Put event on queue, then immediately signal stop so the poller
     # runs exactly one iteration.
-    process_registry.completion_queue.put({
+    isolated_queue.put({
         "type": "completion",
         "session_id": "proc_poller_test",
         "command": "echo hello",
@@ -6864,6 +7042,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
 def test_notification_poller_skips_consumed(monkeypatch):
     """Already-consumed completions are not dispatched by the poller."""
+    import queue as _queue_mod
+
     from tools.process_registry import process_registry
 
     turns = []
@@ -6886,11 +7066,15 @@ def test_notification_poller_skips_consumed(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
+    # Isolate the completion queue so a concurrent/leaked poller in the same
+    # xdist worker can't dequeue this session_key-less event before our poller
+    # does. monkeypatch restores the shared singleton on teardown. (Same
+    # pattern as test_notification_poller_requeues_when_busy.)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
 
     process_registry._completion_consumed.add("proc_already_done")
-    process_registry.completion_queue.put({
+    isolated_queue.put({
         "type": "completion",
         "session_id": "proc_already_done",
         "command": "echo x",
@@ -7517,6 +7701,18 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
         )["result"]["session_id"]
         assert server._sessions[on]["close_on_disconnect"]
         assert not server._sessions[off]["close_on_disconnect"]
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_records_source(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        sid = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"source": "tool"}}
+        )["result"]["session_id"]
+        assert server._sessions[sid]["source"] == "tool"
     finally:
         server._sessions.clear()
 

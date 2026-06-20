@@ -3945,6 +3945,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         data = query.data
         query_message = getattr(query, "message", None)
+
+        hook_result = await self._fire_plugin_hook(
+            "pre_callback_query_dispatch",
+            data=data,
+            chat_id=str(query_message.chat_id) if query_message else None,
+            user_id=str(query.from_user.id) if query.from_user else None,
+            message_id=str(query_message.message_id) if query_message else None,
+            raw_query=query,
+        )
+        if hook_result and hook_result.get("action") == "skip":
+            return
+
         query_chat_id = getattr(query_message, "chat_id", None)
         query_chat = getattr(query_message, "chat", None)
         query_chat_type = getattr(query_chat, "type", None)

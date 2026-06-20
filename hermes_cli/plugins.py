@@ -153,6 +153,14 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Telegram callback query pre-dispatch hook. Fired at the top of
+    # _handle_callback_query (TelegramAdapter), BEFORE any built-in handler
+    # checks data prefix. Plugins return a dict to influence flow:
+    #   {"action": "skip"}   -> claim the callback; built-in handling is suppressed
+    #   {"action": "allow"} / None -> fall through to built-in handling
+    # Kwargs: data (str), chat_id (str|None), user_id (str|None),
+    #         message_id (str|None), raw_query (CallbackQuery).
+    "pre_callback_query_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

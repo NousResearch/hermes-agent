@@ -402,23 +402,49 @@ def _discover(
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
 
+    # Hybrid BM25 + vector retrieval (#44075). hybrid_search returns None
+    # whenever the semantic path is off or unavailable (config disabled,
+    # sqlite-vec missing, no embedding provider, embedding call failed) —
+    # the FTS5-only path below then runs unchanged.
+    raw_results = None
+    search_mode = "fts"
     try:
-        raw_results = db.search_messages(
+        from tools.session_semantic import hybrid_search
+        raw_results = hybrid_search(
+            db,
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             limit=50,  # widen so dedup-by-lineage can find distinct sessions
-            offset=0,
             sort=sort,
         )
+        if raw_results is not None:
+            search_mode = "hybrid"
     except Exception as e:
-        logging.error("FTS5 search failed: %s", e, exc_info=True)
-        return tool_error(f"Search failed: {e}", success=False)
+        logging.warning(
+            "Hybrid search failed; falling back to FTS5: %s", e, exc_info=True
+        )
+        raw_results = None
+
+    if raw_results is None:
+        try:
+            raw_results = db.search_messages(
+                query=query,
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                limit=50,  # widen so dedup-by-lineage can find distinct sessions
+                offset=0,
+                sort=sort,
+            )
+        except Exception as e:
+            logging.error("FTS5 search failed: %s", e, exc_info=True)
+            return tool_error(f"Search failed: {e}", success=False)
 
     if not raw_results:
         return json.dumps({
             "success": True,
             "mode": "discover",
+            "search_mode": search_mode,
             "query": query,
             "results": [],
             "count": 0,
@@ -480,11 +506,14 @@ def _discover(
         }
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
+        if match_info.get("match_type"):
+            entry["match_type"] = match_info["match_type"]
         results.append(entry)
 
     return json.dumps({
         "success": True,
         "mode": "discover",
+        "search_mode": search_mode,
         "query": query,
         "results": results,
         "count": len(results),

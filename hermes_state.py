@@ -581,6 +581,22 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS message_embeddings (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id),
+    model TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS message_embeddings_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM message_embeddings WHERE message_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS message_embeddings_invalidate AFTER UPDATE OF content ON messages BEGIN
+    DELETE FROM message_embeddings WHERE message_id = old.id;
+END;
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -3697,6 +3713,198 @@ class SessionDB:
         for match in matches:
             match.pop("content", None)
 
+        return matches
+
+    # =========================================================================
+    # Semantic (vector) search — #44075
+    # =========================================================================
+    # Embeddings live in the plain ``message_embeddings`` table as little-
+    # endian float32 BLOBs. KNN runs through sqlite-vec's scalar function
+    # ``vec_distance_cosine()`` over that table — deliberately NOT a vec0
+    # virtual table, so a connection that never loads the extension (older
+    # install, sqlite-vec uninstalled, read-only profile DB) can still open,
+    # migrate, and query everything else in state.db without tripping on an
+    # unreadable virtual table.
+
+    # None = not probed yet; probed once per SessionDB instance.
+    _vec_loaded: Optional[bool] = None
+
+    def vector_search_available(self) -> bool:
+        """True when the sqlite-vec extension is importable and loaded on
+        this connection. Lazy and cached; safe to call repeatedly."""
+        if self._vec_loaded is not None:
+            return self._vec_loaded
+        try:
+            import sqlite_vec
+        except ImportError:
+            self._vec_loaded = False
+            return False
+        try:
+            # enable_load_extension is absent on sqlite3 builds compiled
+            # with SQLITE_OMIT_LOAD_EXTENSION (some macOS system pythons).
+            self._conn.enable_load_extension(True)
+            try:
+                sqlite_vec.load(self._conn)
+            finally:
+                self._conn.enable_load_extension(False)
+            with self._lock:
+                self._conn.execute("SELECT vec_version()").fetchone()
+            self._vec_loaded = True
+        except (AttributeError, sqlite3.Error) as exc:
+            logger.warning(
+                "sqlite-vec extension could not be loaded; semantic session "
+                "search disabled for this connection: %s", exc
+            )
+            self._vec_loaded = False
+        return self._vec_loaded
+
+    def upsert_message_embeddings(
+        self, rows: List[Tuple[int, str, int, bytes]]
+    ) -> int:
+        """Insert or replace embeddings. ``rows`` is a list of
+        ``(message_id, model, dim, vector_blob)``. Returns rows written."""
+        if not rows:
+            return 0
+        now = time.time()
+        payload = [(mid, model, dim, vec, now) for mid, model, dim, vec in rows]
+
+        def _write(conn: sqlite3.Connection) -> int:
+            conn.executemany(
+                "INSERT OR REPLACE INTO message_embeddings "
+                "(message_id, model, dim, vector, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                payload,
+            )
+            return len(payload)
+
+        return self._execute_write(_write)
+
+    def get_unembedded_messages(
+        self,
+        model: str,
+        limit: int = 128,
+        roles: Tuple[str, ...] = ("user", "assistant"),
+    ) -> List[Dict[str, Any]]:
+        """Active messages with non-empty text content that have no embedding
+        for ``model`` yet. Newest first, so recent sessions become
+        semantically searchable before deep history is backfilled."""
+        role_placeholders = ",".join("?" for _ in roles)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"""
+                SELECT m.id, m.content
+                FROM messages m
+                LEFT JOIN message_embeddings e
+                    ON e.message_id = m.id AND e.model = ?
+                WHERE e.message_id IS NULL
+                  AND m.active = 1
+                  AND m.role IN ({role_placeholders})
+                  AND m.content IS NOT NULL
+                  AND length(trim(m.content)) > 0
+                ORDER BY m.id DESC
+                LIMIT ?
+                """,
+                (model, *roles, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def count_message_embeddings(self, model: Optional[str] = None) -> int:
+        """Number of stored embeddings, optionally for one model."""
+        with self._lock:
+            if model is None:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM message_embeddings"
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM message_embeddings WHERE model = ?",
+                    (model,),
+                ).fetchone()
+        return row[0] if row else 0
+
+    def search_messages_by_vector(
+        self,
+        query_vector: bytes,
+        model: str,
+        dim: int,
+        role_filter: Optional[List[str]] = None,
+        exclude_sources: Optional[List[str]] = None,
+        limit: int = 20,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Cosine-distance KNN over stored message embeddings.
+
+        Returns rows shaped like :meth:`search_messages` results (snippet is
+        a plain content prefix — no FTS5 highlighting) plus a ``distance``
+        key (cosine distance, lower = closer). Returns ``[]`` when sqlite-vec
+        is unavailable. The ``model``/``dim`` filters keep stale embeddings
+        from a previously configured model out of the distance function,
+        which would otherwise error on dimension mismatch.
+        """
+        if not self.vector_search_available():
+            return []
+
+        where_clauses = ["e.model = ?", "e.dim = ?"]
+        params: list = [query_vector, model, dim]
+        if not include_inactive:
+            where_clauses.append("m.active = 1")
+        if exclude_sources is not None:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
+        if role_filter:
+            placeholders = ",".join("?" for _ in role_filter)
+            where_clauses.append(f"m.role IN ({placeholders})")
+            params.extend(role_filter)
+        params.append(limit)
+
+        sql = f"""
+            SELECT
+                m.id,
+                m.session_id,
+                m.role,
+                m.content,
+                m.timestamp,
+                m.tool_name,
+                s.source,
+                s.model,
+                s.started_at AS session_started,
+                vec_distance_cosine(e.vector, ?) AS distance
+            FROM message_embeddings e
+            JOIN messages m ON m.id = e.message_id
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY distance ASC
+            LIMIT ?
+        """
+        with self._lock:
+            try:
+                cursor = self._conn.execute(sql, params)
+                matches = [dict(row) for row in cursor.fetchall()]
+            except sqlite3.Error as exc:
+                logger.warning("Vector search failed: %s", exc, exc_info=True)
+                return []
+
+        for match in matches:
+            content = match.pop("content", None)
+            text = ""
+            if isinstance(content, str):
+                text = content
+                # Multimodal content is stored JSON-encoded; surface the text
+                # parts the same way search_messages context previews do.
+                if content.startswith("["):
+                    try:
+                        decoded = json.loads(content)
+                        if isinstance(decoded, list):
+                            parts = [
+                                p.get("text", "") for p in decoded
+                                if isinstance(p, dict) and p.get("type") == "text"
+                            ]
+                            text = " ".join(t for t in parts if t).strip() or content
+                    except (ValueError, TypeError):
+                        pass
+            snippet = " ".join(text.split())
+            match["snippet"] = snippet[:200] + ("..." if len(snippet) > 200 else "")
         return matches
 
     def search_sessions_by_id(

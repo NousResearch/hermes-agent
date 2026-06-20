@@ -186,6 +186,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.2.0",),
+    # Semantic session search (#44075) — sqlite-vec provides the cosine-
+    # distance SQL function for the vector half of hybrid session_search.
+    # The call site uses prompt=False (mid-search, never block on input());
+    # keep in sync with the `semantic-search` extra in pyproject.toml.
+    "tool.session_semantic": ("sqlite-vec==0.1.9",),
 }
 
 

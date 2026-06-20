@@ -2139,6 +2139,41 @@ class TestDelegateEventEnum(unittest.TestCase):
         cb("tool.started", tool_name="terminal", preview="ls")
         parent._delegate_spinner.print_above.assert_called()
 
+    def test_progress_callback_relays_profile_lane_provider_metadata(self):
+        """Subagent progress events carry the worker identity needed by TUI status."""
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(
+            0,
+            "test goal",
+            parent,
+            task_count=1,
+            subagent_id="sa_123",
+            parent_id="sa_parent",
+            depth=2,
+            model="kimi-k2.6",
+            provider="opencode-go",
+            profile="reviewer",
+            lane="leaf",
+            toolsets=["terminal", "file"],
+        )
+        if cb is None:
+            self.fail("expected child progress callback")
+
+        cb("tool.started", tool_name="terminal", preview="pytest")
+
+        _, kwargs = parent.tool_progress_callback.call_args
+        self.assertEqual(kwargs["subagent_id"], "sa_123")
+        self.assertEqual(kwargs["parent_id"], "sa_parent")
+        self.assertEqual(kwargs["depth"], 2)
+        self.assertEqual(kwargs["model"], "kimi-k2.6")
+        self.assertEqual(kwargs["provider"], "opencode-go")
+        self.assertEqual(kwargs["profile"], "reviewer")
+        self.assertEqual(kwargs["lane"], "leaf")
+        self.assertEqual(kwargs["toolsets"], ["terminal", "file"])
+
     def test_progress_callback_normalises_thinking(self):
         """Both _thinking and reasoning.available route to TASK_THINKING."""
         parent = _make_mock_parent()

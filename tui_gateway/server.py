@@ -3041,6 +3041,37 @@ def _current_profile_name() -> str:
         return "default"
 
 
+def _profile_summaries() -> list[dict]:
+    """Return compact, non-secret profile metadata for the TUI welcome panel."""
+    try:
+        from hermes_cli.profiles import list_profiles
+    except Exception:
+        return []
+
+    active = _current_profile_name()
+    summaries: list[dict] = []
+    try:
+        profiles = list_profiles()
+    except Exception:
+        return []
+
+    for p in profiles:
+        summaries.append(
+            {
+                "active": p.name == active,
+                "alias": p.alias_name,
+                "description": p.description,
+                "gateway_running": p.gateway_running,
+                "is_default": p.is_default,
+                "model": p.model,
+                "name": p.name,
+                "provider": p.provider,
+                "skill_count": p.skill_count,
+            }
+        )
+    return summaries
+
+
 # Monotonic GUI<->backend contract version. The desktop app refuses to drive a
 # backend reporting less than its required value (or none at all — a pre-GUI
 # checkout), surfacing a one-click "update to align" prompt instead of failing
@@ -3110,6 +3141,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_command": "",
         "usage": _get_usage(agent),
         "profile_name": _current_profile_name(),
+        "profiles": _profile_summaries(),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -3431,6 +3463,12 @@ def _on_tool_progress(
             payload["depth"] = int(_kwargs["depth"])
         if _kwargs.get("model"):
             payload["model"] = str(_kwargs["model"])
+        if _kwargs.get("provider"):
+            payload["provider"] = str(_kwargs["provider"])
+        if _kwargs.get("profile"):
+            payload["profile"] = str(_kwargs["profile"])
+        if _kwargs.get("lane"):
+            payload["lane"] = str(_kwargs["lane"])
         if _kwargs.get("tool_count") is not None:
             payload["tool_count"] = int(_kwargs["tool_count"])
         if _kwargs.get("toolsets"):

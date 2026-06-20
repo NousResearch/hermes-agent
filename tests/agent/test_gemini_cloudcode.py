@@ -1172,6 +1172,29 @@ class TestProviderRegistration:
         ):
             assert key in OPTIONAL_ENV_VARS
 
+    def test_model_picker_shows_google_gemini_oauth_when_logged_in(self):
+        from agent.google_oauth import GoogleCredentials, save_credentials
+        from hermes_cli.model_switch import list_picker_providers
+
+        save_credentials(GoogleCredentials(
+            access_token="tok",
+            refresh_token="rt",
+            expires_ms=int((time.time() + 3600) * 1000),
+            email="picker@e.com",
+            project_id="picker-proj",
+        ))
+
+        providers = list_picker_providers(
+            current_provider="google-gemini-cli",
+            current_model="gemini-3.1-pro-preview",
+        )
+        row = next((p for p in providers if p["slug"] == "google-gemini-cli"), None)
+
+        assert row is not None
+        assert row["name"] == "Google Gemini (OAuth)"
+        assert row["is_current"] is True
+        assert "gemini-3.1-pro-preview" in row["models"]
+
 
 class TestAuthStatus:
     def test_not_logged_in(self):

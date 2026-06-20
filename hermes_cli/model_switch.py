@@ -1582,6 +1582,14 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        if not has_creds and hermes_slug == "google-gemini-cli":
+            try:
+                from hermes_cli.auth import get_gemini_oauth_auth_status
+                status = get_gemini_oauth_auth_status()
+                if status.get("logged_in"):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Google Gemini OAuth status check failed: %s", exc)
         if not has_creds:
             continue
 

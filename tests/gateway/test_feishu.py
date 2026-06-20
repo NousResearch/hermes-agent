@@ -4944,3 +4944,427 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuTableRendering(unittest.TestCase):
+    """Tests for GFM markdown table -> Feishu Card JSON 2.0 conversion.
+
+    Covers the four core functions introduced in PR #40445:
+      - _parse_markdown_table()      -- GFM lines -> Feishu ``table`` component
+      - _split_content_and_tables()  -- line scanner -> mixed elements
+      - _split_content_by_table_limit() -- >5 table card splitting
+      - _build_table_card_payload()  -- full Card JSON construction
+      - _build_outbound_payloads()   -- routing (table->interactive, non-table->post/text)
+    """
+
+    # ------------------------------------------------------------------
+    # _parse_markdown_table
+    # ------------------------------------------------------------------
+
+    def test_parse_simple_two_column_table(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = ["| Name | Age |", "|------|-----|", "| Bob  | 25  |", "| Alice| 30  |"]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["tag"], "table")
+        self.assertEqual(len(result["columns"]), 2)
+        self.assertEqual(result["columns"][0]["display_name"], "Name")
+        self.assertEqual(result["columns"][1]["display_name"], "Age")
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertEqual(result["rows"][0]["col0"], "Bob")
+        self.assertEqual(result["rows"][1]["col1"], "30")
+        self.assertEqual(result["header_style"]["background_style"], "grey")
+        self.assertTrue(result["header_style"]["bold"])
+        self.assertEqual(result["page_size"], 5)
+
+    def test_parse_empty_cells(self):
+        """Empty cells in data rows are preserved as empty strings."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = ["| A | B | C |", "|---|---|---|", "| x |   | z |", "|   | y |   |"]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertEqual(result["rows"][0]["col0"], "x")
+        self.assertEqual(result["rows"][0]["col1"], "")
+        self.assertEqual(result["rows"][0]["col2"], "z")
+        self.assertEqual(result["rows"][1]["col0"], "")
+        self.assertEqual(result["rows"][1]["col1"], "y")
+
+    def test_parse_empty_headers(self):
+        """Header cells that are empty should not get a display_name key."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = ["|  | Named |", "|---|---|", "| x | y |"]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertNotIn("display_name", result["columns"][0])
+        self.assertEqual(result["columns"][1]["display_name"], "Named")
+
+    def test_parse_cells_with_markdown_formatting(self):
+        """Cells containing markdown formatting are preserved as-is
+        (Feishu table cells use data_type='markdown')."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = [
+            "| Format | Value |",
+            "|--------|-------|",
+            "| **bold** | `code` |",
+            "| _italic_ | [link](https://example.com) |",
+        ]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertIn("**bold**", result["rows"][0]["col0"])
+        self.assertEqual(result["rows"][0]["col1"], "`code`")
+        self.assertIn("[link](https://example.com)", result["rows"][1]["col1"])
+
+    def test_parse_cells_with_whitespace(self):
+        """Leading/trailing whitespace in cells is stripped."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = ["|   A   |   B   |", "|---|---|", "|   x   |   y   |"]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertEqual(result["rows"][0]["col0"], "x")
+        self.assertEqual(result["rows"][0]["col1"], "y")
+
+    def test_parse_header_only_table(self):
+        """A table with header + separator but no data rows produces
+        a valid component with empty rows list."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = ["| A | B |", "|---|---|"]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result["columns"]), 2)
+        self.assertEqual(len(result["rows"]), 0)
+
+    def test_parse_single_line_returns_none(self):
+        """A single line starting with | is not a valid table."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        result = FeishuAdapter._parse_markdown_table(["| not a table |"])
+        self.assertIsNone(result)
+
+    def test_parse_empty_list_returns_none(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        result = FeishuAdapter._parse_markdown_table([])
+        self.assertIsNone(result)
+
+    def test_parse_column_count_mismatch_fewer(self):
+        """Data row with fewer columns than header: missing cells become ''."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = ["| A | B | C |", "|---|---|---|", "| x | y |"]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertEqual(result["rows"][0]["col0"], "x")
+        self.assertEqual(result["rows"][0]["col1"], "y")
+        self.assertEqual(result["rows"][0]["col2"], "")
+
+    def test_parse_column_count_mismatch_more(self):
+        """Data row with more columns than header: extra cells are dropped."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        lines = ["| A | B |", "|---|---|", "| x | y | z |"]
+        result = FeishuAdapter._parse_markdown_table(lines)
+        self.assertEqual(result["rows"][0]["col0"], "x")
+        self.assertEqual(result["rows"][0]["col1"], "y")
+        with self.assertRaises(KeyError):
+            _ = result["rows"][0]["col2"]
+
+    def test_parse_wide_table_many_columns(self):
+        """Table with 10+ columns parses correctly."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        ncols = 12
+        header = "| " + " | ".join(f"Col{i}" for i in range(ncols)) + " |"
+        sep = "|" + "|".join(["---"] * ncols) + "|"
+        data = "| " + " | ".join(f"val{i}" for i in range(ncols)) + " |"
+        result = FeishuAdapter._parse_markdown_table([header, sep, data])
+        self.assertEqual(len(result["columns"]), ncols)
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(result["rows"][0]["col0"], "val0")
+        self.assertEqual(result["rows"][0][f"col{ncols-1}"], f"val{ncols-1}")
+
+    # ------------------------------------------------------------------
+    # _split_content_and_tables
+    # ------------------------------------------------------------------
+
+    def test_split_no_tables(self):
+        """Content with no tables returns a single markdown element."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        content = "Just plain text.\nNo tables here."
+        elements = FeishuAdapter._split_content_and_tables(content)
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("plain text", elements[0]["content"])
+
+    def test_split_single_table(self):
+        """Content with exactly one table returns [table]."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        content = "| A | B |\n|---|---|\n| x | y |"
+        elements = FeishuAdapter._split_content_and_tables(content)
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["tag"], "table")
+        self.assertEqual(len(elements[0]["columns"]), 2)
+
+    def test_split_text_surrounding_table(self):
+        """Text before and after the table is preserved in separate elements."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        content = "intro text\n\n| A | B |\n|---|---|\n| x | y |\n\noutro text"
+        elements = FeishuAdapter._split_content_and_tables(content)
+        self.assertEqual(len(elements), 3)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("intro", elements[0]["content"])
+        self.assertEqual(elements[1]["tag"], "table")
+        self.assertEqual(elements[2]["tag"], "markdown")
+        self.assertIn("outro", elements[2]["content"])
+
+    def test_split_multiple_tables(self):
+        """Multiple tables are each parsed as separate table elements."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        content = "| A |\n|---|\n| 1 |\n\n| B |\n|---|\n| 2 |"
+        elements = FeishuAdapter._split_content_and_tables(content)
+        tables = [e for e in elements if e["tag"] == "table"]
+        self.assertEqual(len(tables), 2)
+
+    def test_split_text_between_tables(self):
+        """Text blocks between tables are preserved."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        content = "| A |\n|---|\n| 1 |\n\nmiddle text\n\n| B |\n|---|\n| 2 |"
+        elements = FeishuAdapter._split_content_and_tables(content)
+        self.assertEqual(len(elements), 3)
+        tags = [e["tag"] for e in elements]
+        self.assertEqual(tags, ["table", "markdown", "table"])
+
+    def test_split_non_table_pipe_line(self):
+        """A line with | that is NOT a table (no separator row) stays as text."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        content = "some | pipe | in text\n\n| Real | Table |\n|------|-------|\n| A    | B     |"
+        elements = FeishuAdapter._split_content_and_tables(content)
+        tables = [e for e in elements if e["tag"] == "table"]
+        self.assertEqual(len(tables), 1)
+
+    def test_split_empty_content(self):
+        """Empty content returns empty list."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        elements = FeishuAdapter._split_content_and_tables("")
+        self.assertEqual(len(elements), 0)
+
+    # ------------------------------------------------------------------
+    # _split_content_by_table_limit
+    # ------------------------------------------------------------------
+
+    def test_limit_within_bounds_no_split(self):
+        """Content with exactly max_tables tables is not split."""
+        from gateway.platforms.feishu import FeishuAdapter, _MARKDOWN_TABLE_RE
+
+        lines = []
+        for i in range(5):
+            lines.append(f"| T{i} |\n|---|\n| v{i} |\n")
+        content = "\n".join(lines)
+        chunks = FeishuAdapter._split_content_by_table_limit(content, 5)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(len(_MARKDOWN_TABLE_RE.findall(chunks[0])), 5)
+
+    def test_limit_exceeded_splits(self):
+        """6 tables with max=5 produces 2 chunks (5+1)."""
+        from gateway.platforms.feishu import FeishuAdapter, _MARKDOWN_TABLE_RE
+
+        lines = []
+        for i in range(6):
+            lines.append(f"| T{i} |\n|---|\n| v{i} |\n")
+        content = "\n".join(lines)
+        chunks = FeishuAdapter._split_content_by_table_limit(content, 5)
+        self.assertEqual(len(chunks), 2)
+        total_tables = sum(len(_MARKDOWN_TABLE_RE.findall(c)) for c in chunks)
+        self.assertEqual(total_tables, 6)
+
+    def test_limit_three_chunks(self):
+        """11 tables with max=5 produces 3 chunks (5+5+1)."""
+        from gateway.platforms.feishu import FeishuAdapter, _MARKDOWN_TABLE_RE
+
+        lines = []
+        for i in range(11):
+            lines.append(f"| T{i} |\n|---|\n| v{i} |\n")
+        content = "\n".join(lines)
+        chunks = FeishuAdapter._split_content_by_table_limit(content, 5)
+        self.assertEqual(len(chunks), 3)
+        total_tables = sum(len(_MARKDOWN_TABLE_RE.findall(c)) for c in chunks)
+        self.assertEqual(total_tables, 11)
+
+    def test_limit_no_tables(self):
+        """Content with no tables returns single chunk."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        chunks = FeishuAdapter._split_content_by_table_limit("plain text", 5)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0], "plain text")
+
+    # ------------------------------------------------------------------
+    # _build_table_card_payload
+    # ------------------------------------------------------------------
+
+    def test_card_payload_valid_json(self):
+        """Payload is valid JSON with Card JSON 2.0 schema."""
+        from gateway.platforms.feishu import FeishuAdapter
+        import json
+
+        adapter = object.__new__(FeishuAdapter)
+        content = "intro\n\n| A | B |\n|---|---|\n| x | y |\n\noutro"
+        payload = adapter._build_table_card_payload(content)
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertIn("config", card)
+        self.assertTrue(card["config"]["wide_screen_mode"])
+        self.assertIn("body", card)
+        self.assertIn("elements", card["body"])
+
+    def test_card_payload_mixed_elements(self):
+        """Card contains both markdown and table elements in order."""
+        from gateway.platforms.feishu import FeishuAdapter
+        import json
+
+        adapter = object.__new__(FeishuAdapter)
+        content = "before\n\n| A |\n|---|\n| 1 |\n\nafter"
+        payload = adapter._build_table_card_payload(content)
+        card = json.loads(payload)
+        elements = card["body"]["elements"]
+        tags = [e["tag"] for e in elements]
+        self.assertIn("markdown", tags)
+        self.assertIn("table", tags)
+        table_idx = tags.index("table")
+        self.assertGreater(table_idx, 0)
+        self.assertLess(table_idx, len(tags) - 1)
+
+    # ------------------------------------------------------------------
+    # _build_outbound_payloads -- routing
+    # ------------------------------------------------------------------
+
+    def test_routing_table_to_interactive(self):
+        """Table-bearing content routes to interactive msg_type."""
+        from gateway.platforms.feishu import FeishuAdapter
+        import json
+
+        adapter = object.__new__(FeishuAdapter)
+        content = "| A | B |\n|---|---|\n| x | y |"
+        payloads = adapter._build_outbound_payloads(content)
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0][0], "interactive")
+        card = json.loads(payloads[0][1])
+        self.assertEqual(card["schema"], "2.0")
+
+    def test_routing_non_table_to_text(self):
+        """Plain text without tables routes to text msg_type."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        payloads = adapter._build_outbound_payloads("just text")
+        self.assertEqual(payloads[0][0], "text")
+
+    def test_routing_markdown_hints_to_post(self):
+        """Content with markdown hints but no tables -> post type."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        payloads = adapter._build_outbound_payloads("some **bold** text")
+        self.assertEqual(payloads[0][0], "post")
+
+    def test_routing_multi_table_splits_into_cards(self):
+        """7 tables -> splits into multiple interactive card payloads."""
+        from gateway.platforms.feishu import FeishuAdapter
+        import json
+
+        adapter = object.__new__(FeishuAdapter)
+        lines = []
+        for i in range(7):
+            lines.append(f"| T{i} |\n|---|\n| v{i} |\n")
+        content = "\n".join(lines)
+        payloads = adapter._build_outbound_payloads(content)
+        self.assertGreater(len(payloads), 1)
+        all_interactive = all(p[0] == "interactive" for p in payloads)
+        self.assertTrue(all_interactive)
+        # Count tables across all card payloads by parsing the JSON
+        total_tables = 0
+        for _, payload_str in payloads:
+            card = json.loads(payload_str)
+            for element in card["body"]["elements"]:
+                if element["tag"] == "table":
+                    total_tables += 1
+        self.assertEqual(total_tables, 7)
+
+    # ------------------------------------------------------------------
+    # _build_outbound_payload -- single payload (used by edit_message)
+    # ------------------------------------------------------------------
+
+    def test_build_outbound_payload_table(self):
+        """Single-payload builder routes tables to interactive."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        msg_type, payload = adapter._build_outbound_payload(
+            "| A | B |\n|---|---|\n| x | y |"
+        )
+        self.assertEqual(msg_type, "interactive")
+
+    def test_build_outbound_payload_non_table(self):
+        """Single-payload builder keeps non-table on post/text path."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        msg_type, _ = adapter._build_outbound_payload("plain")
+        self.assertIn(msg_type, ("text", "post"))
+
+    # ------------------------------------------------------------------
+    # Regression: old rendering path still works
+    # ------------------------------------------------------------------
+
+    def test_regression_plain_text_unchanged(self):
+        """Plain text messages are not affected by table routing."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        payloads = adapter._build_outbound_payloads("Hello world")
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0][0], "text")
+
+    def test_regression_markdown_without_tables_still_uses_post(self):
+        """Markdown that has headings/bold/italic but no tables -> post type."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        content = "# Heading\n\n**bold** and _italic_ text\n\n- list item"
+        payloads = adapter._build_outbound_payloads(content)
+        self.assertNotEqual(payloads[0][0], "interactive")
+
+    def test_regression_card_matches_feishu_schema(self):
+        """Generated Card JSON conforms to Feishu Card JSON 2.0 schema."""
+        from gateway.platforms.feishu import FeishuAdapter
+        import json
+
+        adapter = object.__new__(FeishuAdapter)
+        content = "text\n\n| A |\n|---|\n| 1 |"
+        payload = adapter._build_table_card_payload(content)
+        card = json.loads(payload)
+
+        self.assertEqual(card["schema"], "2.0")
+        self.assertIsInstance(card["config"], dict)
+        self.assertIsInstance(card["body"], dict)
+        self.assertIsInstance(card["body"]["elements"], list)
+
+        for element in card["body"]["elements"]:
+            self.assertIn("tag", element)
+            if element["tag"] == "table":
+                self.assertIn("columns", element)
+                self.assertIn("rows", element)
+                self.assertIn("header_style", element)
+                for col in element["columns"]:
+                    self.assertIn("name", col)
+                    self.assertIn("data_type", col)
+                    self.assertEqual(col["data_type"], "markdown")
+            elif element["tag"] == "markdown":
+                self.assertIn("content", element)

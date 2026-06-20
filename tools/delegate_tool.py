@@ -2039,27 +2039,74 @@ def _run_single_child(
             logger.debug("Failed to close child agent after delegation")
 
 
-def _recover_tasks_from_json_string(
-    tasks: Any,
-) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Accept accidental JSON-stringified tasks arrays from model/tool adapters."""
     if not isinstance(tasks, str):
         return None, None
     raw = tasks.strip()
     if not raw:
-        return None, "Provide either 'goal' (single task) or 'tasks' (batch)."
+        return None, None
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         return None, (
-            "tasks must be a JSON array of task objects; received a string "
-            f"that could not be parsed as JSON ({exc.msg})."
+            "The 'tasks' argument was a string that could not be parsed as JSON. "
+            f"Pass an array of task objects instead. JSON error: {exc.msg}."
         )
     if not isinstance(parsed, list):
         return None, (
-            f"tasks must be a JSON array of task objects; parsed "
-            f"{type(parsed).__name__} instead."
+            "The 'tasks' argument was a JSON string, but it decoded to "
+            f"{type(parsed).__name__} instead of a list."
         )
     return parsed, None
+
+
+def _infer_task_route_key(task: Dict[str, Any]) -> Optional[str]:
+    """Infer a coarse routing bucket for a delegated task.
+
+    The router is deterministic and local: it never calls an LLM, and a task
+    may override it explicitly with ``route``/``kind``/``type``.
+    """
+    for key in ("route", "kind", "type", "category"):
+        value = str(task.get(key) or "").strip().lower()
+        if value:
+            return value
+
+    text = " ".join(
+        str(part or "").lower()
+        for part in (
+            task.get("goal"),
+            task.get("context"),
+            " ".join(task.get("toolsets") or []),
+        )
+    )
+    if any(word in text for word in ("research", "search", "look up", "lookup", "docs", "web")):
+        return "research"
+    if any(word in text for word in ("plan", "roadmap", "prioritize", "priority", "release", "pm")):
+        return "pm"
+    if any(word in text for word in ("code", "coding", "implement", "fix", "test", "debug", "refactor", "terminal", "file")):
+        return "coding"
+    if any(word in text for word in ("architecture", "design", "system", "infra", "structure")):
+        return "engineering"
+    return None
+
+
+def _route_task_config(base_cfg: dict, task: Dict[str, Any]) -> dict:
+    """Return delegation config overrides for one task, if task_routing matches."""
+    routing = base_cfg.get("task_routing") or base_cfg.get("routes") or {}
+    if not isinstance(routing, dict):
+        return base_cfg
+
+    route_key = _infer_task_route_key(task)
+    route_cfg = routing.get(route_key or "") or routing.get("default")
+    if not isinstance(route_cfg, dict):
+        return base_cfg
+
+    merged = dict(base_cfg)
+    for key in ("model", "provider", "base_url", "api_key", "api_mode"):
+        if key in route_cfg:
+            merged[key] = route_cfg.get(key)
+    return merged
 
 
 def delegate_task(
@@ -2168,14 +2215,11 @@ def delegate_task(
         tasks = recovered_tasks
 
     if tasks and isinstance(tasks, list):
-        if len(tasks) > max_children:
-            return tool_error(
-                f"Too many tasks: {len(tasks)} provided, but "
-                f"max_concurrent_children is {max_children}. "
-                f"Either reduce the task count, split into multiple "
-                f"delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
-            )
+        # Accept any number of tasks. max_concurrent_children is a concurrency
+        # limit, not a total task-count limit: ThreadPoolExecutor queues the
+        # remainder and starts them as workers free up. This lets models hand
+        # over large decompositions in one call without creating unbounded
+        # parallelism or forcing manual multi-call chunking.
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
@@ -2220,26 +2264,37 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task routing: when delegation.task_routing is configured,
+            # resolve credentials per task based on goal/toolsets heuristics.
+            # Falls back to the batch-level creds when no route matches.
+            task_cfg = _route_task_config(cfg, t)
+            if task_cfg is not cfg:
+                try:
+                    task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+                except ValueError:
+                    task_creds = creds
+            else:
+                task_creds = creds
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2843,10 +2898,9 @@ def _build_top_level_description() -> str:
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
-        f"items concurrently for this user (configured via "
-        f"delegation.max_concurrent_children in config.yaml). "
-        f"All run in parallel and results are returned together. {nesting_clause}\n\n"
+        f"2. Batch (parallel): provide 'tasks' array — up to {max_children} "
+        f"run concurrently (delegation.max_concurrent_children); extra tasks "
+        f"queue automatically with no total cap. {nesting_clause}\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -2898,9 +2952,10 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"Batch mode: tasks to run in parallel (up to {max_children} for this "
-        f"user, set via delegation.max_concurrent_children). Each gets "
-        "its own subagent with isolated context and terminal session. "
+        f"Batch mode: tasks to run. Up to {max_children} run concurrently "
+        f"(set via delegation.max_concurrent_children); additional tasks are "
+        f"queued and start as workers free up — there is NO total task limit. "
+        "Each gets its own subagent with isolated context and terminal session. "
         "When provided, top-level goal/context/toolsets are ignored."
     )
 

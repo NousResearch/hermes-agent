@@ -99,7 +99,7 @@ class TestDelegateRequirements(unittest.TestCase):
         # Top-level description names the user's spawn-depth limit explicitly.
         self.assertIn(f"max_spawn_depth={max_depth}", desc)
         # tasks parameter description repeats the concurrency cap.
-        self.assertIn(f"up to {max_children}", tasks_desc)
+        self.assertIn(f"Up to {max_children}", tasks_desc)
         # role parameter description names the spawn-depth limit.
         self.assertIn(f"max_spawn_depth={max_depth}", role_desc)
         # The misleading "default 3" / "default 2" wording is gone from
@@ -273,20 +273,28 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("could not be parsed as JSON", result["error"])
         mock_run.assert_not_called()
 
+    @patch("tools.delegate_tool._get_max_concurrent_children", return_value=2)
     @patch("tools.delegate_tool._run_single_child")
-    def test_batch_capped_at_3(self, mock_run):
-        mock_run.return_value = {
-            "task_index": 0, "status": "completed",
-            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
-        }
+    def test_batch_queues_tasks_beyond_concurrency_limit(self, mock_run, _mock_limit):
+        def fake_run(task_index, goal, child, parent_agent):
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": f"Done {goal}",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+        mock_run.side_effect = fake_run
         parent = _make_mock_parent()
-        limit = _get_max_concurrent_children()
-        tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
+        tasks = [{"goal": f"Task {i}"} for i in range(5)]
+
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should return an error instead of silently truncating
-        self.assertIn("error", result)
-        self.assertIn("Too many tasks", result["error"])
-        mock_run.assert_not_called()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), 5)
+        self.assertEqual([r["task_index"] for r in result["results"]], [0, 1, 2, 3, 4])
+        self.assertEqual(mock_run.call_count, 5)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
@@ -1395,6 +1403,80 @@ class TestDelegationProviderIntegration(unittest.TestCase):
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
                 self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
                 self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_mode_routes_children_by_task_kind(self, mock_creds, mock_cfg):
+        """Tasks can be routed to different provider:model pairs by goal/toolsets."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "fallback-model",
+            "provider": "fallback-provider",
+            "task_routing": {
+                "coding": {"provider": "zai", "model": "glm-5.2:cloud"},
+                "research": {"provider": "kimi-coding", "model": "kimi-k2.7-code:cloud"},
+                "pm": {"provider": "minimax", "model": "minimax-m3:cloud"},
+            },
+        }
+        mock_creds.side_effect = [
+            {
+                "model": "fallback-model",
+                "provider": "fallback-provider",
+                "base_url": "https://fallback.example/v1",
+                "api_key": "fallback-key",
+                "api_mode": "chat_completions",
+            },
+            {
+                "model": "glm-5.2:cloud",
+                "provider": "zai",
+                "base_url": "https://glm.example/v1",
+                "api_key": "glm-key",
+                "api_mode": "chat_completions",
+            },
+            {
+                "model": "kimi-k2.7-code:cloud",
+                "provider": "kimi-coding",
+                "base_url": "https://kimi.example/v1",
+                "api_key": "kimi-key",
+                "api_mode": "anthropic_messages",
+            },
+            {
+                "model": "minimax-m3:cloud",
+                "provider": "minimax",
+                "base_url": "https://minimax.example/v1",
+                "api_key": "minimax-key",
+                "api_mode": "chat_completions",
+            },
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.side_effect = [MagicMock(), MagicMock(), MagicMock()]
+            mock_run.side_effect = [
+                {"task_index": 0, "status": "completed", "summary": "code", "api_calls": 1, "duration_seconds": 1.0},
+                {"task_index": 1, "status": "completed", "summary": "research", "api_calls": 1, "duration_seconds": 1.0},
+                {"task_index": 2, "status": "completed", "summary": "pm", "api_calls": 1, "duration_seconds": 1.0},
+            ]
+
+            tasks = [
+                {"goal": "Fix the failing Python tests", "toolsets": ["terminal", "file"]},
+                {"goal": "Research current provider docs", "toolsets": ["web"]},
+                {"goal": "Create a release plan and prioritize scope"},
+            ]
+            result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+            self.assertEqual(len(result["results"]), 3)
+            self.assertEqual([c.kwargs.get("model") for c in mock_build.call_args_list], [
+                "glm-5.2:cloud",
+                "kimi-k2.7-code:cloud",
+                "minimax-m3:cloud",
+            ])
+            self.assertEqual([c.kwargs.get("override_provider") for c in mock_build.call_args_list], [
+                "zai",
+                "kimi-coding",
+                "minimax",
+            ])
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

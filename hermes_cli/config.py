@@ -1917,8 +1917,19 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
-        "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
+        "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling.
+                                       # Tasks beyond this are queued and start as workers free up —
+                                       # the limit caps concurrency, NOT total task count.
         "max_async_children": 3,  # max concurrent background (background=true) subagents; new dispatches rejected at capacity
+        # Per-task model routing: map task kinds to different provider:model pairs
+        # so coding tasks use one model, research another, PM another — all in
+        # a single delegate_task batch call. When absent, all children inherit
+        # delegation.model/provider.
+        # task_routing:
+        #   coding:     {provider: zai,           model: "glm-5.2:cloud"}
+        #   research:   {provider: kimi-coding,   model: "kimi-k2.7-code:cloud"}
+        #   pm:         {provider: minimax,       model: "minimax-m3:cloud"}
+        #   default:    {provider: openrouter,    model: "google/gemini-3-flash-preview"}
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.

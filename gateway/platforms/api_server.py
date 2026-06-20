@@ -447,7 +447,34 @@ class ResponseStore:
                 response_id TEXT NOT NULL
             )"""
         )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS session_runs (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                user_message TEXT,
+                error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                last_seq INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        self._conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_session_runs_session_updated
+               ON session_runs(session_id, updated_at DESC)"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS session_run_events (
+                run_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                event_name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY(run_id, seq)
+            )"""
+        )
         self._conn.commit()
+        self.mark_incomplete_session_runs_interrupted()
         # response_store.db contains conversation history (tool payloads,
         # prompts, results). Tighten to owner-only after creation so other
         # local users on a shared box can't read it. Run once at __init__
@@ -557,6 +584,152 @@ class ResponseStore:
             (name, response_id),
         )
         self._conn.commit()
+
+    def create_session_run(self, run_id: str, session_id: str, user_message: Any) -> None:
+        """Persist a session chat-stream run so clients can recover/replay it."""
+        now = time.time()
+        try:
+            encoded_user_message = json.dumps(user_message, default=str)
+        except (TypeError, ValueError):
+            encoded_user_message = json.dumps(str(user_message))
+        self._conn.execute(
+            """INSERT OR REPLACE INTO session_runs
+               (run_id, session_id, status, user_message, error, created_at, updated_at, last_seq)
+               VALUES (?, ?, 'queued', ?, NULL, ?, ?, 0)""",
+            (run_id, session_id, encoded_user_message, now, now),
+        )
+        self._conn.commit()
+
+    def put_session_run_event(self, run_id: str, event_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Append a replayable event and update the run snapshot."""
+        now = time.time()
+        row = self._conn.execute(
+            "SELECT session_id, last_seq FROM session_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return payload
+
+        seq = int(row[1] or 0) + 1
+        stored_payload = dict(payload)
+        stored_payload.setdefault("run_id", run_id)
+        stored_payload.setdefault("session_id", row[0])
+        stored_payload["seq"] = seq
+        stored_payload.setdefault("ts", now)
+
+        status = None
+        error = None
+        if event_name == "run.started":
+            status = "running"
+        elif event_name == "run.completed":
+            status = "completed"
+        elif event_name == "error":
+            status = "failed"
+            error = str(stored_payload.get("message") or "stream failed")
+
+        self._conn.execute(
+            """INSERT OR REPLACE INTO session_run_events
+               (run_id, seq, event_name, payload, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (run_id, seq, event_name, json.dumps(stored_payload, default=str), now),
+        )
+        if status is None:
+            self._conn.execute(
+                "UPDATE session_runs SET updated_at = ?, last_seq = ? WHERE run_id = ?",
+                (now, seq, run_id),
+            )
+        else:
+            self._conn.execute(
+                """UPDATE session_runs
+                   SET status = ?, error = COALESCE(?, error), updated_at = ?, last_seq = ?
+                   WHERE run_id = ?""",
+                (status, error, now, seq, run_id),
+            )
+        self._conn.commit()
+        return stored_payload
+
+    def mark_incomplete_session_runs_interrupted(self) -> int:
+        """Mark runs left in-flight by a previous API-server process as interrupted."""
+        now = time.time()
+        cur = self._conn.execute(
+            """UPDATE session_runs
+               SET status = 'interrupted',
+                   error = COALESCE(error, 'Hermes API server restarted while this run was active.'),
+                   updated_at = ?
+               WHERE status IN ('queued', 'running')""",
+            (now,),
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0)
+
+    def get_latest_session_run(self, session_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT run_id, session_id, status, user_message, error, created_at, updated_at, last_seq
+               FROM session_runs WHERE session_id = ?
+               ORDER BY updated_at DESC LIMIT 1""",
+            (session_id,),
+        ).fetchone()
+        return self._session_run_row_to_dict(row) if row is not None else None
+
+    def get_session_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT run_id, session_id, status, user_message, error, created_at, updated_at, last_seq
+               FROM session_runs WHERE run_id = ?""",
+            (run_id,),
+        ).fetchone()
+        return self._session_run_row_to_dict(row) if row is not None else None
+
+    def list_session_run_events(self, run_id: str, after: int = 0) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT event_name, payload FROM session_run_events
+               WHERE run_id = ? AND seq > ? ORDER BY seq ASC""",
+            (run_id, int(after or 0)),
+        ).fetchall()
+        events: List[Dict[str, Any]] = []
+        for event_name, payload_text in rows:
+            try:
+                payload = json.loads(payload_text)
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            events.append({"event": event_name, "payload": payload})
+        return events
+
+    def _session_run_row_to_dict(self, row: Any) -> Dict[str, Any]:
+        run = {
+            "object": "hermes.session.run",
+            "run_id": row[0],
+            "session_id": row[1],
+            "status": row[2],
+            "error": row[4],
+            "created_at": row[5],
+            "updated_at": row[6],
+            "last_seq": int(row[7] or 0),
+        }
+        try:
+            run["user_message"] = json.loads(row[3]) if row[3] else None
+        except (json.JSONDecodeError, TypeError):
+            run["user_message"] = row[3]
+
+        draft: List[str] = []
+        reasoning: List[str] = []
+        tool_status = None
+        for item in self.list_session_run_events(row[0], after=0):
+            name = item.get("event")
+            payload = item.get("payload") or {}
+            if name == "assistant.delta":
+                draft.append(str(payload.get("delta") or ""))
+                tool_status = None
+            elif name == "tool.progress":
+                reasoning.append(str(payload.get("delta") or ""))
+                tool_status = "thinking…"
+            elif name == "tool.started":
+                tool_status = f"{payload.get('tool_name') or 'tool'}…"
+            elif name in {"tool.completed", "tool.failed"}:
+                tool_status = None
+        run["draft"] = "".join(draft)
+        run["reasoning"] = "".join(reasoning)
+        run["tool_status"] = tool_status
+        return run
 
     def close(self) -> None:
         """Close the database connection."""
@@ -1330,6 +1503,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
+                "session_run_replay": True,
                 "session_fork": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
@@ -1363,6 +1537,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "session_active_run": {"method": "GET", "path": "/api/sessions/{session_id}/active-run"},
+                "session_run_events": {"method": "GET", "path": "/api/session-runs/{run_id}/events"},
             },
         })
 
@@ -1998,6 +2174,62 @@ class APIServerAdapter(BasePlatformAdapter):
         fork = db.get_session(fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
+    async def _handle_session_active_run(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/active-run — latest durable stream state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        run = self._response_store.get_latest_session_run(session_id)
+        return web.json_response({"object": "hermes.session.run", "run": run})
+
+    async def _handle_session_run_events(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /api/session-runs/{run_id}/events — replayable SSE stream."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        run_id = request.match_info["run_id"]
+        try:
+            after = int(request.query.get("after", "0") or "0")
+        except ValueError:
+            return web.json_response(_openai_error("after must be an integer", code="invalid_after"), status=400)
+        run = self._response_store.get_session_run(run_id)
+        if run is None:
+            return web.json_response(_openai_error(f"Session run not found: {run_id}", code="run_not_found"), status=404)
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        try:
+            while True:
+                wrote = False
+                for item in self._response_store.list_session_run_events(run_id, after=after):
+                    payload = item["payload"]
+                    after = max(after, int(payload.get("seq") or after))
+                    data = json.dumps(payload, ensure_ascii=False)
+                    await response.write(f"event: {item['event']}\ndata: {data}\n\n".encode("utf-8"))
+                    wrote = True
+                run = self._response_store.get_session_run(run_id)
+                if not run or run.get("status") not in {"queued", "running"}:
+                    break
+                if not wrote:
+                    await response.write(b": keepalive\n\n")
+                await asyncio.sleep(0.5)
+        except (asyncio.CancelledError, ConnectionResetError):
+            raise
+        except Exception as exc:
+            logger.debug("[api_server] session run replay stream error for %s: %s", run_id, exc)
+        return response
+
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
         auth_err = self._check_auth(request)
@@ -2075,16 +2307,17 @@ class APIServerAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
-        seq = 0
         agent_ref = [None]
+        self._response_store.create_session_run(run_id, session_id, user_message)
 
         def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
-            nonlocal seq
-            seq += 1
             payload.setdefault("session_id", session_id)
             payload.setdefault("run_id", run_id)
-            payload.setdefault("seq", seq)
             payload.setdefault("ts", time.time())
+            try:
+                payload = self._response_store.put_session_run_event(run_id, name, payload)
+            except Exception:
+                logger.debug("[api_server] failed to persist session run event", exc_info=True)
             return name, payload
 
         def _enqueue(name: str, payload: Dict[str, Any]) -> None:
@@ -2193,6 +2426,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         self._session_chat_pending_messages.pop(session_id, None)
                     run_id = str(queued.get("run_id") or f"run_{uuid.uuid4().hex}")
                     message_id = f"msg_{uuid.uuid4().hex}"
+                    self._response_store.create_session_run(run_id, session_id, queued.get("user_message"))
                     await _run_turn(
                         queued.get("user_message"),
                         queued.get("system_prompt"),
@@ -2242,9 +2476,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 data = json.dumps(payload, ensure_ascii=False)
                 await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
                 last_write = time.monotonic()
-        except (asyncio.CancelledError, ConnectionResetError):
+        except asyncio.CancelledError:
             task.cancel()
             raise
+        except ConnectionResetError as exc:
+            logger.debug("[api_server] session SSE client disconnected: %s", exc)
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
@@ -5274,6 +5510,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
+            self._app.router.add_get("/api/sessions/{session_id}/active-run", self._handle_session_active_run)
+            self._app.router.add_get("/api/session-runs/{run_id}/events", self._handle_session_run_events)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)

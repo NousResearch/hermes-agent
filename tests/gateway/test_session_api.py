@@ -8,7 +8,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import APIServerAdapter, ResponseStore
 from hermes_state import SessionDB
 
 
@@ -24,17 +24,27 @@ def session_db(tmp_path):
 
 
 @pytest.fixture
-def adapter(session_db):
+def adapter(session_db, tmp_path):
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._response_store.close()
+    adapter._response_store = ResponseStore(db_path=str(tmp_path / "response_store.db"))
     adapter._session_db = session_db
-    return adapter
+    try:
+        yield adapter
+    finally:
+        adapter._response_store.close()
 
 
 @pytest.fixture
-def auth_adapter(session_db):
+def auth_adapter(session_db, tmp_path):
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+    adapter._response_store.close()
+    adapter._response_store = ResponseStore(db_path=str(tmp_path / "response_store.db"))
     adapter._session_db = session_db
-    return adapter
+    try:
+        yield adapter
+    finally:
+        adapter._response_store.close()
 
 
 def _create_session_app(adapter: APIServerAdapter) -> web.Application:
@@ -53,6 +63,8 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
+    app.router.add_get("/api/sessions/{session_id}/active-run", adapter._handle_session_active_run)
+    app.router.add_get("/api/session-runs/{run_id}/events", adapter._handle_session_run_events)
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
@@ -87,6 +99,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_resources"] is True
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
+    assert features["session_run_replay"] is True
     assert features["session_fork"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
@@ -96,6 +109,14 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+    }
+    assert data["endpoints"]["session_active_run"] == {
+        "method": "GET",
+        "path": "/api/sessions/{session_id}/active-run",
+    }
+    assert data["endpoints"]["session_run_events"] == {
+        "method": "GET",
+        "path": "/api/session-runs/{run_id}/events",
     }
 
 
@@ -696,6 +717,75 @@ async def test_session_queue_drains_after_active_chat_stream_turn(adapter, sessi
     assert len(run_started_payloads) == 2
     assert run_started_payloads[1]["run_id"] == queued["run_id"]
     assert run_started_payloads[1]["user_message"]["content"] == "second"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_persists_replayable_run_state(adapter, session_db):
+    import json as _json
+
+    session_id = session_db.create_session("durable-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("Hello")
+        kwargs["tool_progress_callback"]("reasoning.available", tool_name="_thinking", preview="thinking")
+        kwargs["stream_delta_callback"](" world")
+        return {"final_response": "Hello world", "session_id": session_id}, {"total_tokens": 2}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "stream please"})
+            assert resp.status == 200
+            body = await resp.text()
+
+            active_resp = await cli.get(f"/api/sessions/{session_id}/active-run")
+            assert active_resp.status == 200
+            active = await active_resp.json()
+
+            run = active["run"]
+            run_id = run["run_id"]
+            replay_resp = await cli.get(f"/api/session-runs/{run_id}/events?after=0")
+            assert replay_resp.status == 200
+            replay_body = await replay_resp.text()
+
+    assert run["session_id"] == session_id
+    assert run["status"] == "completed"
+    assert run["user_message"] == "stream please"
+    assert run["draft"] == "Hello world"
+    assert run["reasoning"] == "thinking"
+    assert run["last_seq"] >= 7
+
+    assert "event: run.started" in replay_body
+    assert "event: assistant.delta" in replay_body
+    assert "event: run.completed" in replay_body
+    assert "event: done" in replay_body
+
+    replay_payloads = []
+    for block in replay_body.split("\n\n"):
+        data_line = next((line for line in block.splitlines() if line.startswith("data: ")), None)
+        if data_line:
+            replay_payloads.append(_json.loads(data_line[len("data: "):]))
+    assert [payload["seq"] for payload in replay_payloads] == sorted(payload["seq"] for payload in replay_payloads)
+    assert run_id in body
+
+
+def test_response_store_marks_incomplete_session_runs_interrupted_after_restart(tmp_path):
+    db_path = tmp_path / "response_store.db"
+    store = ResponseStore(db_path=str(db_path))
+    store.create_session_run("run_pending", "session-1", "hello")
+    store.put_session_run_event("run_pending", "run.started", {})
+    assert store.get_session_run("run_pending")["status"] == "running"
+    store.close()
+
+    restarted_store = ResponseStore(db_path=str(db_path))
+    try:
+        run = restarted_store.get_session_run("run_pending")
+        assert run["status"] == "interrupted"
+        assert "restarted" in run["error"]
+        events = restarted_store.list_session_run_events("run_pending")
+        assert [event["event"] for event in events] == ["run.started"]
+    finally:
+        restarted_store.close()
 
 
 @pytest.mark.asyncio

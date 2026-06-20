@@ -100,12 +100,14 @@ from gateway.config import Platform
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+LINE_API_BASE = os.getenv("LINE_API_BASE_URL", "https://api.line.me")
+LINE_API_DATA_BASE = os.getenv("LINE_API_DATA_BASE_URL", "https://api-data.line.me")
 
-LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
-LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
-LINE_LOADING_URL = "https://api.line.me/v2/bot/chat/loading/start"
-LINE_CONTENT_URL_FMT = "https://api-data.line.me/v2/bot/message/{message_id}/content"
-LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
+LINE_REPLY_URL = f"{LINE_API_BASE}/v2/bot/message/reply"
+LINE_PUSH_URL = f"{LINE_API_BASE}/v2/bot/message/push"
+LINE_LOADING_URL = f"{LINE_API_BASE}/v2/bot/chat/loading/start"
+LINE_CONTENT_URL_FMT = f"{LINE_API_DATA_BASE}/v2/bot/message/{{message_id}}/content"
+LINE_BOT_INFO_URL = f"{LINE_API_BASE}/v2/bot/info"
 
 # LINE Messaging API hard limits
 LINE_PER_BUBBLE_CHARS = 5000  # Hard limit per text message object

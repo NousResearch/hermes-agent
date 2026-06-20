@@ -12,6 +12,7 @@ provides_tools:
   - aituber_onair_configure_hakua
   - aituber_onair_prepare
   - aituber_onair_start
+  - aituber_onair_galaxy_session
   - aituber_onair_stop
   - aituber_onair_tts_status
   - aituber_onair_start_tts
@@ -21,5 +22,13 @@ provides_tools:
   - aituber_onair_stream_start_tweet
   - aituber_onair_smoke
   - aituber_onair_youtube_ready
+  - aituber_onair_youtube_comments_status
+  - aituber_onair_start_youtube_comments
+  - aituber_onair_stop_youtube_comments
+  - aituber_onair_loops_status
+  - aituber_onair_start_autonomous_talk
+  - aituber_onair_start_comment_reactions
+  - aituber_onair_enqueue_comment
+  - aituber_onair_stop_loops
 provides_cli:
   - aituber-onair

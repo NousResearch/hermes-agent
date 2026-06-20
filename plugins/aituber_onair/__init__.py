@@ -24,6 +24,12 @@ _TOOLS = (
     ),
     ("aituber_onair_prepare", core.PREPARE_SCHEMA, core.handle_prepare, "A"),
     ("aituber_onair_start", core.START_SCHEMA, core.handle_start, "A"),
+    (
+        "aituber_onair_galaxy_session",
+        core.GALAXY_SESSION_SCHEMA,
+        core.handle_galaxy_session,
+        "A",
+    ),
     ("aituber_onair_stop", core.STOP_SCHEMA, core.handle_stop, "A"),
     ("aituber_onair_tts_status", core.TTS_STATUS_SCHEMA, core.handle_tts_status, "A"),
     ("aituber_onair_start_tts", core.START_TTS_SCHEMA, core.handle_start_tts, "A"),
@@ -120,7 +126,7 @@ def register(ctx) -> None:
         "aituber",
         handler=core.handle_slash,
         description="Run AITuber OnAir avatar streaming and Hakua Codex character chat.",
-        args_hint="[status|configure|prepare|start|stop|say|smoke|youtube-ready|start-comments|start-autonomous|start-reactions|comment]",
+        args_hint="[status|configure|prepare|start|galaxy-session|stop|say|smoke|youtube-ready|start-comments|start-autonomous|start-reactions|comment]",
     )
     ctx.register_cli_command(
         name="aituber-onair",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ class _FakeContext:
     def __init__(self) -> None:
         self.tools = []
         self.commands = {}
+        self.conversation_plugins = []
         self.llm = object()
 
     def register_tool(self, **kwargs):
@@ -19,6 +21,9 @@ class _FakeContext:
 
     def register_command(self, name, **kwargs):
         self.commands[name] = kwargs
+
+    def register_conversation_plugin(self, name, **kwargs):
+        self.conversation_plugins.append({"name": name, **kwargs})
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +50,7 @@ def test_register_exposes_tools_and_binds_ctx_llm(monkeypatch):
     }
     assert all(tool["toolset"] == "line-ai-bot" for tool in ctx.tools)
     assert "line-ai-bot" in ctx.commands
+    assert ctx.conversation_plugins[0]["name"] == "line-ai-bot"
     assert bound["factory"]() is ctx.llm
 
 
@@ -107,6 +113,31 @@ def test_generate_reply_degrades_without_stopping_conversation():
     assert result["degraded"] is True
     assert "stayed alive" in result["reply_text"]
     assert result["error"] == "RuntimeError"
+
+
+def test_conversation_plugin_matches_line_events_and_builds_prompt():
+    source = SimpleNamespace(platform=SimpleNamespace(value="line"), chat_type="dm")
+    event = SimpleNamespace(text="hello", source=source, channel_prompt=None)
+
+    assert core.matches_conversation_event(event) is True
+    prompt = core.conversation_prompt(event=event)
+
+    assert "LINE chat type: dm" in prompt
+    assert "<untrusted_line_message>" in prompt
+
+
+def test_conversation_plugin_skips_slash_commands_and_other_platforms():
+    line = SimpleNamespace(platform=SimpleNamespace(value="line"), chat_type="dm")
+    discord = SimpleNamespace(platform=SimpleNamespace(value="discord"), chat_type="dm")
+
+    assert (
+        core.matches_conversation_event(SimpleNamespace(text="/status", source=line))
+        is False
+    )
+    assert (
+        core.matches_conversation_event(SimpleNamespace(text="hello", source=discord))
+        is False
+    )
 
 
 def test_plugin_imports_cleanly_after_reload():

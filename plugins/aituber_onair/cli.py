@@ -78,6 +78,30 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     start.add_argument("--public-host", default="")
     start.add_argument("--force", action="store_true")
 
+    galaxy = subs.add_parser(
+        "galaxy-session",
+        aliases=["galaxy", "session"],
+        help="Start, stop, or inspect a Galaxy S9+ VRM session",
+    )
+    galaxy.add_argument(
+        "--action",
+        choices=["start", "status", "stop", "restart"],
+        default="start",
+    )
+    galaxy.add_argument("--repo-root", default="")
+    galaxy.add_argument("--vrm-port", type=int, default=None)
+    galaxy.add_argument("--public-host", default="")
+    galaxy.add_argument("--audio-ws-port", type=int, default=None)
+    galaxy.add_argument("--force", action="store_true")
+    galaxy.add_argument("--start-tts", action="store_true")
+    galaxy.add_argument("--start-autonomous", action="store_true")
+    galaxy.add_argument("--start-comment-reactions", action="store_true")
+    galaxy.add_argument("--topic", default="")
+    galaxy.add_argument("--interval-seconds", type=float, default=None)
+    galaxy.add_argument("--poll-seconds", type=float, default=None)
+    galaxy.add_argument("--play", action="store_true")
+    galaxy.add_argument("--no-stop-loops", action="store_true")
+
     stop = subs.add_parser("stop", help="Stop the plugin-managed avatar React app")
     stop.add_argument("--force", action="store_true")
 
@@ -112,9 +136,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     say.add_argument("prompt", nargs="*")
     say.add_argument("--repo-root", default="")
     say.add_argument("--model", default="")
-    say.add_argument(
-        "--reply-backend", choices=["auto", "hermes", "codex"], default=""
-    )
+    say.add_argument("--reply-backend", choices=["auto", "hermes", "codex"], default="")
     say.add_argument("--hermes-provider", default="")
     say.add_argument("--hermes-model", default="")
     say.add_argument("--response-length", default="")
@@ -210,7 +232,9 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         aliases=["loops-stop"],
         help="Stop local autonomous/comment reaction loops",
     )
-    stop_loops.add_argument("--target", choices=["all", "autonomous", "comments"], default="all")
+    stop_loops.add_argument(
+        "--target", choices=["all", "autonomous", "comments"], default="all"
+    )
     stop_loops.add_argument("--force", action="store_true")
 
     subparser.set_defaults(func=aituber_onair_command)
@@ -221,91 +245,98 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
     if not command:
         print(
             "usage: hermes aituber-onair "
-            "{configure,status,context-status,stream-start-tweet,prepare,start,stop,tts-status,start-tts,speak,say,smoke,youtube-ready,start-comments,comments-status,stop-comments,start-autonomous,start-reactions,comment,loops-status,stop-loops}"
+            "{configure,status,context-status,stream-start-tweet,prepare,start,galaxy-session,stop,tts-status,start-tts,speak,say,smoke,youtube-ready,start-comments,comments-status,stop-comments,start-autonomous,start-reactions,comment,loops-status,stop-loops}"
         )
         return 2
     if command in {"configure", "setup"}:
         return _print(
-            core.save_hakua_config(
-                {
-                    "repo_root": getattr(args, "repo_root", ""),
-                    "model": getattr(args, "model", ""),
-                    "reply_backend": getattr(args, "reply_backend", ""),
-                    "hermes_provider": getattr(args, "hermes_provider", ""),
-                    "hermes_model": getattr(args, "hermes_model", ""),
-                    "fbx_port": getattr(args, "fbx_port", None),
-                    "vrm_port": getattr(args, "vrm_port", None),
-                    "avatar_kind": getattr(args, "avatar", ""),
-                    "avatar_host": getattr(args, "avatar_host", ""),
-                    "avatar_public_host": getattr(args, "avatar_public_host", ""),
-                    "system_prompt": getattr(args, "system_prompt", ""),
-                    "tts_provider": getattr(args, "tts_provider", ""),
-                    "voicevox_url": getattr(args, "voicevox_url", ""),
-                    "voicevox_speaker": getattr(args, "voicevox_speaker", None),
-                    "voicevox_engine_exe": getattr(args, "voicevox_engine_exe", ""),
-                    "tts_voice": getattr(args, "tts_voice", ""),
-                    "tts_speed": getattr(args, "tts_speed", None),
-                    "youtube_live_id": getattr(args, "youtube_live_id", ""),
-                    "stream_url": getattr(args, "stream_url", ""),
-                    "with_runtime_context": getattr(
-                        args, "with_runtime_context", False
-                    ),
-                }
-            )
+            core.save_hakua_config({
+                "repo_root": getattr(args, "repo_root", ""),
+                "model": getattr(args, "model", ""),
+                "reply_backend": getattr(args, "reply_backend", ""),
+                "hermes_provider": getattr(args, "hermes_provider", ""),
+                "hermes_model": getattr(args, "hermes_model", ""),
+                "fbx_port": getattr(args, "fbx_port", None),
+                "vrm_port": getattr(args, "vrm_port", None),
+                "avatar_kind": getattr(args, "avatar", ""),
+                "avatar_host": getattr(args, "avatar_host", ""),
+                "avatar_public_host": getattr(args, "avatar_public_host", ""),
+                "system_prompt": getattr(args, "system_prompt", ""),
+                "tts_provider": getattr(args, "tts_provider", ""),
+                "voicevox_url": getattr(args, "voicevox_url", ""),
+                "voicevox_speaker": getattr(args, "voicevox_speaker", None),
+                "voicevox_engine_exe": getattr(args, "voicevox_engine_exe", ""),
+                "tts_voice": getattr(args, "tts_voice", ""),
+                "tts_speed": getattr(args, "tts_speed", None),
+                "youtube_live_id": getattr(args, "youtube_live_id", ""),
+                "stream_url": getattr(args, "stream_url", ""),
+                "with_runtime_context": getattr(args, "with_runtime_context", False),
+            })
         )
     if command == "status":
         return _print(core.status())
     if command in {"context-status", "runtime-context"}:
         return _print(
-            core.context_status(
-                {
-                    "prompt": getattr(args, "prompt", ""),
-                    "url": getattr(args, "url", ""),
-                }
-            )
+            core.context_status({
+                "prompt": getattr(args, "prompt", ""),
+                "url": getattr(args, "url", ""),
+            })
         )
     if command in {"stream-start-tweet", "tweet-start", "post-start"}:
         return _print(
-            core.stream_start_tweet(
-                {
-                    "url": getattr(args, "url", ""),
-                    "text": getattr(args, "text", ""),
-                    "topic": getattr(args, "topic", ""),
-                    "live": getattr(args, "live", False),
-                    "allow_private_url": getattr(args, "allow_private_url", False),
-                    "provider": getattr(args, "provider", ""),
-                    "model": getattr(args, "model", ""),
-                }
-            )
+            core.stream_start_tweet({
+                "url": getattr(args, "url", ""),
+                "text": getattr(args, "text", ""),
+                "topic": getattr(args, "topic", ""),
+                "live": getattr(args, "live", False),
+                "allow_private_url": getattr(args, "allow_private_url", False),
+                "provider": getattr(args, "provider", ""),
+                "model": getattr(args, "model", ""),
+            })
         )
     if command == "prepare":
         return _print(
-            core.prepare(
-                {
-                    "repo_root": getattr(args, "repo_root", ""),
-                    "install_codex_sdk": not getattr(
-                        args, "no_install_codex_sdk", False
-                    ),
-                    "build_chat": not getattr(args, "no_build_chat", False),
-                    "build_fbx_app": getattr(args, "build_fbx_app", False),
-                    "build_vrm_app": getattr(args, "build_vrm_app", False),
-                    "timeout_seconds": getattr(args, "timeout_seconds", None),
-                }
-            )
+            core.prepare({
+                "repo_root": getattr(args, "repo_root", ""),
+                "install_codex_sdk": not getattr(args, "no_install_codex_sdk", False),
+                "build_chat": not getattr(args, "no_build_chat", False),
+                "build_fbx_app": getattr(args, "build_fbx_app", False),
+                "build_vrm_app": getattr(args, "build_vrm_app", False),
+                "timeout_seconds": getattr(args, "timeout_seconds", None),
+            })
         )
     if command == "start":
         return _print(
-            core.start_avatar_app(
-                {
-                    "repo_root": getattr(args, "repo_root", ""),
-                    "avatar_kind": getattr(args, "avatar", ""),
-                    "fbx_port": getattr(args, "fbx_port", None),
-                    "vrm_port": getattr(args, "vrm_port", None),
-                    "host": getattr(args, "host", ""),
-                    "public_host": getattr(args, "public_host", ""),
-                    "force": getattr(args, "force", False),
-                }
-            )
+            core.start_avatar_app({
+                "repo_root": getattr(args, "repo_root", ""),
+                "avatar_kind": getattr(args, "avatar", ""),
+                "fbx_port": getattr(args, "fbx_port", None),
+                "vrm_port": getattr(args, "vrm_port", None),
+                "host": getattr(args, "host", ""),
+                "public_host": getattr(args, "public_host", ""),
+                "force": getattr(args, "force", False),
+            })
+        )
+    if command in {"galaxy-session", "galaxy", "session"}:
+        return _print(
+            core.galaxy_session({
+                "action": getattr(args, "action", "start"),
+                "repo_root": getattr(args, "repo_root", ""),
+                "vrm_port": getattr(args, "vrm_port", None),
+                "public_host": getattr(args, "public_host", ""),
+                "audio_ws_port": getattr(args, "audio_ws_port", None),
+                "force": getattr(args, "force", False),
+                "start_tts": getattr(args, "start_tts", False),
+                "start_autonomous": getattr(args, "start_autonomous", False),
+                "start_comment_reactions": getattr(
+                    args, "start_comment_reactions", False
+                ),
+                "topic": getattr(args, "topic", ""),
+                "interval_seconds": getattr(args, "interval_seconds", None),
+                "poll_seconds": getattr(args, "poll_seconds", None),
+                "play": getattr(args, "play", False),
+                "stop_loops": not getattr(args, "no_stop_loops", False),
+            })
         )
     if command == "stop":
         return _print(core.stop_fbx_app({"force": getattr(args, "force", False)}))
@@ -313,87 +344,75 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
         return _print(core.tts_status())
     if command == "start-tts":
         return _print(
-            core.start_tts(
-                {
-                    "provider": getattr(args, "provider", ""),
-                    "timeout_seconds": getattr(args, "timeout_seconds", None),
-                    "voicevox_url": getattr(args, "voicevox_url", ""),
-                    "voicevox_speaker": getattr(args, "voicevox_speaker", None),
-                }
-            )
+            core.start_tts({
+                "provider": getattr(args, "provider", ""),
+                "timeout_seconds": getattr(args, "timeout_seconds", None),
+                "voicevox_url": getattr(args, "voicevox_url", ""),
+                "voicevox_speaker": getattr(args, "voicevox_speaker", None),
+            })
         )
     if command == "speak":
         return _print(
-            core.synthesize_speech(
-                {
-                    "text": " ".join(getattr(args, "text", [])).strip(),
-                    "provider": getattr(args, "provider", ""),
-                    "output_path": getattr(args, "output_path", ""),
-                    "format": getattr(args, "format", ""),
-                    "voice": getattr(args, "voice", ""),
-                    "model": getattr(args, "model", ""),
-                    "speed": getattr(args, "speed", None),
-                    "voicevox_speaker": getattr(args, "voicevox_speaker", None),
-                    "play": getattr(args, "play", False),
-                }
-            )
+            core.synthesize_speech({
+                "text": " ".join(getattr(args, "text", [])).strip(),
+                "provider": getattr(args, "provider", ""),
+                "output_path": getattr(args, "output_path", ""),
+                "format": getattr(args, "format", ""),
+                "voice": getattr(args, "voice", ""),
+                "model": getattr(args, "model", ""),
+                "speed": getattr(args, "speed", None),
+                "voicevox_speaker": getattr(args, "voicevox_speaker", None),
+                "play": getattr(args, "play", False),
+            })
         )
     if command == "say":
         return _print(
-            core.run_hakua_once(
-                {
-                    "prompt": " ".join(getattr(args, "prompt", [])).strip(),
-                    "repo_root": getattr(args, "repo_root", ""),
-                    "model": getattr(args, "model", ""),
-                    "reply_backend": getattr(args, "reply_backend", ""),
-                    "hermes_provider": getattr(args, "hermes_provider", ""),
-                    "hermes_model": getattr(args, "hermes_model", ""),
-                    "response_length": getattr(args, "response_length", ""),
-                    "timeout_seconds": getattr(args, "timeout_seconds", None),
-                    "speak": getattr(args, "speak", False),
-                    "tts_provider": getattr(args, "tts_provider", ""),
-                    "tts_voice": getattr(args, "tts_voice", ""),
-                    "tts_speed": getattr(args, "tts_speed", None),
-                    "output_path": getattr(args, "output_path", ""),
-                    "play": getattr(args, "play", False),
-                    "with_runtime_context": getattr(args, "with_runtime_context", False),
-                }
-            )
+            core.run_hakua_once({
+                "prompt": " ".join(getattr(args, "prompt", [])).strip(),
+                "repo_root": getattr(args, "repo_root", ""),
+                "model": getattr(args, "model", ""),
+                "reply_backend": getattr(args, "reply_backend", ""),
+                "hermes_provider": getattr(args, "hermes_provider", ""),
+                "hermes_model": getattr(args, "hermes_model", ""),
+                "response_length": getattr(args, "response_length", ""),
+                "timeout_seconds": getattr(args, "timeout_seconds", None),
+                "speak": getattr(args, "speak", False),
+                "tts_provider": getattr(args, "tts_provider", ""),
+                "tts_voice": getattr(args, "tts_voice", ""),
+                "tts_speed": getattr(args, "tts_speed", None),
+                "output_path": getattr(args, "output_path", ""),
+                "play": getattr(args, "play", False),
+                "with_runtime_context": getattr(args, "with_runtime_context", False),
+            })
         )
     if command == "smoke":
         payload = json.loads(
-            core.handle_smoke(
-                {
-                    "repo_root": getattr(args, "repo_root", ""),
-                    "reply_backend": getattr(args, "reply_backend", ""),
-                    "hermes_provider": getattr(args, "hermes_provider", ""),
-                    "hermes_model": getattr(args, "hermes_model", ""),
-                    "timeout_seconds": getattr(args, "timeout_seconds", None),
-                }
-            )
+            core.handle_smoke({
+                "repo_root": getattr(args, "repo_root", ""),
+                "reply_backend": getattr(args, "reply_backend", ""),
+                "hermes_provider": getattr(args, "hermes_provider", ""),
+                "hermes_model": getattr(args, "hermes_model", ""),
+                "timeout_seconds": getattr(args, "timeout_seconds", None),
+            })
         )
         return _print(payload)
     if command in {"youtube-ready", "youtube", "onair-ready"}:
         return _print(
-            core.youtube_ready(
-                {
-                    "require_obs": not getattr(args, "no_require_obs", False),
-                    "require_tts_ready": getattr(args, "require_tts_ready", False),
-                }
-            )
+            core.youtube_ready({
+                "require_obs": not getattr(args, "no_require_obs", False),
+                "require_tts_ready": getattr(args, "require_tts_ready", False),
+            })
         )
     if command in {"start-comments", "comments-start", "onair-comments"}:
         return _print(
-            core.start_youtube_comments(
-                {
-                    "live_id": getattr(args, "live_id", ""),
-                    "api_key_env": getattr(args, "api_key_env", ""),
-                    "poll_seconds": getattr(args, "poll_seconds", None),
-                    "skip_existing": getattr(args, "skip_existing", False),
-                    "play": not getattr(args, "no_play", False),
-                    "force": getattr(args, "force", False),
-                }
-            )
+            core.start_youtube_comments({
+                "live_id": getattr(args, "live_id", ""),
+                "api_key_env": getattr(args, "api_key_env", ""),
+                "poll_seconds": getattr(args, "poll_seconds", None),
+                "skip_existing": getattr(args, "skip_existing", False),
+                "play": not getattr(args, "no_play", False),
+                "force": getattr(args, "force", False),
+            })
         )
     if command in {"comments-status", "comment-status"}:
         return _print(core.youtube_comments_status({}))
@@ -403,45 +422,37 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
         )
     if command in {"start-autonomous", "autonomous-start", "idle-talk"}:
         return _print(
-            core.start_autonomous_talk_loop(
-                {
-                    "interval_seconds": getattr(args, "interval_seconds", None),
-                    "topic": getattr(args, "topic", ""),
-                    "play": not getattr(args, "no_play", False),
-                    "force": getattr(args, "force", False),
-                }
-            )
+            core.start_autonomous_talk_loop({
+                "interval_seconds": getattr(args, "interval_seconds", None),
+                "topic": getattr(args, "topic", ""),
+                "play": not getattr(args, "no_play", False),
+                "force": getattr(args, "force", False),
+            })
         )
     if command in {"start-reactions", "reactions-start", "start-local-comments"}:
         return _print(
-            core.start_comment_reaction_loop(
-                {
-                    "poll_seconds": getattr(args, "poll_seconds", None),
-                    "play": not getattr(args, "no_play", False),
-                    "force": getattr(args, "force", False),
-                }
-            )
+            core.start_comment_reaction_loop({
+                "poll_seconds": getattr(args, "poll_seconds", None),
+                "play": not getattr(args, "no_play", False),
+                "force": getattr(args, "force", False),
+            })
         )
     if command in {"comment", "enqueue-comment"}:
         return _print(
-            core.enqueue_comment(
-                {
-                    "text": " ".join(getattr(args, "text", [])).strip(),
-                    "author": getattr(args, "author", ""),
-                    "source": getattr(args, "source", ""),
-                }
-            )
+            core.enqueue_comment({
+                "text": " ".join(getattr(args, "text", [])).strip(),
+                "author": getattr(args, "author", ""),
+                "source": getattr(args, "source", ""),
+            })
         )
     if command in {"loops-status", "loop-status"}:
         return _print(core.loops_status({}))
     if command in {"stop-loops", "loops-stop"}:
         return _print(
-            core.stop_loops(
-                {
-                    "target": getattr(args, "target", "all"),
-                    "force": getattr(args, "force", False),
-                }
-            )
+            core.stop_loops({
+                "target": getattr(args, "target", "all"),
+                "force": getattr(args, "force", False),
+            })
         )
     print("unknown aituber-onair command")
     return 2

@@ -71,6 +71,7 @@ def test_registers_tools_slash_and_cli_command():
     assert "aituber_onair_tts_status" in names
     assert "aituber_onair_speak" in names
     assert "aituber_onair_say" in names
+    assert "aituber_onair_galaxy_session" in names
     assert "aituber_onair_context_status" in names
     assert "aituber_onair_stream_start_tweet" in names
     assert "aituber_onair_youtube_ready" in names
@@ -164,14 +165,12 @@ def test_run_hakua_once_can_include_safe_runtime_context(monkeypatch, tmp_path):
     monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
     core.bind_llm_factory(lambda: FakeLlm())
 
-    result = core.run_hakua_once(
-        {
-            "repo_root": str(repo),
-            "prompt": "hello bob@example.com",
-            "reply_backend": "hermes",
-            "with_runtime_context": True,
-        }
-    )
+    result = core.run_hakua_once({
+        "repo_root": str(repo),
+        "prompt": "hello bob@example.com",
+        "reply_backend": "hermes",
+        "with_runtime_context": True,
+    })
 
     assert result["ok"] is True
     user_content = calls[0][1]["content"]
@@ -187,15 +186,13 @@ def test_stream_start_tweet_dry_run_uses_lm_twitterer_with_url(monkeypatch):
     class FakeLmTwitterer:
         @staticmethod
         def post(topic, *, dry_run, provider, model, text):
-            calls.append(
-                {
-                    "topic": topic,
-                    "dry_run": dry_run,
-                    "provider": provider,
-                    "model": model,
-                    "text": text,
-                }
-            )
+            calls.append({
+                "topic": topic,
+                "dry_run": dry_run,
+                "provider": provider,
+                "model": model,
+                "text": text,
+            })
             return {"ok": True, "dry_run": dry_run, "tweet_text": text}
 
     monkeypatch.setattr(
@@ -204,13 +201,11 @@ def test_stream_start_tweet_dry_run_uses_lm_twitterer_with_url(monkeypatch):
         lambda name: FakeLmTwitterer if name == "plugins.lm-twitterer.core" else None,
     )
 
-    result = core.stream_start_tweet(
-        {
-            "url": "https://example.com/live",
-            "topic": "Galaxy S9 VRM test",
-            "live": False,
-        }
-    )
+    result = core.stream_start_tweet({
+        "url": "https://example.com/live",
+        "topic": "Galaxy S9 VRM test",
+        "live": False,
+    })
 
     assert result["ok"] is True
     assert result["live"] is False
@@ -220,12 +215,10 @@ def test_stream_start_tweet_dry_run_uses_lm_twitterer_with_url(monkeypatch):
 
 
 def test_stream_start_tweet_refuses_private_live_url():
-    result = core.stream_start_tweet(
-        {
-            "url": "http://127.0.0.1:5175/",
-            "live": True,
-        }
-    )
+    result = core.stream_start_tweet({
+        "url": "http://127.0.0.1:5175/",
+        "live": True,
+    })
 
     assert result["ok"] is False
     assert "local or unverified" in result["error"]
@@ -327,13 +320,21 @@ def test_irodori_speech_uses_configured_hakua_voice(monkeypatch, tmp_path):
     monkeypatch.setattr(
         irodori_core,
         "synthesize_text",
-        lambda **kwargs: seen.update(kwargs)
-        or {"ok": True, "provider": "irodori", "file_path": str(kwargs["output_path"])},
+        lambda **kwargs: (
+            seen.update(kwargs)
+            or {
+                "ok": True,
+                "provider": "irodori",
+                "file_path": str(kwargs["output_path"]),
+            }
+        ),
     )
 
-    result = core._synthesize_irodori(
-        {"text": "hello", "output_path": str(tmp_path / "voice.wav"), "voice": ""}
-    )
+    result = core._synthesize_irodori({
+        "text": "hello",
+        "output_path": str(tmp_path / "voice.wav"),
+        "voice": "",
+    })
 
     assert result["ok"] is True
     assert seen["voice"] == "hakua"
@@ -372,9 +373,11 @@ def test_run_hakua_once_dispatches_codex_character_cli(monkeypatch, tmp_path):
 
     monkeypatch.setattr(core, "_run_command", fake_run)
 
-    result = core.run_hakua_once(
-        {"repo_root": str(repo), "prompt": "greet", "reply_backend": "codex"}
-    )
+    result = core.run_hakua_once({
+        "repo_root": str(repo),
+        "prompt": "greet",
+        "reply_backend": "codex",
+    })
 
     assert result["ok"] is True
     assert result["reply"] == "[happy] hello"
@@ -427,15 +430,13 @@ def test_run_hakua_once_prefers_bound_hermes_llm(monkeypatch, tmp_path):
     )
     core.bind_llm_factory(lambda: FakeLlm())
     try:
-        result = core.run_hakua_once(
-            {
-                "repo_root": str(repo),
-                "prompt": "say hello",
-                "reply_backend": "auto",
-                "hermes_provider": "local",
-                "hermes_model": "main",
-            }
-        )
+        result = core.run_hakua_once({
+            "repo_root": str(repo),
+            "prompt": "say hello",
+            "reply_backend": "auto",
+            "hermes_provider": "local",
+            "hermes_model": "main",
+        })
     finally:
         core.bind_llm_factory(None)
 
@@ -473,23 +474,77 @@ def test_run_hakua_once_applies_call_provider_rotation(monkeypatch, tmp_path):
     monkeypatch.setattr(core, "_rotation_index", 0)
     core.bind_llm_factory(lambda: FakeLlm())
     try:
-        result = core.run_hakua_once(
-            {
-                "repo_root": str(repo),
-                "prompt": "say hello",
-                "reply_backend": "hermes",
-                "provider_rotation": [
-                    "nous:nvidia/nemotron-3-ultra-550b-a55b:free",
-                    "nvidia:nvidia/nemotron-3-super-120b-a12b",
-                ],
-            }
-        )
+        result = core.run_hakua_once({
+            "repo_root": str(repo),
+            "prompt": "say hello",
+            "reply_backend": "hermes",
+            "provider_rotation": [
+                "nous:nvidia/nemotron-3-ultra-550b-a55b:free",
+                "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            ],
+        })
     finally:
         core.bind_llm_factory(None)
 
     assert result["ok"] is True
     assert calls[0][1]["provider"] == "nous"
     assert calls[0][1]["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def test_run_hakua_once_rotates_on_429_and_keeps_avatar_speech(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+    calls = []
+    speech_calls = []
+
+    class Result:
+        text = "[happy] rotated after 429"
+        provider = "nvidia"
+        model = "nvidia/nemotron-3-super-120b-a12b"
+        usage = None
+        audit = None
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            if len(calls) == 1:
+                raise RuntimeError("HTTP 429 Too Many Requests")
+            return Result()
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(core, "_plugin_config", lambda: {})
+    monkeypatch.setattr(core, "_rotation_index", 0)
+    monkeypatch.setattr(
+        core,
+        "synthesize_speech",
+        lambda values: (
+            speech_calls.append(values)
+            or {"ok": True, "provider": "auto", "file_path": "hakua.wav"}
+        ),
+    )
+    core.bind_llm_factory(lambda: FakeLlm())
+    try:
+        result = core.run_hakua_once({
+            "repo_root": str(repo),
+            "prompt": "say hello",
+            "reply_backend": "hermes",
+            "provider_rotation": [
+                "nous:nvidia/nemotron-3-ultra-550b-a55b:free",
+                "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            ],
+            "speak": True,
+            "tts_provider": "auto",
+        })
+    finally:
+        core.bind_llm_factory(None)
+
+    assert result["ok"] is True
+    assert result["reply"] == "[happy] rotated after 429"
+    assert result["provider_rotation_recovered"] is True
+    assert len(result["provider_rotation_attempts"]) == 2
+    assert [call[1]["provider"] for call in calls] == ["nous", "nvidia"]
+    assert speech_calls[0]["text"] == "[happy] rotated after 429"
+    assert result["tts"]["ok"] is True
 
 
 def test_run_hakua_once_can_use_hermes_cli_backend_without_bound_llm(
@@ -515,9 +570,11 @@ def test_run_hakua_once_can_use_hermes_cli_backend_without_bound_llm(
     monkeypatch.setattr(core, "_run_command", fake_run)
     core.bind_llm_factory(None)
 
-    result = core.run_hakua_once(
-        {"repo_root": str(repo), "prompt": "say hello", "reply_backend": "hermes"}
-    )
+    result = core.run_hakua_once({
+        "repo_root": str(repo),
+        "prompt": "say hello",
+        "reply_backend": "hermes",
+    })
 
     assert result["ok"] is True
     assert result["provider"] == "hermes-agent-cli"
@@ -556,9 +613,11 @@ def test_run_hakua_once_falls_back_to_hermes_cli_when_bound_model_is_unsupported
     )
     core.bind_llm_factory(lambda: FakeLlm())
 
-    result = core.run_hakua_once(
-        {"repo_root": str(repo), "prompt": "say hello", "reply_backend": "hermes"}
-    )
+    result = core.run_hakua_once({
+        "repo_root": str(repo),
+        "prompt": "say hello",
+        "reply_backend": "hermes",
+    })
 
     assert result["ok"] is True
     assert result["provider"] == "hermes-agent-cli"
@@ -586,9 +645,11 @@ def test_run_hakua_once_returns_degraded_reply_when_hermes_api_fails(
     )
     core.bind_llm_factory(lambda: FakeLlm())
     try:
-        result = core.run_hakua_once(
-            {"repo_root": str(repo), "prompt": "say hello", "reply_backend": "hermes"}
-        )
+        result = core.run_hakua_once({
+            "repo_root": str(repo),
+            "prompt": "say hello",
+            "reply_backend": "hermes",
+        })
     finally:
         core.bind_llm_factory(None)
 
@@ -622,14 +683,12 @@ def test_run_hakua_once_keeps_reply_when_tts_raises(monkeypatch, tmp_path):
     )
     core.bind_llm_factory(lambda: FakeLlm())
     try:
-        result = core.run_hakua_once(
-            {
-                "repo_root": str(repo),
-                "prompt": "say hello",
-                "reply_backend": "hermes",
-                "speak": True,
-            }
-        )
+        result = core.run_hakua_once({
+            "repo_root": str(repo),
+            "prompt": "say hello",
+            "reply_backend": "hermes",
+            "speak": True,
+        })
     finally:
         core.bind_llm_factory(None)
 
@@ -663,13 +722,11 @@ def test_handle_say_serializes_non_json_hermes_api_metadata(monkeypatch, tmp_pat
     core.bind_llm_factory(lambda: FakeLlm())
     try:
         payload = json.loads(
-            core.handle_say(
-                {
-                    "repo_root": str(repo),
-                    "prompt": "say hello",
-                    "reply_backend": "hermes",
-                }
-            )
+            core.handle_say({
+                "repo_root": str(repo),
+                "prompt": "say hello",
+                "reply_backend": "hermes",
+            })
         )
     finally:
         core.bind_llm_factory(None)
@@ -718,19 +775,41 @@ def test_run_hakua_once_can_synthesize_reply(monkeypatch, tmp_path):
         },
     )
 
-    result = core.run_hakua_once(
-        {
-            "repo_root": str(repo),
-            "prompt": "say hello",
-            "speak": True,
-            "tts_provider": "voicevox",
-        }
-    )
+    result = core.run_hakua_once({
+        "repo_root": str(repo),
+        "prompt": "say hello",
+        "speak": True,
+        "tts_provider": "voicevox",
+    })
 
     assert result["ok"] is True
     assert result["tts"]["ok"] is True
     assert result["tts"]["provider"] == "voicevox"
     assert result["tts"]["text"] == "[happy] hello"
+
+
+def test_synthesize_speech_reports_audio_ws_push(monkeypatch):
+    monkeypatch.setattr(core, "_select_tts_provider", lambda _explicit=None: "voicevox")
+    monkeypatch.setattr(
+        core,
+        "_synthesize_voicevox",
+        lambda values: {
+            "ok": True,
+            "provider": "voicevox",
+            "file_path": "hakua.wav",
+            "text": values["text"],
+        },
+    )
+    monkeypatch.setattr(
+        core,
+        "audio_ws_push_wav",
+        lambda wav_path: {"ok": True, "sent": 1, "path": str(wav_path)},
+    )
+
+    result = core.synthesize_speech({"text": "hello", "provider": "voicevox"})
+
+    assert result["ok"] is True
+    assert result["audio_ws"] == {"ok": True, "sent": 1, "path": "hakua.wav"}
 
 
 def test_audio_ws_config_stays_local_without_lan_opt_in(monkeypatch):
@@ -1039,13 +1118,11 @@ def test_start_vrm_can_bind_for_lan_display(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    result = core.start_avatar_app(
-        {
-            "repo_root": str(repo),
-            "avatar_kind": "vrm",
-            "host": "0.0.0.0",
-        }
-    )
+    result = core.start_avatar_app({
+        "repo_root": str(repo),
+        "avatar_kind": "vrm",
+        "host": "0.0.0.0",
+    })
 
     assert result["ok"] is True
     assert result["url"] == "http://192.168.1.23:5175/"
@@ -1054,6 +1131,95 @@ def test_start_vrm_can_bind_for_lan_display(monkeypatch, tmp_path):
     assert result["public_host"] == "192.168.1.23"
     cmd, _kwargs = popen_calls[0]
     assert cmd == ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5175"]
+
+
+def test_galaxy_session_starts_vrm_and_lan_audio_ws(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+    calls = {}
+
+    def fake_start_avatar(values):
+        calls["avatar"] = values
+        return {
+            "ok": True,
+            "ready": True,
+            "url": "http://192.168.1.23:5175/",
+            "host": "0.0.0.0",
+            "public_host": "192.168.1.23",
+            "avatar_kind": "vrm",
+        }
+
+    def fake_audio_start(host=None, port=None):
+        calls["audio_ws"] = {"host": host, "port": port}
+        core._audio_ws_state["host"] = host
+        core._audio_ws_state["port"] = port
+        core._audio_ws_state["server"] = object()
+        return {"ok": True, "host": host, "port": port}
+
+    monkeypatch.setattr(core, "start_avatar_app", fake_start_avatar)
+    monkeypatch.setattr(core, "audio_ws_start", fake_audio_start)
+
+    result = core.galaxy_session({
+        "repo_root": str(repo),
+        "public_host": "192.168.1.23",
+        "audio_ws_port": 5176,
+        "force": True,
+    })
+
+    assert result["ok"] is True
+    assert result["galaxy_url"] == "http://192.168.1.23:5175/"
+    assert result["audio_ws_url"] == "ws://192.168.1.23:5176/"
+    assert calls["avatar"]["avatar_kind"] == "vrm"
+    assert calls["avatar"]["host"] == "0.0.0.0"
+    assert calls["avatar"]["force"] is True
+    assert calls["audio_ws"] == {"host": "0.0.0.0", "port": 5176}
+    core._audio_ws_state.clear()
+
+
+def test_galaxy_session_status_reports_urls(monkeypatch):
+    monkeypatch.setattr(
+        core,
+        "_active_status",
+        lambda: {
+            "ok": True,
+            "alive": True,
+            "url": "http://192.168.1.23:5175/",
+            "public_host": "192.168.1.23",
+        },
+    )
+    monkeypatch.setattr(core, "status", lambda: {"ok": True, "config": {}})
+    core._audio_ws_state["host"] = "0.0.0.0"
+    core._audio_ws_state["port"] = 5176
+    core._audio_ws_state["server"] = object()
+
+    result = core.galaxy_session({"action": "status"})
+
+    assert result["ok"] is True
+    assert result["galaxy_url"] == "http://192.168.1.23:5175/"
+    assert result["audio_ws_url"] == "ws://192.168.1.23:5176/"
+    assert result["audio_ws"]["running"] is True
+    core._audio_ws_state.clear()
+
+
+def test_slash_galaxy_session_routes_to_session_handler(monkeypatch):
+    seen = {}
+
+    def fake_handle_galaxy(values):
+        seen.update(values)
+        return json.dumps({"ok": True, "values": values})
+
+    monkeypatch.setattr(core, "handle_galaxy_session", fake_handle_galaxy)
+
+    payload = json.loads(
+        core.handle_slash(
+            "galaxy-session status --public-host 192.168.1.23 --audio-ws-port 5176 --force"
+        )
+    )
+
+    assert payload["ok"] is True
+    assert seen["action"] == "status"
+    assert seen["public_host"] == "192.168.1.23"
+    assert seen["audio_ws_port"] == 5176
+    assert seen["force"] is True
 
 
 def test_run_command_uses_sanitized_default_env(monkeypatch, tmp_path):
@@ -1225,7 +1391,9 @@ def test_start_youtube_comments_requires_secret_env(monkeypatch):
 
 def test_youtube_comments_status_reports_presence_without_key_value(monkeypatch):
     monkeypatch.setenv("AITUBER_ONAIR_YOUTUBE_API_KEY", "secret-youtube-key")
-    monkeypatch.setattr(core, "_plugin_config", lambda: {"youtube_live_id": "abc123XYZ"})
+    monkeypatch.setattr(
+        core, "_plugin_config", lambda: {"youtube_live_id": "abc123XYZ"}
+    )
     monkeypatch.setattr(
         core,
         "_youtube_comments_active_status",
@@ -1240,7 +1408,9 @@ def test_youtube_comments_status_reports_presence_without_key_value(monkeypatch)
     assert "secret-youtube-key" not in json.dumps(result)
 
 
-def test_start_youtube_comments_spawns_worker_without_recording_api_key(monkeypatch, tmp_path):
+def test_start_youtube_comments_spawns_worker_without_recording_api_key(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path)
     monkeypatch.setenv("AITUBER_ONAIR_YOUTUBE_API_KEY", "secret-youtube-key")
     popen_calls = []
@@ -1255,13 +1425,11 @@ def test_start_youtube_comments_spawns_worker_without_recording_api_key(monkeypa
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(core, "_pid_alive", lambda _pid: False)
 
-    result = core.start_youtube_comments(
-        {
-            "live_id": "https://www.youtube.com/watch?v=live-123",
-            "poll_seconds": 1,
-            "skip_existing": True,
-        }
-    )
+    result = core.start_youtube_comments({
+        "live_id": "https://www.youtube.com/watch?v=live-123",
+        "poll_seconds": 1,
+        "skip_existing": True,
+    })
 
     assert result["ok"] is True
     assert result["active"]["pid"] == 34567
@@ -1287,9 +1455,11 @@ def test_start_autonomous_talk_spawns_local_loop_worker(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    result = core.start_autonomous_talk_loop(
-        {"interval_seconds": 30, "topic": "Galaxy display test", "play": False}
-    )
+    result = core.start_autonomous_talk_loop({
+        "interval_seconds": 30,
+        "topic": "Galaxy display test",
+        "play": False,
+    })
 
     assert result["ok"] is True
     assert result["active"]["pid"] == 45678
@@ -1307,13 +1477,17 @@ def test_start_autonomous_talk_spawns_local_loop_worker(monkeypatch, tmp_path):
 def test_enqueue_comment_writes_local_queue(monkeypatch, tmp_path):
     monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path)
 
-    result = core.enqueue_comment(
-        {"author": "bob", "text": "反応して", "source": "local-test"}
-    )
+    result = core.enqueue_comment({
+        "author": "bob",
+        "text": "反応して",
+        "source": "local-test",
+    })
 
     assert result["ok"] is True
     queue_file = Path(result["queue_file"])
-    rows = [json.loads(line) for line in queue_file.read_text(encoding="utf-8").splitlines()]
+    rows = [
+        json.loads(line) for line in queue_file.read_text(encoding="utf-8").splitlines()
+    ]
     assert rows[-1]["author"] == "bob"
     assert rows[-1]["text"] == "反応して"
     assert rows[-1]["source"] == "local-test"
@@ -1350,12 +1524,10 @@ def test_comment_reaction_worker_skips_processed_comments(monkeypatch, tmp_path)
     queue_file = tmp_path / "queue.jsonl"
     processed_file = tmp_path / "processed.json"
     queue_file.write_text(
-        "\n".join(
-            [
-                json.dumps({"id": "one", "author": "bob", "text": "first"}),
-                json.dumps({"id": "two", "author": "bob", "text": "second"}),
-            ]
-        ),
+        "\n".join([
+            json.dumps({"id": "one", "author": "bob", "text": "first"}),
+            json.dumps({"id": "two", "author": "bob", "text": "second"}),
+        ]),
         encoding="utf-8",
     )
     processed_file.write_text(json.dumps({"ids": ["one"]}), encoding="utf-8")
@@ -1364,8 +1536,9 @@ def test_comment_reaction_worker_skips_processed_comments(monkeypatch, tmp_path)
     monkeypatch.setattr(
         local_loops_worker,
         "_reply",
-        lambda prompt, play: replies.append(prompt)
-        or {"ok": True, "reply": "[happy] ok"},
+        lambda prompt, play: (
+            replies.append(prompt) or {"ok": True, "reply": "[happy] ok"}
+        ),
     )
     monkeypatch.setattr(local_loops_worker, "_log", lambda _payload: None)
 

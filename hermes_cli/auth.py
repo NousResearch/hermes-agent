@@ -46,7 +46,7 @@ import httpx
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -4088,9 +4088,7 @@ def resolve_codex_runtime_credentials(
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(
-        os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20")
-    )
+    refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
 
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
@@ -4748,9 +4746,7 @@ def resolve_xai_oauth_runtime_credentials(
     data = _read_xai_oauth_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(
-        os.getenv("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", "20")
-    )
+    refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
     discovery = dict(data.get("discovery") or {})
     token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
     redirect_uri = str(data.get("redirect_uri", "") or "").strip()

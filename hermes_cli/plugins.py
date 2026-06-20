@@ -295,6 +295,7 @@ class LoadedPlugin:
     hooks_registered: List[str] = field(default_factory=list)
     middleware_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
+    conversation_plugins_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
 
@@ -1027,6 +1028,77 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    def register_conversation_plugin(
+        self,
+        name: str,
+        prompt_builder: Callable,
+        matcher: Callable | None = None,
+    ) -> None:
+        clean = name.lower().strip().replace(" ", "-")
+        if not clean:
+            logger.warning(
+                "Plugin '%s' tried to register a conversation plugin with an empty name.",
+                self.manifest.name,
+            )
+            return
+        if not callable(prompt_builder):
+            logger.warning(
+                "Plugin '%s' tried to register conversation plugin '%s' without a callable prompt builder.",
+                self.manifest.name,
+                clean,
+            )
+            return
+        if matcher is not None and not callable(matcher):
+            logger.warning(
+                "Plugin '%s' tried to register conversation plugin '%s' with a non-callable matcher.",
+                self.manifest.name,
+                clean,
+            )
+            return
+
+        def _call_callback(callback: Callable, event: Any, kwargs: dict) -> Any:
+            call_kwargs = dict(kwargs)
+            call_kwargs["event"] = event
+            try:
+                return callback(**call_kwargs)
+            except TypeError:
+                return callback(event)
+
+        def _conversation_prompt_hook(**kwargs):
+            event = kwargs.get("event")
+            if event is None:
+                return None
+            if matcher is not None and not _call_callback(matcher, event, kwargs):
+                return None
+            prompt = _call_callback(prompt_builder, event, kwargs)
+            prompt = str(prompt or "").strip()
+            if not prompt:
+                return None
+            current = str(getattr(event, "channel_prompt", None) or "").strip()
+            merged = f"{current}\n\n{prompt}" if current else prompt
+            setattr(event, "channel_prompt", merged)
+            platform = getattr(getattr(event, "source", None), "platform", None)
+            logger.info(
+                "Conversation plugin %s injected channel_prompt for platform=%s prompt_chars=%d",
+                clean,
+                getattr(platform, "value", platform),
+                len(prompt),
+            )
+            return {"action": "allow", "conversation_plugin": clean}
+
+        self._manager._conversation_plugins[clean] = {
+            "name": clean,
+            "plugin": self.manifest.name,
+            "prompt_builder": prompt_builder,
+            "matcher": matcher,
+        }
+        self.register_hook("pre_gateway_dispatch", _conversation_prompt_hook)
+        logger.debug(
+            "Plugin %s registered conversation plugin: %s",
+            self.manifest.name,
+            clean,
+        )
+
     # -- middleware registration -------------------------------------------
 
     def register_middleware(self, kind: str, callback: Callable) -> None:
@@ -1110,6 +1182,7 @@ class PluginManager:
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
+        self._conversation_plugins: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
@@ -1155,6 +1228,7 @@ class PluginManager:
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
+            self._conversation_plugins.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
@@ -1570,6 +1644,7 @@ class PluginManager:
                 _mw_counts_before = {
                     kind: len(cbs) for kind, cbs in self._middleware.items()
                 }
+                _conversation_before = set(self._conversation_plugins)
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
@@ -1588,6 +1663,11 @@ class PluginManager:
                 loaded.commands_registered = [
                     c for c in self._plugin_commands
                     if self._plugin_commands[c].get("plugin") == manifest.name
+                ]
+                loaded.conversation_plugins_registered = [
+                    c
+                    for c in self._conversation_plugins
+                    if c not in _conversation_before
                 ]
                 loaded.enabled = True
                 logger.debug(
@@ -1776,6 +1856,9 @@ class PluginManager:
                     "hooks": len(loaded.hooks_registered),
                     "middleware": len(loaded.middleware_registered),
                     "commands": len(loaded.commands_registered),
+                    "conversation_plugins": len(
+                        loaded.conversation_plugins_registered
+                    ),
                     "error": loaded.error,
                 }
             )

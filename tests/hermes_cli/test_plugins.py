@@ -658,6 +658,29 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
 
+    def test_register_conversation_plugin_adds_channel_prompt(self):
+        manifest = PluginManifest(name="bot_plugin")
+        mgr = PluginManager()
+        ctx = PluginContext(manifest, mgr)
+        event = types.SimpleNamespace(channel_prompt="existing")
+
+        ctx.register_conversation_plugin(
+            "line bot",
+            prompt_builder=lambda **kw: "persona prompt",
+            matcher=lambda **kw: True,
+        )
+
+        results = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event=event,
+            gateway=object(),
+            session_store=object(),
+        )
+
+        assert event.channel_prompt == "existing\n\npersona prompt"
+        assert results == [{"action": "allow", "conversation_plugin": "line-bot"}]
+        assert mgr._conversation_plugins["line-bot"]["plugin"] == "bot_plugin"
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

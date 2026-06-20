@@ -8686,7 +8686,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
             reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            if getattr(event, "reply_to_is_own_message", False):
+                message_text = (
+                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+                    f"{message_text}"
+                )
+            else:
+                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:

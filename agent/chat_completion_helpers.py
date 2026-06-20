@@ -35,7 +35,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, env_int
+from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -1968,14 +1968,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _base_timeout = (
             _provider_timeout_cfg
             if _provider_timeout_cfg is not None
-            else float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+            else env_float("HERMES_API_TIMEOUT", 1800.0)
         )
         # Read timeout: config wins here too.  Otherwise use
         # HERMES_STREAM_READ_TIMEOUT (default 120s) for cloud providers.
         if _provider_timeout_cfg is not None:
             _stream_read_timeout = _provider_timeout_cfg
         else:
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
+            _stream_read_timeout = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
             # Local providers (Ollama, llama.cpp, vLLM) can take minutes for
             # prefill on large contexts before producing the first token.
             # Auto-increase the httpx read timeout unless the user explicitly
@@ -2742,9 +2742,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if _cfg_stale is not None:
         _stream_stale_timeout_base = _cfg_stale
     else:
-        _stream_stale_timeout_base = float(
-            os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0)
-        )
+        _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.

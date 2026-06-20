@@ -40,3 +40,8 @@ def register(ctx) -> None:
         description="Generate LINE-ready bot replies through the active Hermes model.",
         args_hint="[status|reply <text>]",
     )
+    ctx.register_conversation_plugin(
+        "line-ai-bot",
+        prompt_builder=core.conversation_prompt,
+        matcher=core.matches_conversation_event,
+    )

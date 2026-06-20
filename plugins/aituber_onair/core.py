@@ -22,6 +22,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, cast
+
 # Lazy import — hermes_constants may not be importable before config is loaded
 try:
     from hermes_constants import get_hermes_home
@@ -125,7 +126,9 @@ SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE),
     re.compile(r"\b(?:\+?\d[\d .()_-]{8,}\d)\b"),
     re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),
-    re.compile(r"\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*\S+", re.IGNORECASE),
+    re.compile(
+        r"\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*\S+", re.IGNORECASE
+    ),
 )
 
 _llm_factory: Callable[[], Any] | None = None
@@ -156,7 +159,11 @@ def _next_provider_rotation_entry(raw: Any = None) -> tuple[str, str]:
     Model may be empty when an entry has no colon separator.
     Thread-safe round-robin.
     """
-    rotation = _provider_rotation_entries(raw) if raw is not None else _plugin_provider_rotation_entries()
+    rotation = (
+        _provider_rotation_entries(raw)
+        if raw is not None
+        else _plugin_provider_rotation_entries()
+    )
     if not rotation:
         return ("", "")
     global _rotation_index
@@ -358,6 +365,60 @@ START_SCHEMA = {
             "public_host": {
                 "type": "string",
                 "description": "Host or IP returned for external devices. Empty auto-detects LAN IPv4 when host is 0.0.0.0.",
+            },
+        },
+    },
+}
+
+GALAXY_SESSION_SCHEMA = {
+    "name": "aituber_onair_galaxy_session",
+    "description": "Start, stop, or inspect a Galaxy S9+ friendly VRM session with LAN avatar URL and audio WebSocket.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["start", "status", "stop", "restart"],
+                "description": "Session action. Default: start.",
+            },
+            "repo_root": {"type": "string"},
+            "vrm_port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+            "public_host": {
+                "type": "string",
+                "description": "LAN host/IP returned for Galaxy. Empty auto-detects.",
+            },
+            "audio_ws_port": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 65535,
+                "description": "LAN audio WebSocket port. Default: configured audio_ws_port or 5176.",
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Restart an existing plugin-managed avatar process.",
+            },
+            "start_tts": {
+                "type": "boolean",
+                "description": "Also start the configured local TTS backend.",
+            },
+            "start_autonomous": {
+                "type": "boolean",
+                "description": "Also start Hakua's autonomous talk loop.",
+            },
+            "start_comment_reactions": {
+                "type": "boolean",
+                "description": "Also start the local comment reaction loop.",
+            },
+            "topic": {"type": "string"},
+            "interval_seconds": {"type": "number", "minimum": 10, "maximum": 3600},
+            "poll_seconds": {"type": "number", "minimum": 1, "maximum": 120},
+            "play": {
+                "type": "boolean",
+                "description": "Local desktop playback for optional loops. Default: false for Galaxy sessions.",
+            },
+            "stop_loops": {
+                "type": "boolean",
+                "description": "Stop autonomous/comment loops on stop. Default: true.",
             },
         },
     },
@@ -851,13 +912,11 @@ def _default_repo_candidates() -> list[Path]:
     candidates: list[Path] = []
     if len(here.parents) >= 4:
         candidates.append(here.parents[3] / "aituber-onair")
-    candidates.extend(
-        [
-            Path.cwd() / "aituber-onair",
-            Path.cwd().parent / "aituber-onair",
-            Path.home() / "Documents" / "New project" / "aituber-onair",
-        ]
-    )
+    candidates.extend([
+        Path.cwd() / "aituber-onair",
+        Path.cwd().parent / "aituber-onair",
+        Path.home() / "Documents" / "New project" / "aituber-onair",
+    ])
     return candidates
 
 
@@ -981,7 +1040,9 @@ def _npm_exe() -> str | None:
 
 
 def _hermes_python_exe() -> str:
-    python_exe = Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "python.exe"
+    python_exe = (
+        Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "python.exe"
+    )
     if python_exe.is_file():
         return str(python_exe)
     return sys.executable
@@ -1137,6 +1198,23 @@ def _avatar_url(port: int, public_host: str | None = None) -> str:
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     return f"http://{host}:{port}/"
+
+
+def _ws_url(host: str, port: int) -> str:
+    display_host = host
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    return f"ws://{display_host}:{port}/"
+
+
+def _audio_ws_public_url(public_host: str | None = None) -> str:
+    host = str(_audio_ws_state.get("host") or _audio_ws_config()[0])
+    port = int(_audio_ws_state.get("port") or _audio_ws_config()[1])
+    if host in {"0.0.0.0", "::"}:
+        host = public_host or _plugin_avatar_public_host(host=host)
+    if host == "localhost":
+        host = "127.0.0.1"
+    return _ws_url(host, port)
 
 
 def _plugin_tts_provider(explicit: Any = None) -> str:
@@ -1421,7 +1499,9 @@ def _safe_speech_context(values: dict[str, Any], prompt: str) -> str:
         lines.append(
             "- Incoming text may contain personal or secret-looking data. Do not repeat it literally."
         )
-    lines.append("- Do not speak raw environment variable values, tokens, cookies, file contents, or private memory.")
+    lines.append(
+        "- Do not speak raw environment variable values, tokens, cookies, file contents, or private memory."
+    )
     return "\n".join(lines)
 
 
@@ -1572,15 +1652,13 @@ def _codex_cli_auth_status() -> dict[str, Any]:
     tokens = data.get("tokens", {}) if isinstance(data, dict) else {}
     if not isinstance(tokens, dict):
         tokens = {}
-    result.update(
-        {
-            "parsed": True,
-            "auth_mode": str(data.get("auth_mode") or ""),
-            "has_access_token": bool(tokens.get("access_token")),
-            "has_refresh_token": bool(tokens.get("refresh_token")),
-            "account_id_present": bool(tokens.get("account_id")),
-        }
-    )
+    result.update({
+        "parsed": True,
+        "auth_mode": str(data.get("auth_mode") or ""),
+        "has_access_token": bool(tokens.get("access_token")),
+        "has_refresh_token": bool(tokens.get("refresh_token")),
+        "account_id_present": bool(tokens.get("account_id")),
+    })
     return result
 
 
@@ -1610,13 +1688,11 @@ def _hermes_codex_auth_status() -> dict[str, Any]:
             pool_entries = len(value)
         elif isinstance(value, dict):
             pool_entries = 1
-    result.update(
-        {
-            "parsed": True,
-            "provider_entry": provider_entry,
-            "credential_pool_entries": pool_entries,
-        }
-    )
+    result.update({
+        "parsed": True,
+        "provider_entry": provider_entry,
+        "credential_pool_entries": pool_entries,
+    })
     return result
 
 
@@ -1744,18 +1820,14 @@ def _voicevox_engine_candidates() -> list[Path]:
         candidates.append(Path(configured).expanduser())
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
-        candidates.extend(
-            [
-                Path(local_appdata) / "Programs" / "VOICEVOX" / "vv-engine" / "run.exe",
-                Path(local_appdata) / "voicevox-engine" / "voicevox-engine" / "run.exe",
-            ]
-        )
-    candidates.extend(
-        [
-            Path("C:/Program Files/VOICEVOX/vv-engine/run.exe"),
-            Path("C:/Program Files (x86)/VOICEVOX/vv-engine/run.exe"),
-        ]
-    )
+        candidates.extend([
+            Path(local_appdata) / "Programs" / "VOICEVOX" / "vv-engine" / "run.exe",
+            Path(local_appdata) / "voicevox-engine" / "voicevox-engine" / "run.exe",
+        ])
+    candidates.extend([
+        Path("C:/Program Files/VOICEVOX/vv-engine/run.exe"),
+        Path("C:/Program Files (x86)/VOICEVOX/vv-engine/run.exe"),
+    ])
 
     seen: set[str] = set()
     found: list[Path] = []
@@ -2041,9 +2113,10 @@ def _synthesize_voicevox(values: dict[str, Any]) -> dict[str, Any]:
 
     speaker = _plugin_voicevox_speaker(values.get("voicevox_speaker"))
     output_path = _tts_output_path("voicevox", values.get("output_path"), "wav")
-    query_url = f"{url}/audio_query?" + urllib.parse.urlencode(
-        {"speaker": speaker, "text": text}
-    )
+    query_url = f"{url}/audio_query?" + urllib.parse.urlencode({
+        "speaker": speaker,
+        "text": text,
+    })
     try:
         status_code, query_raw = _http_request(
             query_url, method="POST", timeout_seconds=15.0
@@ -2055,9 +2128,9 @@ def _synthesize_voicevox(values: dict[str, Any]) -> dict[str, Any]:
                 "error": f"audio_query HTTP {status_code}",
             }
         query = json.loads(query_raw.decode("utf-8", errors="replace"))
-        synthesis_url = f"{url}/synthesis?" + urllib.parse.urlencode(
-            {"speaker": speaker}
-        )
+        synthesis_url = f"{url}/synthesis?" + urllib.parse.urlencode({
+            "speaker": speaker
+        })
         status_code, wav_bytes = _http_request(
             synthesis_url,
             method="POST",
@@ -2142,6 +2215,7 @@ def _play_wav_file(path: Path) -> dict[str, Any]:
 
 # ── Audio WebSocket Push Server ──────────────────────────────────────────────
 
+
 def _audio_ws_running() -> bool:
     return bool(_audio_ws_state.get("server"))
 
@@ -2153,7 +2227,9 @@ def _audio_ws_send_json(websocket: Any, payload: dict[str, Any]) -> None:
         _audio_ws_clients.discard(websocket)
 
 
-def _audio_ws_broadcast_bytes(data: bytes, exclude: Any | None = None) -> dict[str, Any]:
+def _audio_ws_broadcast_bytes(
+    data: bytes, exclude: Any | None = None
+) -> dict[str, Any]:
     if not _audio_ws_clients:
         return {"ok": True, "sent": 0, "info": "no clients connected"}
     clients = list(_audio_ws_clients)
@@ -2186,7 +2262,9 @@ def _audio_ws_handle_text(websocket: Any, raw_message: str) -> None:
     except json.JSONDecodeError:
         parsed = {"type": "chat", "text": text}
     if not isinstance(parsed, dict):
-        _audio_ws_send_json(websocket, {"type": "error", "error": "Invalid WS message."})
+        _audio_ws_send_json(
+            websocket, {"type": "error", "error": "Invalid WS message."}
+        )
         return
     message_type = str(parsed.get("type") or "chat").strip().lower()
     if message_type in {"ping", "hello"}:
@@ -2195,12 +2273,16 @@ def _audio_ws_handle_text(websocket: Any, raw_message: str) -> None:
     if message_type == "push_wav":
         raw_b64 = str(parsed.get("wav_b64") or "")
         if not raw_b64:
-            _audio_ws_send_json(websocket, {"type": "error", "error": "wav_b64 is required."})
+            _audio_ws_send_json(
+                websocket, {"type": "error", "error": "wav_b64 is required."}
+            )
             return
         try:
             data = base64.b64decode(raw_b64, validate=True)
         except Exception:
-            _audio_ws_send_json(websocket, {"type": "error", "error": "invalid wav_b64."})
+            _audio_ws_send_json(
+                websocket, {"type": "error", "error": "invalid wav_b64."}
+            )
             return
         result = _audio_ws_broadcast_bytes(data, exclude=websocket)
         _audio_ws_send_json(websocket, {"type": "push_wav_result", **result})
@@ -2235,13 +2317,20 @@ def _audio_ws_handle_text(websocket: Any, raw_message: str) -> None:
                     "type": "reply",
                     "ok": bool(result.get("ok")),
                     "reply": str(result.get("reply") or ""),
-                    "error": _safe_error_text(result.get("error") or result.get("recoverable_error") or ""),
+                    "error": _safe_error_text(
+                        result.get("error") or result.get("recoverable_error") or ""
+                    ),
                 },
             )
         except Exception as exc:
             _audio_ws_send_json(
                 websocket,
-                {"type": "reply", "ok": False, "reply": "", "error": _safe_error_text(str(exc))},
+                {
+                    "type": "reply",
+                    "ok": False,
+                    "reply": "",
+                    "error": _safe_error_text(str(exc)),
+                },
             )
 
     threading.Thread(target=worker, daemon=True, name="audio-ws-chat").start()
@@ -2270,7 +2359,9 @@ def _audio_ws_config() -> tuple[str, int]:
         port = int(port)
     except (TypeError, ValueError):
         port = _AUDIO_WS_PORT
-    if host in {"0.0.0.0", "::"} and not _coerce_bool(cfg.get("audio_ws_allow_lan"), False):
+    if host in {"0.0.0.0", "::"} and not _coerce_bool(
+        cfg.get("audio_ws_allow_lan"), False
+    ):
         host = _AUDIO_WS_HOST
     return host, max(1024, min(65535, port))
 
@@ -2343,12 +2434,10 @@ def audio_ws_push_wav(wav_path: Path | str) -> dict[str, Any]:
         with _ws_client_mod.connect(uri, open_timeout=5, close_timeout=2) as ws:
             ws.recv(timeout=2)  # ready
             ws.send(
-                json.dumps(
-                    {
-                        "type": "push_wav",
-                        "wav_b64": base64.b64encode(data).decode("ascii"),
-                    }
-                )
+                json.dumps({
+                    "type": "push_wav",
+                    "wav_b64": base64.b64encode(data).decode("ascii"),
+                })
             )
             ack = ws.recv(timeout=10)
         return {
@@ -2359,7 +2448,11 @@ def audio_ws_push_wav(wav_path: Path | str) -> dict[str, Any]:
             "ack": ack if isinstance(ack, str) else f"bytes:{len(ack)}",
         }
     except Exception as exc:
-        return {"ok": False, "error": f"audio WS loopback push failed: {exc}", "uri": uri}
+        return {
+            "ok": False,
+            "error": f"audio WS loopback push failed: {exc}",
+            "uri": uri,
+        }
 
 
 # ── Speech Synthesis ─────────────────────────────────────────────────────────
@@ -2373,7 +2466,9 @@ def synthesize_speech(values: dict[str, Any]) -> dict[str, Any]:
             if voicevox.get("installed") or voicevox.get("reachable"):
                 fallback_result = _synthesize_voicevox(values)
                 fallback_result["fallback_from"] = "irodori"
-                fallback_result["fallback_error"] = _safe_error_text(result.get("error") or "")
+                fallback_result["fallback_error"] = _safe_error_text(
+                    result.get("error") or ""
+                )
                 result = fallback_result
     elif provider == "voicevox":
         result = _synthesize_voicevox(values)
@@ -2385,7 +2480,7 @@ def synthesize_speech(values: dict[str, Any]) -> dict[str, Any]:
         }
     # Push to WebSocket audio clients (best-effort, silent)
     if result.get("ok") and result.get("file_path"):
-        audio_ws_push_wav(result["file_path"])
+        result["audio_ws"] = audio_ws_push_wav(result["file_path"])
     return result
 
 
@@ -2413,12 +2508,10 @@ def _obs_exe_candidates() -> list[Path]:
             / "64bit"
             / "obs64.exe"
         )
-    candidates.extend(
-        [
-            Path("C:/Program Files/obs-studio/bin/64bit/obs64.exe"),
-            Path("C:/Program Files (x86)/obs-studio/bin/64bit/obs64.exe"),
-        ]
-    )
+    candidates.extend([
+        Path("C:/Program Files/obs-studio/bin/64bit/obs64.exe"),
+        Path("C:/Program Files (x86)/obs-studio/bin/64bit/obs64.exe"),
+    ])
 
     seen: set[str] = set()
     found_candidates: list[Path] = []
@@ -2624,14 +2717,12 @@ def fetch_youtube_live_comments(
             comment_text = _path_text(super_chat.get("userComment"))
         if not comment_text:
             continue
-        comments.append(
-            {
-                "id": _path_text(item.get("id")),
-                "author": _path_text(author.get("displayName")) or "viewer",
-                "text": comment_text,
-                "published_at": _path_text(snippet.get("publishedAt")),
-            }
-        )
+        comments.append({
+            "id": _path_text(item.get("id")),
+            "author": _path_text(author.get("displayName")) or "viewer",
+            "text": comment_text,
+            "published_at": _path_text(snippet.get("publishedAt")),
+        })
     return {
         "ok": "error" not in data,
         "comments": comments,
@@ -2714,12 +2805,10 @@ def start_youtube_comments(values: dict[str, Any] | None = None) -> dict[str, An
         cmd.append("--skip-existing")
     if play:
         cmd.append("--play")
-    env = _child_process_env(
-        {
-            api_key_env: api_key,
-            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
-        }
-    )
+    env = _child_process_env({
+        api_key_env: api_key,
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+    })
     with log_path.open("ab") as log_file:
         proc = subprocess.Popen(
             cmd,
@@ -2737,9 +2826,7 @@ def start_youtube_comments(values: dict[str, Any] | None = None) -> dict[str, An
         "play": bool(play),
         "log_path": str(log_path),
         "started_at": time.time(),
-        "command": [
-            part if part != api_key else "<redacted>" for part in cmd
-        ],
+        "command": [part if part != api_key else "<redacted>" for part in cmd],
     }
     _write_json_file(_youtube_comments_active_file(), record)
     return {"ok": True, "active": record}
@@ -2840,13 +2927,11 @@ def _start_local_loop(
     if play:
         cmd.append("--play")
 
-    env = _child_process_env(
-        {
-            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONUTF8": "1",
-        }
-    )
+    env = _child_process_env({
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    })
     with log_path.open("ab") as log_file:
         proc = subprocess.Popen(
             cmd,
@@ -2938,7 +3023,12 @@ def _stop_loop_file(path: Path, *, force: bool = False) -> dict[str, Any]:
         path.unlink()
     except FileNotFoundError:
         pass
-    return {"ok": True, "stopped": True, "pid": pid, "was_alive": bool(active.get("alive"))}
+    return {
+        "ok": True,
+        "stopped": True,
+        "pid": pid,
+        "was_alive": bool(active.get("alive")),
+    }
 
 
 def stop_loops(values: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2947,9 +3037,13 @@ def stop_loops(values: dict[str, Any] | None = None) -> dict[str, Any]:
     force = bool(values.get("force"))
     results: dict[str, Any] = {}
     if target in {"all", "autonomous"}:
-        results["autonomous"] = _stop_loop_file(_autonomous_talk_active_file(), force=force)
+        results["autonomous"] = _stop_loop_file(
+            _autonomous_talk_active_file(), force=force
+        )
     if target in {"all", "comments"}:
-        results["comments"] = _stop_loop_file(_comment_reactions_active_file(), force=force)
+        results["comments"] = _stop_loop_file(
+            _comment_reactions_active_file(), force=force
+        )
     if not results:
         return {"ok": False, "error": "target must be all, autonomous, or comments."}
     return {"ok": all(item.get("ok") for item in results.values()), "results": results}
@@ -3061,15 +3155,21 @@ def handle_youtube_ready(args: dict[str, Any] | None = None, **kwargs: Any) -> s
     return _json(youtube_ready(args or {}))
 
 
-def handle_youtube_comments_status(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+def handle_youtube_comments_status(
+    args: dict[str, Any] | None = None, **kwargs: Any
+) -> str:
     return _json(youtube_comments_status(args or {}))
 
 
-def handle_start_youtube_comments(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+def handle_start_youtube_comments(
+    args: dict[str, Any] | None = None, **kwargs: Any
+) -> str:
     return _json(start_youtube_comments(args or {}))
 
 
-def handle_stop_youtube_comments(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+def handle_stop_youtube_comments(
+    args: dict[str, Any] | None = None, **kwargs: Any
+) -> str:
     return _json(stop_youtube_comments(args or {}))
 
 
@@ -3077,11 +3177,15 @@ def handle_loops_status(args: dict[str, Any] | None = None, **kwargs: Any) -> st
     return _json(loops_status(args or {}))
 
 
-def handle_start_autonomous_talk(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+def handle_start_autonomous_talk(
+    args: dict[str, Any] | None = None, **kwargs: Any
+) -> str:
     return _json(start_autonomous_talk_loop(args or {}))
 
 
-def handle_start_comment_reactions(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+def handle_start_comment_reactions(
+    args: dict[str, Any] | None = None, **kwargs: Any
+) -> str:
     return _json(start_comment_reaction_loop(args or {}))
 
 
@@ -3160,7 +3264,9 @@ def status() -> dict[str, Any]:
             "model": cfg.get("model") or "Codex CLI default",
             "reply_backend": cfg.get("reply_backend") or "auto",
             "provider_rotation": _plugin_provider_rotation_entries(),
-            "provider_rotation_index": _rotation_index if _plugin_provider_rotation_enabled() else None,
+            "provider_rotation_index": _rotation_index
+            if _plugin_provider_rotation_enabled()
+            else None,
             "audio_ws_host": _audio_ws_config()[0],
             "audio_ws_port": _audio_ws_config()[1],
             "audio_ws_running": _audio_ws_running(),
@@ -3295,7 +3401,9 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             entry.pop("audio_ws_port", None)
     if values.get("audio_ws_allow_lan") is not None:
-        entry["audio_ws_allow_lan"] = _coerce_bool(values.get("audio_ws_allow_lan"), False)
+        entry["audio_ws_allow_lan"] = _coerce_bool(
+            values.get("audio_ws_allow_lan"), False
+        )
     if values.get("hermes_provider"):
         entry["hermes_provider"] = _path_text(values.get("hermes_provider"))
     if values.get("hermes_model"):
@@ -3366,24 +3474,22 @@ def prepare(values: dict[str, Any]) -> dict[str, Any]:
         if existing.get("installed"):
             steps.append({"name": "install_codex_sdk", "ok": True, "skipped": True})
         else:
-            steps.append(
-                {
-                    "name": "install_codex_sdk",
-                    **_run_command(
-                        [
-                            npm,
-                            "install",
-                            "--include=optional",
-                            "--no-save",
-                            "--package-lock=false",
-                            CODEX_SDK_PACKAGE,
-                            CODEX_CLI_PACKAGE,
-                        ],
-                        cwd=repo,
-                        timeout_seconds=timeout,
-                    ),
-                }
-            )
+            steps.append({
+                "name": "install_codex_sdk",
+                **_run_command(
+                    [
+                        npm,
+                        "install",
+                        "--include=optional",
+                        "--no-save",
+                        "--package-lock=false",
+                        CODEX_SDK_PACKAGE,
+                        CODEX_CLI_PACKAGE,
+                    ],
+                    cwd=repo,
+                    timeout_seconds=timeout,
+                ),
+            })
             after_install = _codex_sdk_installed(repo)
             native_package = _codex_native_package_name()
             if (
@@ -3393,72 +3499,63 @@ def prepare(values: dict[str, Any]) -> dict[str, Any]:
             ):
                 native_spec = _codex_native_package_spec(repo)
                 if native_spec:
-                    steps.append(
-                        {
-                            "name": "install_codex_native_package",
-                            **_run_command(
-                                [
-                                    npm,
-                                    "install",
-                                    "--include=optional",
-                                    "--no-save",
-                                    "--package-lock=false",
-                                    native_spec,
-                                ],
-                                cwd=repo,
-                                timeout_seconds=timeout,
-                            ),
-                        }
-                    )
+                    steps.append({
+                        "name": "install_codex_native_package",
+                        **_run_command(
+                            [
+                                npm,
+                                "install",
+                                "--include=optional",
+                                "--no-save",
+                                "--package-lock=false",
+                                native_spec,
+                            ],
+                            cwd=repo,
+                            timeout_seconds=timeout,
+                        ),
+                    })
 
     if build_chat:
-        steps.append(
-            {"name": "build_chat", **_build_chat_for_codex(repo, npm, timeout)}
-        )
+        steps.append({
+            "name": "build_chat",
+            **_build_chat_for_codex(repo, npm, timeout),
+        })
 
     if build_fbx_app:
         app_dir = _fbx_app_dir(repo)
         if not (app_dir / "package.json").is_file():
-            steps.append(
-                {
-                    "name": "build_fbx_app",
-                    "ok": False,
-                    "error": f"FBX app package.json was not found: {app_dir}",
-                }
-            )
+            steps.append({
+                "name": "build_fbx_app",
+                "ok": False,
+                "error": f"FBX app package.json was not found: {app_dir}",
+            })
         else:
-            steps.append(
-                {
-                    "name": "build_fbx_app",
-                    **_run_command(
-                        [npm, "run", "build"],
-                        cwd=app_dir,
-                        timeout_seconds=timeout,
-                    ),
-                }
-            )
+            steps.append({
+                "name": "build_fbx_app",
+                **_run_command(
+                    [npm, "run", "build"],
+                    cwd=app_dir,
+                    timeout_seconds=timeout,
+                ),
+            })
 
     if build_vrm_app:
         app_dir = _vrm_app_dir(repo)
         if not (app_dir / "package.json").is_file():
-            steps.append(
-                {
-                    "name": "build_vrm_app",
-                    "ok": False,
-                    "error": f"VRoid/VRM app package.json was not found: {app_dir}",
-                }
-            )
+            steps.append({
+                "name": "build_vrm_app",
+                "ok": False,
+                "error": f"VRoid/VRM app package.json was not found: {app_dir}",
+            })
         else:
-            steps.append(
-                {
-                    "name": "build_vrm_app",
-                    **_run_command(
-                        [npm, "run", "build"],
-                        cwd=app_dir,
-                        timeout_seconds=timeout,
-                    ),
-                }
-            )
+            steps.append({
+                "name": "build_vrm_app",
+                **_run_command(
+                    [npm, "run", "build"],
+                    cwd=app_dir,
+                    timeout_seconds=timeout,
+                ),
+            })
 
     return {
         "ok": all(step.get("ok") is True for step in steps),
@@ -3553,20 +3650,20 @@ def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
     host = _plugin_avatar_host(values.get("host"))
     public_host = _plugin_avatar_public_host(values.get("public_host"), host=host)
     url = _avatar_url(port, public_host)
-    readiness_url = _avatar_url(port, "127.0.0.1" if host in {"0.0.0.0", "::"} else public_host)
+    readiness_url = _avatar_url(
+        port, "127.0.0.1" if host in {"0.0.0.0", "::"} else public_host
+    )
     log_path = _log_file(f"{avatar_kind}-vite.log")
     cmd = [npm, "run", "dev", "--", "--host", host, "--port", str(port)]
-    env = _child_process_env(
-        {
-            "AITUBER_ONAIR_HERMES_PLUGIN": "1",
-            "AITUBER_ONAIR_AVATAR_KIND": avatar_kind,
-            "AITUBER_ONAIR_CHARACTER_NAME": _plugin_character_name(),
-            "AITUBER_ONAIR_CODEX_AUTH_SOURCE": "local-codex-cli",
-            "AITUBER_ONAIR_TTS_PROVIDER": _select_tts_provider(),
-            "VOICEVOX_URL": _plugin_voicevox_url(),
-            "VOICEVOX_SPEAKER": str(_plugin_voicevox_speaker()),
-        }
-    )
+    env = _child_process_env({
+        "AITUBER_ONAIR_HERMES_PLUGIN": "1",
+        "AITUBER_ONAIR_AVATAR_KIND": avatar_kind,
+        "AITUBER_ONAIR_CHARACTER_NAME": _plugin_character_name(),
+        "AITUBER_ONAIR_CODEX_AUTH_SOURCE": "local-codex-cli",
+        "AITUBER_ONAIR_TTS_PROVIDER": _select_tts_provider(),
+        "VOICEVOX_URL": _plugin_voicevox_url(),
+        "VOICEVOX_SPEAKER": str(_plugin_voicevox_speaker()),
+    })
 
     log_fh = open(log_path, "ab", buffering=0)
     kwargs: dict[str, Any] = {
@@ -3626,6 +3723,145 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
 
 def handle_start(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(start_avatar_app(args or {}))
+
+
+def galaxy_session_status(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    public_host = _path_text(values.get("public_host"))
+    if not public_host:
+        active = _active_status()
+        public_host = _path_text(
+            active.get("public_host")
+        ) or _plugin_avatar_public_host(host="0.0.0.0")
+    vrm_port = _plugin_vrm_port(values.get("vrm_port"))
+    active = _active_status()
+    galaxy_url = str(active.get("url") or _avatar_url(vrm_port, public_host))
+    audio_url = _audio_ws_public_url(public_host)
+    status_payload = status()
+    return {
+        "ok": True,
+        "action": "status",
+        "galaxy_url": galaxy_url,
+        "audio_ws_url": audio_url,
+        "audio_ws": {
+            "running": _audio_ws_running(),
+            "clients": len(_audio_ws_clients),
+            "host": _audio_ws_state.get("host") or _audio_ws_config()[0],
+            "port": _audio_ws_state.get("port") or _audio_ws_config()[1],
+        },
+        "active": active,
+        "status": status_payload,
+    }
+
+
+def start_galaxy_session(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    public_host = _path_text(values.get("public_host")) or _plugin_avatar_public_host(
+        host="0.0.0.0"
+    )
+    audio_ws_port = values.get("audio_ws_port")
+    if audio_ws_port is None:
+        audio_ws_port = _audio_ws_config()[1]
+    try:
+        audio_ws_port = max(1024, min(65535, int(audio_ws_port)))
+    except (TypeError, ValueError):
+        audio_ws_port = _AUDIO_WS_PORT
+    avatar = start_avatar_app({
+        "repo_root": values.get("repo_root") or "",
+        "avatar_kind": "vrm",
+        "vrm_port": values.get("vrm_port"),
+        "host": "0.0.0.0",
+        "public_host": public_host,
+        "force": bool(values.get("force")),
+    })
+    audio_ws = audio_ws_start(host="0.0.0.0", port=audio_ws_port)
+    steps: dict[str, Any] = {"avatar": avatar, "audio_ws": audio_ws}
+    if values.get("start_tts"):
+        steps["tts"] = start_tts({})
+    play = _coerce_bool(values.get("play"), False)
+    if values.get("start_autonomous"):
+        steps["autonomous"] = start_autonomous_talk_loop({
+            "interval_seconds": values.get("interval_seconds"),
+            "topic": values.get("topic") or "Galaxy S9+ VRM session",
+            "play": play,
+            "force": bool(values.get("force")),
+        })
+    if values.get("start_comment_reactions"):
+        steps["comment_reactions"] = start_comment_reaction_loop({
+            "poll_seconds": values.get("poll_seconds"),
+            "play": play,
+            "force": bool(values.get("force")),
+        })
+    required_ok = [
+        bool(avatar.get("ok")),
+        bool(audio_ws.get("ok")),
+    ]
+    optional_ok = [
+        bool(step.get("ok"))
+        for name, step in steps.items()
+        if name not in {"avatar", "audio_ws"}
+    ]
+    galaxy_url = str(
+        avatar.get("url")
+        or _avatar_url(_plugin_vrm_port(values.get("vrm_port")), public_host)
+    )
+    return {
+        "ok": all(required_ok) and all(optional_ok),
+        "action": "start",
+        "galaxy_url": galaxy_url,
+        "audio_ws_url": _audio_ws_public_url(public_host),
+        "public_host": public_host,
+        "steps": steps,
+        "open_on_galaxy": galaxy_url,
+        "first_galaxy_action": "Tap Audio ON in the VRM page before sending speech.",
+    }
+
+
+def stop_galaxy_session(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    force = bool(values.get("force"))
+    stop_avatar = stop_fbx_app({"force": force})
+    stop_audio = audio_ws_stop()
+    stop_local_loops: dict[str, Any] | None = None
+    if _coerce_bool(values.get("stop_loops"), True):
+        stop_local_loops = stop_loops({"target": "all", "force": force})
+    return {
+        "ok": bool(stop_audio.get("ok"))
+        and (
+            bool(stop_avatar.get("ok"))
+            or stop_avatar.get("reason") == "no active AITuber OnAir process"
+        )
+        and (stop_local_loops is None or bool(stop_local_loops.get("ok"))),
+        "action": "stop",
+        "avatar": stop_avatar,
+        "audio_ws": stop_audio,
+        "loops": stop_local_loops,
+    }
+
+
+def galaxy_session(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    action = str(values.get("action") or "start").strip().lower()
+    if action == "status":
+        return galaxy_session_status(values)
+    if action == "stop":
+        return stop_galaxy_session(values)
+    if action == "restart":
+        stop_result = stop_galaxy_session({**values, "force": True})
+        start_result = start_galaxy_session({**values, "force": True})
+        return {
+            "ok": bool(stop_result.get("ok")) and bool(start_result.get("ok")),
+            "action": "restart",
+            "stop": stop_result,
+            "start": start_result,
+            "galaxy_url": start_result.get("galaxy_url"),
+            "audio_ws_url": start_result.get("audio_ws_url"),
+        }
+    return start_galaxy_session(values)
+
+
+def handle_galaxy_session(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+    return _json(galaxy_session(args or {}))
 
 
 def stop_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
@@ -3742,13 +3978,52 @@ def _should_retry_codex_default(model: str, stderr: str) -> bool:
 
 
 def _should_try_hermes_cli_fallback(payload: dict[str, Any]) -> bool:
-    detail = str(payload.get("error") or "").lower()
+    detail = _hakua_failure_detail(payload)
     return (
         "model is not supported" in detail
         or "not supported when using codex" in detail
         or "usage limit" in detail
         or "rate limit" in detail
+        or "too many requests" in detail
+        or "429" in detail
     )
+
+
+def _hakua_failure_detail(payload: dict[str, Any]) -> str:
+    return " ".join(
+        str(payload.get(key) or "")
+        for key in (
+            "error",
+            "provider_error",
+            "stderr",
+            "hermes_facade_error",
+            "recoverable_error",
+        )
+    ).lower()
+
+
+def _is_hakua_rate_limit(payload: dict[str, Any]) -> bool:
+    detail = _hakua_failure_detail(payload)
+    return (
+        "usage limit" in detail
+        or "rate limit" in detail
+        or "too many requests" in detail
+        or "429" in detail
+    )
+
+
+def _hakua_rotation_attempt(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": bool(payload.get("ok")),
+        "provider": payload.get("hermes_provider") or payload.get("provider") or "",
+        "model": payload.get("model") or "",
+        "error": _safe_error_text(
+            payload.get("error")
+            or payload.get("provider_error")
+            or payload.get("stderr")
+            or ""
+        ),
+    }
 
 
 def _safe_error_text(value: Any) -> str:
@@ -3758,7 +4033,9 @@ def _safe_error_text(value: Any) -> str:
     return text[:1000]
 
 
-def _recover_hakua_reply(payload: dict[str, Any], *, reply_backend: str) -> dict[str, Any]:
+def _recover_hakua_reply(
+    payload: dict[str, Any], *, reply_backend: str
+) -> dict[str, Any]:
     if payload.get("ok") or payload.get("reply"):
         return payload
     error = _safe_error_text(
@@ -3785,17 +4062,15 @@ def _attach_tts_if_requested(
     if not values.get("speak") or not payload.get("reply"):
         return payload
     try:
-        payload["tts"] = synthesize_speech(
-            {
-                "text": payload["reply"],
-                "provider": values.get("tts_provider"),
-                "output_path": values.get("output_path"),
-                "format": values.get("format"),
-                "voice": values.get("tts_voice") or values.get("voice"),
-                "speed": values.get("tts_speed") or values.get("speed"),
-                "play": values.get("play"),
-            }
-        )
+        payload["tts"] = synthesize_speech({
+            "text": payload["reply"],
+            "provider": values.get("tts_provider"),
+            "output_path": values.get("output_path"),
+            "format": values.get("format"),
+            "voice": values.get("tts_voice") or values.get("voice"),
+            "speed": values.get("tts_speed") or values.get("speed"),
+            "play": values.get("play"),
+        })
     except Exception as exc:
         payload["tts"] = {
             "ok": False,
@@ -3885,15 +4160,13 @@ def _run_hermes_cli_once(
         cmd.extend(["--model", hermes_model])
     if hermes_provider and hermes_model:
         cmd.extend(["--provider", hermes_provider])
-    env = _child_process_env(
-        {
-            "HERMES_YOLO_MODE": "1",
-            "HERMES_ACCEPT_HOOKS": "1",
-            "HERMES_QUIET": "1",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONUTF8": "1",
-        }
-    )
+    env = _child_process_env({
+        "HERMES_YOLO_MODE": "1",
+        "HERMES_ACCEPT_HOOKS": "1",
+        "HERMES_QUIET": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    })
     result = _run_command(
         cmd,
         cwd=Path(__file__).resolve().parents[2],
@@ -3927,31 +4200,84 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     prompt = str(values.get("prompt") or "").strip()
     if not prompt:
         return {"ok": False, "error": "prompt is required."}
+    original_values = values
+    explicit_hermes_provider = bool(values.get("hermes_provider"))
+    explicit_hermes_model = bool(values.get("hermes_model"))
+    rotation_raw = values.get("provider_rotation")
+    rotation_entries = (
+        _provider_rotation_entries(rotation_raw)
+        if rotation_raw is not None
+        else _plugin_provider_rotation_entries()
+    )
     spoken_prompt = _prompt_with_runtime_context(prompt, values)
     character_name = _plugin_character_name()
     response_length = _plugin_response_length(values.get("response_length"))
     system_prompt = _plugin_system_prompt()
     reply_backend = _plugin_reply_backend(values.get("reply_backend"))
 
-    # Resolve provider rotation: advance round-robin and inject into values
-    rot_provider, rot_model = _next_provider_rotation_entry(values.get("provider_rotation"))
-    if rot_provider or rot_model:
-        # Copy values so the rotation entry is scoped to this call
-        values = dict(values)
-        if rot_provider and not values.get("hermes_provider"):
-            values["hermes_provider"] = rot_provider
-        if rot_model and not values.get("hermes_model"):
-            values["hermes_model"] = rot_model
+    def rotated_values(base_values: dict[str, Any]) -> dict[str, Any] | None:
+        rot_provider, rot_model = _next_provider_rotation_entry(rotation_raw)
+        if not (rot_provider or rot_model):
+            return None
+        next_values = dict(base_values)
+        changed = False
+        if rot_provider and not explicit_hermes_provider:
+            next_values["hermes_provider"] = rot_provider
+            changed = True
+        if rot_model and not explicit_hermes_model:
+            next_values["hermes_model"] = rot_model
+            changed = True
+        if not changed:
+            return None
+        return next_values
+
+    rotated = rotated_values(values)
+    if rotated is not None:
+        values = rotated
 
     if reply_backend in {"auto", "hermes"} and _llm_factory is not None:
+        active_values = values
         payload = _run_hermes_llm_once(
             prompt=spoken_prompt,
             character_name=character_name,
             system_prompt=system_prompt,
             response_length=response_length,
-            values=values,
+            values=active_values,
         )
         payload["reply_backend"] = "hermes"
+        rotation_attempts = [_hakua_rotation_attempt(payload)]
+        if (
+            not payload.get("ok")
+            and _is_hakua_rate_limit(payload)
+            and len(rotation_entries) > 1
+        ):
+            for _ in range(max(0, len(rotation_entries) - 1)):
+                next_values = rotated_values(original_values)
+                if next_values is None:
+                    break
+                active_values = next_values
+                retry_payload = _run_hermes_llm_once(
+                    prompt=spoken_prompt,
+                    character_name=character_name,
+                    system_prompt=system_prompt,
+                    response_length=response_length,
+                    values=active_values,
+                )
+                retry_payload["reply_backend"] = "hermes"
+                retry_payload["provider_rotation_error"] = _safe_error_text(
+                    payload.get("error")
+                    or payload.get("provider_error")
+                    or payload.get("stderr")
+                    or ""
+                )
+                rotation_attempts.append(_hakua_rotation_attempt(retry_payload))
+                payload = retry_payload
+                if payload.get("ok") or not _is_hakua_rate_limit(payload):
+                    break
+        if len(rotation_attempts) > 1:
+            payload["provider_rotation_attempts"] = rotation_attempts
+            if payload.get("ok"):
+                payload["provider_rotation_recovered"] = True
         if not payload.get("ok") and _should_try_hermes_cli_fallback(payload):
             hermes_error = payload.get("error")
             payload = _run_hermes_cli_once(
@@ -3959,12 +4285,12 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
                 character_name=character_name,
                 system_prompt=system_prompt,
                 response_length=response_length,
-                values=values,
+                values=active_values,
             )
             payload["reply_backend"] = "hermes"
             payload["hermes_facade_error"] = hermes_error
         payload = _recover_hakua_reply(payload, reply_backend="hermes")
-        return _attach_tts_if_requested(payload, values)
+        return _attach_tts_if_requested(payload, active_values)
 
     if reply_backend == "hermes":
         payload = _run_hermes_cli_once(
@@ -4034,16 +4360,14 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
         ]
         if active_model:
             cmd.append(f"--model={active_model}")
-        env = _child_process_env(
-            {
-                "CODEX_CHARACTER_NAME": character_name,
-                "CODEX_CHARACTER_SYSTEM_PROMPT": system_prompt,
-                "CODEX_WORKING_DIRECTORY": working_directory,
-                "CODEX_SKIP_GIT_REPO_CHECK": "true",
-                "CODEX_RESPONSE_LENGTH": response_length,
-                "CODEX_SDK_MODEL": active_model if active_model else None,
-            }
-        )
+        env = _child_process_env({
+            "CODEX_CHARACTER_NAME": character_name,
+            "CODEX_CHARACTER_SYSTEM_PROMPT": system_prompt,
+            "CODEX_WORKING_DIRECTORY": working_directory,
+            "CODEX_SKIP_GIT_REPO_CHECK": "true",
+            "CODEX_RESPONSE_LENGTH": response_length,
+            "CODEX_SDK_MODEL": active_model if active_model else None,
+        })
         return _run_command(cmd, cwd=repo, env=env, timeout_seconds=timeout)
 
     attempts: list[dict[str, Any]] = []
@@ -4052,13 +4376,11 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     stderr = str(result.get("stderr") or "")
     reply = _extract_character_reply(stdout, character_name)
     provider_failed = _codex_provider_failed(stderr)
-    attempts.append(
-        {
-            "model": model or "Codex CLI default",
-            "ok": result.get("ok") is True and bool(reply) and not provider_failed,
-            "provider_error": _codex_provider_error_detail(stderr),
-        }
-    )
+    attempts.append({
+        "model": model or "Codex CLI default",
+        "ok": result.get("ok") is True and bool(reply) and not provider_failed,
+        "provider_error": _codex_provider_error_detail(stderr),
+    })
     effective_model = model
     fallback_from_model = ""
     if provider_failed and _should_retry_codex_default(model, stderr):
@@ -4069,13 +4391,11 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
         reply = _extract_character_reply(stdout, character_name)
         provider_failed = _codex_provider_failed(stderr)
         effective_model = ""
-        attempts.append(
-            {
-                "model": "Codex CLI default",
-                "ok": result.get("ok") is True and bool(reply) and not provider_failed,
-                "provider_error": _codex_provider_error_detail(stderr),
-            }
-        )
+        attempts.append({
+            "model": "Codex CLI default",
+            "ok": result.get("ok") is True and bool(reply) and not provider_failed,
+            "provider_error": _codex_provider_error_detail(stderr),
+        })
     ok = result.get("ok") is True and bool(reply) and not provider_failed
     payload = {
         "ok": ok,
@@ -4126,6 +4446,7 @@ HELP = """aituber commands:
   /aituber configure
   /aituber prepare
   /aituber start [fbx|vrm|vroid] [--force]
+  /aituber galaxy-session [start|status|stop|restart] [--force]
   /aituber stop [--force]
   /aituber tts-status
   /aituber start-tts
@@ -4163,14 +4484,12 @@ def handle_slash(raw_args: str) -> str:
         topic = " ".join(
             arg for arg in argv[1:] if not arg.startswith("--") and arg != url
         )
-        return handle_stream_start_tweet(
-            {
-                "url": url,
-                "topic": topic,
-                "live": "--live" in argv,
-                "allow_private_url": "--allow-private-url" in argv,
-            }
-        )
+        return handle_stream_start_tweet({
+            "url": url,
+            "topic": topic,
+            "live": "--live" in argv,
+            "allow_private_url": "--allow-private-url" in argv,
+        })
     if command in {"configure", "config", "setup"}:
         return handle_configure_hakua({})
     if command == "prepare":
@@ -4181,6 +4500,50 @@ def handle_slash(raw_args: str) -> str:
             "",
         )
         return handle_start({"avatar_kind": avatar_kind, "force": "--force" in argv})
+    if command in {"galaxy-session", "galaxy", "session"}:
+        action = next(
+            (
+                arg.lower()
+                for arg in argv[1:]
+                if arg.lower() in {"start", "status", "stop", "restart"}
+            ),
+            "",
+        )
+        if not action:
+            if "--status" in argv:
+                action = "status"
+            elif "--stop" in argv:
+                action = "stop"
+            elif "--restart" in argv:
+                action = "restart"
+            else:
+                action = "start"
+
+        def value_after(flag: str) -> str:
+            try:
+                return argv[argv.index(flag) + 1]
+            except (ValueError, IndexError):
+                return ""
+
+        def int_value_after(flag: str) -> int | None:
+            raw_value = value_after(flag)
+            try:
+                return int(raw_value) if raw_value else None
+            except ValueError:
+                return None
+
+        return handle_galaxy_session({
+            "action": action,
+            "public_host": value_after("--public-host"),
+            "vrm_port": int_value_after("--vrm-port"),
+            "audio_ws_port": int_value_after("--audio-ws-port"),
+            "force": "--force" in argv,
+            "start_tts": "--start-tts" in argv,
+            "start_autonomous": "--start-autonomous" in argv,
+            "start_comment_reactions": "--start-comment-reactions" in argv,
+            "play": "--play" in argv,
+            "stop_loops": "--no-stop-loops" not in argv,
+        })
     if command == "stop":
         return handle_stop({"force": "--force" in argv})
     if command in {"tts-status", "tts"}:
@@ -4198,31 +4561,28 @@ def handle_slash(raw_args: str) -> str:
         return handle_youtube_comments_status({})
     if command in {"start-comments", "comments-start", "onair-comments"}:
         live_id = next((arg for arg in argv[1:] if not arg.startswith("--")), "")
-        return handle_start_youtube_comments(
-            {
-                "live_id": live_id,
-                "skip_existing": "--skip-existing" in argv,
-                "play": "--no-play" not in argv,
-                "force": "--force" in argv,
-            }
-        )
+        return handle_start_youtube_comments({
+            "live_id": live_id,
+            "skip_existing": "--skip-existing" in argv,
+            "play": "--no-play" not in argv,
+            "force": "--force" in argv,
+        })
     if command in {"stop-comments", "comments-stop"}:
         return handle_stop_youtube_comments({"force": "--force" in argv})
     if command in {"loops-status", "loop-status"}:
         return handle_loops_status({})
     if command in {"start-autonomous", "autonomous-start", "idle-talk"}:
         topic = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
-        return handle_start_autonomous_talk(
-            {
-                "topic": topic,
-                "play": "--no-play" not in argv,
-                "force": "--force" in argv,
-            }
-        )
+        return handle_start_autonomous_talk({
+            "topic": topic,
+            "play": "--no-play" not in argv,
+            "force": "--force" in argv,
+        })
     if command in {"start-reactions", "reactions-start", "start-local-comments"}:
-        return handle_start_comment_reactions(
-            {"play": "--no-play" not in argv, "force": "--force" in argv}
-        )
+        return handle_start_comment_reactions({
+            "play": "--no-play" not in argv,
+            "force": "--force" in argv,
+        })
     if command in {"comment", "enqueue-comment"}:
         prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
         return handle_enqueue_comment({"text": prompt, "source": "slash"})
@@ -4230,12 +4590,10 @@ def handle_slash(raw_args: str) -> str:
         return handle_stop_loops({"target": "all", "force": "--force" in argv})
     if command == "say":
         prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
-        return handle_say(
-            {
-                "prompt": prompt,
-                "speak": "--speak" in argv,
-                "play": "--play" in argv,
-                "with_runtime_context": "--with-runtime-context" in argv,
-            }
-        )
+        return handle_say({
+            "prompt": prompt,
+            "speak": "--speak" in argv,
+            "play": "--play" in argv,
+            "with_runtime_context": "--with-runtime-context" in argv,
+        })
     return HELP

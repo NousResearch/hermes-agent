@@ -182,6 +182,24 @@ _DEFAULT_PAYLOADS = {
         "child_status": "completed",
         "duration_ms": 1234,
     },
+    "on_goal_set": {
+        "session_id": "test-session",
+        "goal_text": "ship the feature",
+        "max_turns": 20,
+    },
+    "on_goal_pause": {
+        "session_id": "test-session",
+        "reason": "user-paused",
+    },
+    "on_goal_resume": {
+        "session_id": "test-session",
+        "reset_budget": True,
+    },
+    "on_goal_complete": {
+        "session_id": "test-session",
+        "reason": "judge verdict: done",
+        "turns_used": 4,
+    },
 }
 
 

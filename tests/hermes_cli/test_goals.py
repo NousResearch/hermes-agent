@@ -737,3 +737,129 @@ class TestStatusLineSubgoalCount:
         mgr.add_subgoal("b")
         line = mgr.status_line()
         assert "2 subgoals" in line
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Goal lifecycle plugin hooks
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestGoalLifecycleHooks:
+    """Plugin hooks fired on goal state transitions.
+
+    Each hook is fire-and-forget: return values are ignored, and
+    exceptions raised inside a hook callback must never wedge the
+    goal mutation that triggered it.
+    """
+
+    def test_hooks_registered_as_valid(self):
+        from hermes_cli.plugins import VALID_HOOKS
+
+        for name in (
+            "on_goal_set",
+            "on_goal_pause",
+            "on_goal_resume",
+            "on_goal_complete",
+        ):
+            assert name in VALID_HOOKS
+
+    def test_on_goal_set_fires_with_payload(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        with patch("hermes_cli.plugins.invoke_hook") as mock_invoke:
+            mgr = GoalManager(session_id="hook-set")
+            mgr.set("ship it", max_turns=7)
+
+        names = [c.args[0] for c in mock_invoke.call_args_list]
+        assert "on_goal_set" in names
+
+        call = next(c for c in mock_invoke.call_args_list if c.args[0] == "on_goal_set")
+        assert call.kwargs == {
+            "session_id": "hook-set",
+            "goal_text": "ship it",
+            "max_turns": 7,
+        }
+
+    def test_on_goal_pause_fires_with_reason(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="hook-pause")
+        mgr.set("ship it")
+
+        with patch("hermes_cli.plugins.invoke_hook") as mock_invoke:
+            mgr.pause(reason="judge-parse-failure")
+
+        call = next(c for c in mock_invoke.call_args_list if c.args[0] == "on_goal_pause")
+        assert call.kwargs == {
+            "session_id": "hook-pause",
+            "reason": "judge-parse-failure",
+        }
+
+    def test_on_goal_resume_fires_with_budget_flag(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="hook-resume")
+        mgr.set("ship it")
+        mgr.pause()
+
+        with patch("hermes_cli.plugins.invoke_hook") as mock_invoke:
+            mgr.resume(reset_budget=False)
+
+        call = next(c for c in mock_invoke.call_args_list if c.args[0] == "on_goal_resume")
+        assert call.kwargs == {
+            "session_id": "hook-resume",
+            "reset_budget": False,
+        }
+
+    def test_on_goal_complete_fires_with_turns(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="hook-complete")
+        state = mgr.set("ship it")
+        state.turns_used = 4
+
+        with patch("hermes_cli.plugins.invoke_hook") as mock_invoke:
+            mgr.mark_done("judge verdict: done")
+
+        call = next(c for c in mock_invoke.call_args_list if c.args[0] == "on_goal_complete")
+        assert call.kwargs == {
+            "session_id": "hook-complete",
+            "reason": "judge verdict: done",
+            "turns_used": 4,
+        }
+
+    def test_pause_without_active_goal_does_not_fire(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="hook-empty")
+        with patch("hermes_cli.plugins.invoke_hook") as mock_invoke:
+            assert mgr.pause("user-paused") is None
+            assert mgr.resume() is None
+            mgr.mark_done("noop")
+
+        # No state means no transition -> no hook.
+        assert not any(
+            c.args[0].startswith("on_goal_") for c in mock_invoke.call_args_list
+        )
+
+    def test_hook_exception_does_not_break_goal_mutation(self, hermes_home):
+        """A misbehaving plugin must not wedge the state machine."""
+        from hermes_cli.goals import GoalManager
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=RuntimeError("plugin exploded"),
+        ):
+            mgr = GoalManager(session_id="hook-explode")
+            state = mgr.set("ship it")
+            assert state.status == "active"
+            assert state.goal == "ship it"
+
+            mgr.pause("explode-test")
+            assert mgr._state.status == "paused"
+
+            mgr.resume(reset_budget=True)
+            assert mgr._state.status == "active"
+
+            mgr.mark_done("explode-test-done")
+            assert mgr._state.status == "done"

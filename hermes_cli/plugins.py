@@ -167,6 +167,20 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Goal lifecycle hooks. Fired by hermes_cli/goals.py when the
+    # /goal state machine transitions. Observers only -- return values
+    # are ignored, and exceptions raised by plugin callbacks do not
+    # interrupt the goal mutation that fired the hook.
+    #
+    # Kwargs:
+    #   on_goal_set:      session_id, goal_text, max_turns
+    #   on_goal_pause:    session_id, reason
+    #   on_goal_resume:   session_id, reset_budget
+    #   on_goal_complete: session_id, reason, turns_used
+    "on_goal_set",
+    "on_goal_pause",
+    "on_goal_resume",
+    "on_goal_complete",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

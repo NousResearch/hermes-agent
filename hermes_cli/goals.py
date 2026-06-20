@@ -464,6 +464,26 @@ def judge_goal(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Plugin hook helper — fire-and-forget, never raises
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _fire_goal_hook(hook_name: str, **kwargs: Any) -> None:
+    """Invoke a goal lifecycle hook on every registered plugin.
+
+    Wrapped in a broad try/except so a misbehaving plugin (or an absent
+    plugin manager during unit tests) can never wedge the goal mutation
+    that triggered the hook. Plugin return values are ignored — these
+    hooks are observers only.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(hook_name, **kwargs)
+    except Exception:
+        logger.debug("goal hook %s: dispatch failed", hook_name, exc_info=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # GoalManager — the orchestration surface CLI + gateway talk to
 # ──────────────────────────────────────────────────────────────────────
 
@@ -533,6 +553,12 @@ class GoalManager:
         )
         self._state = state
         save_goal(self.session_id, state)
+        _fire_goal_hook(
+            "on_goal_set",
+            session_id=self.session_id,
+            goal_text=state.goal,
+            max_turns=state.max_turns,
+        )
         return state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
@@ -541,6 +567,11 @@ class GoalManager:
         self._state.status = "paused"
         self._state.paused_reason = reason
         save_goal(self.session_id, self._state)
+        _fire_goal_hook(
+            "on_goal_pause",
+            session_id=self.session_id,
+            reason=reason,
+        )
         return self._state
 
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
@@ -551,6 +582,11 @@ class GoalManager:
         if reset_budget:
             self._state.turns_used = 0
         save_goal(self.session_id, self._state)
+        _fire_goal_hook(
+            "on_goal_resume",
+            session_id=self.session_id,
+            reset_budget=bool(reset_budget),
+        )
         return self._state
 
     def clear(self) -> None:
@@ -567,6 +603,12 @@ class GoalManager:
         self._state.last_verdict = "done"
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
+        _fire_goal_hook(
+            "on_goal_complete",
+            session_id=self.session_id,
+            reason=reason,
+            turns_used=self._state.turns_used,
+        )
 
     # --- /subgoal user controls ---------------------------------------
 

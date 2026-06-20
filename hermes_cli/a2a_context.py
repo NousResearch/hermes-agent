@@ -31,9 +31,14 @@ A2A_SOURCE = "a2a"
 _PREFIX = "a2a:"
 
 # 受限工具集白名单(F7;最终清单待评审,见 plan 开放问题#2)。
-# 只读 / 检索 / 规划类;**不含** terminal / process / write_file / patch / delegate / execute_code,
-# 故远程调用方没有危险工具可触发;再叠加"不设 YOLO + 无交互审批回调 → 危险操作默认 deny"(approval.py)。
-A2A_TOOLSETS = ["web", "search", "memory", "todo"]
+# **只读 / 检索 / 规划类**;**不含** terminal / process / write_file / patch / delegate / execute_code,
+# 也**不含 memory**(memory 工具支持 add/replace/remove 会写被叫方记忆——远程调用方不该能改;codex 评审 #2)。
+# 故远程调用方没有危险/可写工具可触发;再叠加"不设 YOLO + 无交互审批回调 → 危险操作默认 deny"(approval.py)。
+A2A_TOOLSETS = ["web", "search", "todo"]
+
+
+class UnknownContextError(Exception):
+    """客户端带了一个本调用方并不存在的 contextId(#6:server 拥有会话连续性,不凭空建会话)。"""
 
 
 # --------------------------- contextId ↔ 内部 session 映射(F1 / F2)---------------------------
@@ -183,7 +188,10 @@ def _build_a2a_agent(session_id: str, session_db):
         model=model,
         enabled_toolsets=list(A2A_TOOLSETS),  # 受限白名单(F7)
         quiet_mode=True,
-        platform="cli",  # 用已知 platform;降权靠 enabled_toolsets,不靠 platform 名
+        # platform="a2a":既是系统提示的平台 hint,又让**压缩生成的子会话** source 继承 "a2a"
+        # (conversation_compression 用 source=agent.platform)——否则压缩后子会话 source="cli" 会漏进
+        # 本机会话列表(codex 评审 #1)。降权仍靠 enabled_toolsets,不依赖 platform 名。
+        platform="a2a",
         session_id=session_id,  # 绑定到我们的内部 id
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
@@ -212,10 +220,18 @@ def run_turn(
     - 多轮记忆:每轮把上一轮 transcript 经 ``conversation_history`` 回灌;持久化由 run_conversation 内部完成。
     - ``db`` / ``build_agent`` 可注入(测试用);默认共享 SessionDB + 降权 agent。
     """
-    ext_context_id = ext_context_id or new_context_id()
-    resolve_or_create(caller_uid, ext_context_id)  # 确保有内部 id
+    # 【#6】contextId 客户端可填:没带 → server 新建并回传;带了但本调用方无此会话 → 拒绝
+    # (server 拥有会话连续性,不为陌生 contextId 凭空建会话)。
+    if ext_context_id:
+        if current_internal_id(caller_uid, ext_context_id) is None:
+            raise UnknownContextError(ext_context_id)
+    else:
+        ext_context_id = new_context_id()
+        resolve_or_create(caller_uid, ext_context_id)
     with _conversation_lock(caller_uid, ext_context_id):  # 同会话串行(F1 映射 + 历史一致)
         sid = current_internal_id(caller_uid, ext_context_id)
+        if sid is None:  # 极罕见竞态(并发删了映射)→ 兜底重建
+            sid = resolve_or_create(caller_uid, ext_context_id)
         database = db or _shared_session_db()
         database.create_session(sid, source=A2A_SOURCE)  # INSERT OR IGNORE,把 source 钉成 a2a
         database.reopen_session(sid)  # 续接(被 end 过的也能再收 turn)
@@ -296,6 +312,8 @@ def handle_a2a_request(body: dict, caller_uid_override: Optional[str] = None) ->
         return make_error_response(parsed["rpc_id"], -32602, "缺少 callerUid(调用方身份)")
     try:
         answer, ctx = run_turn(caller_uid, parsed["ext_context_id"], parsed["text"])
+    except UnknownContextError as e:
+        return make_error_response(parsed["rpc_id"], -32602, f"未知 contextId(无此会话):{e}")
     except Exception as e:  # noqa: BLE001
         import logging  # noqa: PLC0415
 

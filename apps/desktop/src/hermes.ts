@@ -550,11 +550,22 @@ export interface SubAgentChatResult {
   error?: string
 }
 
-/** 局域网自发现到的在线下级节点(每个可发起多轮对话)。 */
+/**
+ * 在线下级子agent:局域网自发现的 peer ∩ 注册表里有 `agent` 资源的节点(codex #4)。
+ * 注册表尚无任何 agent 资源时(早期/未同步)回退显示全部 peer,保证可用。
+ * 注:逐资源**授权**过滤是 Phase 3(主签票);此处仅按「是否注册了 agent 资源」收窄。
+ */
 export async function listSubAgents(): Promise<SubAgentPeer[]> {
-  const { peers } = await window.hermesDesktop.api<{ peers: SubAgentPeer[] }>({ path: '/api/kari/peers' })
+  const [peersRes, agentsRes] = await Promise.all([
+    window.hermesDesktop.api<{ peers: SubAgentPeer[] }>({ path: '/api/kari/peers' }),
+    window.hermesDesktop
+      .api<{ by_node?: Record<string, unknown> }>({ path: '/api/kari/resources?kind=agent' })
+      .catch(() => ({ by_node: {} }))
+  ])
+  const peers = peersRes.peers ?? []
+  const agentUids = new Set(Object.keys(agentsRes.by_node ?? {}))
 
-  return peers ?? []
+  return agentUids.size > 0 ? peers.filter(p => agentUids.has(p.uid)) : peers
 }
 
 /** LAN 直连某下级多轮对话。把上次返回的 contextId 带回来即可续聊。 */

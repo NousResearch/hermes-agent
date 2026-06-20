@@ -3137,6 +3137,14 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                 root = compression_root(raw_sid)
                 if root in seen or len(seen) >= safe_limit:
                     return
+                # 排除 A2A 子agent会话(source=a2a):与 sidebar 列表的 exclude_sources 一致,
+                # 不让跨节点对话出现在本机搜索结果(codex #5)。
+                try:
+                    s = db.get_session(raw_sid)
+                    if isinstance(s, dict) and s.get("source") == "a2a":
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
                 payload = dict(payload)
                 payload["session_id"] = lineage_tip(root)
                 payload["lineage_root"] = root

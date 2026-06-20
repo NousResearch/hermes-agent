@@ -371,6 +371,9 @@ def is_callable(caller_user_id: str, role: str, node_uid: str, kind: str, resour
     并集 = 角色授权或按账号直授其一即可;再 AND 资源存活,避免授权还在但资源已删/下线时误放行
     (与 list_authorized_resources 的 join 语义一致)。A2A agent 对话:kind="agent"、node_uid=子 uid、
     resource_id="agent"。
+
+    ⚠️ **v1 尚未接入 /a2a 调用链**(codex 评审 #3):当前 A2A 对话仅靠团队 LAN 令牌 + 私网门控,
+    没有逐资源鉴权。把本函数接入 + 主签票身份是 **Phase 3**(评审通过前 A2A 勿对非可信网开放)。
     """
     if not (
         is_granted(role, node_uid, kind, resource_id)

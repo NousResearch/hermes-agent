@@ -87,10 +87,11 @@ def test_multiturn_history_and_source(ctx_db, sdb, tmp_path):
     assert any(m.get("role") == "user" and m.get("content") == "hello" for m in hist)
     assert any(m.get("role") == "assistant" and m.get("content") == "echo:hello" for m in hist)
 
-    # 不同 caller 用同一个 ctx 串不进来(防劫持端到端):它看到的是自己的空历史
+    # 不同 caller 用同一个 ctx 串不进来(防劫持端到端):未知 contextId 直接被拒,根本不落会话(#6)
     StubAgent.instances.clear()
-    ac.run_turn("intruder", ctx, "whoami", db=sdb, build_agent=_stub_builder)
-    assert StubAgent.instances[0].seen_history in (None, [])
+    with pytest.raises(ac.UnknownContextError):
+        ac.run_turn("intruder", ctx, "whoami", db=sdb, build_agent=_stub_builder)
+    assert StubAgent.instances == []
 
     # source 标记 = a2a(供 /api/sessions exclude_sources 排除)
     sid = ac.current_internal_id("boss", ctx)
@@ -142,6 +143,19 @@ def test_handle_a2a_happy(monkeypatch):
     assert r["result"]["role"] == "agent"
     assert r["result"]["parts"][0]["text"] == "got:yo"
     assert r["result"]["contextId"] == "newctx"
+
+
+def test_handle_unknown_context_rejected(monkeypatch):
+    def boom(caller, ctx, text):
+        raise ac.UnknownContextError(ctx)
+
+    monkeypatch.setattr(ac, "run_turn", boom)
+    req = {
+        "id": 9,
+        "method": "message/send",
+        "params": {"message": {"parts": [{"kind": "text", "text": "x"}], "contextId": "ghost"}, "callerUid": "boss"},
+    }
+    assert ac.handle_a2a_request(req)["error"]["code"] == -32602
 
 
 def test_agent_card_shape():

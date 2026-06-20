@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import time
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -500,6 +501,34 @@ class TestHTTPHandling:
             assert data["route"] == "test"
 
     @pytest.mark.asyncio
+    async def test_accepted_webhook_dispatch_failure_is_logged(self, caplog):
+        """Failures after the 202 ACK must be retrieved and logged with context."""
+        routes = {"test": {"secret": _INSECURE_NO_AUTH, "prompt": "hi"}}
+        adapter = _make_adapter(routes=routes)
+
+        async def _boom(event):
+            raise RuntimeError("synthetic dispatch boom")
+
+        adapter.handle_message = _boom
+        caplog.set_level(logging.ERROR, logger="gateway.platforms.webhook")
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/test",
+                json={"data": "value"},
+                headers={"X-GitHub-Delivery": "dispatch-123"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+
+        assert "agent dispatch failed route=test" in caplog.text
+        assert "delivery=dispatch-123" in caplog.text
+        assert "chat=webhook:test:dispatch-123" in caplog.text
+        assert "synthetic dispatch boom" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
         """Missing HMAC secret must fail closed even if connect() was bypassed."""
         routes = {"test": {"prompt": "hi"}}
@@ -605,8 +634,8 @@ class TestIdempotency:
             resp1 = await cli.post("/webhooks/idem", json={"x": 1}, headers=headers)
             assert resp1.status == 202
 
-            # Backdate the cache entry so it appears expired
-            adapter._seen_deliveries["delivery-456"] = time.time() - 3700
+            # Backdate the scoped cache entry so it appears expired
+            adapter._seen_deliveries["idem:delivery-456"] = time.time() - 3700
 
             resp2 = await cli.post("/webhooks/idem", json={"x": 1}, headers=headers)
             assert resp2.status == 202  # re-accepted

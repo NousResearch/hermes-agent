@@ -3748,6 +3748,67 @@ class BasePlatformAdapter(ABC):
         self._discard_text_debounce(session_key)
         return True
 
+    def _log_background_task_result(
+        self,
+        task: asyncio.Task,
+        session_key: str,
+        *,
+        task_label: str = "message-processing",
+    ) -> None:
+        """Retrieve/log background task results so async handoff failures are visible.
+
+        Fire-and-forget tasks can otherwise fail after an HTTP 202 / platform
+        ACK with little more than a late event-loop warning.  This callback is
+        intentionally side-effect-light: it only observes task state and logs
+        the failure with session context while leaving lifecycle cleanup to the
+        task's own finally block.
+        """
+        try:
+            if task.cancelled():
+                logger.debug(
+                    "[%s] Background %s task cancelled for session %s",
+                    self.name,
+                    task_label,
+                    session_key,
+                )
+                return
+            exc = task.exception()
+        except asyncio.CancelledError:
+            logger.debug(
+                "[%s] Background %s task cancelled for session %s",
+                self.name,
+                task_label,
+                session_key,
+            )
+            return
+        except Exception as callback_err:
+            logger.debug(
+                "[%s] Could not inspect background %s task for session %s: %s",
+                self.name,
+                task_label,
+                session_key,
+                callback_err,
+                exc_info=True,
+            )
+            return
+
+        if exc is not None:
+            logger.error(
+                "[%s] Background %s task failed for session %s: %s",
+                self.name,
+                task_label,
+                session_key,
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        else:
+            logger.debug(
+                "[%s] Background %s task completed for session %s",
+                self.name,
+                task_label,
+                session_key,
+            )
+
     def _start_session_processing(
         self,
         event: MessageEvent,
@@ -3778,6 +3839,12 @@ class BasePlatformAdapter(ABC):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
+            task.add_done_callback(
+                lambda done_task, _session_key=session_key: self._log_background_task_result(
+                    done_task,
+                    _session_key,
+                )
+            )
         return True
 
     async def cancel_session_processing(
@@ -4116,7 +4183,15 @@ class BasePlatformAdapter(ABC):
         # pattern — set the guard synchronously, not inside the task.)
         # _start_session_processing installs the guard AND the owner-task
         # mapping atomically so stale-lock detection works.
-        self._start_session_processing(event, session_key)
+        started = self._start_session_processing(event, session_key)
+        if not started:
+            logger.error(
+                "[%s] Failed to start background processing for session %s; "
+                "falling back to inline processing in dispatch task",
+                self.name,
+                session_key,
+            )
+            await self._process_message_background(event, session_key)
     
     @staticmethod
     def _get_human_delay() -> float:

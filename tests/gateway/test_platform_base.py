@@ -1,5 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
+import logging
 import os
 import time
 from unittest.mock import patch
@@ -10,6 +12,8 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    MessageType,
+    SendResult,
     safe_url_for_log,
     utf16_len,
     _log_safe_path,
@@ -1128,10 +1132,10 @@ class TestTruncateMessage:
             async def disconnect(self):
                 pass
 
-            async def send(self, *a, **kw):
-                pass
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True)
 
-            async def get_chat_info(self, *a):
+            async def get_chat_info(self, chat_id):
                 return {}
 
         from gateway.config import Platform, PlatformConfig
@@ -1209,6 +1213,48 @@ class TestTruncateMessage:
             assert len(chunk) <= max_len + 20, (
                 f"Chunk {i} too long: {len(chunk)} > {max_len}"
             )
+
+
+# ---------------------------------------------------------------------------
+# background task observability
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundTaskObservability:
+    def _adapter(self):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True)
+
+            async def get_chat_info(self, chat_id):
+                return {}
+
+        from gateway.config import Platform, PlatformConfig
+
+        config = PlatformConfig(enabled=True, token="test")
+        return StubAdapter(config=config, platform=Platform.TELEGRAM)
+
+    @pytest.mark.asyncio
+    async def test_background_task_failure_is_logged_with_session_context(self, caplog):
+        adapter = self._adapter()
+
+        async def _boom():
+            raise RuntimeError("synthetic background boom")
+
+        caplog.set_level(logging.ERROR, logger="gateway.platforms.base")
+        task = asyncio.create_task(_boom())
+        await asyncio.sleep(0)
+
+        adapter._log_background_task_result(task, "session-123")
+
+        assert "Background message-processing task failed for session session-123" in caplog.text
+        assert "synthetic background boom" in caplog.text
 
 
 # ---------------------------------------------------------------------------

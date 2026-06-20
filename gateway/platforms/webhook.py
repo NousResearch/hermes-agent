@@ -709,10 +709,21 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately
+        # Non-blocking — return 202 Accepted immediately.  Track the short
+        # dispatch task separately from the longer message-processing task it
+        # spawns so accepted webhooks cannot fail silently before the session
+        # guard/transcript path is reached.
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(
+            lambda done_task, _delivery_id=delivery_id, _session_chat_id=session_chat_id: self._log_webhook_dispatch_result(
+                done_task,
+                route_name=route_name,
+                delivery_id=_delivery_id,
+                session_chat_id=_session_chat_id,
+            )
+        )
 
         return web.json_response(
             {
@@ -723,6 +734,67 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    def _log_webhook_dispatch_result(
+        self,
+        task: asyncio.Task,
+        *,
+        route_name: str,
+        delivery_id: str,
+        session_chat_id: str,
+    ) -> None:
+        """Log failures in the accepted-webhook → adapter-dispatch handoff.
+
+        The HTTP handler returns 202 before the agent turn begins.  If the
+        intermediate ``handle_message`` task fails before BasePlatformAdapter
+        can install the per-session processing guard, the user otherwise sees
+        an accepted webhook with no obvious transcript evidence.  Retrieve the
+        task result here to surface that boundary explicitly.
+        """
+        try:
+            if task.cancelled():
+                logger.warning(
+                    "[webhook] agent dispatch cancelled route=%s delivery=%s chat=%s",
+                    route_name,
+                    delivery_id,
+                    session_chat_id,
+                )
+                return
+            exc = task.exception()
+        except asyncio.CancelledError:
+            logger.warning(
+                "[webhook] agent dispatch cancelled route=%s delivery=%s chat=%s",
+                route_name,
+                delivery_id,
+                session_chat_id,
+            )
+            return
+        except Exception as callback_err:
+            logger.debug(
+                "[webhook] could not inspect dispatch task route=%s delivery=%s: %s",
+                route_name,
+                delivery_id,
+                callback_err,
+                exc_info=True,
+            )
+            return
+
+        if exc is not None:
+            logger.error(
+                "[webhook] agent dispatch failed route=%s delivery=%s chat=%s: %s",
+                route_name,
+                delivery_id,
+                session_chat_id,
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        else:
+            logger.debug(
+                "[webhook] agent dispatch enqueued route=%s delivery=%s chat=%s",
+                route_name,
+                delivery_id,
+                session_chat_id,
+            )
 
     # ------------------------------------------------------------------
     # Signature validation

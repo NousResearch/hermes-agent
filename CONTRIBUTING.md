@@ -78,7 +78,41 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
-### Clone and install
+### Install with the standard installer
+
+For most contributors, the best development bootstrap is the same path users
+take: run the standard installer, then work inside the repository it cloned.
+The installer creates the Hermes venv, wires the `hermes` command, stamps the
+install method for `hermes update`, and clones the full git project into
+`$HERMES_HOME/hermes-agent` (usually `~/.hermes/hermes-agent`). That keeps your
+development environment on the same layout the CLI, updater, lazy dependency
+installer, gateway, and docs assume.
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+
+# Add dev/test extras on top of the standard install.
+uv pip install -e ".[all,dev]"
+
+# Optional: browser tools / docs site dependencies.
+npm install
+```
+
+After that, create branches and run tests from that checkout:
+
+```bash
+git checkout -b fix/description
+scripts/run_tests.sh
+```
+
+### Manual clone fallback
+
+Use this only if you intentionally do not want Hermes' managed install layout
+(for example, a throwaway clone inside a container or CI job). If you install
+this way, make sure you run the `hermes` entrypoint from this venv; running the
+system `python3 -m hermes_cli.main` can pick up unrelated system Python
+packages.
 
 ```bash
 git clone https://github.com/tj-coding/nautilus-agent.git
@@ -116,6 +150,14 @@ ln -sf "$(pwd)/venv/bin/nautilus" ~/.local/bin/nautilus
 # Verify
 nautilus doctor
 nautilus chat -q "Hello"
+```
+
+If you used the manual clone fallback, run `./hermes` from the checkout or
+symlink this clone's venv explicitly:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ```
 
 ### Run tests

@@ -1189,6 +1189,18 @@ class TestParseTargetRefE164:
         assert thread_id is None
         assert is_explicit is True
 
+    def test_signal_group_target_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "  group:abc123  ")
+        assert chat_id == "group:abc123"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_empty_signal_group_target_is_not_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "  group:  ")
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
+
     def test_sms_e164_is_explicit(self):
         chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
         assert chat_id == "+15551234567"
@@ -1222,6 +1234,58 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("telegram", "+15551234567")[2] is False
         assert _parse_target_ref("discord", "+15551234567")[2] is False
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
+
+
+class TestParseTargetRefWhatsAppJID:
+    """_parse_target_ref accepts native WhatsApp JIDs as explicit targets.
+
+    Regression: group JIDs (``<id>@g.us``) and linked-identity JIDs
+    (``<id>@lid``) matched no branch and fell through to home-channel
+    resolution, so ``send_message(target="whatsapp:<group-jid>")`` silently
+    delivered to the configured home DM instead of the requested group.
+    """
+
+    def test_group_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "whatsapp", "120363408391911677@g.us"
+        )
+        assert chat_id == "120363408391911677@g.us"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_user_jid_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "whatsapp", "19255551234@s.whatsapp.net"
+        )
+        assert chat_id == "19255551234@s.whatsapp.net"
+        assert is_explicit is True
+
+    def test_lid_jid_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "whatsapp", "149606612619433@lid"
+        )
+        assert chat_id == "149606612619433@lid"
+        assert is_explicit is True
+
+    def test_broadcast_and_newsletter_jids_are_explicit(self):
+        assert _parse_target_ref("whatsapp", "status@broadcast")[2] is True
+        assert _parse_target_ref("whatsapp", "120363000000000000@newsletter")[2] is True
+
+    def test_whatsapp_e164_still_explicit_alongside_jids(self):
+        """The pre-existing '+'-prefixed E.164 path must keep working."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_jid_suffix_only_matches_whatsapp(self):
+        """WhatsApp JID suffixes must NOT be treated as explicit elsewhere."""
+        assert _parse_target_ref("telegram", "120363408391911677@g.us")[2] is False
+        assert _parse_target_ref("signal", "149606612619433@lid")[2] is False
+
+    def test_non_jid_whatsapp_target_falls_through(self):
+        """A bare friendly name is not a JID — it must fall through to
+        directory resolution (returns not-explicit so the caller can resolve)."""
+        assert _parse_target_ref("whatsapp", "general")[2] is False
 
 
 class TestParseTargetRefSlack:
@@ -2178,11 +2242,68 @@ class TestSendSignalChunking:
             )
         )
 
-        assert result == {"success": True, "platform": "signal", "chat_id": "+15557654321"}
+        assert result["success"] is True
+        assert result["platform"] == "signal"
+        assert result["chat_id"].endswith("4321")
         assert len(fake.calls) == 1
         params = fake.calls[0]["payload"]["params"]
         assert params["message"] == "hello"
         assert "attachments" not in params
+        assert "textStyle" not in params
+        assert "textStyles" not in params
+
+    def test_text_only_markdown_uses_singular_text_style(self, monkeypatch):
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "+155****4321",
+                "**hello**",
+            )
+        )
+
+        assert result["success"] is True
+        params = fake.calls[0]["payload"]["params"]
+        assert params["message"] == "hello"
+        assert params["textStyle"] == "0:5:BOLD"
+        assert "textStyles" not in params
+
+    def test_text_only_multiple_styles_use_plural_text_styles(self, monkeypatch):
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "+155****4321",
+                "**bold** and *italic*",
+            )
+        )
+
+        assert result["success"] is True
+        params = fake.calls[0]["payload"]["params"]
+        assert params["message"] == "bold and italic"
+        assert "textStyle" not in params
+        assert params["textStyles"] == ["0:4:BOLD", "9:6:ITALIC"]
+
+    def test_text_style_offsets_use_utf16_code_units(self, monkeypatch):
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "+155****4321",
+                "🙂 **bold**",
+            )
+        )
+
+        assert result["success"] is True
+        params = fake.calls[0]["payload"]["params"]
+        assert params["message"] == "🙂 bold"
+        assert params["textStyle"] == "3:4:BOLD"
 
     def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
         """33 attachments → 2 batches; text only on first batch. Batch 1
@@ -2222,10 +2343,53 @@ class TestSendSignalChunking:
         first = fake.calls[0]["payload"]["params"]
         assert first["message"] == "Caption goes here"
         assert len(first["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "textStyle" not in first
+        assert "textStyles" not in first
 
         second = fake.calls[1]["payload"]["params"]
         assert second["message"] == ""  # caption only on batch 0
         assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "textStyle" not in second
+        assert "textStyles" not in second
+
+    def test_caption_styles_only_apply_to_first_attachment_batch(self, tmp_path, monkeypatch):
+        from gateway.platforms.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        paths = []
+        for i in range(33):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"result": {"timestamp": 1}},
+            {"result": {"timestamp": 2}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "group:abc123",
+                "**Bold** and *italic*",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "group:***"
+        first = fake.calls[0]["payload"]["params"]
+        assert first["groupId"] == "abc123"
+        assert first["message"] == "Bold and italic"
+        assert first["textStyles"] == ["0:4:BOLD", "9:6:ITALIC"]
+        assert len(first["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        second = fake.calls[1]["payload"]["params"]
+        assert second["groupId"] == "abc123"
+        assert second["message"] == ""
+        assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "textStyle" not in second
+        assert "textStyles" not in second
 
     def test_full_followup_batch_emits_pacing_notice(self, tmp_path, monkeypatch):
         """64 attachments → 2 full batches. Batch 1 needs 14 more tokens

@@ -40,6 +40,14 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# WhatsApp JIDs: group chats (<digits>@g.us), individual users
+# (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
+# newsletter chats. These are explicit native targets the bridge accepts
+# verbatim — they must NOT fall through to home-channel resolution.
+_WHATSAPP_JID_RE = re.compile(
+    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
+    re.IGNORECASE,
+)
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -78,6 +86,13 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _display_chat_id(platform_name: str, chat_id: str) -> str:
+    """Return a result-safe chat identifier for tool transcripts/log consumers."""
+    if platform_name == "signal" and str(chat_id).startswith("group:"):
+        return "group:***"
+    return chat_id
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -509,6 +524,18 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
+        # are explicit targets — pass through verbatim. E.164 '+' numbers fall
+        # through to the _PHONE_PLATFORMS handler below.
+        if _WHATSAPP_JID_RE.fullmatch(target_ref):
+            return target_ref.strip(), None, True
+    stripped_target = target_ref.strip()
+    if platform_name == "signal" and stripped_target.startswith("group:"):
+        group_id = stripped_target[len("group:"):].strip()
+        if group_id:
+            return f"group:{group_id}", None, True
+        return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -1244,6 +1271,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         _signal_send_timeout,
         get_scheduler,
     )
+    from gateway.platforms.signal_format import markdown_to_signal
 
     try:
         http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
@@ -1270,8 +1298,15 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         else:
             att_batches = [[]]
 
+        plain_text, text_styles = markdown_to_signal(message)
+
         async def _post(batch_attachments, batch_message):
             params = {"account": account, "message": batch_message}
+            if batch_message and text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
             if chat_id.startswith("group:"):
                 params["groupId"] = chat_id[6:]
             else:
@@ -1328,7 +1363,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                         f"for Signal rate limit, batch {idx + 1}/{len(att_batches)}.)"
                     )
 
-            batch_message = message if idx == 0 else ""
+            batch_message = plain_text if idx == 0 else ""
 
             for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
                 try:
@@ -1393,7 +1428,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                 f"no attachments delivered"
             )
 
-        result = {"success": True, "platform": "signal", "chat_id": chat_id}
+        result = {"success": True, "platform": "signal", "chat_id": _display_chat_id("signal", chat_id)}
         if warnings:
             result["warnings"] = warnings
         return result
@@ -1885,13 +1920,16 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import tool_error
 
-registry.register(
-    name="send_message",
-    toolset="messaging",
-    schema=SEND_MESSAGE_SCHEMA,
-    handler=send_message_tool,
-    check_fn=_check_send_message,
-    emoji="📨",
-)
+# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable
+# model tool. The agent should not decide on its own to fire off cross-platform
+# messages or reactions. The send engine in this module (``_send_to_platform``,
+# ``_send_via_adapter``, ``_parse_target_ref``, the per-platform ``_send_*``
+# helpers) remains the shared transport used by:
+#   - cron delivery (cron/scheduler.py)
+#   - the ``hermes send`` CLI command (hermes_cli/send_cmd.py)
+#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
+#   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
+# Those callers import the helpers directly; none of them need the registry
+# entry.

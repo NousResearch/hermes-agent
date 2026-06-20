@@ -164,7 +164,9 @@ nautilus claw migrate --overwrite  # 覆盖已有冲突
 
 欢迎贡献！请参阅 [贡献指南](https://tj-coding.github.io/nautilus-agent/developer-guide/contributing) 了解开发设置、代码风格和 PR 流程。
 
-贡献者快速开始——克隆并使用 `setup-hermes.sh`：
+贡献者快速开始——使用标准安装器，然后在它创建的完整 git checkout 中开发：
+`$HERMES_HOME/hermes-agent`（通常是 `~/.hermes/hermes-agent`）。这会匹配
+`hermes update`、托管 venv、lazy dependencies、gateway 和 docs tooling 使用的布局。
 
 ```bash
 git clone https://github.com/TJ-coding/nautilus-agent.git
@@ -173,7 +175,7 @@ cd hermes-agent
 ./hermes              # 自动检测 venv，无需先 source
 ```
 
-手动安装（等效于上述命令）：
+手动克隆备用路径（用于一次性 clone / CI，或你明确不想使用 managed install layout 时）：
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh

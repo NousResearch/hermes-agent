@@ -553,7 +553,7 @@ export function DesktopController() {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
+  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds, terminalFontFamily } = useHermesConfig({
     activeSessionIdRef,
     refreshProjectBranch
   })
@@ -952,7 +952,7 @@ export function DesktopController() {
   // where it shows. Lives in main's stacking context (not the root overlay layer)
   // so pane resize handles still paint above it. Toggling never rebuilds the shell.
   const mainOverlays = (
-    <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+    <PersistentTerminal cwd={currentCwd} fontFamily={terminalFontFamily} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
   )
 
   const overlays = (

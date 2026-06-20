@@ -133,6 +133,7 @@ function stripInitialPromptGap(data: string) {
 
 interface UseTerminalSessionOptions {
   cwd: string
+  fontFamily: string
   onAddSelectionToChat: (text: string, label?: string) => void
 }
 
@@ -232,7 +233,7 @@ function quotePathForShell(path: string, shellName: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`
 }
 
-export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSessionOptions) {
+export function useTerminalSession({ cwd, fontFamily, onAddSelectionToChat }: UseTerminalSessionOptions) {
   // Key off renderedMode (the painted surface type), not resolvedMode (the
   // clicked switch) — a skin can keep a light surface in "dark" mode, and we
   // must match the surface or the ANSI palette inverts against it. themeName
@@ -337,7 +338,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      fontFamily: fontFamily || "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
       // (500) as the base, which reads a touch heavy at this size.

@@ -39,6 +39,7 @@ export function TerminalSlot({ className = SLOT_CLASS }: { className?: string })
 
 interface PersistentTerminalProps {
   cwd: string
+  fontFamily: string
   onAddSelectionToChat: (text: string, label?: string) => void
 }
 
@@ -52,7 +53,7 @@ interface Rect {
 const sameRect = (a: Rect | null, b: Rect) =>
   !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
 
-export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerminalProps) {
+export function PersistentTerminal({ cwd, fontFamily, onAddSelectionToChat }: PersistentTerminalProps) {
   const slot = useStore($slot)
   const [rect, setRect] = useState<Rect | null>(null)
   const [ready, setReady] = useState(false)
@@ -116,7 +117,7 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
   // new line. After first measurement we keep it mounted forever.
   return (
     <div aria-hidden={!visible} style={style}>
-      {ready && <TerminalTab cwd={cwd} onAddSelectionToChat={onAddSelectionToChat} />}
+      {ready && <TerminalTab cwd={cwd} fontFamily={fontFamily} onAddSelectionToChat={onAddSelectionToChat} />}
     </div>
   )
 }

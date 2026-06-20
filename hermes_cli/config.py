@@ -1097,6 +1097,14 @@ DEFAULT_CONFIG = {
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
+        # Terminal font family for the desktop app's embedded xterm.js terminal.
+        # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
+        # the desktop terminal uses this as the CSS font-family value, with the
+        # built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo,
+        # Consolas, monospace") as fallback when the field is empty or unset.
+        # This lets users install a Nerd Font (or any custom font) and configure
+        # it here without patching the built desktop app.
+        "font_family": "",
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in

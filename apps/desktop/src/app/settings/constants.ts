@@ -295,6 +295,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     cwd: 'Working Directory',
     backend: 'Execution Backend',
     timeout: 'Command Timeout',
+    fontFamily: 'Terminal Font',
     persistentShell: 'Persistent Shell',
     envPassthrough: 'Environment Passthrough',
     dockerImage: 'Docker Image',
@@ -442,6 +443,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
+    fontFamily: 'CSS font-family for the desktop embedded terminal (xterm.js). Set to a Nerd Font name like CaskaydiaCoveNerdFont to render icon glyphs correctly.',
     persistentShell: 'Keep shell state between commands when the backend supports it.',
     envPassthrough: 'Environment variables to pass into tool execution.',
     dockerImage: 'Container image used when the execution backend is Docker.',

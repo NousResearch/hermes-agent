@@ -14,14 +14,16 @@ import { useTerminalSession } from './use-terminal-session'
 
 interface TerminalTabProps {
   cwd: string
+  fontFamily: string
   onAddSelectionToChat: (text: string, label?: string) => void
 }
 
-export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
+export function TerminalTab({ cwd, fontFamily, onAddSelectionToChat }: TerminalTabProps) {
   const { t } = useI18n()
 
   const { addSelectionToChat, hostRef, selection, selectionStyle, shellName, status } = useTerminalSession({
     cwd,
+    fontFamily,
     onAddSelectionToChat
   })
 

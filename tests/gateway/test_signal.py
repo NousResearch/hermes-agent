@@ -1573,7 +1573,9 @@ class TestSignalQuoteExtraction:
     async def test_track_sent_timestamp_keeps_reply_detection_cache_after_echo_discard(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         adapter._track_sent_timestamp({"timestamp": 111222333})
-        adapter._recent_sent_timestamps.discard(111222333)
+        # Echo suppression consumes the entry from the recent-sent ring; the
+        # separate reply-detection cache must still retain it.
+        adapter._consume_sent_timestamp(111222333)
 
         assert "111222333" in adapter._sent_message_timestamps
         assert adapter._quote_references_own_message("111222333", None) is True

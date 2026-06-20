@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import site
 import sys
 import signal
@@ -1622,6 +1623,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.status_card import format_hermes_status_card
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -1803,6 +1805,96 @@ def _build_media_placeholder(event) -> str:
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
+
+
+def _status_git_short_sha() -> str | None:
+    """Best-effort git short SHA for the running Hermes checkout."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+        sha = (proc.stdout or "").strip()
+        return sha or None
+    except Exception:
+        return None
+
+
+def _status_gateway_uptime_seconds() -> int | None:
+    """Best-effort uptime for the current gateway process."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "etimes=", "-p", str(os.getpid())],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+        return int((proc.stdout or "").strip())
+    except Exception:
+        return None
+
+
+def _status_system_uptime_seconds() -> int | None:
+    """Best-effort system uptime in seconds."""
+    try:
+        with open("/proc/uptime", "r") as f:
+            return int(float(f.read().split()[0]))
+    except Exception:
+        return None
+
+
+def _status_model_label(config: dict) -> str:
+    """Extract model label from config. Shows only model name, never exposes api_key or base_url."""
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        model = model_cfg.get("default", "") or model_cfg.get("model", "")
+    elif isinstance(model_cfg, str):
+        model = model_cfg
+    else:
+        model = ""
+    return model or "unknown"
+
+
+def _status_context_limit(config: dict) -> int | None:
+    """Extract context limit from config."""
+    # Try top-level "context" as an int value
+    ctx = config.get("context")
+    if ctx is not None and isinstance(ctx, (int, float)):
+        return int(ctx)
+    # Try model.context_length
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        cl = model_cfg.get("context_length")
+        if cl is not None:
+            try:
+                return int(cl)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _status_fallback_labels(config: dict) -> list[str]:
+    """Extract fallback model labels from config."""
+    fallbacks = config.get("fallbacks")
+    if not isinstance(fallbacks, list):
+        return []
+    labels = []
+    for fb in fallbacks:
+        if isinstance(fb, dict):
+            fb_provider = fb.get("provider", "")
+            fb_model = fb.get("model", "")
+            label = f"{fb_provider}/{fb_model}" if fb_provider and fb_model else (fb_model or fb_provider or "unknown")
+            labels.append(label)
+        elif isinstance(fb, str):
+            labels.append(fb)
+    return labels
 
 
 def _build_document_context_note(display_name: str, agent_path: str, mtype: str) -> str:

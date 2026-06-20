@@ -394,12 +394,22 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
+        from gateway.run import (
+            _AGENT_PENDING_SENTINEL,
+            _load_gateway_config,
+            _resolve_gateway_model,
+            _status_git_short_sha,
+            _status_gateway_uptime_seconds,
+            _status_system_uptime_seconds,
+            _status_model_label,
+            _status_context_limit,
+            _status_fallback_labels,
+            format_hermes_status_card,
+        )
+        import hermes_cli
 
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-
-        connected_platforms = [p.value for p in self.adapters.keys()]
 
         # Check if there's an active agent. Keep the sentinel distinct: a
         # starting/pending run should not be treated as a fully usable agent for
@@ -412,160 +422,85 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
-        def _clean_str(value: Any) -> str:
-            return value.strip() if isinstance(value, str) and value.strip() else ""
-
         def _int_value(value: Any) -> int:
             try:
                 return int(value)
             except (TypeError, ValueError):
                 return 0
 
-        title = None
         session_row: dict[str, Any] = {}
-        # Pull token totals from the SQLite session DB rather than the
-        # in-memory SessionStore.  The agent's per-turn token deltas are
-        # persisted into sessions_db (run_agent.py), not into SessionEntry,
-        # so session_entry.total_tokens is always 0.  SessionDB is the
-        # single source of truth; reading it here keeps /status accurate
-        # without duplicating token writes into two stores.
-        db_total_tokens = 0
         if self._session_db:
-            try:
-                title = self._session_db.get_session_title(session_entry.session_id)
-            except Exception:
-                title = None
             try:
                 row = self._session_db.get_session(session_entry.session_id)
                 if isinstance(row, dict):
                     session_row = row
-                    db_total_tokens = (
-                        _int_value(row.get("input_tokens"))
-                        + _int_value(row.get("output_tokens"))
-                        + _int_value(row.get("cache_read_tokens"))
-                        + _int_value(row.get("cache_write_tokens"))
-                        + _int_value(row.get("reasoning_tokens"))
-                    )
             except Exception:
-                db_total_tokens = 0
+                pass
 
-        # Resolve model/context for cockpit-style status. Prefer the live or
-        # cached agent because it carries the actual runtime route and context
-        # compressor. Fall back to persisted SessionDB metadata plus the
-        # SessionStore's last_prompt_tokens so /status remains useful between
-        # turns without making billing/account calls.
-        status_agent = agent if is_running else None
-        if status_agent is None:
-            cache_lock = getattr(self, "_agent_cache_lock", None)
-            cache = getattr(self, "_agent_cache", None)
-            if cache_lock is not None and cache is not None:
-                try:
-                    with cache_lock:
-                        cached = cache.get(session_key)
-                    if cached:
-                        status_agent = cached[0]
-                except Exception:
-                    status_agent = None
+        input_tokens = _int_value(session_row.get("input_tokens"))
+        output_tokens = _int_value(session_row.get("output_tokens"))
+        cache_read_tokens = _int_value(session_row.get("cache_read_tokens"))
+        cache_write_tokens = _int_value(session_row.get("cache_write_tokens"))
 
-        model_name = ""
-        provider_name = ""
-        base_url = ""
-        context_used = 0
-        context_total = 0
-        if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
-            model_name = _clean_str(getattr(status_agent, "model", ""))
-            provider_name = _clean_str(getattr(status_agent, "provider", ""))
-            base_url = _clean_str(getattr(status_agent, "base_url", ""))
-            ctx = getattr(status_agent, "context_compressor", None)
-            if ctx is not None:
-                context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
-                context_total = _int_value(getattr(ctx, "context_length", 0))
+        # context_tokens: prefer the live agent's context_compressor (most accurate),
+        # then fall back to the session_entry's persisted last_prompt_tokens.
+        context_tokens = None
+        context_limit = None
+        if is_running:
+            cc = getattr(agent, "context_compressor", None)
+            if cc is not None:
+                context_tokens = _int_value(getattr(cc, "last_prompt_tokens", 0)) or None
+                context_limit = _int_value(getattr(cc, "context_length", 0)) or None
 
-        model_name = model_name or _clean_str(session_row.get("model"))
-        provider_name = provider_name or _clean_str(session_row.get("billing_provider"))
-        base_url = base_url or _clean_str(session_row.get("billing_base_url"))
-        context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+        # Load gateway config for model/fallback/context info.
+        try:
+            cfg = _load_gateway_config()
+        except Exception:
+            cfg = {}
 
-        user_config: dict[str, Any] = {}
-        if not model_name or not provider_name or not context_total:
-            try:
-                user_config = _load_gateway_config()
-            except Exception:
-                user_config = {}
-        if not model_name:
-            model_name = _resolve_gateway_model(user_config)
-        if not provider_name:
-            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-            if isinstance(model_cfg, dict):
-                provider_name = _clean_str(model_cfg.get("provider"))
-        if not context_total:
-            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-            configured_context = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
-            if isinstance(configured_context, int) and configured_context > 0:
-                context_total = configured_context
+        if context_tokens is None:
+            context_tokens = _int_value(getattr(session_entry, "last_prompt_tokens", 0)) or 0
+        if context_limit is None:
+            context_limit = _status_context_limit(cfg)
 
-        model_line = ""
-        if model_name:
-            if provider_name:
-                model_line = t("gateway.status.model_provider", model=model_name, provider=provider_name)
-            else:
-                model_line = t("gateway.status.model", model=model_name)
-
-        context_line = ""
-        if context_total:
-            pct = min(100, round((context_used / context_total) * 100)) if context_total else 0
-            context_line = t(
-                "gateway.status.context",
-                used=f"{context_used:,}",
-                total=f"{context_total:,}",
-                pct=f"{pct}",
-            )
-        elif context_used:
-            context_line = t("gateway.status.context_used", used=f"{context_used:,}")
-
-        lines = [
-            t("gateway.status.header"),
-            "",
-            t("gateway.status.session_id", session_id=session_entry.session_id),
-        ]
-        if title:
-            lines.append(t("gateway.status.title", title=title))
-        lines.extend([
-            t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
-            t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
-        ])
-        if model_line:
-            lines.append(model_line)
-        if context_line:
-            lines.append(context_line)
-        lines.extend([
-            t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
-        ])
-        if queue_depth:
-            lines.append(t("gateway.status.queued", count=queue_depth))
-        if source.platform == Platform.MATRIX:
-            adapter = self.adapters.get(Platform.MATRIX)
-            scope = getattr(adapter, "_matrix_session_scope", os.getenv("MATRIX_SESSION_SCOPE", "auto"))
-            thread = source.thread_id or "none"
-            lines.extend([
-                "",
-                t("gateway.status.matrix_scope_header"),
-                t("gateway.status.matrix_scope_room", room=source.chat_name or source.chat_id),
-                t("gateway.status.matrix_scope_room_id", room_id=source.chat_id),
-                t("gateway.status.matrix_scope_thread", thread_id=thread),
-                t("gateway.status.matrix_scope_mode", scope=scope),
-                t(
-                    "gateway.status.matrix_scope_key",
-                    session_key=self._redact_matrix_session_key(session_key),
-                ),
+        # Count active tasks (agents + processes + background tasks).
+        running_processes = 0
+        try:
+            from tools.process_registry import process_registry
+            running_processes = len([
+                p for p in process_registry.list_sessions()
+                if p.get("status") == "running"
             ])
-        lines.extend([
-            "",
-            t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
+        except Exception:
+            running_processes = 0
+        background_tasks = len([
+            task for task in (getattr(self, "_background_tasks", set()) or set())
+            if hasattr(task, "done") and not task.done()
         ])
+        active_tasks = len(getattr(self, "_running_agents", {}) or {}) + running_processes + background_tasks
 
-        return "\n".join(lines)
+        snapshot = {
+            "version": hermes_cli.__version__,
+            "commit": _status_git_short_sha(),
+            "gateway_uptime_seconds": _status_gateway_uptime_seconds(),
+            "system_uptime_seconds": _status_system_uptime_seconds(),
+            "model": _status_model_label(cfg),
+            "fallbacks": _status_fallback_labels(cfg),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "estimated_cost_usd": session_row.get("estimated_cost_usd"),
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "context_tokens": context_tokens,
+            "context_limit": context_limit,
+            "compactions": session_row.get("compression_count", 0),
+            "session_id": session_entry.session_id,
+            "active_tasks": active_tasks,
+            "queue_mode": getattr(self, "_busy_input_mode", "queue"),
+            "queue_depth": queue_depth,
+        }
+
+        return format_hermes_status_card(snapshot)
 
     @staticmethod
     def _redact_matrix_session_key(session_key: str) -> str:

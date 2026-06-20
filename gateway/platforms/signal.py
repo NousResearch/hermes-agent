@@ -801,7 +801,8 @@ class SignalAdapter(BasePlatformAdapter):
         # require AAC to be muxed into an MP4 container. Remux losslessly
         # with ``ffmpeg -c:a copy`` so the cached file is a normal .m4a.
         # No re-encode, sub-100ms on a Pi 5. Graceful no-op if ffmpeg is
-        # absent; the STT layer has its own sniff-and-remux fallback.
+        # absent: the raw ADTS file is cached as-is and STT may reject it
+        # (there is no downstream sniff-and-remux fallback).
         if ext == ".aac":
             remuxed: Optional[Tuple[bytes, str]] = await asyncio.to_thread(_remux_aac_to_m4a, raw_data)
             if remuxed is not None:
@@ -904,7 +905,7 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _markdown_to_signal(text: str) -> tuple:
+    def _markdown_to_signal(text: str) -> tuple[str, list[str]]:
         """Backward-compatible wrapper around shared Signal formatting helper."""
         return markdown_to_signal(text)
 

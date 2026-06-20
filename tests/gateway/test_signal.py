@@ -201,20 +201,45 @@ class TestSignalHelpers:
         assert _is_audio_ext(ext) is True
 
     def test_remux_aac_to_m4a_round_trip(self):
-        """Real ADTS file from the audio cache remuxes to a valid MP4 container.
+        """A real ADTS AAC stream remuxes to a valid MP4 (.m4a) container.
 
-        Round-trips the actual Android voice note that triggered the
-        bug report — proves the end-to-end fix.
+        Generates a short ADTS AAC sample with ffmpeg at runtime so the
+        end-to-end remux path actually exercises in CI (skipped only when
+        ffmpeg is unavailable), rather than depending on a machine-specific
+        file.
         """
-        import os
         import shutil
+        import subprocess
+        import tempfile
         from gateway.platforms.signal import _remux_aac_to_m4a
-        src = "/home/pi/.hermes/audio_cache/audio_fcfc38390b47.mp3"
-        if not os.path.exists(src) or not shutil.which("ffmpeg"):
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
             import pytest
-            pytest.skip("ffmpeg or source file not available in this env")
-        with open(src, "rb") as f:
-            aac_data = f.read()
+            pytest.skip("ffmpeg not available in this env")
+
+        # Synthesize 0.5s of silence encoded as raw ADTS AAC.
+        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as tmp:
+            adts_path = tmp.name
+        try:
+            gen = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "anullsrc=r=44100:cl=mono", "-t", "0.5",
+                 "-c:a", "aac", "-f", "adts", adts_path],
+                capture_output=True, timeout=30,
+            )
+            if gen.returncode != 0:
+                import pytest
+                pytest.skip("ffmpeg could not produce an ADTS AAC sample")
+            with open(adts_path, "rb") as f:
+                aac_data = f.read()
+        finally:
+            try:
+                import os
+                os.unlink(adts_path)
+            except OSError:
+                pass
+
         result = _remux_aac_to_m4a(aac_data)
         assert result is not None
         m4a_bytes, ext = result

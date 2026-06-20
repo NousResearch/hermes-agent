@@ -1102,6 +1102,35 @@ class TestWebServerEndpoints:
         assert resp.json() == {"ok": True, "pid": 12345, "name": "hermes-update"}
         assert calls == [(["update"], "hermes-update")]
 
+    def test_spawn_action_uses_windows_detach_helper(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        captured = {}
+
+        class _Proc:
+            pid = 777
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return _Proc()
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        monkeypatch.setattr(
+            web_server, "windows_detach_popen_kwargs", lambda: {"creationflags": 0x12345678}
+        )
+        monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+
+        proc = web_server._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+        assert proc.pid == 777
+        assert captured["cmd"][0] == web_server.sys.executable
+        assert captured["cmd"][1:] == ["-m", "hermes_cli.main", "gateway", "restart"]
+        assert captured["kwargs"]["creationflags"] == 0x12345678
+        assert captured["kwargs"]["stdin"] is web_server.subprocess.DEVNULL
+        assert captured["kwargs"]["stderr"] is web_server.subprocess.STDOUT
+        assert captured["kwargs"]["env"]["HERMES_NONINTERACTIVE"] == "1"
+
     def test_action_status_reaps_completed_process(self, monkeypatch):
         import hermes_cli.web_server as web_server
 

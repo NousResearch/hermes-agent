@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -216,13 +217,142 @@ def knowledge_index_payload(paths: AgentsOSPaths) -> dict[str, Any]:
     return {"local_only": True, "runtime_memory_merge": False, "note": "vault/reference graph, not runtime memory merge", "nodes": nodes, "edges": edges}
 
 
+def board_meeting_schema_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    agents = agents_registry_payload(paths)["agents"]
+    return {
+        "local_only": True,
+        "execution_created": False,
+        "external_calls": False,
+        "fields": {
+            "objective": {"type": "string", "required": True, "max_length": 2000},
+            "participants": {"type": "array", "items": [agent["id"] for agent in agents]},
+        },
+        "default_participants": [agent["id"] for agent in agents if agent["id"] == "local-agent"] or ([agents[0]["id"]] if agents else []),
+        "approval_gates": [
+            "deploy",
+            "push",
+            "PR",
+            "credentials",
+            "external integrations",
+            "microphone",
+            "TTS",
+            "computer-control",
+            "gateway restart",
+        ],
+    }
+
+
+def _board_meeting_risk(objective: str) -> tuple[bool, str, list[str]]:
+    lowered = f" {objective.lower()} "
+    risky_markers = {
+        "deploy": "deploy",
+        "deployaj": "deploy",
+        "push": "push",
+        "pull request": "PR",
+        " pr ": "PR",
+        "pošalji": "external_send",
+        "posalji": "external_send",
+        "email": "external_send",
+        "credential": "credentials",
+        "token": "credentials",
+        "api key": "credentials",
+        "mikrofon": "microphone",
+        "microphone": "microphone",
+        "tts": "TTS",
+        "computer-control": "computer-control",
+        "gateway restart": "gateway restart",
+    }
+    gates = sorted({gate for marker, gate in risky_markers.items() if marker in lowered})
+    return bool(gates), "approval_gated" if gates else "safe_local", gates
+
+
+def draft_board_meeting_action(service: AgentsOSService, data: dict[str, Any]) -> dict[str, Any]:
+    paths = service.paths
+    objective = str(data.get("objective") or "").strip()
+    if not objective:
+        raise ValueError("objective is required")
+    if len(objective) > 2000:
+        objective = objective[:2000]
+    known_agents = {agent["id"]: agent for agent in agents_registry_payload(paths)["agents"]}
+    raw_participants = data.get("participants") or ["local-agent"]
+    if not isinstance(raw_participants, list):
+        raw_participants = [raw_participants]
+    participants = [str(item) for item in raw_participants if str(item) in known_agents]
+    if not participants and "local-agent" in known_agents:
+        participants = ["local-agent"]
+    risky, risk_class, gates = _board_meeting_risk(objective)
+    stamp = utc_now().replace(":", "").replace("-", "").replace(".", "")[:15] + "-" + uuid.uuid4().hex[:6]
+    slug = slugify(objective[:80], fallback="board-meeting")
+    task_id = f"task-board-{stamp}"
+    artifact_id = f"artifact-board-{stamp}"
+    approval_id = f"approval-board-{stamp}" if risky else None
+    mode = "approval_draft" if risky else "safe_local_task"
+    now = utc_now()
+    board_dir = paths.artifacts / "board-meetings"
+    board_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = board_dir / f"{stamp}-{slug}.md"
+    body_payload = {
+        "objective": objective,
+        "participants": participants,
+        "risk_class": risk_class,
+        "approval_required": risky,
+        "approval_gates_triggered": gates,
+        "execution_created": False,
+        "created_at": now,
+    }
+    participant_lines = "\n".join(f"- {known_agents[p]['name']} (`{p}`)" for p in participants)
+    artifact_path.write_text(
+        "# Board Meeting Draft\n\n"
+        f"## Objective\n{objective}\n\n"
+        f"## Participants\n{participant_lines or '- none'}\n\n"
+        f"## Safety\n- local_only: true\n- execution_created: false\n- mode: {mode}\n- approval_required: {str(risky).lower()}\n\n"
+        "## Payload\n```json\n"
+        + json.dumps(body_payload, ensure_ascii=False, indent=2)
+        + "\n```\n",
+        encoding="utf-8",
+    )
+    with connect(paths) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO tasks(id,title,status,workflow,priority,created_at,updated_at,notes,route,approval_required) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (task_id, f"Board Meeting: {objective[:90]}", "needs_approval" if risky else "pending", "board-meeting", 2, now, now, objective, "approval_gate" if risky else "local:direct", 1 if risky else 0),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO artifacts(id,kind,title,path,task_id,workflow,created_at) VALUES(?,?,?,?,?,?,?)",
+            (artifact_id, "board_meeting", "Board Meeting Draft", str(artifact_path), task_id, "board-meeting", now),
+        )
+        if approval_id:
+            conn.execute(
+                "INSERT OR REPLACE INTO approvals(id,title,status,risk,task_id,payload,created_at) VALUES(?,?,?,?,?,?,?)",
+                (approval_id, f"Approval draft: Board Meeting — {objective[:80]}", "pending", risk_class, task_id, json.dumps(body_payload, ensure_ascii=False), now),
+            )
+            log_event(conn, "approval_requested", task_id=task_id, payload={"approval_id": approval_id, "risk": risk_class, "execution_created": False})
+        log_event(conn, "board_meeting_drafted", task_id=task_id, payload={"artifact_id": artifact_id, "approval_id": approval_id, "mode": mode, "execution_created": False})
+        conn.commit()
+    return {
+        "status": "drafted",
+        "local_only": True,
+        "execution_created": False,
+        "external_calls": False,
+        "mode": mode,
+        "approval_required": risky,
+        "approval_gates_triggered": gates,
+        "task_id": task_id,
+        "approval_id": approval_id,
+        "artifact_id": artifact_id,
+        "artifact_path": str(artifact_path),
+        "participants": participants,
+    }
+
+
 def artifacts_payload(paths: AgentsOSPaths) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     with connect(paths) as conn:
         for row in conn.execute("SELECT * FROM artifacts ORDER BY created_at DESC LIMIT 100").fetchall():
             item = row_to_dict(row)
             info = _path_info(item["path"])
+            path_kind = info.pop("kind")
             item.update(info)
+            item["path_kind"] = path_kind
             item["preview_type"] = "markdown" if info["suffix"] == ".md" else ("json" if info["suffix"] == ".json" else ("media" if info["suffix"] in MEDIA_SUFFIXES else "text"))
             items.append(item)
     seen = {item["path"] for item in items}
@@ -235,7 +365,11 @@ def artifacts_payload(paths: AgentsOSPaths) -> dict[str, Any]:
             if p.is_file() and p.suffix.lower() in ARTIFACT_SUFFIXES and str(p) not in seen:
                 info = _path_info(str(p))
                 items.append({"id": f"file:{slugify(str(p))}", "kind": "file", "title": p.name, "task_id": None, "workflow": None, **info})
-    return {"local_only": True, "items": items}
+    summary: dict[str, int] = {}
+    for item in items:
+        key = str(item.get("kind") or item.get("preview_type") or item.get("suffix") or "unknown")
+        summary[key] = summary.get(key, 0) + 1
+    return {"local_only": True, "read_only": True, "mutation_enabled": False, "credentials_visible": False, "bounded_scan": True, "summary": summary, "items": items}
 
 
 def media_assets_payload(paths: AgentsOSPaths) -> dict[str, Any]:
@@ -1047,7 +1181,7 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 <body>
 <header><h1>Agents OS Mission Control</h1><div class=\"sub\">Local-only operator cockpit · gateway restart: false · vault/reference graph, not runtime memory merge</div></header>
 <nav class=\"tabs\">
-<button data-tab=\"overview\" class=\"active\">Overview</button><button data-tab=\"tasks\">Task board</button><button data-tab=\"approvals\">Approvals</button><button data-tab=\"runs\">Runs</button><button data-tab=\"events\">Events / Logs</button><button data-tab=\"idea\">Idea Factory</button><button data-tab=\"agents\">Agent Registry</button><button data-tab=\"knowledge\">Knowledge Galaxy</button><button data-tab=\"artifacts\">Artifact Library</button><button data-tab=\"seo\">SEO Mission Control</button><button data-tab=\"operator\">Operator Loop</button><button data-tab=\"media\">Media Studio</button><button data-tab=\"skills\">Skills</button><button data-tab=\"sessions\">Sessions</button><button data-tab=\"manage\">Manage / Status</button><button data-tab=\"voice\">Voice / Jarvis</button>
+<button data-tab=\"overview\" class=\"active\">Overview</button><button data-tab=\"tasks\">Task board</button><button data-tab=\"approvals\">Approvals</button><button data-tab=\"runs\">Runs</button><button data-tab=\"events\">Events / Logs</button><button data-tab=\"idea\">Idea Factory</button><button data-tab=\"agents\">Agent Registry</button><button data-tab=\"knowledge\">Knowledge Galaxy</button><button data-tab=\"board\">Board Meeting</button><button data-tab=\"artifacts\">Artifact Library</button><button data-tab=\"seo\">SEO Mission Control</button><button data-tab=\"operator\">Operator Loop</button><button data-tab=\"media\">Media Studio</button><button data-tab=\"skills\">Skills</button><button data-tab=\"sessions\">Sessions</button><button data-tab=\"manage\">Manage / Status</button><button data-tab=\"voice\">Voice / Jarvis</button>
 </nav>
 <main>
 <section id=\"overview\" class=\"active\"><div class=\"grid\"><div class=\"card\"><h2>HEALTH <span class=\"ok\">OK</span></h2><div class=\"kv\">State DB: {status.get('state_db')}</div><div class=\"kv\">Schema: {status.get('schema_version')}</div></div><div class=\"card\"><h2>Queue</h2><pre id=\"queueSummary\"></pre></div></div></section>
@@ -1058,7 +1192,8 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 <section id=\"idea\"><div class=\"card\"><h2>Idea Factory</h2><textarea id=\"ideaText\">Obradi YouTube video</textarea><p><button id=\"draftIdea\">Draft only</button> <button id=\"createIdea\">Create safe task / approval draft</button></p><pre id=\"ideaResult\"></pre><div class=\"kv\">Fields: classification · risk class · recommended lane · plan steps · approval badge · expected artifacts · acceptance criteria</div></div></section>
 <section id=\"agents\"><h2>Paperclip Agent Registry</h2><div id=\"agentsList\" class=\"grid\"></div></section>
 <section id=\"knowledge\"><h2>Knowledge / Memory Galaxy v0</h2><div class=\"kv\">Read-only vault/reference graph, not runtime memory merge.</div><div id=\"knowledgeList\" class=\"grid\"></div></section>
-<section id=\"artifacts\"><h2>Artifact / Project Library</h2><pre id=\"artifactDetail\"></pre><div id=\"artifactList\" class=\"grid\"></div></section>
+<section id=\"board\"><div class=\"card\"><h2>Board Meeting</h2><div class=\"kv\">Draft-only cockpit flow. Creates a local board meeting artifact plus safe-local task or approval draft; execution remains false.</div><textarea id=\"boardObjective\">Planirati Asset Library read-only proof iz Mission Controla</textarea><div id=\"boardParticipants\" class=\"kv\"></div><p><button id=\"draftBoardMeeting\">Draft board meeting</button></p><pre id=\"boardMeetingResult\"></pre></div></section>
+<section id=\"artifacts\"><h2>Artifact / Asset Library</h2><div class=\"card\"><input id=\"assetSearch\" placeholder=\"Search assets\" style=\"width:100%;border-radius:12px;background:#09111f;color:var(--text);border:1px solid #2a4166;padding:10px;margin-bottom:8px;\" /><select id=\"assetTypeFilter\" style=\"width:100%;border-radius:12px;background:#09111f;color:var(--text);border:1px solid #2a4166;padding:10px;\"><option value=\"\">All types</option></select><pre id=\"assetSummary\"></pre></div><pre id=\"artifactDetail\"></pre><div id=\"artifactList\" class=\"grid\"></div></section>
 <section id=\"seo\"><h2>SEO Mission Control</h2><div class=\"card\"><h3>Draft-only SEO/AISO lane</h3><div class=\"kv\">publish disabled · outreach disabled · live metrics require approval-gated credentials</div><pre id=\"seoPayload\"></pre></div><div id=\"seoList\" class=\"grid\"></div></section>
 <section id=\"operator\"><h2>Operator Loop / Judge / Evidence</h2><pre id=\"operatorPayload\"></pre></section>
 <section id=\"media\"><h2>Media Studio Browser v0</h2><div class=\"kv\">Read-only. No generation. No posting.</div><div id=\"mediaList\" class=\"grid\"></div></section>
@@ -1081,15 +1216,30 @@ async function showTaskDetail(id) {{ showPre('#taskDetail', await j('/api/tasks/
 async function showApprovalDetail(id) {{ showPre('#approvalDetail', await j('/api/approvals/' + encodeURIComponent(id))); }}
 async function showRunDetail(id) {{ showPre('#runDetail', await j('/api/runs/' + encodeURIComponent(id))); }}
 async function showArtifactDetail(id) {{ showPre('#artifactDetail', await j('/api/artifacts/' + encodeURIComponent(id))); }}
+
+function selectedBoardParticipants() {{ return $$('#boardParticipants input[type="checkbox"]:checked').map(x => x.value); }}
+function renderBoardAgents(agents) {{
+ const target = $('#boardParticipants'); if (!target) return;
+ target.innerHTML = '<div class="kv">Participants</div>' + agents.agents.map(a => '<label class="pill"><input type="checkbox" value="' + escapeHtml(a.id) + '" ' + (a.id === 'local-agent' ? 'checked' : '') + '> ' + escapeHtml(a.name) + '</label>').join('');
+}}
+function renderAssets(artifacts) {{
+ showPre('#assetSummary', artifacts.summary || {{}});
+ const types = Object.keys(artifacts.summary || {{}}).sort(); const filter = $('#assetTypeFilter');
+ const current = filter.value || ''; filter.innerHTML = '<option value="">All types</option>' + types.map(t => '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>').join(''); filter.value = current;
+ const q = ($('#assetSearch')?.value || '').toLowerCase(); const type = filter.value;
+ const filtered = (artifacts.items || []).filter(a => (!type || a.kind === type || a.preview_type === type) && (!q || String((a.title||'') + ' ' + (a.path||'') + ' ' + (a.kind||'')).toLowerCase().includes(q)));
+ $('#artifactList').innerHTML = filtered.slice(0,60).map(a => asCard(a.title, '<div class="kv">' + escapeHtml(a.kind) + ' · ' + escapeHtml(a.preview_type||a.suffix) + '</div><div class="kv">' + escapeHtml(a.path) + '</div><p><button data-detail-id="' + escapeHtml(a.id) + '" onclick="showArtifactDetail(this.dataset.detailId)">Open artifact preview</button></p>')).join('') || '<div class="card kv">No matching assets.</div>';
+}}
+
 async function loadAll() {{
  const dashboard = await j('/api/dashboard'); showPre('#queueSummary', dashboard.queue_summary || {{}});
  const tasks = await j('/api/tasks'); showPre('#tasksPayload', tasks); $('#tasksList').innerHTML = tasks.items.slice(0,30).map(t => asCard(t.title || t.id, '<div class="kv">' + escapeHtml(t.id) + ' · ' + escapeHtml(t.status) + ' · ' + escapeHtml(t.workflow) + '</div><div class="kv">priority=' + escapeHtml(t.priority) + ' approval_required=' + escapeHtml(t.approval_required) + '</div><p><button data-detail-id="' + escapeHtml(t.id) + '" onclick="showTaskDetail(this.dataset.detailId)">Open task detail</button></p>')).join('');
  const approvals = await j('/api/approvals'); showPre('#approvalsPayload', approvals); $('#approvalsList').innerHTML = approvals.items.slice(0,30).map(a => asCard(a.title || a.id, '<div class="kv">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.status) + ' · risk=' + escapeHtml(a.risk) + '</div><div class="kv">resolution enabled: ' + escapeHtml(a.resolution_enabled) + '</div><p><button data-detail-id="' + escapeHtml(a.id) + '" onclick="showApprovalDetail(this.dataset.detailId)">Open approval detail</button></p>')).join('') || '<div class="card kv">No approvals.</div>';
  const runs = await j('/api/runs'); showPre('#runsPayload', runs); $('#runsList').innerHTML = runs.items.slice(0,30).map(r => asCard(r.id, '<div class="kv">' + escapeHtml(r.status) + ' · ' + escapeHtml(r.workflow) + '</div><div class="kv">task=' + escapeHtml(r.task_id) + '</div><p><button data-detail-id="' + escapeHtml(r.id) + '" onclick="showRunDetail(this.dataset.detailId)">Open run detail</button></p>')).join('') || '<div class="card kv">No runs.</div>';
  const events = await j('/api/events'); showPre('#eventsPayload', events); $('#eventsList').innerHTML = events.items.slice(0,30).map(e => asCard(e.event_type || e.id, '<div class="kv">' + escapeHtml(e.id) + ' · ' + escapeHtml(e.created_at) + '</div><div class="kv">task=' + escapeHtml(e.task_id) + ' run=' + escapeHtml(e.run_id) + '</div>')).join('') || '<div class="card kv">No events.</div>';
- const agents = await j('/api/agents'); $('#agentsList').innerHTML = agents.agents.map(a => asCard(a.name, '<div class="kv">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.status) + '</div><p>' + (a.capabilities||[]).map(pill).join('') + '</p><div class="kv">Memory: ' + escapeHtml(a.memory_boundary) + '</div><div class="kv">Auth: ' + escapeHtml(a.auth_boundary) + '</div><div class="kv">Gates: ' + (a.approval_gates||[]).map(escapeHtml).join(', ') + '</div>')).join('');
+ const agents = await j('/api/agents'); renderBoardAgents(agents); $('#agentsList').innerHTML = agents.agents.map(a => asCard(a.name, '<div class="kv">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.status) + '</div><p>' + (a.capabilities||[]).map(pill).join('') + '</p><div class="kv">Memory: ' + escapeHtml(a.memory_boundary) + '</div><div class="kv">Auth: ' + escapeHtml(a.auth_boundary) + '</div><div class="kv">Gates: ' + (a.approval_gates||[]).map(escapeHtml).join(', ') + '</div>')).join('');
  const knowledge = await j('/api/knowledge/index'); $('#knowledgeList').innerHTML = knowledge.nodes.map(n => asCard(n.label, '<div class="kv">' + escapeHtml(n.kind) + ' · exists=' + escapeHtml(n.exists) + '</div><div class="kv">' + escapeHtml(n.path) + '</div>')).join('');
- const artifacts = await j('/api/artifacts'); $('#artifactList').innerHTML = artifacts.items.slice(0,40).map(a => asCard(a.title, '<div class="kv">' + escapeHtml(a.kind) + ' · ' + escapeHtml(a.preview_type||a.suffix) + '</div><div class="kv">' + escapeHtml(a.path) + '</div><p><button data-detail-id="' + escapeHtml(a.id) + '" onclick="showArtifactDetail(this.dataset.detailId)">Open artifact preview</button></p>')).join('');
+ const artifacts = await j('/api/assets'); renderAssets(artifacts);
  const seo = await j('/api/seo'); showPre('#seoPayload', seo); $('#seoList').innerHTML = ['goals','keyword_queue','draft_queue','review_gates'].map(k => asCard(k, '<div class="kv">' + escapeHtml((seo[k]||[]).length) + ' item(s)</div>')).join('');
  const operator = await j('/api/operator-loop'); showPre('#operatorPayload', operator);
  const media = await j('/api/media'); $('#mediaList').innerHTML = media.assets.map(m => asCard(m.title, '<div class="kv">' + escapeHtml(m.mime) + ' · ' + escapeHtml(m.size_bytes) + ' bytes</div><div class="kv">' + escapeHtml(m.path) + '</div>')).join('') || '<div class="card kv">No local media assets found.</div>';
@@ -1101,6 +1251,9 @@ async function loadAll() {{
 }}
 $('#draftIdea').addEventListener('click', async () => showPre('#ideaResult', await j('/api/idea-factory/draft', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})));
 $('#createIdea').addEventListener('click', async () => {{ showPre('#ideaResult', await j('/api/idea-factory/action', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})); await loadAll(); }});
+$('#draftBoardMeeting').addEventListener('click', async () => {{ const result = await j('/api/board-meeting/draft', {{method:'POST', body:JSON.stringify({{objective:$('#boardObjective').value, participants:selectedBoardParticipants()}})}}); showPre('#boardMeetingResult', result); await loadAll(); }});
+$('#assetSearch').addEventListener('input', () => loadAll().catch(e => showPre('#assetSummary', {{error:String(e)}})));
+$('#assetTypeFilter').addEventListener('change', () => loadAll().catch(e => showPre('#assetSummary', {{error:String(e)}})));
 let refreshTimer = setInterval(() => loadAll().catch(e => showPre('#queueSummary', {{error:String(e), refresh:'poll_failed'}})), 5000);
 let jarvisRecorder = null; let jarvisChunks = [];
 async function previewJarvisCommand() {{ showPre('#jarvisCommandCard', await j('/api/jarvis/preview', {{method:'POST', body:JSON.stringify({{transcript_text:$('#jarvisTranscript').value}})}})); }}
@@ -1161,9 +1314,11 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, self.service.idea_factory_schema_payload())
             elif path == "/api/agents":
                 _send_json(self, agents_registry_payload(self.service.paths))
+            elif path == "/api/board-meeting/schema":
+                _send_json(self, board_meeting_schema_payload(self.service.paths))
             elif path in {"/api/knowledge", "/api/knowledge/index"}:
                 _send_json(self, knowledge_index_payload(self.service.paths))
-            elif path == "/api/artifacts":
+            elif path in {"/api/artifacts", "/api/assets", "/api/artifact-library"}:
                 _send_json(self, artifacts_payload(self.service.paths))
             elif path.startswith("/api/artifacts/"):
                 _send_json(self, artifact_detail_payload(self.service.paths, path.rsplit("/", 1)[-1]))
@@ -1209,6 +1364,8 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, self.service.idea_factory_draft_payload(data))
             elif path == "/api/idea-factory/action":
                 _send_json(self, create_idea_action(self.service, data))
+            elif path == "/api/board-meeting/draft":
+                _send_json(self, draft_board_meeting_action(self.service, data))
             elif path == "/api/jarvis/preview":
                 _send_json(self, jarvis_preview_payload(self.service.paths, data))
             elif path == "/api/jarvis/advisor":

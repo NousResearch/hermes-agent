@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import re
 import shutil
+import threading
 import textwrap
 import uuid
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ SAFE_WORKFLOWS = {
 }
 
 SCHEMA_VERSION = "3"
+_SERVICE_COMMAND_STDOUT_LOCK = threading.RLock()
 TASK_STATUSES = (
     "new",
     "pending",
@@ -1418,8 +1420,9 @@ class AgentsOSService:
         import io
         buf = io.StringIO()
         args = argparse.Namespace(vault_root=str(self.paths.vault_root), json=True, markdown=False)
-        with contextlib.redirect_stdout(buf):
-            func(args)
+        with _SERVICE_COMMAND_STDOUT_LOCK:
+            with contextlib.redirect_stdout(buf):
+                func(args)
         return json.loads(buf.getvalue())
 
     def doctor_payload(self) -> dict[str, Any]:

@@ -11,7 +11,9 @@ from hermes_cli.agents_os_web import (
     approval_detail_payload,
     artifact_detail_payload,
     artifacts_payload,
+    board_meeting_schema_payload,
     create_idea_action,
+    draft_board_meeting_action,
     jarvis_briefing_payload,
     jarvis_model_advisor_payload,
     jarvis_preview_payload,
@@ -53,6 +55,7 @@ def test_root_html_contains_operator_tabs_and_bootstrap_payload(agents_home):
         "Idea Factory",
         "Agent Registry",
         "Knowledge Galaxy",
+        "Board Meeting",
         "Artifact Library",
         "Operator Loop",
         "Media Studio",
@@ -61,6 +64,11 @@ def test_root_html_contains_operator_tabs_and_bootstrap_payload(agents_home):
     ]:
         assert label in html
     assert "/api/idea-factory/draft" in html
+    assert "/api/board-meeting/draft" in html
+    assert "boardObjective" in html
+    assert "boardMeetingResult" in html
+    assert "assetSearch" in html
+    assert "assetTypeFilter" in html
     assert "demo=task-detail" in html
     assert "demo=approval-detail" in html
     assert "showTaskDetail(tasks.items[0].id)" in html
@@ -80,6 +88,64 @@ def test_idea_factory_schema_and_draft_payloads_are_local_only(agents_home):
     assert draft["approval_required"] is True
     assert draft["risk_class"] == "public_gated"
     assert draft["execution_created"] is False
+
+
+def test_board_meeting_schema_is_local_only_and_approval_gated(agents_home):
+    schema = board_meeting_schema_payload(resolve_paths(None))
+
+    assert schema["local_only"] is True
+    assert schema["execution_created"] is False
+    assert schema["external_calls"] is False
+    assert "objective" in schema["fields"]
+    assert "participants" in schema["fields"]
+    assert "credentials" in schema["approval_gates"]
+    assert "deploy" in schema["approval_gates"]
+    assert "gateway restart" in schema["approval_gates"]
+
+
+def test_board_meeting_draft_creates_artifact_and_safe_task(agents_home):
+    service = AgentsOSService(resolve_paths(None))
+    result = draft_board_meeting_action(
+        service,
+        {"objective": "Planirati Asset Library read-only proof", "participants": ["local-agent", "missing-agent"]},
+    )
+
+    assert result["mode"] == "safe_local_task"
+    assert result["execution_created"] is False
+    assert result["approval_required"] is False
+    assert result["approval_id"] is None
+    assert result["task_id"].startswith("task-board-")
+    assert result["artifact_id"].startswith("artifact-board-")
+    assert result["participants"] == ["local-agent"]
+    artifact_path = Path(result["artifact_path"])
+    assert artifact_path.exists()
+    assert "Planirati Asset Library read-only proof" in artifact_path.read_text(encoding="utf-8")
+    with connect(resolve_paths(None)) as conn:
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (result["task_id"],)).fetchone()
+        artifact = conn.execute("SELECT * FROM artifacts WHERE id=?", (result["artifact_id"],)).fetchone()
+    assert task["status"] == "pending"
+    assert task["route"] == "local:direct"
+    assert artifact["kind"] == "board_meeting"
+
+
+def test_board_meeting_risky_objective_creates_approval_draft_only(agents_home):
+    service = AgentsOSService(resolve_paths(None))
+    result = draft_board_meeting_action(
+        service,
+        {"objective": "Pošalji email klijentu i deployaj promjene", "participants": ["local-agent"]},
+    )
+
+    assert result["execution_created"] is False
+    assert result["approval_required"] is True
+    assert result["mode"] == "approval_draft"
+    assert result["approval_id"].startswith("approval-board-")
+    assert "deploy" in result["approval_gates_triggered"]
+    with connect(resolve_paths(None)) as conn:
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (result["task_id"],)).fetchone()
+        approval = conn.execute("SELECT * FROM approvals WHERE id=?", (result["approval_id"],)).fetchone()
+    assert task["status"] == "needs_approval"
+    assert approval["status"] == "pending"
+    assert approval["risk"] == "approval_gated"
 
 
 def test_create_idea_action_creates_safe_task_but_gates_public_action(agents_home):
@@ -161,6 +227,10 @@ def test_artifacts_media_operator_manage_voice_payloads_are_redacted_and_read_on
     operator = AgentsOSService(paths).operator_loop_payload()
 
     assert artifacts["items"]
+    assert artifacts["read_only"] is True
+    assert artifacts["mutation_enabled"] is False
+    assert artifacts["credentials_visible"] is False
+    assert artifacts["summary"]
     assert media["assets"]
     assert manage["credentials_visible"] is False
     assert "api_key" not in json.dumps(manage).lower()

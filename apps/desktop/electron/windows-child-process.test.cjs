@@ -46,7 +46,7 @@ test('intentional or interactive desktop child processes stay documented', () =>
   assert.match(source, /'--repair', '--branch'/)
   assert.match(source, /'--update', '--branch'/)
   assert.match(source, /nodePty\.spawn\(command, args/)
-  assert.match(source, /spawn\('cmd\.exe', \['\/c', 'start'/)
+  assert.match(source, /spawn\('powershell\.exe', \['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath \$args\[0\]'/)
 })
 
 test('bootstrap PowerShell runner hides Windows console children', () => {

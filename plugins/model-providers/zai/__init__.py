@@ -17,6 +17,7 @@ zai = ProviderProfile(
     ),
     base_url="https://api.z.ai/api/paas/v4",
     default_aux_model="glm-4.5-flash",
+    reasoning_effort_max="max",
 )
 
 register_provider(zai)

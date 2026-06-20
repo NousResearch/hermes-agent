@@ -93,6 +93,14 @@ class ProviderProfile:
     )
     # empty = use main model
 
+    # ── Reasoning effort mapping ───────────────────────────────
+    # When set, the base build_api_kwargs_extras maps Hermes' "xhigh"
+    # effort to this top-level ``reasoning_effort`` value (e.g. "max").
+    # Providers that expose a deeper-than-default reasoning tier via a
+    # dedicated parameter (Z.AI/GLM, etc.) set this instead of
+    # subclassing build_api_kwargs_extras.
+    reasoning_effort_max: str | None = None
+
     # ── Hooks (override in subclass for complex providers) ───
 
     def get_hostname(self) -> str:
@@ -141,8 +149,19 @@ class ProviderProfile:
         extra_body (OpenRouter: extra_body.reasoning) while others put it
         as top-level api_kwargs (Kimi: api_kwargs.reasoning_effort).
 
-        Default: ({}, {}).
+        Base implementation handles the declarative ``reasoning_effort_max``
+        mapping only: when the provider sets ``reasoning_effort_max`` and the
+        requested effort is ``xhigh``, it emits a top-level
+        ``reasoning_effort`` kwarg with the provider-specific value (e.g.
+        ``"max"`` for Z.AI/GLM). This lets providers that use a single
+        top-level parameter for deep reasoning opt in without overriding the
+        full method. Subclasses with richer needs (Nous, OpenRouter, MiniMax)
+        override entirely.
         """
+        if self.reasoning_effort_max and isinstance(reasoning_config, dict):
+            effort = (reasoning_config.get("effort") or "").strip().lower()
+            if effort == "xhigh" and reasoning_config.get("enabled", True) is not False:
+                return {}, {"reasoning_effort": self.reasoning_effort_max}
         return {}, {}
 
     def get_max_tokens(self, model: str | None) -> int | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -647,26 +648,65 @@ class TestPlaceholderKeyDetection:
                     and r.name == self.LOGGER_NAME]
         assert warnings == []
 
-    def test_sdk_not_installed_still_skips_silently(self, monkeypatch, caplog):
-        """If the langfuse SDK isn't installed at all, the placeholder
-        check should never run — there's nothing the operator can do
-        about a credential mismatch when the package is missing, and
-        re-warning here would dilute the actually-actionable SDK-missing
-        signal upstream.  The ``Langfuse is None`` guard at the top of
-        ``_get_langfuse`` already handles this; this test pins that
-        behaviour."""
+    def test_sdk_not_installed_warns_after_lazy_install_fails(self, monkeypatch, caplog):
+        """If the SDK is missing and lazy_deps.ensure() cannot install it,
+        the plugin must log a warning with a manual-install hint instead of
+        silently no-op-ing — operators need to know why traces are missing."""
         self._clear_env(monkeypatch)
         monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
         monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "placeholder")
-        # NO monkeypatch on Langfuse here — falls back to whatever the
-        # plugin imported at module load (None if SDK absent).
         plugin = self._fresh_plugin()
         monkeypatch.setattr(plugin, "Langfuse", None, raising=False)
+
+        def _fake_ensure(*_a, **_kw):
+            raise RuntimeError("offline / allow_lazy_installs=false")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "tools.lazy_deps",
+            types.SimpleNamespace(ensure=_fake_ensure),
+        )
+
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
         warnings = [r for r in caplog.records if r.levelname == "WARNING"
                     and r.name == self.LOGGER_NAME]
-        assert warnings == []
+        assert len(warnings) >= 1
+        assert "pip install langfuse" in warnings[0].getMessage()
+
+    def test_sdk_lazy_install_succeeds_then_init_proceeds(self, monkeypatch, caplog):
+        """If the SDK is missing at module load but lazy_deps.ensure()
+        installs it successfully, _get_langfuse() must re-import the SDK
+        and proceed to client init — not stay stuck on the stale None."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin()
+        monkeypatch.setattr(plugin, "Langfuse", None, raising=False)
+        _FakeLangfuse.instances.clear()
+
+        # Build a fake langfuse module so the real `from langfuse import
+        # Langfuse` inside _get_langfuse() finds it after ensure() "installs".
+        fake_mod = types.SimpleNamespace(
+            Langfuse=_FakeLangfuse,
+            propagate_attributes=lambda *a, **kw: None,
+        )
+        monkeypatch.setitem(sys.modules, "langfuse", fake_mod)
+
+        def _fake_ensure(*_a, **_kw):
+            pass  # simulate successful install
+
+        monkeypatch.setitem(
+            sys.modules,
+            "tools.lazy_deps",
+            types.SimpleNamespace(ensure=_fake_ensure),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            client = plugin._get_langfuse()
+        assert isinstance(client, _FakeLangfuse)
+        assert client.kwargs["public_key"] == "pk-lf-real-public-xyz"
+        assert "pip install langfuse" not in caplog.text
 
     def test_valid_prefixes_do_not_trigger_placeholder_warning(self, monkeypatch, caplog):
         """Real Langfuse keys (``pk-lf-…`` / ``sk-lf-…``) must pass the

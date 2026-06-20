@@ -120,6 +120,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.honcho": ("honcho-ai==2.0.1",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
 
+    # ─── Observability backends ─────────────────────────────────────────────
+    "observability.langfuse": ("langfuse",),
+
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for

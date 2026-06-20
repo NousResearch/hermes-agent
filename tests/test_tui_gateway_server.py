@@ -1756,9 +1756,9 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     reattached = _session(transport=_LiveTransport(), running=False)
     assert server._ws_session_is_orphaned(reattached) is False
 
-    # Mid-turn sessions are also spared even if detached.
+    # Mid-turn sessions are not spared if detached.
     mid_turn = _session(transport=server._detached_ws_transport, running=True)
-    assert server._ws_session_is_orphaned(mid_turn) is False
+    assert server._ws_session_is_orphaned(mid_turn) is True
 
     # Already finalized sessions are spared (idempotency).
     done = _session(

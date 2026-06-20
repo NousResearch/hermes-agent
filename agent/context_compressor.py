@@ -823,7 +823,7 @@ class ContextCompressor(ContextEngine):
         if tokens < self.threshold_tokens:
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
-        if self._ineffective_compression_count >= 2:
+        if getattr(self, "_ineffective_compression_count", 0) >= 2:
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped — last %d compressions saved <10%% each. "
@@ -2202,7 +2202,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Phase 1: Prune old tool results (cheap, no LLM call)
         effective_tail_count = self.protect_last_n
         effective_tail_tokens = self.tail_token_budget
-        if self._ineffective_compression_count >= 1:
+        if getattr(self, "_ineffective_compression_count", 0) >= 1:
             effective_tail_count = max(8, self.protect_last_n // 2)
             if effective_tail_tokens is not None:
                 effective_tail_tokens = effective_tail_tokens // 2
@@ -2219,7 +2219,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
-        if self._ineffective_compression_count >= 1:
+        if getattr(self, "_ineffective_compression_count", 0) >= 1:
             try:
                 compress_end = self._find_tail_cut_by_tokens(
                     messages, compress_start,
@@ -2237,7 +2237,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # an ineffective compression the anti-thrashing guard in
             # should_compress() never fires and every subsequent turn
             # re-triggers a no-op compression loop.  (#40803)
-            self._ineffective_compression_count += 1
+            self._ineffective_compression_count = getattr(self, "_ineffective_compression_count", 0) + 1
             self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(
@@ -2428,7 +2428,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
         if savings_pct < 10:
-            self._ineffective_compression_count += 1
+            self._ineffective_compression_count = getattr(self, "_ineffective_compression_count", 0) + 1
         else:
             self._ineffective_compression_count = 0
 

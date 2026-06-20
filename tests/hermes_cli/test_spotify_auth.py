@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import socket
+import threading
+import urllib.request
+from http.server import HTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -181,3 +185,91 @@ def test_spotify_interactive_setup_empty_aborts(
     env_path = tmp_path / ".env"
     if env_path.exists():
         assert "HERMES_SPOTIFY_CLIENT_ID" not in env_path.read_text()
+
+
+# ── Callback handler tests ─────────────────────────────────────────────────
+
+
+class _ReuseHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
+def _start_spotify_callback_server(path: str = "/callback") -> tuple[HTTPServer, threading.Thread, dict, str]:
+    """Start a Spotify loopback callback server on an OS-assigned port."""
+    handler_cls, result = auth_mod._make_spotify_callback_handler(path)
+    server = _ReuseHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+    thread.start()
+    redirect_uri = f"http://127.0.0.1:{port}{path}"
+    return server, thread, result, redirect_uri
+
+
+def _get_callback(redirect_uri: str, query: str = "") -> tuple[int, str]:
+    """GET the loopback callback URL with an optional query string."""
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    target = redirect_uri + (("?" + query) if query else "")
+    req = Request(target, method="GET")
+    try:
+        with urlopen(req, timeout=5.0) as resp:
+            return resp.getcode(), resp.read().decode("utf-8", "replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def test_spotify_callback_handler_returns_400_when_callback_url_lacks_code_and_error():
+    """Bare loopback URL (no code, no error) must not claim authorization received.
+
+    Mirrors the xAI OAuth regression fix: when Spotify's auth backend fails to
+    redirect and the user manually navigates to http://127.0.0.1:<port>/callback,
+    the handler must return 400 "not received" rather than 200 "authorization
+    received" — otherwise the browser shows a success page while the CLI wait
+    loop still times out, leaving the user with a contradictory outcome.
+    """
+    server, thread, result, redirect_uri = _start_spotify_callback_server()
+    try:
+        status, body = _get_callback(redirect_uri)
+        assert status == 400
+        assert "not received" in body.lower()
+        assert "hermes auth add spotify" in body
+        # Wait loop must still see no code/error so it raises a real timeout,
+        # rather than treating this empty hit as a successful callback.
+        assert result["code"] is None
+        assert result["error"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_spotify_callback_handler_accepts_callback_with_code():
+    """A real OAuth redirect (code + state) still records both and shows success."""
+    server, thread, result, redirect_uri = _start_spotify_callback_server()
+    try:
+        status, body = _get_callback(redirect_uri, query="code=abc&state=xyz")
+        assert status == 200
+        assert "Spotify authorization received" in body
+        assert result["code"] == "abc"
+        assert result["state"] == "xyz"
+        assert result["error"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_spotify_callback_handler_records_error_callback():
+    """A redirect carrying an `error` param must surface the failure page."""
+    server, thread, result, redirect_uri = _start_spotify_callback_server()
+    try:
+        status, body = _get_callback(redirect_uri, query="error=access_denied")
+        assert status == 200
+        assert "Spotify authorization failed" in body
+        assert result["error"] == "access_denied"
+        assert result["code"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)

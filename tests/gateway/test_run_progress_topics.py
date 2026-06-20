@@ -586,6 +586,23 @@ class CommentaryAgent:
         }
 
 
+class CommentaryBurstAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("Checking the repo.", already_streamed=False)
+            time.sleep(0.05)
+            self.interim_assistant_callback("Running targeted tests.", already_streamed=False)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class PreviewedResponseAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -782,6 +799,31 @@ async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path)
 
     assert result.get("already_sent") is not True
     assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_compacts_telegram_interim_commentary(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryBurstAgent,
+        session_id="sess-commentary-compact-telegram",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result.get("already_sent") is not True
+    commentary_sends = [
+        call["content"]
+        for call in adapter.sent
+        if call["content"] in {"Checking the repo.", "Running targeted tests."}
+    ]
+    commentary_edits = [
+        call["content"]
+        for call in adapter.edits
+        if call["content"] in {"Checking the repo.", "Running targeted tests."}
+    ]
+    assert commentary_sends == ["Checking the repo."]
+    assert commentary_edits == ["Running targeted tests."]
 
 
 @pytest.mark.asyncio

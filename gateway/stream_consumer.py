@@ -74,6 +74,7 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+    compact_commentary: bool = False
 
 
 class GatewayStreamConsumer:
@@ -196,6 +197,12 @@ class GatewayStreamConsumer:
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
+        # Separate editable status bubble for completed interim commentary.
+        # Commentary is not the turn-final answer, so it must not reuse
+        # ``_message_id`` / ``_already_sent`` from response streaming.
+        self._commentary_message_id: Optional[str] = None
+        self._commentary_last_text = ""
+        self._commentary_edit_supported = True
 
     def _metadata_for_send(
         self,
@@ -1135,6 +1142,37 @@ class GatewayStreamConsumer:
         text = self._clean_for_display(text)
         if not text.strip():
             return False
+        if (
+            self.cfg.compact_commentary
+            and self._commentary_message_id
+            and self._commentary_edit_supported
+        ):
+            if text == self._commentary_last_text:
+                return True
+            try:
+                kwargs: dict[str, Any] = {
+                    "chat_id": self.chat_id,
+                    "message_id": self._commentary_message_id,
+                    "content": text,
+                }
+                if self.metadata:
+                    try:
+                        params = inspect.signature(self.adapter.edit_message).parameters
+                        if "metadata" in params or any(
+                            param.kind is inspect.Parameter.VAR_KEYWORD
+                            for param in params.values()
+                        ):
+                            kwargs["metadata"] = self.metadata
+                    except (TypeError, ValueError):
+                        pass
+                result = await self.adapter.edit_message(**kwargs)
+                if result.success:
+                    self._commentary_last_text = text
+                    return True
+                self._commentary_edit_supported = False
+            except Exception as e:
+                logger.debug("Compact commentary edit failed: %s", e)
+                self._commentary_edit_supported = False
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -1147,6 +1185,10 @@ class GatewayStreamConsumer:
             # the final response to be incorrectly suppressed when there are
             # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
             if result.success:
+                if self.cfg.compact_commentary and getattr(result, "message_id", None):
+                    self._commentary_message_id = str(result.message_id)
+                    self._commentary_last_text = text
+                    self._commentary_edit_supported = True
                 # Commentary counts as fresh content — close off any
                 # stale tool bubble above it so the next tool starts a
                 # new bubble below.

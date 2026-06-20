@@ -1817,6 +1817,46 @@ class TestOnNewMessageCallback:
         assert events == ["reset"]
 
     @pytest.mark.asyncio
+    async def test_compact_commentary_edits_one_status_bubble(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        events = []
+        config = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=1,
+            compact_commentary=True,
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat",
+            config,
+            on_new_message=lambda: events.append("reset"),
+        )
+
+        consumer.on_commentary("Checking the repo.")
+        consumer.on_commentary("Running targeted tests.")
+        consumer.finish()
+        await consumer.run()
+
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat",
+            content="Checking the repo.",
+            metadata=None,
+        )
+        adapter.edit_message.assert_awaited_once_with(
+            chat_id="chat",
+            message_id="msg_1",
+            content="Running targeted tests.",
+        )
+        assert events == ["reset"]
+        assert consumer.already_sent is False
+
+    @pytest.mark.asyncio
     async def test_callback_error_swallowed(self):
         """Exceptions in the callback do not crash the consumer."""
         adapter = MagicMock()

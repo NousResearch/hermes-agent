@@ -17,7 +17,6 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
   deleteProfile,
-  getProfiles,
   getProfileSetupCommand,
   getProfileSoul,
   type ProfileInfo,
@@ -28,6 +27,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -54,7 +54,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
   const refresh = useCallback(async () => {
     try {
-      const { profiles: list } = await getProfiles()
+      const list = await refreshProfiles()
       setProfiles(list)
       setSelectedName(current => {
         if (current && list.some(p => p.name === current)) {

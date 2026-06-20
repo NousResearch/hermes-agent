@@ -19,7 +19,6 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
   deleteProfile,
-  getProfiles,
   getProfileSoul,
   type ProfileInfo,
   renameProfile,
@@ -31,7 +30,7 @@ import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { slug } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors } from '@/store/profile'
+import { $profileColors, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -72,7 +71,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
   const refresh = useCallback(async () => {
     try {
-      const { profiles: list } = await getProfiles()
+      const list = await refreshProfiles()
       setProfiles(list)
       setSelectedName(current => {
         if (current && list.some(p => p.name === current)) {

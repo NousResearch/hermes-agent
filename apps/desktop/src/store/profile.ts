@@ -38,6 +38,13 @@ export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
 }
 
+export async function refreshProfiles(): Promise<ProfileInfo[]> {
+  const { profiles } = await getProfiles()
+  $profiles.set(profiles)
+
+  return profiles
+}
+
 // ── Rail order ─────────────────────────────────────────────────────────────
 // User-defined order for the named (non-default) profile squares in the rail.
 // Names absent from the list fall back to alphabetical, appended at the tail —
@@ -111,8 +118,7 @@ export async function refreshActiveProfile(): Promise<void> {
   }
 
   try {
-    const { profiles } = await getProfiles()
-    $profiles.set(profiles)
+    await refreshProfiles()
   } catch {
     // Leave the cached list in place.
   }

@@ -23,6 +23,20 @@ function isDiffBlock(lang, code) {
   return /diff|patch/i.test(lang || '') || /^diff --git /m.test(value) || /^@@\s/m.test(value);
 }
 
+function isRunnableBlock(lang, code) {
+  if (isDiffBlock(lang, code)) return false;
+  const normalizedLang = String(lang || '').toLowerCase();
+  if (/^(sh|shell|bash|zsh|fish|powershell|pwsh|ps1|terminal|console|cmd|bat|batch)$/.test(normalizedLang)) return true;
+  if (normalizedLang && !/^(text|txt|plain|plaintext)$/.test(normalizedLang)) return false;
+  const lines = String(code || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  if (!lines.length || lines.length > 20) return false;
+  return lines.every((line) =>
+    !line.startsWith('#') &&
+    !/[{};]/.test(line) &&
+    /^(cd\s|npm\s|pnpm\s|yarn\s|bun\s|node\s|python\b|python3\b|pytest\b|poetry\s|uv\s|pip\s|make\b|go\s|cargo\s|swift\s|docker\s|kubectl\s|terraform\s|ansible\s|git\s|gh\s|hermes\s|npx\s|\.\/|[A-Za-z0-9_./~-]+\s+[-\w./~])/.test(line)
+  );
+}
+
 function renderDiff(code) {
   return String(code || '').split('\n').map((line) => {
     let cls = 'diff-context';
@@ -52,9 +66,12 @@ function renderMarkdown(text) {
       const code = parts[i + 1] || '';
       const id = 'code-' + (++codeBlockCounter);
       const diff = isDiffBlock(lang, code);
+      const runnable = isRunnableBlock(lang, code);
       codeBlocks.set(id, code);
       const rendered = diff ? renderDiff(code) : escapeHtml(code);
-      html += '<pre class="' + (diff ? 'diff-block' : '') + '"><div class="code-actions"><button class="copy" data-copy="code" data-code-id="' + id + '">Copy</button>' + (diff ? '<button class="apply-inline" data-apply-code="' + id + '">Apply</button>' : '') + '</div><code data-lang="' + escapeHtml(lang) + '">' + rendered + '</code></pre>';
+      const runButton = runnable ? '<button class="run-inline" data-run-code="' + id + '">Run</button>' : '';
+      const applyButton = diff ? '<button class="apply-inline" data-apply-code="' + id + '">Apply</button>' : '';
+      html += '<pre class="' + (diff ? 'diff-block' : runnable ? 'command-block' : '') + '"><div class="code-actions"><button class="copy" data-copy="code" data-code-id="' + id + '">Copy</button>' + runButton + applyButton + '</div><code data-lang="' + escapeHtml(lang) + '">' + rendered + '</code></pre>';
       i++;
     }
   }
@@ -173,6 +190,9 @@ document.addEventListener('click', (e) => {
   }
   if (e.target.dataset.applyCode) {
     vscode.postMessage({ type: 'applyInlinePatch', value: codeBlocks.get(e.target.dataset.applyCode) || '' });
+  }
+  if (e.target.dataset.runCode) {
+    vscode.postMessage({ type: 'runInlineCommand', value: codeBlocks.get(e.target.dataset.runCode) || '' });
   }
   if (e.target.dataset.retry) {
     const last = [...messages.querySelectorAll('.user')].pop();

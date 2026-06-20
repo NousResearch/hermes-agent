@@ -78,6 +78,7 @@ class HermesChatProvider {
         if (message.type === 'previewPatch') await this.previewLastPatch();
         if (message.type === 'applyPatch') await this.applyLastPatch();
         if (message.type === 'applyInlinePatch') await this.applyInlinePatch(message.value || '');
+        if (message.type === 'runInlineCommand') await this.runInlineCommand(message.value || '');
         if (message.type === 'copyPatch') await this.copyLastPatch();
         if (message.type === 'discardPatch') await this.discardLastPatch();
         if (message.type === 'revertPatch') await this.revertLastPatch();
@@ -183,13 +184,28 @@ class HermesChatProvider {
     await this.ask('Explain these diagnostics and recommend fixes. If code changes are needed, return a unified diff.', { includeFile: true, includeDiagnostics: true, includeInstructions: true, extraContext: diagnostics, wantsPatch: true });
   }
 
+  runCommandsInTerminal(commandText, name = 'Hermes Code') {
+    const command = String(commandText || '').trim();
+    if (!command) {
+      vscode.window.showWarningMessage('No command text found to run.');
+      return;
+    }
+    const cwd = getWorkspaceFolder()?.uri.fsPath;
+    const terminal = vscode.window.createTerminal({ name, cwd });
+    terminal.show();
+    terminal.sendText(`# Hermes Code command in ${cwd || process.cwd()}`);
+    terminal.sendText(command);
+    this.post('tool', `Sent command block to VS Code terminal:\n\n\`\`\`sh\n${command}\n\`\`\``);
+  }
+
   async runCommandWithContext() {
     const command = await vscode.window.showInputBox({ prompt: 'Command to run in the VS Code terminal' });
     if (!command) return;
-    const terminal = vscode.window.createTerminal({ name: 'Hermes Code', cwd: getWorkspaceFolder()?.uri.fsPath });
-    terminal.show();
-    terminal.sendText(`# Hermes Code requested command in ${getWorkspaceFolder()?.uri.fsPath || process.cwd()}`);
-    terminal.sendText(command);
+    this.runCommandsInTerminal(command, 'Hermes Code');
+  }
+
+  async runInlineCommand(commandText) {
+    this.runCommandsInTerminal(commandText, 'Hermes Commands');
   }
 
   async inspectContext(options = {}) {

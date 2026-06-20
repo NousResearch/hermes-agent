@@ -2,7 +2,7 @@
   "name": "hermes-vscode",
   "displayName": "Hermes Code",
   "description": "Use Hermes Agent from a Claude-like VS Code/Cursor sidebar with editor, diagnostics, terminal, and patch/diff workflows.",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "publisher": "nousresearch",
   "license": "MIT",
   "repository": {

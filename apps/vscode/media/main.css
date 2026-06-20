@@ -80,11 +80,12 @@ select { min-width: 102px; color: var(--vscode-dropdown-foreground); background:
 .prompt-buttons button { font-size: 11px; padding: 6px 8px; }
 pre { position: relative; margin: 10px 0; padding: 38px 12px 12px; border-radius: 12px; overflow:auto; background: var(--vscode-textCodeBlock-background); border:1px solid var(--hermes-soft-border); }
 pre.diff-block { background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 90%, #000 10%); }
+pre.command-block { border-color: color-mix(in srgb, var(--hermes-accent) 36%, var(--hermes-soft-border)); }
 code { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
 pre code { display: block; line-height: 1.45; tab-size: 2; }
 .code-actions { position:absolute; top:8px; right:8px; display:flex; gap:6px; z-index:1; }
-.copy, .apply-inline { font-size:10px; padding:4px 8px; opacity:.92; }
-.apply-inline { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+.copy, .apply-inline, .run-inline { font-size:10px; padding:4px 8px; opacity:.92; }
+.apply-inline, .run-inline { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
 .diff-block code span { display:block; min-height:1.35em; }
 .diff-add { color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950); background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #3fb950) 10%, transparent); }
 .diff-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #f85149) 10%, transparent); }

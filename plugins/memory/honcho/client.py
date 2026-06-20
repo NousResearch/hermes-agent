@@ -679,10 +679,11 @@ class HonchoClientConfig:
         """Resolve Honcho session name.
 
         Resolution order:
-          1. Manual directory override from sessions map
-          2. Hermes session title (from /title command)
-          3. Gateway session key (stable per-chat identifier from gateway platforms)
-          4. per-session strategy — Hermes session_id ({timestamp}_{hex})
+          1. Gateway session key (stable per-chat identifier from gateway platforms)
+          2. per-session strategy — Hermes session_id ({timestamp}_{hex}); authoritative,
+             so a generated title never remaps a live conversation
+          3. Manual directory override from sessions map
+          4. Hermes session title (from /title command; non-per-session)
           5. per-repo strategy — git repo root directory name
           6. per-directory strategy — directory basename
           7. global strategy — workspace name
@@ -692,34 +693,33 @@ class HonchoClientConfig:
         if not cwd:
             cwd = os.getcwd()
 
-        # Manual override always wins
+        # Gateway per-chat key wins everywhere — gateways (telegram/discord/…)
+        # need per-chat isolation no cwd/strategy name can provide.
+        if gateway_session_key:
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
+            if sanitized:
+                return self._enforce_session_id_limit(sanitized, gateway_session_key)
+
+        # per-session: the run's session_id IS the identity — resolve before the
+        # cwd map / title so an auto-generated title can't remap a live
+        # conversation onto a second Honcho session mid-stream.
+        if self.session_strategy == "per-session" and session_id:
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{session_id}"
+            return session_id
+
+        # Manual override (cwd → name), for non-per-session strategies.
         manual = self.sessions.get(cwd)
         if manual:
             return manual
 
-        # /title mid-session remap
+        # /title mid-session remap (non-per-session).
         if session_title:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', session_title).strip('-')
             if sanitized:
                 if self.session_peer_prefix and self.peer_name:
                     return f"{self.peer_name}-{sanitized}"
                 return sanitized
-
-        # Gateway session key: stable per-chat identifier passed by the gateway
-        # (e.g. "agent:main:telegram:dm:8439114563"). Sanitize colons to hyphens
-        # for Honcho session ID compatibility. This takes priority over strategy-
-        # based resolution because gateway platforms need per-chat isolation that
-        # cwd-based strategies cannot provide.
-        if gateway_session_key:
-            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
-            if sanitized:
-                return self._enforce_session_id_limit(sanitized, gateway_session_key)
-
-        # per-session: inherit Hermes session_id (new Honcho session each run)
-        if self.session_strategy == "per-session" and session_id:
-            if self.session_peer_prefix and self.peer_name:
-                return f"{self.peer_name}-{session_id}"
-            return session_id
 
         # per-repo: one Honcho session per git repository
         if self.session_strategy == "per-repo":

@@ -1093,24 +1093,14 @@ class TelegramAdapter(BasePlatformAdapter):
     def _needs_rich_rendering(self, content: str) -> bool:
         """Return True for markdown constructs that the legacy path degrades.
 
-        Keep ordinary replies on the pre-rich MarkdownV2 path so Telegram
-        clients render a consistent font weight/spacing. The rich endpoint is
-        reserved for constructs where raw markdown materially improves output:
-        pipe tables (MarkdownV2 has no table syntax and rewrites them into
-        bullet lists), GFM task lists, collapsible ``<details>`` blocks, and
-        block math.  Adapted from #45995 (@YonganZhang).
+        Original: only triggered for tables/task-lists/details/math. Now
+        returns True for all non-empty content so every finalize goes through
+        the rich edit path (``editMessageText`` with ``rich_message`` param),
+        avoiding the ``parse_mode`` mutation overlap bug where Telegram clients
+        don't fully re-render when switching from plain text to MarkdownV2
+        in-place.
         """
-        if not content:
-            return False
-        if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
-            return True
-        if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
-            return True
-        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
-            return True
-        if "$$" in content:
-            return True
-        return False
+        return bool(content and content.strip())
 
     def _rich_eligible(self, content: str) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.
@@ -3026,30 +3016,38 @@ class TelegramAdapter(BasePlatformAdapter):
         first_chunk = chunks[0]
         try:
             if finalize:
-                # Use format_message + parse_mode for the final chunk;
-                # mirror edit_message's main happy-path.
-                formatted = _separate_chunk_indicator_from_fence(
-                    self.format_message(first_chunk)
-                )
-                try:
-                    await self._bot.edit_message_text(
-                        chat_id=int(chat_id),
-                        message_id=int(message_id),
-                        text=formatted,
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                # Try rich edit first (avoids parse_mode mutation overlap).
+                rich_result = await self._try_edit_rich(chat_id, message_id, first_chunk)
+                if rich_result is not None:
+                    if rich_result.success:
+                        prev_id = message_id
+                        message_id = str(rich_result.message_id)
+                    else:
+                        return rich_result
+                else:
+                    # Fallback: MarkdownV2 in-place edit
+                    formatted = _separate_chunk_indicator_from_fence(
+                        self.format_message(first_chunk)
                     )
-                except Exception as fmt_err:
-                    if "not modified" not in str(fmt_err).lower():
-                        logger.warning(
-                            "[%s] Overflow split: MarkdownV2 first-chunk edit "
-                            "failed, falling back to plain text: %s",
-                            self.name, fmt_err,
-                        )
+                    try:
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
-                            text=_strip_mdv2(first_chunk),
+                            text=formatted,
+                            parse_mode=ParseMode.MARKDOWN_V2,
                         )
+                    except Exception as fmt_err:
+                        if "not modified" not in str(fmt_err).lower():
+                            logger.warning(
+                                "[%s] Overflow split: MarkdownV2 first-chunk edit "
+                                "failed, falling back to plain text: %s",
+                                self.name, fmt_err,
+                            )
+                            await self._bot.edit_message_text(
+                                chat_id=int(chat_id),
+                                message_id=int(message_id),
+                                text=_strip_mdv2(first_chunk),
+                            )
             else:
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -3089,16 +3087,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
             )
             for use_markdown in (True, False) if finalize else (False,):
+                # Try sendRichMessage first for finalize continuation chunks
+                if use_markdown:
+                    rich_result = await self._try_send_rich(chat_id, chunk, prev_id, metadata)
+                    if rich_result is not None:
+                        if rich_result.success:
+                            sent_msg = type("RichMsg", (), {"message_id": rich_result.message_id})()
+                            break
+                        else:
+                            # Transient failure — do not legacy-resend
+                            break
+                    # Capability error — fall through to legacy
                 try:
                     if use_markdown:
                         text = _separate_chunk_indicator_from_fence(
                             self.format_message(chunk)
                         )
                     else:
-                        # Plain attempt: on finalize the MarkdownV2 attempt
-                        # failed, so degrade to clean stripped text, never
-                        # the raw chunk (raw ** / ``` markers would render
-                        # literally); streaming previews stay raw.
                         text = _strip_mdv2(chunk) if finalize else chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),

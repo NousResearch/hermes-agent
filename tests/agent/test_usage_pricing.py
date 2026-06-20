@@ -250,3 +250,42 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+def test_xiaomi_mimo_v2_5_pricing_entry_exists():
+    """Regression test: mimo-v2.5 must have a pricing entry.
+
+    Without it, xiaomi/mimo-v2.5 sessions (the default failover model) show
+    as unknown / $0 cost in hermes insights and downstream observability,
+    because the _OFFICIAL_DOCS_PRICING table had no entry for that model.
+    """
+    entry = get_pricing_entry("mimo-v2.5", provider="xiaomi")
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.14
+    assert float(entry.output_cost_per_million) == 0.28
+    assert float(entry.cache_read_cost_per_million) == 0.0028
+
+
+def test_xiaomi_mimo_v2_5_pro_pricing_entry_exists():
+    """Regression test: mimo-v2.5-pro must have a pricing entry."""
+    entry = get_pricing_entry("mimo-v2.5-pro", provider="xiaomi")
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+    assert float(entry.cache_read_cost_per_million) == 0.0036
+
+
+def test_xiaomi_mimo_v2_5_estimate_usage_cost():
+    """Ensure mimo-v2.5 sessions get a dollar estimate, not unknown."""
+    result = estimate_usage_cost(
+        "mimo-v2.5",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="xiaomi",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
+    assert float(result.amount_usd) == 0.28

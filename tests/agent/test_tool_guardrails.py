@@ -228,6 +228,40 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert blocked.code == "no_progress_block"
 
 
+def test_only_execution_mutating_tools_trigger_no_progress_when_repeated():
+    """terminal/execute_code trigger no_progress on repeated identical success output.
+    Other mutating tools (write_file, browser_click) do NOT — repeated writes/clicks
+    can be intentional and should not be blocked."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+
+    # terminal does trigger no_progress
+    args = {"command": "python script.py"}
+    assert controller.before_call("terminal", args).action == "allow"
+    d1 = controller.after_call("terminal", args, "same output", failed=False)
+    assert d1.action == "allow"
+
+    assert controller.before_call("terminal", args).action == "allow"
+    d2 = controller.after_call("terminal", args, "same output", failed=False)
+    assert d2.action == "warn"
+    assert d2.code == "no_progress_warning"
+
+    blocked = controller.before_call("terminal", args)
+    assert blocked.action == "block"
+    assert blocked.code == "no_progress_block"
+
+    # write_file does NOT trigger no_progress
+    write_args = {"path": "/tmp/x", "content": "x"}
+    for _ in range(3):
+        assert controller.before_call("write_file", write_args).action == "allow"
+        assert controller.after_call("write_file", write_args, "ok", failed=False).action == "allow"
+
+
 def test_reset_for_turn_clears_bounded_guardrail_state():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, no_progress_block_after=2)
@@ -273,6 +307,11 @@ def test_terminal_exit_code_zero_with_task_failure_output_is_detected():
     result = json.dumps({"exit_code": 0, "output": "404 page test passed"})
     is_fail, _ = classify_tool_failure("terminal", result)
     assert is_fail is False
+
+    # Long output with traceback at the end should be caught
+    result = json.dumps({"exit_code": 0, "output": "x" * 3000 + "\nTraceback (most recent call last):\nboom"})
+    is_fail, _ = classify_tool_failure("terminal", result)
+    assert is_fail is True
 
 
 def test_execute_code_success_with_task_failure_output_is_detected():

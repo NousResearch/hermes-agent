@@ -3,15 +3,36 @@ from types import SimpleNamespace
 from hermes_cli.status import show_status
 
 
-def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
+def test_show_status_includes_redacted_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-dev-abcdefghijklmnopqrstuvwxyz")
 
     show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
     assert "Tavily" in output
-    assert "tvly...cdef" in output
+    assert "tvly...wxyz" in output
+    assert "tvly-dev-abcdefghijklmnopqrstuvwxyz" not in output
+
+
+def test_show_status_all_keeps_api_keys_redacted(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-dev-abcdefghijklmnopqrstuvwxyz")
+    anthropic_key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", anthropic_key)
+    monkeypatch.setattr(status_mod, "get_anthropic_key", lambda: anthropic_key, raising=False)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Tavily" in output
+    assert "Anthropic" in output
+    assert "tvly...wxyz" in output
+    assert "sk-a...wxyz" in output
+    assert "tvly-dev-abcdefghijklmnopqrstuvwxyz" not in output
+    assert anthropic_key not in output
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):

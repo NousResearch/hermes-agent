@@ -1792,7 +1792,6 @@ class GatewayKanbanWatchersMixin:
             text=text,
             source=source,
             internal=True,
-            system_session=True,
         )
 
         try:

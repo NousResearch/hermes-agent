@@ -103,7 +103,59 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
   return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
 }
 
-function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+// Exported for testing
+export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: ChatMessage['parts'][number]): boolean {
+  // Reference equality fast-path
+  if (aPart === bPart) {
+    return true
+  }
+
+  if (aPart.type !== bPart.type) {
+    return false
+  }
+
+  // Structural compare WITHOUT JSON.stringify — the only consumer asks "did
+  // the transcript change, should I call setMessages?", so a slightly
+  // conservative compare (occasionally false-negative → one extra idempotent
+  // setMessages) is safe, but a false-POSITIVE (claiming equal when different)
+  // would skip a needed update.
+  if (aPart.type === 'text' || aPart.type === 'reasoning') {
+    return (aPart as { text: string }).text === (bPart as { text: string }).text
+  }
+
+  if (aPart.type === 'tool-call') {
+    const aCall = aPart as { toolCallId?: string; toolName?: string; result?: unknown }
+    const bCall = bPart as { toolCallId?: string; toolName?: string; result?: unknown }
+
+    if (aCall.toolCallId !== bCall.toolCallId || aCall.toolName !== bCall.toolName) {
+      return false
+    }
+
+    // Compare whether result is present (undefined on both or defined on both)
+    const aHasResult = aCall.result !== undefined
+    const bHasResult = bCall.result !== undefined
+
+    return aHasResult === bHasResult
+  }
+
+  // For other/unknown part types (image, ui, etc.), fall back to shallow key
+  // comparison of primitive fields only — conservative: if we're not sure,
+  // claim not-equal (one extra setMessages is harmless, but skipping an update
+  // would break the UI).
+  const aPrimitive = aPart as Record<string, unknown>
+  const bPrimitive = bPart as Record<string, unknown>
+  const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
+  const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
+
+  if (aKeys.length !== bKeys.length) {
+    return false
+  }
+
+  return aKeys.every(k => aPrimitive[k] === bPrimitive[k])
+}
+
+// Exported for testing
+export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
     a.role !== b.role ||
@@ -119,10 +171,16 @@ function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
     return false
   }
 
-  return a.parts.every((part, index) => JSON.stringify(part) === JSON.stringify(b.parts[index]))
+  return a.parts.every((part, index) => chatPartsEquivalent(part, b.parts[index]))
 }
 
-function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
+// Exported for testing
+export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
+  // Array-level identity fast-path (same reference)
+  if (a === b) {
+    return true
+  }
+
   return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 

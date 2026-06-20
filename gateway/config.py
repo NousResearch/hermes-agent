@@ -511,6 +511,11 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # Important-contact rules used by gateway adapters/features that need
+    # fail-closed nudges for selected senders. Stored as raw config so platform
+    # plugins can evolve rule shapes without a gateway config migration.
+    important_contacts: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -646,6 +651,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "important_contacts": self.important_contacts,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
@@ -693,6 +699,10 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        important_contacts = data.get("important_contacts", {})
+        if not isinstance(important_contacts, dict):
+            important_contacts = {}
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -733,6 +743,7 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            important_contacts=important_contacts,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
@@ -865,6 +876,14 @@ def load_gateway_config() -> GatewayConfig:
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
+
+            gateway_cfg = yaml_cfg.get("gateway")
+            if isinstance(gateway_cfg, dict) and isinstance(
+                gateway_cfg.get("important_contacts"), dict
+            ):
+                gw_data["important_contacts"] = gateway_cfg["important_contacts"]
+            if isinstance(yaml_cfg.get("important_contacts"), dict):
+                gw_data["important_contacts"] = yaml_cfg["important_contacts"]
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]

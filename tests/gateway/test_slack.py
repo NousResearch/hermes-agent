@@ -166,6 +166,83 @@ class TestSlashCommandSessionIsolation:
         assert event.source.chat_id == "D123"
         assert event.source.user_id == "U123"
 
+    @pytest.mark.asyncio
+    async def test_configured_catchall_alias_routes_like_hermes(self, adapter):
+        adapter.config.extra["catch_all_commands"] = ["hermes", "alternate-hermes-slash"]
+        command = {
+            "command": "/alternate-hermes-slash",
+            "text": "help",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/help"
+        assert event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_configured_catchall_alias_allows_freeform_text(self, adapter):
+        adapter.config.extra["catch_all_commands"] = "hermes,alternate-hermes-slash"
+        command = {
+            "command": "/alternate-hermes-slash",
+            "text": "what changed today?",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "what changed today?"
+        assert event.message_type == MessageType.TEXT
+
+    @pytest.mark.asyncio
+    async def test_configured_catchall_alias_reads_config_when_extra_missing(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "slack:\n  catch_all_commands: [hermes, alternate-hermes-slash]\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        command = {
+            "command": "/alternate-hermes-slash",
+            "text": "help",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/help"
+        assert event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_configured_catchall_alias_does_not_shadow_native_command(self, adapter):
+        adapter.config.extra["catch_all_commands"] = ["hermes", "btw"]
+        command = {
+            "command": "/btw",
+            "text": "ship the app",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/btw ship the app"
+        assert event.message_type == MessageType.COMMAND
+
 
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
@@ -177,7 +254,11 @@ class TestAppMentionHandler:
 
     def test_app_mention_registered_on_connect(self):
         """connect() should register message + assistant lifecycle handlers."""
-        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        config = PlatformConfig(
+            enabled=True,
+            token="xoxb-fake",
+            extra={"catch_all_commands": ["hermes", "alternate-hermes-slash"]},
+        )
         adapter = SlackAdapter(config)
 
         # Track which events get registered
@@ -253,7 +334,14 @@ class TestAppMentionHandler:
         import re as _re
 
         assert isinstance(slash_matcher, _re.Pattern)
-        for expected in ("/hermes", "/btw", "/stop", "/model", "/help"):
+        for expected in (
+            "/hermes",
+            "/alternate-hermes-slash",
+            "/btw",
+            "/stop",
+            "/model",
+            "/help",
+        ):
             assert slash_matcher.match(
                 expected
             ), f"Slack slash regex does not match {expected}"

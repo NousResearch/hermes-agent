@@ -1071,7 +1071,93 @@ def _sanitize_slack_name(raw: str) -> str:
     return name[:_SLACK_NAME_LIMIT]
 
 
-def slack_native_slashes() -> list[tuple[str, str, str]]:
+def _coerce_slack_command_list(raw: Any) -> list[str]:
+    """Coerce YAML list or comma-separated string into Slack command names."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        return []
+    return [str(value).strip().lstrip("/") for value in values if str(value).strip()]
+
+
+def _raw_slack_catch_all_commands(cfg: Mapping[str, Any]) -> Any:
+    """Read Slack catch-all commands from supported raw config locations."""
+    slack_cfg = cfg.get("slack")
+    if isinstance(slack_cfg, dict) and "catch_all_commands" in slack_cfg:
+        return slack_cfg.get("catch_all_commands")
+
+    for section_name in ("platforms", "gateway"):
+        section = cfg.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        platforms = section.get("platforms") if section_name == "gateway" else section
+        if not isinstance(platforms, dict):
+            continue
+        slack_platform = platforms.get("slack")
+        if not isinstance(slack_platform, dict):
+            continue
+        if "catch_all_commands" in slack_platform:
+            return slack_platform.get("catch_all_commands")
+        extra = slack_platform.get("extra")
+        if isinstance(extra, dict) and "catch_all_commands" in extra:
+            return extra.get("catch_all_commands")
+    return None
+
+
+def slack_catch_all_commands(configured: Any = None) -> list[str]:
+    """Return configured Slack catch-all slash command names.
+
+    ``/hermes`` is always included first for backwards compatibility. Extra
+    names come from ``slack.catch_all_commands`` in config.yaml and are
+    sanitized with the same Slack slash-command rules used for manifests.
+    """
+    raw = configured
+    if raw is None:
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+            if isinstance(cfg, dict):
+                raw = _raw_slack_catch_all_commands(cfg)
+        except Exception:
+            raw = None
+
+    reserved_for_commands = set(GATEWAY_KNOWN_COMMANDS)
+    reserved_for_commands.update(name for name, _description, _args_hint in _iter_plugin_command_entries())
+    reserved_for_commands = {
+        sanitized
+        for name in reserved_for_commands
+        if (sanitized := _sanitize_slack_name(name))
+    }
+
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str, *, force: bool = False) -> None:
+        slack_name = _sanitize_slack_name(name)
+        if not slack_name or slack_name in seen or slack_name in _SLACK_RESERVED_COMMANDS:
+            return
+        if not force and slack_name in reserved_for_commands:
+            logger.warning(
+                "Ignoring Slack catch-all command /%s because it collides with a gateway command",
+                slack_name,
+            )
+            return
+        names.append(slack_name)
+        seen.add(slack_name)
+
+    _add("hermes", force=True)
+    for name in _coerce_slack_command_list(raw):
+        _add(name)
+        if len(names) >= _SLACK_MAX_SLASH_COMMANDS:
+            break
+    return names
+
+
+def slack_native_slashes(configured_catch_all_commands: Any = None) -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.
 
     Every gateway-available command in ``COMMAND_REGISTRY`` is surfaced as
@@ -1096,9 +1182,11 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
-    # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
-    seen.add("hermes")
+    # Reserve configured catch-all top-level commands before the registry
+    # entries so aliases such as /alternate-hermes-slash survive Slack's 50-command cap.
+    for catch_all in slack_catch_all_commands(configured_catch_all_commands):
+        entries.append((catch_all, "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+        seen.add(catch_all)
 
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)

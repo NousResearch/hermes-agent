@@ -928,7 +928,12 @@ class SlackAdapter(BasePlatformAdapter):
             from hermes_cli.commands import slack_native_slashes
             import re as _re
 
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            _slash_names = [
+                name
+                for name, _d, _h in slack_native_slashes(
+                    self.config.extra.get("catch_all_commands")
+                )
+            ]
             if _slash_names:
                 _slash_pattern = _re.compile(
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
@@ -3511,8 +3516,13 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in {"hermes", ""}:
+        from hermes_cli.commands import slack_catch_all_commands
+        catch_all_commands = set(slack_catch_all_commands(
+            self.config.extra.get("catch_all_commands")
+        ))
+        if slash_name.lower() in catch_all_commands or not slash_name:
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
+            # Configured catch-all aliases (e.g. /alternate-hermes-slash) follow the same path.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
             from hermes_cli.commands import slack_subcommand_map

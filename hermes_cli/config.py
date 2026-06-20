@@ -2064,6 +2064,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "catch_all_commands": ["hermes"],  # Slash commands that behave like /hermes catch-all
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 

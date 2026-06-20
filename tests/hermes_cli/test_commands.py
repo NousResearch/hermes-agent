@@ -23,6 +23,7 @@ from hermes_cli.commands import (
     gateway_help_lines,
     resolve_command,
     slack_app_manifest,
+    slack_catch_all_commands,
     slack_native_slashes,
     slack_subcommand_map,
     telegram_bot_commands,
@@ -304,6 +305,54 @@ class TestSlackNativeSlashes:
         slashes = slack_native_slashes()
         assert slashes[0][0] == "hermes"
 
+    def test_configured_catchall_alias_is_native_slash(self, tmp_path, monkeypatch):
+        """Configured catch-all aliases must be registered as Slack slashes."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "slack:\n  catch_all_commands: [hermes, alternate-hermes-slash]\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        slashes = slack_native_slashes()
+        assert slashes[0][0] == "hermes"
+        assert slashes[1][0] == "alternate-hermes-slash"
+
+    def test_catchall_commands_force_include_hermes(self):
+        assert slack_catch_all_commands(["alternate-hermes-slash"])[0] == "hermes"
+
+    def test_catchall_commands_skip_gateway_command_collisions(self):
+        assert "btw" not in slack_catch_all_commands(["alternate-hermes-slash", "btw"])
+
+    def test_catchall_commands_ignore_boolean_scalar(self):
+        assert slack_catch_all_commands(False) == ["hermes"]
+
+    def test_configured_catchall_alias_reads_platform_extra(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    extra:\n"
+            "      catch_all_commands: [hermes, alternate-hermes-slash]\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = [name for name, _desc, _hint in slack_native_slashes()]
+        assert names[:2] == ["hermes", "alternate-hermes-slash"]
+
+    def test_configured_catchall_alias_reads_gateway_platform_extra(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    slack:\n"
+            "      extra:\n"
+            "        catch_all_commands: [hermes, alternate-hermes-slash]\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = [name for name, _desc, _hint in slack_native_slashes()]
+        assert names[:2] == ["hermes", "alternate-hermes-slash"]
+
     def test_names_respect_slack_limits(self):
         for name, _desc, _hint in slack_native_slashes():
             # Slack: lowercase a-z, 0-9, hyphens, underscores; max 32 chars
@@ -413,6 +462,17 @@ class TestSlackAppManifest:
         m = slack_app_manifest()
         commands = [c["command"] for c in m["features"]["slash_commands"]]
         assert "/btw" in commands
+
+    def test_configured_catchall_alias_is_in_manifest(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "slack:\n  catch_all_commands: [hermes, alternate-hermes-slash]\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        m = slack_app_manifest()
+        commands = [c["command"] for c in m["features"]["slash_commands"]]
+        assert commands[:2] == ["/hermes", "/alternate-hermes-slash"]
 
     def test_custom_request_url(self):
         m = slack_app_manifest(request_url="https://example.com/slack")

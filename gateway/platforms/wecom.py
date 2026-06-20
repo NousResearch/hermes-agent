@@ -140,6 +140,17 @@ def _entry_matches(entries: List[str], target: str) -> bool:
     return False
 
 
+def _safe_url_for_log(url: str) -> str:
+    """Drop credentials, query params, and fragments before logging a URL."""
+    parsed = urlparse(url)
+    host = parsed.hostname or parsed.netloc
+    if not host:
+        return url.split("?", 1)[0].split("#", 1)[0]
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return parsed._replace(netloc=host, query="", fragment="").geturl()
+
+
 class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
@@ -226,7 +237,7 @@ class WeComAdapter(BasePlatformAdapter):
             self._mark_connected()
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-            logger.info("[%s] Connected to %s", self.name, self._ws_url)
+            logger.info("[%s] Connected to %s", self.name, _safe_url_for_log(self._ws_url))
             return True
         except Exception as exc:
             message = f"WeCom startup failed: {exc}"

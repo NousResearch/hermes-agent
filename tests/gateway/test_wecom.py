@@ -122,6 +122,36 @@ class TestWeComConnect:
         assert adapter.fatal_error_code == "wecom_connect_error"
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
+    @pytest.mark.asyncio
+    async def test_connect_redacts_websocket_query_secrets_in_logs(self, monkeypatch, caplog):
+        import gateway.platforms.wecom as wecom_module
+        from gateway.platforms.wecom import WeComAdapter
+
+        class DummyClient:
+            async def aclose(self):
+                return None
+
+        monkeypatch.setattr(wecom_module, "AIOHTTP_AVAILABLE", True)
+        monkeypatch.setattr(wecom_module, "HTTPX_AVAILABLE", True)
+        monkeypatch.setattr(wecom_module, "httpx", SimpleNamespace(AsyncClient=lambda **kwargs: DummyClient()))
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={
+            "bot_id": "bot-1",
+            "secret": "secret-1",
+            "websocket_url": "wss://openws.work.weixin.qq.com/ws?access_token=topsecret123&tenant=acme",
+        }))
+        adapter._open_connection = AsyncMock(return_value=None)
+        adapter._listen_loop = AsyncMock()
+        adapter._heartbeat_loop = AsyncMock()
+
+        with caplog.at_level("INFO", logger="gateway.platforms.wecom"):
+            success = await adapter.connect()
+
+        assert success is True
+        assert "topsecret123" not in caplog.text
+        assert "wss://openws.work.weixin.qq.com/ws" in caplog.text
+        await adapter.disconnect()
+
 
 class TestWeComQrScan:
     @patch("gateway.platforms.wecom.time")

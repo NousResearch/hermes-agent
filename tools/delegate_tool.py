@@ -867,6 +867,15 @@ def _build_child_progress_callback(
             _relay("subagent.complete", preview=preview, **kwargs)
             return
 
+        if event_type == "subagent.text":
+            # Streamed assistant reply text from the child. Relay verbatim so a
+            # gateway watch window can mirror the child "talking" as it streams.
+            # No spinner echo — the CLI shows the child via the tree, and the
+            # CLI/TUI progress handlers ignore non-tool event types, so this is
+            # inert there; only a gateway watch window consumes it.
+            _relay("subagent.text", preview=preview)
+            return
+
         # Normalise legacy strings, new-style "delegate.*" strings, and
         # DelegateEvent enum values all to a single DelegateEvent.  The
         # original implementation only accepted the five legacy strings;
@@ -1626,11 +1635,23 @@ def _run_single_child(
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
 
+        def _relay_child_text(delta: str) -> None:
+            # Forward the child's streamed reply text up the progress relay so
+            # gateway watch windows mirror it live (subagent.text → message.delta).
+            # Inert under CLI/TUI: their progress handlers ignore non-tool events.
+            if not delta or not child_progress_cb:
+                return
+            try:
+                child_progress_cb("subagent.text", preview=delta)
+            except Exception as e:
+                logger.debug("Child text relay failed: %s", e)
+
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             return child.run_conversation(
                 user_message=goal,
                 task_id=child_task_id,
+                stream_callback=_relay_child_text,
             )
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
@@ -2864,6 +2885,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
+        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )

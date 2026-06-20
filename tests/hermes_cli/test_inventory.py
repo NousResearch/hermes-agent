@@ -606,3 +606,122 @@ def test_aggregator_dedup_multiple_user_providers():
     assert or_row["models"] == ["model-z"]
     assert or_row["total_models"] == 1
 
+
+def test_aggregator_dedup_does_not_empty_user_defined_custom_provider():
+    """A named custom provider has slug ``custom:<name>``, which makes it
+    *both* ``is_user_defined=True`` *and* ``is_aggregator()==True``
+    (is_aggregator reports True for every ``custom:*`` slug).  The dedup
+    must skip user-defined rows: their models populate ``user_models``, so
+    filtering them against that set would strip the row's entire catalog and
+    hide the provider from the picker.  Regression for the #45954 dedup
+    emptying ``custom:*`` providers (e.g. a local llama.cpp endpoint or an
+    Anthropic-compatible proxy)."""
+    rows = [
+        _user_provider_row("custom:my-proxy", ["my-model-a", "my-model-b"]),
+        _aggregator_row("openrouter", ["my-model-a", "other/model"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    proxy_row = next(
+        r for r in payload["providers"] if r["slug"] == "custom:my-proxy"
+    )
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+
+    # The user's own custom provider keeps all of its models.
+    assert proxy_row["models"] == ["my-model-a", "my-model-b"]
+    assert proxy_row["total_models"] == 2
+
+    # A genuine aggregator is still deduped against the user's models.
+    assert "my-model-a" not in or_row["models"]
+    assert "other/model" in or_row["models"]
+    assert or_row["total_models"] == 1
+
+
+def test_two_custom_providers_with_overlap_both_survive():
+    """Two user-defined custom endpoints that happen to expose an
+    overlapping model must each keep their full catalog. Neither is the
+    aggregator the dedup exists to trim, so cross-filtering between two
+    user-defined rows must not happen.
+    """
+    rows = [
+        _user_provider_row("custom:proxy-a", ["shared/model", "a/only"]),
+        _user_provider_row("custom:proxy-b", ["shared/model", "b/only"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    a_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-a")
+    b_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-b")
+    assert a_row["models"] == ["shared/model", "a/only"]
+    assert b_row["models"] == ["shared/model", "b/only"]
+    assert a_row["total_models"] == 2
+    assert b_row["total_models"] == 2
+
+
+def test_build_models_payload_no_max_models_returns_full_list():
+    """When max_models is not passed (None), build_models_payload must
+    return the full model list — not truncate to the old default of 50.
+    Regression for #48279: Kilo Gateway picker was capped at 50 of 336
+    models, making most models undiscoverable via search."""
+    full_models = [f"model-{i}" for i in range(100)]
+    rows = [
+        {
+            "slug": "kilocode",
+            "name": "Kilo Code",
+            "models": full_models,
+            "total_models": len(full_models),
+            "is_current": False,
+            "is_user_defined": False,
+            "source": "built-in",
+        },
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        # No max_models argument — should return all 100 models
+        payload = build_models_payload(ctx)
+
+    kilo_row = next(r for r in payload["providers"] if r["slug"] == "kilocode")
+    assert kilo_row["models"] == full_models
+    assert kilo_row["total_models"] == 100
+    assert len(kilo_row["models"]) == 100
+
+
+# ─── refresh flag (cache-bust) ─────────────────────────────────────────
+
+
+def test_build_models_payload_forwards_refresh_flag():
+    """build_models_payload must forward refresh= to list_authenticated_providers.
+
+    The desktop picker's "Refresh Models" control passes refresh=True; the
+    flag has to reach list_authenticated_providers so the per-provider
+    model-id cache gets busted. Default opens pass refresh=False.
+    """
+    captured: dict = {}
+
+    def _capture(*args, **kwargs):
+        captured["refresh"] = kwargs.get("refresh")
+        return []
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+        build_models_payload(_empty_ctx())
+    assert captured["refresh"] is False
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+        build_models_payload(_empty_ctx(), refresh=True)
+    assert captured["refresh"] is True
+
+
+def test_list_authenticated_providers_refresh_busts_cache():
+    """refresh=True clears the provider-model disk cache exactly once;
+    refresh=False leaves it untouched (so normal picker opens stay snappy)."""
+    from hermes_cli import model_switch
+
+    with patch("hermes_cli.models.clear_provider_models_cache") as clear:
+        model_switch.list_authenticated_providers(refresh=False)
+        assert clear.call_count == 0
+        model_switch.list_authenticated_providers(refresh=True)
+        assert clear.call_count == 1
+

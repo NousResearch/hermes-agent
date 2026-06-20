@@ -142,6 +142,11 @@ export const zhHant = defineLocale({
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`,
+    dismiss: '關閉'
+  },
+
   titlebar: {
     hideSidebar: '隱藏側邊欄',
     showSidebar: '顯示側邊欄',
@@ -672,12 +677,13 @@ export const zhHant = defineLocale({
       connectAnother: '連結其他提供方',
       otherProviders: '其他提供方',
       removeConfirm: provider => `移除 ${provider}？`,
-      removeExternal: (provider, command) => `${provider} 由 Hermes 外部管理。請使用 ${command} 移除。`,
       removeKeyManaged: provider => `${provider} 由 API 金鑰設定。請從 API Keys 中移除。`,
       removedTitle: '帳號已移除',
       removedMessage: provider => `${provider} 已移除。`,
       failedRemove: provider => `無法移除 ${provider}`,
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
+      searchKeys: '搜尋提供方…',
+      noKeysMatch: '沒有符合的提供方。',
       loading: '正在載入提供方...'
     },
     sessions: {
@@ -855,7 +861,8 @@ export const zhHant = defineLocale({
     gatewayRunning: '訊息閘道執行中',
     gatewayStopped: '訊息閘道已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活躍工作階段 ${count}`,
-    restartMessaging: '重新啟動訊息服務',
+    restartGateway: '重新啟動閘道',
+    gatewayRestartFailed: '閘道重新啟動失敗。',
     updateHermes: '更新 Hermes',
     actionRunning: '執行中',
     actionDone: '完成',
@@ -924,9 +931,9 @@ export const zhHant = defineLocale({
     disableAria: name => `停用 ${name}`,
     platformEnabled: name => `${name} 已啟用`,
     platformDisabled: name => `${name} 已停用`,
-    restartToApply: '重新啟動閘道後此變更才會生效。',
+    restartToApply: '此變更將在閘道重新啟動後生效。',
     setupSaved: name => `${name} 設定已儲存`,
-    restartToReconnect: '重新啟動閘道以使用新憑證重新連線。',
+    restartToReconnect: '新憑證將在閘道重新啟動後生效。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 設定已更新。`,
     failedUpdate: name => `更新 ${name} 失敗`,
@@ -1582,8 +1589,6 @@ export const zhHant = defineLocale({
     unknown: '（未知）',
     search: '篩選提供方和模型...',
     noModels: '找不到模型。',
-    persistGlobalSession: '全域儲存（否則僅限此工作階段）',
-    persistGlobal: '全域儲存',
     addProvider: '新增提供方',
     loadFailed: '無法載入模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
@@ -1609,6 +1614,7 @@ export const zhHant = defineLocale({
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',
+      refreshModels: '重新整理模型',
       fast: '快速',
       medium: '中'
     },
@@ -1663,6 +1669,7 @@ export const zhHant = defineLocale({
       gatewayChecking: '檢查中',
       gatewayConnecting: '連線中',
       gatewayOffline: '離線',
+      gatewayRestarting: '重新啟動中…',
       gatewayTitle: 'Hermes 推論閘道狀態',
       agents: '代理',
       closeAgents: '關閉代理',
@@ -1809,6 +1816,7 @@ export const zhHant = defineLocale({
       refresh: '重新整理',
       moreActions: '更多動作',
       branchNewChat: '在新聊天中分支',
+      dismissError: '关闭错误',
       readAloudFailed: '朗讀失敗',
       preparingAudio: '正在準備音訊...',
       stopReading: '停止朗讀',
@@ -1916,6 +1924,9 @@ export const zhHant = defineLocale({
     regenerateFailed: '重新生成失敗',
     editFailed: '編輯失敗',
     resumeFailed: '繼續失敗',
+    resumeStrandedTitle: '無法載入此工作階段',
+    resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
+    resumeRetry: '重試',
     nothingToBranch: '沒有可分支的內容',
     branchNeedsChat: '分支前請先開始或繼續一個聊天。',
     sessionBusy: '工作階段忙碌中',

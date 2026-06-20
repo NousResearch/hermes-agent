@@ -28,6 +28,7 @@ from hermes_cli.auth import (
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _load_auth_store,
+    _load_global_auth_store,
     _load_provider_state,
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
@@ -579,15 +580,14 @@ class CredentialPool:
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Codex device_code pool entry from auth.json if tokens differ.
 
-        When a Codex OAuth access token expires (or the ChatGPT account hits
-        its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
-        with a ``last_error_reset_at`` that can be many hours in the future.
-        Meanwhile the user may run ``hermes model`` / ``hermes auth`` which
-        performs a fresh device-code login and writes new tokens to
-        ``auth.json`` under ``_auth_store_lock``.  Without this sync the pool
-        entry stays frozen until ``last_error_reset_at`` elapses — even
-        though fresh credentials are sitting on disk — and every request
-        fails with "no available entries (all exhausted or empty)".
+        When a Codex OAuth access token expires, the pool entry may hold a
+        single-use refresh token that another Hermes process/profile already
+        spent.  Profile-local ``auth.json`` files can be stale copies of the
+        same singleton token pair, while the root auth store has the latest
+        pair written by whichever profile refreshed first.  Adopt the freshest
+        available auth-store state before attempting a refresh so a peer
+        profile does not replay a consumed refresh token and crash with
+        ``refresh_token_reused``.
 
         Mirrors the Nous/Anthropic resync paths above.  Only applies to
         device_code-sourced entries; env/API-key-sourced entries have no
@@ -599,6 +599,27 @@ class CredentialPool:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
                 state = _load_provider_state(auth_store, "openai-codex")
+            global_store = _load_global_auth_store()
+            global_state = None
+            if isinstance(global_store, dict):
+                global_providers = global_store.get("providers")
+                if isinstance(global_providers, dict):
+                    maybe_global = global_providers.get("openai-codex")
+                    if isinstance(maybe_global, dict):
+                        global_state = maybe_global
+            if isinstance(global_state, dict):
+                local_tokens = state.get("tokens") if isinstance(state, dict) else None
+                global_tokens = global_state.get("tokens")
+                if isinstance(global_tokens, dict):
+                    global_access = global_tokens.get("access_token", "")
+                    global_refresh = global_tokens.get("refresh_token", "")
+                    local_refresh = local_tokens.get("refresh_token", "") if isinstance(local_tokens, dict) else ""
+                    # If the profile copy still matches the entry but root has
+                    # a different token pair, root is the fresher canonical
+                    # state from a peer profile refresh.  Let it win over the
+                    # profile-local stale shadow.
+                    if global_access and global_refresh and global_refresh != (entry.refresh_token or "") and global_refresh != local_refresh:
+                        state = global_state
             if not isinstance(state, dict):
                 return entry
             tokens = state.get("tokens")

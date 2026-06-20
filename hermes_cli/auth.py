@@ -3508,9 +3508,19 @@ def _sync_codex_pool_entries(
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
-    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json).
+
+    Codex OAuth refresh tokens are single-use.  Named Hermes profiles often
+    carry profile-local copies of the same singleton ``device_code`` token
+    pair; when one profile refreshes, sibling profiles can otherwise replay the
+    consumed refresh token and fail with ``refresh_token_reused``.  Persist a
+    successful refresh to the active profile *and* write it through to the
+    global-root auth store so peer profiles have a canonical fresh pair to
+    adopt before spending their stale local copy.
+    """
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    global_auth_path = _global_auth_file_path()
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
@@ -3523,6 +3533,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
+        state.pop("last_auth_error", None)
         if label and str(label).strip():
             state["label"] = str(label).strip()
         _save_provider_state(auth_store, "openai-codex", state)
@@ -3533,6 +3544,40 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             previous_singleton_tokens=previous_singleton_tokens,
         )
         _save_auth_store(auth_store)
+
+        if global_auth_path is not None:
+            try:
+                global_store = _load_auth_store(global_auth_path)
+                global_providers = global_store.setdefault("providers", {})
+                global_state = global_providers.get("openai-codex")
+                if not isinstance(global_state, dict):
+                    global_state = {}
+                previous_global_tokens = (
+                    global_state.get("tokens")
+                    if isinstance(global_state.get("tokens"), dict)
+                    else None
+                )
+                global_state["tokens"] = tokens
+                global_state["last_refresh"] = last_refresh
+                global_state["auth_mode"] = "chatgpt"
+                global_state.pop("last_auth_error", None)
+                if label and str(label).strip():
+                    global_state["label"] = str(label).strip()
+                _store_provider_state(
+                    global_store,
+                    "openai-codex",
+                    global_state,
+                    set_active=False,
+                )
+                _sync_codex_pool_entries(
+                    global_store,
+                    tokens,
+                    last_refresh,
+                    previous_singleton_tokens=previous_global_tokens,
+                )
+                _save_auth_store(global_store, target_path=global_auth_path)
+            except Exception as exc:
+                logger.debug("Failed to write through Codex tokens to global auth store: %s", exc)
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:

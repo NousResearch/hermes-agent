@@ -367,6 +367,103 @@ def test_load_provider_state_malformed_global_does_not_break_profile(profile_env
     assert state["access_token"] == "profile-token"
 
 
+def test_codex_save_in_profile_writes_through_to_global_root(profile_env):
+    """A Codex refresh in one named profile refreshes the shared root copy.
+
+    Codex refresh tokens are single-use.  If profile A refreshes only its local
+    auth.json, profile B's copied singleton refresh token becomes stale and the
+    next Kanban worker can die with ``refresh_token_reused``.  Successful Codex
+    saves therefore write through to the global-root auth store so sibling
+    profiles can adopt the fresh pair before spending their stale copy.
+    """
+    from hermes_cli.auth import _save_codex_tokens
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={
+            "openai-codex": {
+                "tokens": {"access_token": "old-root-access", "refresh_token": "old-root-refresh"},
+                "last_refresh": "2026-01-01T00:00:00Z",
+                "last_auth_error": {"code": "refresh_token_reused"},
+            },
+        },
+        pool={
+            "openai-codex": [{
+                "id": "root-device",
+                "label": "root-device",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "device_code",
+                "access_token": "old-root-access",
+                "refresh_token": "old-root-refresh",
+                "last_status": "dead",
+                "last_error_reason": "refresh_token_reused",
+            }],
+        },
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {
+            "tokens": {"access_token": "old-profile-access", "refresh_token": "old-profile-refresh"},
+            "last_refresh": "2026-01-01T00:00:00Z",
+            "last_auth_error": {"code": "refresh_token_reused"},
+        },
+    }))
+
+    _save_codex_tokens(
+        {"access_token": "fresh-access", "refresh_token": "fresh-refresh"},
+        last_refresh="2026-06-20T17:30:00Z",
+    )
+
+    global_store = json.loads((profile_env["global"] / "auth.json").read_text())
+    global_state = global_store["providers"]["openai-codex"]
+    assert global_state["tokens"]["access_token"] == "fresh-access"
+    assert global_state["tokens"]["refresh_token"] == "fresh-refresh"
+    assert "last_auth_error" not in global_state
+    profile_store = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert "last_auth_error" not in profile_store["providers"]["openai-codex"]
+    root_entry = global_store["credential_pool"]["openai-codex"][0]
+    assert root_entry["access_token"] == "fresh-access"
+    assert root_entry["refresh_token"] == "fresh-refresh"
+    assert root_entry["last_status"] is None
+
+
+def test_codex_pool_sync_adopts_fresh_global_root_over_stale_profile_shadow(profile_env):
+    """A sibling profile with a stale copied singleton adopts the root pair."""
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {
+            "tokens": {"access_token": "fresh-access", "refresh_token": "fresh-refresh"},
+            "last_refresh": "2026-06-20T17:30:00Z",
+        },
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {
+            "tokens": {"access_token": "stale-access", "refresh_token": "stale-refresh"},
+            "last_refresh": "2026-06-20T11:00:00Z",
+        },
+    }))
+    stale_entry = PooledCredential(
+        provider="openai-codex",
+        id="copied-device",
+        label="copied-device",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token="stale-access",
+        refresh_token="stale-refresh",
+        last_status="dead",
+        last_error_reason="refresh_token_reused",
+    )
+
+    pool = CredentialPool("openai-codex", [stale_entry])
+    synced = pool._sync_codex_entry_from_auth_store(stale_entry)
+
+    assert synced.access_token == "fresh-access"
+    assert synced.refresh_token == "fresh-refresh"
+    assert synced.last_status is None
+    assert synced.last_error_reason is None
+
+
 # ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------

@@ -6034,7 +6034,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": sys.prefix}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -6759,7 +6759,7 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                uv_env = {**os.environ, "VIRTUAL_ENV": sys.prefix}
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -6843,12 +6843,28 @@ def _is_windows() -> bool:
 
 
 def _venv_scripts_dir() -> Path | None:
-    """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
-        return None
-    scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
-    return scripts if scripts.is_dir() else None
+    """Return the venv Scripts directory if we're running inside the project venv.
+
+    Checks ``venv/`` first (the canonical Hermes install layout), then
+    ``.venv/`` (common when users create the venv manually with
+    ``python -m venv .venv``).  Falls back to ``sys.prefix`` so that any
+    non-standard venv location is covered when Hermes is actually running
+    inside it.
+    """
+    for candidate in (PROJECT_ROOT / "venv", PROJECT_ROOT / ".venv"):
+        if candidate.is_dir():
+            scripts = candidate / ("Scripts" if _is_windows() else "bin")
+            if scripts.is_dir():
+                return scripts
+    # Fall back to sys.prefix — covers venvs at non-standard paths and
+    # ensures quarantine / concurrent-instance detection works regardless
+    # of how the venv was named or placed.
+    sp = Path(sys.prefix)
+    if sp != Path("/") and sp.is_dir():
+        scripts = sp / ("Scripts" if _is_windows() else "bin")
+        if scripts.is_dir():
+            return scripts
+    return None
 
 
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
@@ -8946,7 +8962,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": sys.prefix}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

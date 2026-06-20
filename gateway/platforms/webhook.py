@@ -663,9 +663,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=502,
             )
 
-        # Use delivery_id in session key so concurrent webhooks on the
-        # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_chat_id = self._session_chat_id(
+            route_name, delivery_id, route_config, payload
+        )
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
@@ -888,6 +888,46 @@ class WebhookAdapter(BasePlatformAdapter):
                 rendered[key] = self._render_prompt(value, payload, "", "")
             else:
                 rendered[key] = value
+        return rendered
+
+    def _session_chat_id(
+        self,
+        route_name: str,
+        delivery_id: str,
+        route_config: dict,
+        payload: dict,
+    ) -> str:
+        """Return the webhook chat id used for gateway session routing.
+
+        By default, each delivery gets its own chat id to preserve existing
+        behavior and avoid unrelated concurrent webhook runs sharing context.
+        Routes that need a persistent external conversation can opt in with a
+        payload-rendered ``session_key`` (or ``session_key_template``) value,
+        for example ``github:{repository.full_name}:issue:{issue.number}``.
+        Every webhook delivery that renders the same value is then routed into
+        the same Hermes session by the gateway's normal chat-id based session
+        key construction.
+        """
+        fallback = f"webhook:{route_name}:{delivery_id}"
+        template = (
+            route_config.get("session_key")
+            or route_config.get("session_key_template")
+            or ""
+        )
+        if not isinstance(template, str) or not template.strip():
+            return fallback
+
+        rendered = self._render_prompt(template, payload, "", route_name).strip()
+        # Unresolved placeholders mean the payload did not contain enough
+        # information to build the stable key. Fall back to per-delivery
+        # isolation rather than accidentally collapsing events into a shared
+        # literal ``{missing.field}`` session.
+        if not rendered or re.search(r"\{[a-zA-Z0-9_.]+\}", rendered):
+            logger.warning(
+                "[webhook] session_key template for route %s could not be fully rendered; using delivery id",
+                route_name,
+            )
+            return fallback
         return rendered
 
     # ------------------------------------------------------------------

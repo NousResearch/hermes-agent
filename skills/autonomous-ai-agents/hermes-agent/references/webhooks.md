@@ -62,6 +62,7 @@ hermes webhook subscribe <name> \
   --skills "skill1,skill2" \
   --deliver telegram \
   --deliver-chat-id "12345" \
+  --session-key "github:{repository.full_name}:issue:{issue.number}" \
   --secret "optional-custom-secret"
 ```
 
@@ -101,6 +102,7 @@ If no prompt is specified, the full JSON payload is dumped into the agent prompt
 hermes webhook subscribe github-issues \
   --events "issues" \
   --prompt "New GitHub issue #{issue.number}: {issue.title}\n\nAction: {action}\nAuthor: {issue.user.login}\nBody:\n{issue.body}\n\nPlease triage this issue." \
+  --session-key "github:{repository.full_name}:issue:{issue.number}" \
   --deliver telegram \
   --deliver-chat-id "-100123456789"
 ```

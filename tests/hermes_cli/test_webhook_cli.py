@@ -34,6 +34,7 @@ def _make_args(**kwargs):
         "deliver": "log",
         "deliver_chat_id": "",
         "secret": "",
+        "session_key": "",
         "payload": "",
     }
     defaults.update(kwargs)
@@ -71,6 +72,17 @@ class TestSubscribe:
             webhook_action="subscribe", name="s", secret="my-secret"
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
+
+    def test_session_key_template(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="gh-issues",
+            session_key="github:{repository.full_name}:issue:{issue.number}",
+        ))
+        assert (
+            _load_subscriptions()["gh-issues"]["session_key"]
+            == "github:{repository.full_name}:issue:{issue.number}"
+        )
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))

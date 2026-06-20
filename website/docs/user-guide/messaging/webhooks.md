@@ -84,6 +84,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `skills` | No | List of skill names to load for the agent run. |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
+| `session_key` | No | Payload-rendered template for a persistent webhook session, e.g. `github:{repository.full_name}:issue:{issue.number}`. Events rendering the same value reuse the same Hermes session; routes without this keep the default one-session-per-delivery behavior. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
 
 ### Full example
@@ -108,6 +109,7 @@ platforms:
             Diff URL: {pull_request.diff_url}
             Action: {action}
           skills: ["github-code-review"]
+          session_key: "github:{repository.full_name}:pr:{pull_request.number}"
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"
@@ -138,6 +140,16 @@ prompt: "PR #{pull_request.number} by {pull_request.user.login}: {__raw__}"
 If no `prompt` template is configured for a route, the entire payload is dumped as indented JSON (truncated at 4000 characters).
 
 The same dot-notation templates work in `deliver_extra` values.
+
+### Persistent webhook sessions
+
+By default, each webhook delivery becomes an independent Hermes session keyed by the provider delivery id. Use `session_key` when an external object should keep context across events:
+
+```yaml
+session_key: "github:{repository.full_name}:issue:{issue.number}"
+```
+
+All deliveries that render the same session key route back into the same Hermes conversation. If the template cannot be fully rendered because the payload is missing a field, Hermes falls back to the default delivery-id session to avoid accidental cross-event context sharing.
 
 ### Forum Topic Delivery
 

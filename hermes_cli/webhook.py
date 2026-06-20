@@ -189,6 +189,9 @@ def _cmd_subscribe(args):
             return
         route["deliver_only"] = True
 
+    if getattr(args, "session_key", ""):
+        route["session_key"] = args.session_key
+
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
@@ -237,6 +240,9 @@ def _cmd_list(args):
             print(f"    {desc}")
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
+        session_key = route.get("session_key") or route.get("session_key_template")
+        if session_key:
+            print(f"    Session: {session_key}")
         print(f"    Deliver: {deliver}")
         print()
 

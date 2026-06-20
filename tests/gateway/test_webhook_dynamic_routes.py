@@ -172,3 +172,46 @@ class TestDynamicRouteSecretValidation:
         adapter._reload_dynamic_routes()
         assert "good" in adapter._routes
         assert "bad" not in adapter._routes
+
+
+class TestWebhookSessionRouting:
+    def test_session_key_template_routes_same_issue_to_same_chat_id(self):
+        adapter = _make_adapter()
+        route = {"session_key": "github:{repository.full_name}:issue:{issue.number}"}
+        payload_opened = {
+            "repository": {"full_name": "simplexadjungat/simplexadjungat"},
+            "issue": {"number": 2},
+            "action": "opened",
+        }
+        payload_comment = {
+            "repository": {"full_name": "simplexadjungat/simplexadjungat"},
+            "issue": {"number": 2},
+            "comment": {"body": "approved"},
+            "action": "created",
+        }
+
+        first = adapter._session_chat_id("github-issues", "delivery-open", route, payload_opened)
+        second = adapter._session_chat_id("github-issues", "delivery-comment", route, payload_comment)
+
+        assert first == second
+        assert first == "github:simplexadjungat/simplexadjungat:issue:2"
+
+    def test_without_session_key_template_delivery_id_keeps_existing_isolation(self):
+        adapter = _make_adapter()
+        route = {}
+
+        first = adapter._session_chat_id("github-issues", "delivery-one", route, {})
+        second = adapter._session_chat_id("github-issues", "delivery-two", route, {})
+
+        assert first == "webhook:github-issues:delivery-one"
+        assert second == "webhook:github-issues:delivery-two"
+        assert first != second
+
+    def test_unresolved_session_key_template_falls_back_to_delivery_id(self):
+        adapter = _make_adapter()
+        route = {"session_key": "github:{repository.full_name}:issue:{issue.number}"}
+        payload = {"repository": {"full_name": "simplexadjungat/simplexadjungat"}}
+
+        chat_id = adapter._session_chat_id("github-issues", "delivery-one", route, payload)
+
+        assert chat_id == "webhook:github-issues:delivery-one"

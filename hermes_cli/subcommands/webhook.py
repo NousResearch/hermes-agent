@@ -49,6 +49,12 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"
     )
     wh_sub.add_argument(
+        "--session-key",
+        default="",
+        help="Payload template for a persistent webhook session key, e.g. "
+        "github:{repository.full_name}:issue:{issue.number}",
+    )
+    wh_sub.add_argument(
         "--deliver-only",
         action="store_true",
         help="Skip the agent — deliver the rendered prompt directly as the "

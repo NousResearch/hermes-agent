@@ -87,7 +87,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
-from utils import atomic_replace, env_float, env_int
+from utils import atomic_replace
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -377,6 +377,7 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
+    _INGRESS_LAG_WARN_SECONDS = 30.0
 
     @staticmethod
     def _env_float_clamped(
@@ -406,6 +407,54 @@ class TelegramAdapter(BasePlatformAdapter):
             value = min(value, max_value)
         return value
 
+    @classmethod
+    def _ingress_lag_warn_seconds(cls) -> float:
+        return cls._env_float_clamped(
+            "HERMES_TELEGRAM_INGRESS_LAG_WARN_SECONDS",
+            cls._INGRESS_LAG_WARN_SECONDS,
+            min_value=0.0,
+        )
+
+    @staticmethod
+    def _telegram_message_datetime(msg: Any) -> Optional[datetime]:
+        msg_date = getattr(msg, "date", None)
+        if not isinstance(msg_date, datetime):
+            return None
+        if msg_date.tzinfo is None:
+            return msg_date.replace(tzinfo=timezone.utc)
+        return msg_date.astimezone(timezone.utc)
+
+    def _log_ingress_lag(self, update: Any, msg: Any, *, kind: str) -> None:
+        """Log Telegram update age at the adapter ingress boundary.
+
+        Telegram long-polling can wedge in a way that delivers updates late
+        without producing an obvious network error. Logging Telegram's native
+        message timestamp next to the local receive timestamp makes those
+        stalls visible for both normal text and slash-command paths.
+        """
+        msg_date = self._telegram_message_datetime(msg)
+        if msg_date is None:
+            return
+        received_at = datetime.now(timezone.utc)
+        lag_seconds = max(0.0, (received_at - msg_date).total_seconds())
+        update_id = getattr(update, "update_id", None)
+        message_id = getattr(msg, "message_id", None)
+        chat_id = getattr(getattr(msg, "chat", None), "id", None)
+        user_id = getattr(getattr(msg, "from_user", None), "id", None)
+        log_fn = logger.warning if lag_seconds >= self._ingress_lag_warn_seconds() else logger.info
+        log_fn(
+            "[Telegram] Ingress %s update_id=%s message_id=%s chat_id=%s user_id=%s "
+            "message_date=%s received_at=%s lag=%.3fs",
+            kind,
+            update_id,
+            message_id,
+            chat_id,
+            user_id,
+            msg_date.isoformat(),
+            received_at.isoformat(),
+            lag_seconds,
+        )
+
     @property
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
@@ -433,7 +482,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._rich_draft_disabled: bool = False
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
-        self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
+        self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
@@ -2153,7 +2202,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # inject forged updates as if from Telegram. Refuse to
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
-                webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
+                webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
@@ -5974,6 +6023,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
+        self._log_ingress_lag(update, msg, kind="text")
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
@@ -5989,6 +6039,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg, is_command=True):
             return
+        self._log_ingress_lag(update, msg, kind="command")
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)

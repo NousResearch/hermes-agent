@@ -432,6 +432,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ``chat_id`` is the recipient's WhatsApp ID (``wa_id``) — typically
         their phone number with country code, no plus sign.
         """
+        self._check_send_gate()
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
         if not content or not content.strip():

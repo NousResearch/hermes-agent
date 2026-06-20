@@ -5152,6 +5152,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         group_code: str = "",
     ) -> SendResult:
         """Send text message with auto-chunking. Delegates to OutboundManager."""
+        self._check_send_gate()
         return await self._outbound.send_text(chat_id, content, reply_to, group_code=group_code)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

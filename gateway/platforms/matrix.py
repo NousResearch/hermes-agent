@@ -1510,6 +1510,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a message to a Matrix room."""
+        self._check_send_gate()
 
         if not content:
             return SendResult(success=True)

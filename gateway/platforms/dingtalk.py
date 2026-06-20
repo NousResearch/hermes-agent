@@ -826,6 +826,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a markdown reply via DingTalk session webhook."""
+        self._check_send_gate()
         metadata = metadata or {}
         logger.debug(
             "[%s] send() chat_id=%s card_enabled=%s",

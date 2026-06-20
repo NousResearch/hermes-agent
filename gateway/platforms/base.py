@@ -24,6 +24,11 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+
+class SendGateDisabledException(RuntimeError):
+    """Raised when send() is called with send_gate=disabled."""
+    pass
+
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.
@@ -2311,7 +2316,23 @@ class BasePlatformAdapter(ABC):
     async def disconnect(self) -> None:
         """Disconnect from the platform."""
         pass
-    
+
+    def _check_send_gate(self) -> None:
+        """Check whether send() is allowed by the send_gate config.
+
+        Raises:
+            SendGateDisabledException: If send_gate is set to "disabled"
+        """
+        extra = self.config.extra or {}
+        send_gate_mode = extra.get("send_gate", "enabled")
+        if send_gate_mode == "disabled":
+            platform_name = getattr(self.platform, "value", str(self.platform))
+            raise SendGateDisabledException(
+                f"send() is disabled for platform '{platform_name}'. "
+                f"To re-enable, set platforms.{platform_name}.extra.send_gate to 'enabled' "
+                f"or remove the 'send_gate' setting from your config."
+            )
+
     @abstractmethod
     async def send(
         self,
@@ -2322,15 +2343,18 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """
         Send a message to a chat.
-        
+
         Args:
             chat_id: The chat/channel ID to send to
             content: Message content (may be markdown)
             reply_to: Optional message ID to reply to
             metadata: Additional platform-specific options
-        
+
         Returns:
             SendResult with success status and message ID
+
+        Raises:
+            SendGateDisabledException: If send_gate is configured as "disabled"
         """
         pass
 

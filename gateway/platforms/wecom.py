@@ -1367,6 +1367,7 @@ class WeComAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
+        self._check_send_gate()
         del metadata
 
         if not chat_id:

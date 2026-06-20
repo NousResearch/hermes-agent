@@ -307,11 +307,20 @@ class EmailAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 
-        self._address = os.getenv("EMAIL_ADDRESS", "")
+        # Resolve connection settings from the env vars first, then fall back to
+        # PlatformConfig.extra (address/imap_host/smtp_host) — the canonical dict
+        # gateway.config populates and that the "connected" check, the
+        # send-helper, and `hermes config show` already read. Without the
+        # fallback a config.yaml-only setup left these empty. Host/address values
+        # are stripped: a stray space or newline made IMAP4_SSL raise the
+        # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
+        # instead of an obvious "host not set" error.
+        extra = config.extra or {}
+        self._address = (os.getenv("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
         self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
+        self._imap_host = (os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
-        self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
+        self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
@@ -319,7 +328,6 @@ class EmailAdapter(BasePlatformAdapter):
         #   platforms:
         #     email:
         #       skip_attachments: true
-        extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
 
         # Track message IDs we've already processed to avoid duplicates
@@ -396,6 +404,27 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
+        # Validate up front so a missing host surfaces as an actionable config
+        # error instead of IMAP4_SSL("") raising the cryptic
+        # ``[Errno 8] nodename nor servname provided, or not known``.
+        missing = [
+            name
+            for name, value in (
+                ("EMAIL_ADDRESS", self._address),
+                ("EMAIL_PASSWORD", self._password),
+                ("EMAIL_IMAP_HOST", self._imap_host),
+                ("EMAIL_SMTP_HOST", self._smtp_host),
+            )
+            if not value
+        ]
+        if missing:
+            logger.error(
+                "[Email] Not configured — missing %s. Set it via `hermes gateway "
+                "setup` (env) or platforms.email in config.yaml.",
+                ", ".join(missing),
+            )
+            return False
+
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)

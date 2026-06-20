@@ -4123,9 +4123,18 @@ class FeishuAdapter(BasePlatformAdapter):
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
         ):
             return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        # When group policy is "open", the policy gate has already
+        # admitted the message -- no additional @mention requirement.
+        if require_mention and self._get_effective_policy(chat_id) != "open" and not self._mentions_self(message):
             return "group_policy_rejected"
         return None
+
+    def _get_effective_policy(self, chat_id: str) -> str:
+        """Resolve the effective group policy for a chat, falling back to defaults."""
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule:
+            return rule.policy
+        return self._default_group_policy or self._group_policy
 
     def _require_mention_for(self, chat_id: str) -> bool:
         rule = self._group_rules.get(chat_id) if chat_id else None

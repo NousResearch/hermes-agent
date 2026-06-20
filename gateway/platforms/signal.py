@@ -224,6 +224,10 @@ class SignalAdapter(BasePlatformAdapter):
         # RPC during a cooldown window instead.
         self._typing_failures: Dict[str, int] = {}
         self._typing_skip_until: Dict[str, float] = {}
+        # Track which chats have already had a typing indicator this turn.
+        # Signal has no stopTyping RPC, so we send exactly ONE sendTyping
+        # per turn to avoid stuck typing indicators on the client side.
+        self._typing_sent_this_turn: set = set()
         self._running = False
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
@@ -235,6 +239,14 @@ class SignalAdapter(BasePlatformAdapter):
         # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
         self._recent_sent_timestamps: set = set()
         self._max_recent_timestamps = 50
+
+        # Track envelope timestamps replayed from the buffer so the SSE
+        # listener can skip duplicates that arrive moments after replay.
+        self._replayed_envelope_keys: set = set()
+        # Guard: connect() handles the first replay; SSE reconnects handle
+        # subsequent ones.  Avoids spawning a redundant replay task on the
+        # very first SSE connection (connect() already did it).
+        self._first_sse_connect = True
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
         # phone number to the corresponding UUID when signal-cli prefers it.
@@ -284,6 +296,12 @@ class SignalAdapter(BasePlatformAdapter):
             self._sse_task = asyncio.create_task(self._sse_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
+            # Replay any messages buffered by signal-buffer.py while the
+            # gateway was offline.  This runs as a fire-and-forget task so
+            # connect() returns immediately and the SSE listener can start
+            # receiving live messages in parallel.
+            asyncio.create_task(self._replay_buffered_messages())
+
             logger.info("Signal: connected to %s", self.http_url)
             return True
         finally:
@@ -326,6 +344,94 @@ class SignalAdapter(BasePlatformAdapter):
         logger.info("Signal: disconnected")
 
     # ------------------------------------------------------------------
+    # Buffered Message Replay
+    # ------------------------------------------------------------------
+
+    async def _replay_buffered_messages(self) -> None:
+        """Replay messages captured by signal-buffer.py during gateway downtime.
+
+        signal-buffer.py is an always-on sidecar that listens to signal-cli's
+        SSE stream and persists every envelope to ~/.hermes/signal-queue-<acct>/
+        (with dedup via signal-seen-<acct>.json).  This method reads the queue
+        directory on gateway startup, replays envelopes through the normal
+        _handle_envelope() path, then removes the queue files.
+
+        The replay runs as a fire-and-forget asyncio task shortly after
+        connect() so it doesn't block the live SSE listener.
+        """
+        account_id = self.account.lstrip("+")
+        # Derive HERMES_HOME the same way the buffer script does.
+        from hermes_constants import get_hermes_home
+        hermes_home = str(get_hermes_home())
+        queue_dir = Path(hermes_home) / f"signal-queue-{account_id}"
+
+        if not queue_dir.is_dir():
+            logger.debug("Signal replay: no queue directory at %s", queue_dir)
+            return
+
+        queue_files = sorted(queue_dir.iterdir())
+        if not queue_files:
+            logger.debug("Signal replay: queue empty")
+            return
+
+        logger.info(
+            "Signal replay: %d buffered message(s) in %s",
+            len(queue_files),
+            queue_dir,
+        )
+
+        replayed = 0
+        errors = 0
+        for qf in queue_files:
+            if not qf.is_file() or qf.suffix != ".json":
+                continue
+            try:
+                raw = qf.read_text(encoding="utf-8")
+                envelope = json.loads(raw)
+                # Register dedup key before replay so if the same envelope
+                # arrives via SSE moments later, it gets skipped.
+                env_data = envelope.get("envelope", envelope)
+                dedup_sender = (
+                    env_data.get("sourceNumber")
+                    or env_data.get("sourceUuid")
+                )
+                dedup_ts = env_data.get("timestamp", 0)
+                if dedup_ts and dedup_sender:
+                    self._replayed_envelope_keys.add(f"{dedup_ts}_{dedup_sender}")
+                await self._handle_envelope(envelope)
+                replayed += 1
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                logger.warning("Signal replay: bad JSON in %s: %s", qf.name, exc)
+                errors += 1
+            except Exception:
+                logger.exception("Signal replay: error replaying %s", qf.name)
+                errors += 1
+
+        # Small delay so the agent has a chance to start processing before we
+        # remove the files underneath.  In practice the handle_message call is
+        # synchronous-enough that this is just a safety margin.
+        if replayed:
+            await asyncio.sleep(1.0)
+
+        # Remove replayed queue files regardless of success — we don't want
+        # stale entries to accumulate and get re-replayed on every restart.
+        removed = 0
+        for qf in queue_files:
+            if qf.is_file() and qf.suffix == ".json":
+                try:
+                    qf.unlink(missing_ok=True)
+                    removed += 1
+                except OSError:
+                    pass
+
+        logger.info(
+            "Signal replay: replayed=%d errors=%d cleaned=%d",
+            replayed,
+            errors,
+            removed,
+        )
+
+    # ------------------------------------------------------------------
     # SSE Streaming (inbound messages)
     # ------------------------------------------------------------------
 
@@ -346,6 +452,12 @@ class SignalAdapter(BasePlatformAdapter):
                     backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
                     self._last_sse_activity = time.time()
                     logger.info("Signal SSE: connected")
+
+                    # Replay any messages buffered during the disconnect gap.
+                    # Skip the very first connect (connect() already replayed).
+                    if not self._first_sse_connect:
+                        asyncio.create_task(self._replay_buffered_messages())
+                    self._first_sse_connect = False
 
                     buffer = ""
                     async for chunk in response.aiter_text():
@@ -443,6 +555,21 @@ class SignalAdapter(BasePlatformAdapter):
         """Process an incoming signal-cli envelope."""
         # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
+
+        # Dedup: skip envelopes that were already replayed from the buffer.
+        # This prevents double processing when the SSE listener delivers the
+        # same message moments after the startup replay.
+        _dedup_sender = (
+            envelope_data.get("sourceNumber")
+            or envelope_data.get("sourceUuid")
+        )
+        _dedup_ts = envelope_data.get("timestamp", 0)
+        if _dedup_ts and _dedup_sender:
+            _dedup_key = f"{_dedup_ts}_{_dedup_sender}"
+            if _dedup_key in self._replayed_envelope_keys:
+                self._replayed_envelope_keys.discard(_dedup_key)
+                logger.debug("Signal: skipping replay-duplicate envelope (ts=%s)", _dedup_ts)
+                return
 
         # Handle syncMessage: extract "Note to Self" messages (sent to own account)
         # while still filtering other sync events (read receipts, typing, etc.)
@@ -1047,23 +1174,25 @@ class SignalAdapter(BasePlatformAdapter):
                 self._recent_sent_timestamps.pop()
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send a typing indicator.
+        """Send a typing indicator — at most once per turn.
 
-        base.py's ``_keep_typing`` refresh loop calls this every ~2s while
-        the agent is processing. If signal-cli returns NETWORK_FAILURE for
-        this recipient (offline, unroutable, group membership lost, etc.)
-        the unmitigated behaviour is: a WARNING log every 2 seconds for as
-        long as the agent keeps running. Instead we:
+        Signal has no ``stopTyping`` RPC (the method is not implemented by
+        signal-cli), so the typing bubble only clears via a server-side
+        timeout.  Repeated ``sendTyping`` calls refresh that timeout and
+        can cause the indicator to get stuck on the recipient's client.
 
-        - silence the WARNING after the first consecutive failure (subsequent
-          attempts log at DEBUG) so transport issues are still visible once
-          but don't flood the log,
-        - skip the RPC entirely during an exponential cooldown window once
-          three consecutive failures have happened, so we stop hammering
-          signal-cli with requests it can't deliver.
+        We therefore allow exactly **one** ``sendTyping`` per chat per
+        agent turn.  Subsequent calls from base.py's ``_keep_typing``
+        loop are silently skipped.  The set is cleared when
+        ``_stop_typing_indicator`` is called (i.e. between turns).
 
-        A successful sendTyping clears the counters.
+        The backoff logic is preserved for the initial call in case of
+        network failures.
         """
+        # Only send once per turn to avoid stuck typing indicators.
+        if chat_id in self._typing_sent_this_turn:
+            return
+
         now = time.monotonic()
         skip_until = self._typing_skip_until.get(chat_id, 0.0)
         if now < skip_until:
@@ -1098,6 +1227,7 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             self._typing_failures.pop(chat_id, None)
             self._typing_skip_until.pop(chat_id, None)
+            self._typing_sent_this_turn.add(chat_id)
 
     async def send_multiple_images(
         self,
@@ -1450,6 +1580,7 @@ class SignalAdapter(BasePlatformAdapter):
         # fresh rather than inheriting a cooldown from a prior conversation.
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)
+        self._typing_sent_this_turn.discard(chat_id)
 
     async def stop_typing(self, chat_id: str) -> None:
         """Public interface for stopping typing — called by base adapter's

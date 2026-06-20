@@ -28,6 +28,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { refreshActiveProfile } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -56,6 +57,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
     try {
       const { profiles: list } = await getProfiles()
       setProfiles(list)
+      void refreshActiveProfile()
       setSelectedName(current => {
         if (current && list.some(p => p.name === current)) {
           return current

@@ -1849,6 +1849,7 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
+    from hermes_cli.models import _PROVIDER_ALIASES as _CANON_ALIASES
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         # Skip vendor names that are merely aliases routing through an
@@ -1940,14 +1941,34 @@ def list_authenticated_providers(
         else:
             top = model_ids[:max_models] if max_models is not None else model_ids
 
-        slug = hermes_id
+        # Emit under the CANONICAL Hermes slug, not the bare alias. A single
+        # credential can be reachable under several PROVIDER_TO_MODELS_DEV keys
+        # that all share one models.dev id (e.g. "kimi", "moonshot" and the
+        # canonical "kimi-coding" all map to "kimi-for-coding"). The
+        # seen_mdev_ids guard above already collapses them to the first key —
+        # but that first key is usually the bare alias ("kimi"), so emitting it
+        # verbatim leaves section 2b free to re-emit the canonical "kimi-coding"
+        # from CANONICAL_PROVIDERS: one key, two picker rows (#49439). Resolving
+        # to the canonical slug here lets 2b's seen_slugs check collapse the
+        # pair, matches the picker's other alias rows (copilot, gemini, …), and
+        # keeps the row resolvable to the real provider.
+        slug = _CANON_ALIASES.get(hermes_id.lower(), hermes_id)
+        if slug.lower() in seen_slugs:
+            # Canonical already emitted by an earlier alias in this pass; don't
+            # add a second row for the same provider.
+            seen_mdev_ids.add(mdev_id)
+            continue
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
 
         results.append({
             "slug": slug,
             "name": display_name,
-            "is_current": slug == current_provider or mdev_id == current_provider,
+            "is_current": (
+                slug == current_provider
+                or hermes_id == current_provider
+                or mdev_id == current_provider
+            ),
             "is_user_defined": False,
             "models": top,
             "total_models": total,

@@ -2167,7 +2167,18 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
     )
 
-    cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
+        # Use pythonw.exe on Windows so the spawned process doesn't create a
+    # visible console window. DETACHED_PROCESS alone still flashes a window
+    # with console-subsystem python.exe; pythonw.exe is WINDOWS-subsystem
+    # and never creates a console. Fall back to sys.executable if pythonw
+    # is not available (dev runs outside the installed venv).
+    interpreter = sys.executable
+    if sys.platform == "win32":
+        pythonw = str(Path(interpreter).with_name("pythonw.exe"))
+        if Path(pythonw).is_file():
+            interpreter = pythonw
+
+    cmd = [interpreter, "-m", "hermes_cli.main", *subcommand]
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),

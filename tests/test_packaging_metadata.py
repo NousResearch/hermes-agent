@@ -265,3 +265,38 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
+
+def test_optional_mcps_catalog_entries_ship_in_wheel():
+    """Every on-disk optional-mcps/<name> must ship in the wheel + sdist.
+
+    optional-mcps/ is a bare data directory (no __init__.py), so each catalog
+    entry is shipped ONLY via a hand-maintained [tool.setuptools.data-files]
+    target (wheel) plus `graft optional-mcps` in MANIFEST.in (sdist). A new
+    catalog manifest that lands without its data-files target ships in the
+    sdist but is dropped from the wheel, so `hermes mcp catalog`/`install`
+    silently omit it on pip/Docker/Nix installs. This guards that recurring
+    gap (e.g. the unreal-engine entry added in 5ffbfed19 without a target).
+    """
+    on_disk = sorted(p.parent.name for p in (REPO_ROOT / "optional-mcps").glob("*/manifest.yaml"))
+    assert on_disk, "expected optional-mcps/*/manifest.yaml entries on disk"
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+
+    missing = []
+    for name in on_disk:
+        key = f"optional-mcps/{name}"
+        expected = [f"optional-mcps/{name}/manifest.yaml"]
+        if data_files.get(key) != expected:
+            missing.append(key)
+    assert not missing, (
+        "pyproject [tool.setuptools.data-files] is missing a wheel target for "
+        f"each on-disk optional-mcps entry (so it would be dropped from the "
+        f"wheel): {missing}"
+    )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships the catalog"
+    )
+

@@ -547,6 +547,143 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
 
+_TABLE_RE = re.compile(r"((?:^[ \t]*\|.+\|[ \t]*\n)(?:^[ \t]*\|[-:\s|]+\|[ \t]*\n)(?:^[ \t]*\|.+\|[ \t]*\n?)+)", re.MULTILINE)
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+_CODE_BLOCK_RE = re.compile(r"(```[\s\S]*?```)", re.MULTILINE)
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_BOLD_UNDERSCORE_RE = re.compile(r"__(.+?)__")
+_MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+_MD_STRIKE_RE = re.compile(r"~~(.+?)~~")
+
+def _build_card_payload(content: str) -> list[str]:
+
+    def _split_headings(content: str) -> list[dict]:
+        """Split content by headings, converting headings to div elements."""
+        protected = content
+        code_blocks = []
+        for m in _CODE_BLOCK_RE.finditer(content):
+            code_blocks.append(m.group(1))
+            protected = protected.replace(m.group(1), f"\x00CODE{len(code_blocks) - 1}\x00", 1)
+
+        elements = []
+        last_end = 0
+        for m in _HEADING_RE.finditer(protected):
+            before = protected[last_end : m.start()].strip()
+            if before:
+                elements.append({"tag": "markdown", "content": before})
+            text = _strip_md_formatting(m.group(2).strip())
+            display_text = f"**{text}**" if text else ""
+            elements.append(
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": display_text,
+                    },
+                }
+            )
+            last_end = m.end()
+        remaining = protected[last_end:].strip()
+        if remaining:
+            elements.append({"tag": "markdown", "content": remaining})
+
+        for i, cb in enumerate(code_blocks):
+            for el in elements:
+                if el.get("tag") == "markdown":
+                    el["content"] = el["content"].replace(f"\x00CODE{i}\x00", cb)
+
+        return elements or [{"tag": "markdown", "content": content}]
+
+    def _parse_md_table(table_text: str) -> dict | None:
+        """Parse a markdown table into a Feishu table element."""
+        lines = [_line.strip() for _line in table_text.strip().split("\n") if _line.strip()]
+        if len(lines) < 3:
+            return None
+
+        def split(_line: str) -> list[str]:
+            return [c.strip() for c in _line.strip("|").split("|")]
+
+        headers = [_strip_md_formatting(h) for h in split(lines[0])]
+        rows = [[_strip_md_formatting(c) for c in split(_line)] for _line in lines[2:]]
+        columns = [
+            {"tag": "column", "name": f"c{i}", "display_name": h, "width": "auto"}
+            for i, h in enumerate(headers)
+        ]
+        return {
+            "tag": "table",
+            "page_size": len(rows) + 1,
+            "columns": columns,
+            "rows": [
+                {f"c{i}": r[i] if i < len(r) else "" for i in range(len(headers))} for r in rows
+            ],
+        }
+
+    def _strip_md_formatting(text: str) -> str:
+        """Strip markdown formatting markers from text for plain display.
+
+        Feishu table cells do not support markdown rendering, so we remove
+        the formatting markers to keep the text readable.
+        """
+        # Remove bold markers
+        text = _MD_BOLD_RE.sub(r"\1", text)
+        text = _MD_BOLD_UNDERSCORE_RE.sub(r"\1", text)
+        # Remove italic markers
+        text = _MD_ITALIC_RE.sub(r"\1", text)
+        # Remove strikethrough markers
+        text = _MD_STRIKE_RE.sub(r"\1", text)
+        return text
+
+    def _build_card_elements(content: str) -> list[dict]:
+        """Split content into div/markdown + table elements for Feishu card."""
+        elements, last_end = [], 0
+        for m in _TABLE_RE.finditer(content):
+            before = content[last_end : m.start()]
+            if before.strip():
+                elements.extend(_split_headings(before))
+            elements.append(
+                _parse_md_table(m.group(1)) or {"tag": "markdown", "content": m.group(1)}
+            )
+            last_end = m.end()
+        remaining = content[last_end:]
+        if remaining.strip():
+            elements.extend(_split_headings(remaining))
+        return elements or [{"tag": "markdown", "content": content}]
+    
+    def _split_elements_by_table_limit(elements: list[dict], max_tables: int = 1) -> list[list[dict]]:
+        """Split card elements into groups with at most *max_tables* table elements each.
+
+        Feishu cards have a hard limit of one table per card (API error 11310).
+        When the rendered content contains multiple markdown tables each table is
+        placed in a separate card message so every table reaches the user.
+        """
+        if not elements:
+            return [[]]
+        groups: list[list[dict]] = []
+        current: list[dict] = []
+        table_count = 0
+        for el in elements:
+            if el.get("tag") == "table":
+                if table_count >= max_tables:
+                    if current:
+                        groups.append(current)
+                    current = []
+                    table_count = 0
+                current.append(el)
+                table_count += 1
+            else:
+                current.append(el)
+        if current:
+            groups.append(current)
+        return groups or [[]]
+    
+    elements = _build_card_elements(content)
+    chunks = _split_elements_by_table_limit(elements)
+    payloads = []
+    for chunk in chunks:
+        card = {"config": {"wide_screen_mode": True}, "elements": chunk}
+        payloads.append(json.dumps(card, ensure_ascii=False))
+    return payloads
+
 
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
@@ -607,6 +744,10 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+def _build_plain_text_payload(content: str) -> str:
+    return json.dumps({"text": content}, ensure_ascii=False)
 
 
 def parse_feishu_post_payload(
@@ -1788,39 +1929,43 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
-                try:
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type=msg_type,
-                        payload=payload,
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
+                msg_type, payloads = self._build_outbound_payload(chunk)
+                if len(payloads) == 0:
+                    msg_type = "text"
+                    payloads = ["Task done, but no more info to response."]
+                for payload in payloads:
+                    try:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    except Exception as exc:
+                        if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                            raise
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    if (
+                        msg_type in {"post", "interactive"}
+                        and not self._response_succeeded(response)
+                        and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    ):
+                        logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
                 last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
@@ -1842,7 +1987,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            msg_type, payloads = self._build_outbound_payload(content)
+            if len(payloads) == 0:
+                logger.error("[Feishu] Failed to build payload by %s for message %s", content, message_id)
+                return SendResult(success=False, error="Failed to build payload")
+            if len(payloads) > 1:
+                logger.warning("[Feishu] Multiple payloads by %s for message %s; using last", content, message_id)
+            payload = payloads[-1]
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
@@ -4373,17 +4524,87 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+    def _detect_msg_format(self, content: str) -> str:
+        """Determine the optimal Feishu message format for *content*.
+
+        Returns one of:
+        - ``"text"``        – plain text, short and no markdown
+        - ``"post"``        – rich text (links only, moderate length)
+        - ``"interactive"`` – card with full markdown rendering
+        """
+        # ── Smart format detection ──────────────────────────────────────────
+        # Patterns that indicate "complex" markdown needing card rendering
+        _COMPLEX_MD_RE = re.compile(
+            r"```"  # fenced code block
+            r"|^\|.+\|.*\n\s*\|[-:\s|]+\|"  # markdown table (header + separator)
+            r"|^#{1,6}\s+",  # headings
+            re.MULTILINE,
+        )
+
+        # Simple markdown patterns (bold, italic, strikethrough)
+        _SIMPLE_MD_RE = re.compile(
+            r"\*\*.+?\*\*"  # **bold**
+            r"|__.+?__"  # __bold__
+            r"|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)"  # *italic* (single *)
+            r"|~~.+?~~",  # ~~strikethrough~~
+            re.DOTALL,
+        )
+
+        # Markdown link: [text](url)
+        _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\)]+)\)")
+
+        # Unordered list items
+        _LIST_RE = re.compile(r"^[\s]*[-*+]\s+", re.MULTILINE)
+
+        # Ordered list items
+        _OLIST_RE = re.compile(r"^[\s]*\d+\.\s+", re.MULTILINE)
+
+        # Max length for plain text format
+        _TEXT_MAX_LEN = 200
+
+        # Max length for post (rich text) format; beyond this, use card
+        _POST_MAX_LEN = 2000
+
+        stripped = content.strip()
+
+        # Complex markdown (code blocks, tables, headings) → always card
+        if _COMPLEX_MD_RE.search(stripped):
+            return "interactive"
+
+        # Long content → card (better readability with card layout)
+        if len(stripped) > _POST_MAX_LEN:
+            return "interactive"
+
+        # Has bold/italic/strikethrough → card (post format can't render these)
+        if _SIMPLE_MD_RE.search(stripped):
+            return "interactive"
+
+        # Has list items → card (post format can't render list bullets well)
+        if _LIST_RE.search(stripped) or _OLIST_RE.search(stripped):
+            return "interactive"
+
+        # Has links → post format (supports <a> tags)
+        if _MD_LINK_RE.search(stripped):
+            return "post"
+
+        # Short plain text → text format
+        if len(stripped) <= _TEXT_MAX_LEN:
+            return "text"
+
+        # Medium plain text without any formatting → post format
+        return "post"
+
+
+    def _build_outbound_payload(self, content: str) -> tuple[str, list[str]]:
+        msg_format = self._detect_msg_format(content)
+        if msg_format == "interactive":
+            return "interactive", _build_card_payload(content)
+        if msg_format == "post":
+            return "post", [_build_markdown_post_payload(content)]
+        if msg_format == "text":
+            return "text", [_build_plain_text_payload(content)]
+        else:
+            return "interactive", _build_card_payload(content)
 
     async def _send_uploaded_file_message(
         self,

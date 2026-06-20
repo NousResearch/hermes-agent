@@ -1580,6 +1580,24 @@ class TestSignalQuoteExtraction:
         assert "111222333" in adapter._sent_message_timestamps
         assert adapter._quote_references_own_message("111222333", None) is True
 
+    def test_sent_message_timestamps_evicts_oldest_first(self, monkeypatch):
+        """Over the cap, the OLDEST quote-cache timestamp is dropped (FIFO),
+        not an arbitrary one — so a recent reply-to-own-message is still
+        detected after a burst of sends."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._max_sent_message_timestamps = 3
+        for ts in (1, 2, 3):
+            adapter._remember_sent_message_timestamp(ts)
+        # Adding a 4th evicts the oldest (1), keeps the rest in order.
+        adapter._remember_sent_message_timestamp(4)
+        assert list(adapter._sent_message_timestamps.keys()) == ["2", "3", "4"]
+        assert "1" not in adapter._sent_message_timestamps
+        # Re-seeing an existing ts promotes it so it survives the next eviction.
+        adapter._remember_sent_message_timestamp(2)  # 2 -> most recent
+        adapter._remember_sent_message_timestamp(5)  # evicts oldest (now 3)
+        assert list(adapter._sent_message_timestamps.keys()) == ["4", "2", "5"]
+        assert "3" not in adapter._sent_message_timestamps
+
     @pytest.mark.asyncio
     async def test_handle_envelope_without_quote_leaves_reply_fields_none(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)

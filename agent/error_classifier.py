@@ -104,6 +104,11 @@ _BILLING_PATTERNS = [
     "top up your credits",
     "payment required",
     "billing hard limit",
+    "budget limit exceeded",      # OpenRouter monthly-budget exhaustion (#491)
+    "budget exceeded",
+    "budget exhausted",
+    "monthly budget",
+    "spending limit",
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",

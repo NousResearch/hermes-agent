@@ -281,6 +281,118 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
     adapter.handle_message.assert_awaited_once()
 
 
+# ── force_thread_channels ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_force_thread_channel_threads_despite_free_response(adapter, monkeypatch):
+    """A free-response channel auto-threads when listed in force_thread_channels.
+
+    Free-response channels normally skip auto-threading (the bot replies
+    inline). force_thread_channels opts a channel back into threading while
+    keeping it mention-free — the regression this knob fixes: a /bug-style
+    intake channel that's both mention-free AND thread-per-conversation.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "700")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    # No @mention — proves the channel is still mention-free under force_thread.
+    message = make_message(channel=FakeTextChannel(channel_id=700), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_free_response_without_force_still_inline(adapter, monkeypatch):
+    """Regression guard: a free-response channel NOT in force_thread_channels
+    keeps the original inline (no-thread) behavior."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "700")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "701")  # different channel
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=700), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_no_thread_channels_overrides_force_thread(adapter, monkeypatch):
+    """When a channel is in BOTH lists, no_thread_channels wins (no thread)."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "700")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "700")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=700), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_force_thread_noop_when_auto_thread_disabled(adapter, monkeypatch):
+    """force_thread_channels is a no-op when auto_thread is globally disabled."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "700")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(channel=FakeTextChannel(channel_id=700), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_force_thread_channels_csv_parsing(adapter, monkeypatch):
+    """Multiple force_thread channel IDs parsed from CSV; each threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "700, 800")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "700, 800")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    for ch_id in (700, 800):
+        adapter._auto_create_thread.reset_mock()
+        adapter.handle_message.reset_mock()
+        message = make_message(channel=FakeTextChannel(channel_id=ch_id), content="hello")
+        await adapter._handle_message(message)
+        adapter._auto_create_thread.assert_awaited_once()
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 
@@ -322,6 +434,44 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_force_thread_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.force_thread_channels to env var."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "force_thread_channels": ["444"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_FORCE_THREAD_CHANNELS") == "444"
+
+
+def test_config_bridges_force_thread_channels_csv(monkeypatch, tmp_path):
+    """force_thread_channels accepts a comma-separated string too."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "force_thread_channels": "444,555",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_FORCE_THREAD_CHANNELS") == "444,555"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

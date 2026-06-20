@@ -5157,6 +5157,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
+        #   discord.force_thread_channels: Free-response channel IDs that auto-thread anyway (inverse of no_thread_channels)
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
         thread_id = None
@@ -5243,11 +5244,26 @@ class DiscordAdapter(BasePlatformAdapter):
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
+        # force_thread_channels: channels that auto-thread even when they are
+        #   free-response. Free-response normally skips threading (so the channel
+        #   stays a lightweight inline chat); listing it here opts it back into
+        #   auto-threading, so a mention-free front-door channel (a /bug or
+        #   support intake, say) still spins each conversation into its own
+        #   thread. An explicit no_thread_channels listing always wins if a
+        #   channel appears in both. The independent voice-linked and reply-message
+        #   guards below still suppress threading regardless of this set.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            force_thread_channels_raw = os.getenv("DISCORD_FORCE_THREAD_CHANNELS", "")
+            force_thread_channels = {ch.strip() for ch in force_thread_channels_raw.split(",") if ch.strip()}
+            force_thread = bool(channel_ids & force_thread_channels)
+            # A free-response channel normally skips auto-threading; force_thread
+            # opts it back in. An explicit no_thread_channels listing always wins.
+            skip_thread = bool(channel_ids & no_thread_channels) or (
+                is_free_channel and not force_thread
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -6968,7 +6984,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
     ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
-    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_FORCE_THREAD_CHANNELS``,
+    ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
     Rather than rewrite ~50 call sites inside the adapter to read from
@@ -7028,6 +7045,14 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(ntc, list):
             ntc = ",".join(str(v) for v in ntc)
         os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+    # force_thread_channels: free-response channels that auto-thread anyway
+    # (inverse of no_thread_channels — opts a mention-free channel back into
+    # auto-threading instead of inline replies)
+    ftc = discord_cfg.get("force_thread_channels")
+    if ftc is not None and not os.getenv("DISCORD_FORCE_THREAD_CHANNELS"):
+        if isinstance(ftc, list):
+            ftc = ",".join(str(v) for v in ftc)
+        os.environ["DISCORD_FORCE_THREAD_CHANNELS"] = str(ftc)
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.
@@ -7097,7 +7122,7 @@ def register(ctx) -> None:
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
         # auto_thread, reactions, ignored_channels, allowed_channels,
-        # no_thread_channels, allow_mentions.*, reply_to_mode,
+        # no_thread_channels, force_thread_channels, allow_mentions.*, reply_to_mode,
         # thread_require_mention) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
         # that used to live in ``gateway/config.py``.  Hook contract: #24836.

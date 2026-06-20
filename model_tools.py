@@ -612,6 +612,75 @@ def _sanitize_tool_error(error_msg: str) -> str:
     return f"[TOOL_ERROR] {sanitized}"
 
 
+_FILE_EDIT_TOOLS_WITH_DIFF = {"patch", "write_file"}
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_tool_result_diff_config(function_name: str, result: str) -> str:
+    """Apply tool_result diff shaping to JSON file-edit tool results.
+
+    This runs after tool execution and plugin transforms, just before the
+    result string is returned to the agent loop and injected as tool-message
+    content. The default config preserves byte-for-byte behavior.
+    """
+    if function_name not in _FILE_EDIT_TOOLS_WITH_DIFF:
+        return result
+    if not isinstance(result, str) or '"diff"' not in result:
+        return result
+
+    try:
+        from hermes_cli.config import load_config
+        tool_result_config = (load_config().get("tool_result") or {})
+    except Exception as exc:
+        logger.debug("tool_result diff config unavailable: %s", exc)
+        return result
+
+    suppress_diff = bool(tool_result_config.get("suppress_diff", False))
+    max_diff_lines = _coerce_optional_int(tool_result_config.get("max_diff_lines"))
+    if max_diff_lines == 0:
+        suppress_diff = True
+
+    if not suppress_diff and (max_diff_lines is None or max_diff_lines < 0):
+        return result
+
+    try:
+        payload = json.loads(result)
+    except Exception:
+        return result
+    if not isinstance(payload, dict):
+        return result
+
+    diff = payload.get("diff")
+    if not isinstance(diff, str) or not diff:
+        return result
+
+    if suppress_diff:
+        payload.pop("diff", None)
+        payload["diff_suppressed"] = True
+        return json.dumps(payload, ensure_ascii=False)
+
+    lines = diff.splitlines()
+    if max_diff_lines is not None and len(lines) > max_diff_lines:
+        shown = max(max_diff_lines, 0)
+        payload["diff"] = "\n".join(lines[:shown])
+        payload["diff_truncated"] = {
+            "shown_lines": shown,
+            "total_lines": len(lines),
+        }
+        return json.dumps(payload, ensure_ascii=False)
+    return result
+
+
 # =========================================================================
 # Tool argument type coercion
 # =========================================================================
@@ -1194,7 +1263,7 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
-        return result
+        return _apply_tool_result_diff_config(function_name, result)
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"

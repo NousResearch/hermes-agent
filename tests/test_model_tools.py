@@ -201,6 +201,61 @@ class TestHandleFunctionCall:
         assert pre_call[1]["middleware_trace"] == expected_trace
         assert post_call[1]["middleware_trace"] == expected_trace
 
+    def test_tool_result_diff_config_preserves_diff_by_default(self, monkeypatch):
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *a, **kw: json.dumps({"success": True, "diff": "a\nb"}),
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"tool_result": {}})
+
+        result = json.loads(handle_function_call("patch", {"mode": "patch", "patch": "x"}))
+
+        assert result["diff"] == "a\nb"
+        assert "diff_suppressed" not in result
+        assert "diff_truncated" not in result
+
+    def test_tool_result_diff_config_suppresses_patch_diff(self, monkeypatch):
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *a, **kw: json.dumps({
+                "success": True,
+                "diff": "--- a\n+++ b\n@@\n-old\n+new",
+                "files_modified": ["a.py"],
+                "lint": {"status": "ok"},
+            }),
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tool_result": {"suppress_diff": True}},
+        )
+
+        result = json.loads(handle_function_call("patch", {"mode": "patch", "patch": "x"}))
+
+        assert "diff" not in result
+        assert result["diff_suppressed"] is True
+        assert result["success"] is True
+        assert result["files_modified"] == ["a.py"]
+        assert result["lint"] == {"status": "ok"}
+
+    def test_tool_result_diff_config_truncates_write_file_diff(self, monkeypatch):
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *a, **kw: json.dumps({"bytes_written": 4, "diff": "1\n2\n3\n4"}),
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tool_result": {"max_diff_lines": 2}},
+        )
+
+        result = json.loads(handle_function_call("write_file", {"path": "a.py", "content": "x"}))
+
+        assert result["diff"] == "1\n2"
+        assert result["diff_truncated"] == {"shown_lines": 2, "total_lines": 4}
+        assert result["bytes_written"] == 4
+
 
 # =========================================================================
 # Agent loop tools

@@ -1235,6 +1235,18 @@ DEFAULT_CONFIG = {
         "max_lines": 2000,
         "max_line_length": 2000,
     },
+    # Structured tool-result shaping before results are appended back into
+    # the agent conversation. This is separate from display.inline_diffs
+    # (human-facing UI only) and tool_output (terminal/read_file caps).
+    "tool_result": {
+        # When true, remove large unified diffs from file-edit tool results
+        # before they enter the model context. Success/error metadata,
+        # touched files, lint, and diagnostics are left intact.
+        "suppress_diff": False,
+        # Optional line cap for retained diffs. 0 is equivalent to
+        # suppress_diff=true. None/unset preserves full diffs.
+        "max_diff_lines": None,
+    },
 
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;

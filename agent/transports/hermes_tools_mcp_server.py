@@ -105,6 +105,22 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+def _unwrap_kwargs_envelope(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap a single ``{"kwargs": {...}}`` envelope into the inner dict.
+
+    Each tool handler is registered as a variadic ``_dispatch(**kwargs)``
+    callable, so FastMCP derives an input schema with one required ``kwargs``
+    object property. MCP clients (e.g. Codex) therefore send the real
+    arguments nested as ``{"kwargs": {"query": "..."}}``. Without unwrapping,
+    that whole envelope is forwarded to ``handle_function_call`` and the real
+    parameters are never seen, so the tool runs with no arguments (e.g.
+    ``web_search`` ran with an empty query). Returns the dict unchanged when
+    it is not a lone ``kwargs`` envelope."""
+    if list(kwargs) == ["kwargs"] and isinstance(kwargs["kwargs"], dict):
+        return kwargs["kwargs"]
+    return kwargs
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -161,8 +177,9 @@ def _build_server() -> Any:
         # which we can't get from a JSON schema at runtime).
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
+                args = _unwrap_kwargs_envelope(kwargs)
                 try:
-                    return handle_function_call(tool_name, kwargs or {})
+                    return handle_function_call(tool_name, args or {})
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})

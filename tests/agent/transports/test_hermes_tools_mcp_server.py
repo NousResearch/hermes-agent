@@ -49,6 +49,68 @@ class TestModuleSurface:
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
 
+    def test_unwraps_codex_kwargs_envelope(self):
+        """MCP clients send a variadic handler's args as {"kwargs": {...}};
+        the envelope must be unwrapped so the real params survive (regression:
+        web_search ran with an empty query -> SearXNG HTTP 400)."""
+        from agent.transports.hermes_tools_mcp_server import _unwrap_kwargs_envelope
+        assert _unwrap_kwargs_envelope({"kwargs": {"query": "x", "response_length": "short"}}) == {
+            "query": "x",
+            "response_length": "short",
+        }
+
+    def test_unwrap_leaves_flat_args_untouched(self):
+        from agent.transports.hermes_tools_mcp_server import _unwrap_kwargs_envelope
+        assert _unwrap_kwargs_envelope({"query": "x"}) == {"query": "x"}
+
+    def test_unwrap_ignores_non_dict_kwargs_and_extra_keys(self):
+        from agent.transports.hermes_tools_mcp_server import _unwrap_kwargs_envelope
+        # A literal tool param named "kwargs" that isn't the lone envelope key
+        assert _unwrap_kwargs_envelope({"kwargs": "literal", "other": 1}) == {
+            "kwargs": "literal",
+            "other": 1,
+        }
+        assert _unwrap_kwargs_envelope({"kwargs": "literal"}) == {"kwargs": "literal"}
+        assert _unwrap_kwargs_envelope({}) == {}
+
+    def test_dispatch_wiring_unwraps_envelope_end_to_end(self, monkeypatch):
+        """Build the real server and route a Codex-style {"kwargs": {...}}
+        payload through FastMCP, confirming the registered _dispatch closure
+        unwraps the envelope before calling handle_function_call (the helper
+        is unit-tested above; this pins the wiring at the registration site)."""
+        import asyncio
+        import json
+
+        import pytest
+
+        pytest.importorskip("mcp")
+        import model_tools
+        from agent.transports import hermes_tools_mcp_server as m
+
+        captured: dict = {}
+
+        def fake_handle_function_call(name, args):
+            captured["name"] = name
+            captured["args"] = args
+            return json.dumps({"ok": True})
+
+        # _build_server does `from model_tools import handle_function_call`
+        # at call time, so patching the source attribute before building the
+        # server makes the closures pick up the stub.
+        monkeypatch.setattr(model_tools, "handle_function_call", fake_handle_function_call)
+
+        server = m._build_server()
+        tool_manager = server._tool_manager
+        if "web_search" not in {t.name for t in tool_manager.list_tools()}:
+            pytest.skip("web_search not registered in this environment")
+
+        asyncio.run(
+            tool_manager.call_tool("web_search", {"kwargs": {"query": "x", "limit": 3}})
+        )
+
+        assert captured["name"] == "web_search"
+        assert captured["args"] == {"query": "x", "limit": 3}
+
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the
         running AIAgent context to dispatch, so a stateless MCP callback

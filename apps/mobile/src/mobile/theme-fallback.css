@@ -137,6 +137,13 @@ body {
   display: none !important;
 }
 
+/* Keyboard-shortcut keycaps (the "Ctrl N" next to New session, etc.) mean nothing
+   on a touchscreen — hide them everywhere on mobile. */
+[data-slot='kbd-group'],
+[data-slot='kbd'] {
+  display: none !important;
+}
+
 /*
  * Overlay screens (Settings / Skills / Profiles …) — native mobile master-detail.
  * The desktop two-pane split would cram both panes on a phone, so instead:

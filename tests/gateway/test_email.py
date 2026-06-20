@@ -485,6 +485,45 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
 
+    def test_raw_email_metadata_is_attached_to_event(self):
+        """Plugins should be able to inspect raw email metadata.
+
+        Security plugins such as DKIM/alignment checks need access to the
+        original RFC822 bytes and headers.  The gateway still dispatches the
+        normalized text, but keeps the raw email details on ``raw_message`` for
+        hooks that need them.
+        """
+        import asyncio
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        raw_email = b"From: John <john@example.com>\r\nSubject: Hi\r\n\r\nHello"
+        msg_data = {
+            "uid": b"7",
+            "raw_email": raw_email,
+            "sender_addr": "john@example.com",
+            "sender_name": "John",
+            "subject": "Re: hi",
+            "message_id": "<msg7@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "headers": {"From": "John <john@example.com>", "Subject": "Hi"},
+            "date": "Mon, 1 Jan 2024 00:00:00 +0000",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+
+        event = captured_events[0]
+        self.assertEqual(event.raw_message["raw_email"], raw_email)
+        self.assertEqual(event.raw_message["headers"]["Subject"], "Hi")
+        self.assertEqual(event.raw_message["date"], "Mon, 1 Jan 2024 00:00:00 +0000")
+
     def test_non_allowlisted_sender_dropped(self):
         """Senders not in EMAIL_ALLOWED_USERS should be dropped before dispatch."""
         import asyncio

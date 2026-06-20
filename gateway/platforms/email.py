@@ -511,6 +511,7 @@ class EmailAdapter(BasePlatformAdapter):
 
                     results.append({
                         "uid": uid,
+                        "raw_email": raw_email,
                         "sender_addr": sender_addr,
                         "sender_name": sender_name,
                         "subject": subject,
@@ -518,6 +519,7 @@ class EmailAdapter(BasePlatformAdapter):
                         "in_reply_to": in_reply_to,
                         "body": body,
                         "attachments": attachments,
+                        "headers": msg_headers,
                         "date": msg.get("Date", ""),
                     })
             finally:
@@ -599,6 +601,11 @@ class EmailAdapter(BasePlatformAdapter):
             text=text or "(empty email)",
             message_type=msg_type,
             source=source,
+            raw_message={
+                "headers": msg_data.get("headers", {}),
+                "raw_email": msg_data.get("raw_email"),
+                "date": msg_data.get("date", ""),
+            },
             message_id=msg_data["message_id"],
             media_urls=media_urls,
             media_types=media_types,

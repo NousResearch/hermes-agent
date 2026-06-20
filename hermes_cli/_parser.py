@@ -70,6 +70,7 @@ Examples:
     hermes logs -f                Follow agent.log in real time
     hermes logs errors            View errors.log
     hermes logs --since 1h        Lines from the last hour
+    hermes gaps list              Review logged missing capabilities
     hermes debug share             Upload debug report for support
     hermes update                 Update to latest version
     hermes dashboard              Start web UI dashboard (port 9119)

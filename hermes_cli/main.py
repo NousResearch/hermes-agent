@@ -11589,6 +11589,31 @@ def cmd_claw(args):
     claw_command(args)
 
 
+def cmd_gaps(args):
+    """Review or manually record affordance gaps."""
+    from hermes_cli.affordance_gaps import (
+        format_affordance_gaps,
+        load_affordance_gaps,
+        log_affordance_gap,
+    )
+
+    action = getattr(args, "gaps_action", None) or "list"
+    if action == "log":
+        gap = log_affordance_gap(
+            goal=args.goal,
+            missing_capability=args.missing_capability,
+            failure_description=getattr(args, "failure", "") or "",
+            available_tools=getattr(args, "tool", None) or [],
+            session_id=getattr(args, "session_id", None),
+            source="cli",
+        )
+        print(f"Logged affordance gap: {gap['missing_capability']}")
+        return
+
+    gaps = load_affordance_gaps(limit=getattr(args, "limit", 20))
+    print(format_affordance_gaps(gaps))
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
@@ -12515,6 +12540,34 @@ def main():
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # =========================================================================
+    # gaps command
+    # =========================================================================
+    gaps_parser = subparsers.add_parser(
+        "gaps",
+        help="Review missing-capability affordance gaps",
+        description="Record and review missing affordances discovered during task execution.",
+    )
+    gaps_sub = gaps_parser.add_subparsers(dest="gaps_action")
+    gaps_list = gaps_sub.add_parser("list", help="List recent affordance gaps")
+    gaps_list.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of recent gaps to show (default: 20)",
+    )
+    gaps_log = gaps_sub.add_parser("log", help="Manually log an affordance gap")
+    gaps_log.add_argument("--goal", required=True, help="Task goal that could not be completed")
+    gaps_log.add_argument(
+        "--missing-capability",
+        required=True,
+        help="Tool, skill, knowledge, or permission that was missing",
+    )
+    gaps_log.add_argument("--failure", default="", help="Short failure description")
+    gaps_log.add_argument("--tool", action="append", default=[], help="Available tool at time of failure")
+    gaps_log.add_argument("--session-id", help="Session id associated with the gap")
+    gaps_parser.set_defaults(func=cmd_gaps)
 
     # =========================================================================
     # Parse and execute

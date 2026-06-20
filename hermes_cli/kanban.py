@@ -671,7 +671,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     # --- stats ---
     p_stats = sub.add_parser(
-        "stats", help="Per-status + per-assignee counts + oldest-ready age",
+        "stats", aliases=["status"],
+        help="Per-status + per-assignee counts + oldest-ready age",
     )
     p_stats.add_argument("--json", action="store_true")
 
@@ -948,6 +949,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
+            "status":   _cmd_stats,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
@@ -2736,6 +2738,7 @@ Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
+  `status`              Compatibility alias for `stats`
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done

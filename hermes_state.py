@@ -2592,6 +2592,22 @@ class SessionDB:
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
         """
+        # Defensive fallback guard (#49391): discard consecutive duplicate user messages
+        # to guarantee DB history integrity.
+        cleaned_messages: List[Dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                cleaned_messages.append(msg)
+                continue
+            if (
+                cleaned_messages
+                and msg.get("role") == "user"
+                and cleaned_messages[-1].get("role") == "user"
+                and msg.get("content") == cleaned_messages[-1].get("content")
+            ):
+                continue
+            cleaned_messages.append(msg)
+        messages = cleaned_messages
 
         def _do(conn):
             conn.execute(

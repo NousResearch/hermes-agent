@@ -1439,6 +1439,49 @@ class TestPrompt:
 
         assert resp.stop_reason == "cancelled"
 
+    @pytest.mark.asyncio
+    async def test_prompt_prevents_duplicate_user_messages(self, agent):
+        """If the session history already contains the current user message,
+        we slice it out of the history passed to run_conversation.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        # Pretend that the bridge already persisted the user message.
+        state.history = [{"role": "user", "content": "hi duplicate"}]
+
+        captured_history = []
+
+        def mock_run(user_message, conversation_history=None, **kwargs):
+            nonlocal captured_history
+            captured_history = list(conversation_history) if conversation_history else []
+            # Simulate agent returning the turn including the user message and assistant reply
+            return {
+                "final_response": "hello",
+                "messages": captured_history + [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": "hello"},
+                ],
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hi duplicate")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        # The history passed to run_conversation should not contain the user message at the end
+        assert captured_history == []
+
+        # The final state.history should contain exactly one copy of the user message and assistant response
+        assert state.history == [
+            {"role": "user", "content": "hi duplicate"},
+            {"role": "assistant", "content": "hello"},
+        ]
+
 
 # ---------------------------------------------------------------------------
 # on_connect

@@ -1501,10 +1501,26 @@ class HermesACPAgent(acp.Agent):
             # never leaks one session's id into the next session's tools.
             previous_session_id = os.environ.get("HERMES_SESSION_ID")
             os.environ["HERMES_SESSION_ID"] = session_id
+            # If the client (bridge) has already persisted the user prompt, it will be
+            # the last item in state.history. Slice it out from the conversation_history
+            # passed to agent.run_conversation so the agent only appends a single copy
+            # of the prompt, preventing duplicate user messages and role alternation issues.
+            history_to_use = state.history
+            if (
+                state.history
+                and isinstance(state.history[-1], dict)
+                and state.history[-1].get("role") == "user"
+            ):
+                last_content = state.history[-1].get("content")
+                if last_content == user_content:
+                    history_to_use = state.history[:-1]
+                elif isinstance(last_content, str) and last_content.strip() == user_text.strip():
+                    history_to_use = state.history[:-1]
+
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
-                    conversation_history=state.history,
+                    conversation_history=history_to_use,
                     task_id=session_id,
                     persist_user_message=user_text or "[Image attachment]",
                 )

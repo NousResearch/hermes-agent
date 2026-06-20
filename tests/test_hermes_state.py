@@ -979,6 +979,25 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"] == codex_items
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
+    def test_replace_messages_deduplicates_consecutive_user_messages(self, db):
+        """replace_messages must defensively remove consecutive duplicate user messages
+        with identical content to preserve database history integrity.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "hello duplicated"},
+                {"role": "user", "content": "hello duplicated"},
+                {"role": "assistant", "content": "how can I help?"},
+                {"role": "user", "content": "hello duplicated"},
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert [m["role"] for m in conv] == ["user", "assistant", "user"]
+        assert [m["content"] for m in conv] == ["hello duplicated", "how can I help?", "hello duplicated"]
+
 
 # =========================================================================
 # FTS5 search

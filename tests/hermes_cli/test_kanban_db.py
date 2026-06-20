@@ -2132,6 +2132,48 @@ def test_worktree_workspace_repo_root_anchor_materializes_linked_worktree(kanban
     assert f"branch refs/heads/wt/{t}" in listed
 
 
+def test_worktree_no_path_anchors_on_board_default_workdir(kanban_home, tmp_path):
+    """A worktree task created with no explicit path inherits the board's
+    default_workdir as its anchor and materializes a per-task linked worktree
+    at ``<repo>/.worktrees/<id>`` — NOT the dispatcher's CWD, and NOT the
+    shared default_workdir verbatim (which would collapse every task into one
+    directory)."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    kb.create_board("wt-default-board", default_workdir=str(repo))
+    with kb.connect(board="wt-default-board") as conn:
+        t = kb.create_task(
+            conn, title="ship", workspace_kind="worktree", board="wt-default-board"
+        )
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kb.resolve_workspace(task, board="wt-default-board")
+
+    expected = repo / ".worktrees" / t
+    assert ws == expected
+    assert ws.exists()
+    assert ws != repo  # not the shared default verbatim
+
+
+def test_worktree_no_path_no_board_default_raises(kanban_home, tmp_path, monkeypatch):
+    """With neither an explicit workspace_path nor a board default_workdir,
+    resolution fails loudly pointing at default_workdir / worktree:<path> —
+    rather than silently materializing under the dispatcher's CWD (the old
+    behavior that scattered worktrees under whatever dir launched the
+    gateway)."""
+    # Park the dispatcher CWD inside a real git repo so the OLD cwd-anchored
+    # code would have "succeeded" — proving the new code does NOT use cwd.
+    decoy_repo = tmp_path / "decoy"
+    _init_git_repo(decoy_repo)
+    monkeypatch.chdir(decoy_repo)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        with pytest.raises(ValueError, match="default_workdir"):
+            kb.resolve_workspace(task)
+
+
 def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_home, tmp_path):
     repo = tmp_path / "repo"
     _init_git_repo(repo)

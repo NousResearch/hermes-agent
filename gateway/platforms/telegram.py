@@ -2083,7 +2083,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
                 )
             elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+                _safe_proxy = re.sub(r"//[^@/]+@", "//<redacted>@", proxy_url)
+                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, _safe_proxy)
                 request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
                 get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
             else:

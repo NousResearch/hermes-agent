@@ -620,6 +620,17 @@ class SignalAdapter(BasePlatformAdapter):
                     "Signal: ignoring group message (require_mention=true, bot not mentioned)"
                 )
                 return
+            # Strip the bot's own @mention from the message text so the agent
+            # doesn't misinterpret "@+155****4567 say hello" as a directive to
+            # contact that phone number. _render_mentions replaces the Signal
+            # ￼ placeholder with @<number-or-uuid>, which looks like an
+            # addressee to the LLM rather than a self-reference.
+            if account_norm:
+                text = text.replace(f"@{account_norm}", "").strip()
+                # Also strip if the mention was rendered using the bot's UUID
+                bot_uuid = self._recipient_uuid_by_number.get(account_norm)
+                if bot_uuid:
+                    text = text.replace(f"@{bot_uuid}", "").strip()
 
         # Extract quote (reply-to) context from Signal dataMessage. Signal's
         # quote.id is the timestamp of the quoted message; quote.author points

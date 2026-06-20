@@ -394,6 +394,9 @@ TOOLSETS = {
             "web_search", "web_extract",
             # Terminal + process management
             "terminal", "process",
+            # Read the desktop GUI's embedded terminal pane (gated on
+            # HERMES_DESKTOP via check_fn — hidden outside the GUI).
+            "read_terminal",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation

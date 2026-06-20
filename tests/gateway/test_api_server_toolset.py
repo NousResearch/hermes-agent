@@ -63,6 +63,16 @@ class TestApiServerPlatformConfig:
         assert "api_server" in PLATFORMS
         assert PLATFORMS["api_server"]["default_toolset"] == "hermes-api-server"
 
+    def test_default_api_server_includes_terminal_toolset(self):
+        """Regression: subset inference must not drop terminal because of
+        desktop-only read_terminal being absent from the composite.
+        See https://github.com/NousResearch/hermes-agent/issues/49622."""
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled = _get_platform_tools({}, "api_server")
+        assert "terminal" in enabled, (
+            "Default api_server should include terminal toolset"
+        )
+
 
 class TestApiServerAdapterToolset:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)

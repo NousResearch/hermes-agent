@@ -4113,6 +4113,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
+            "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -4166,6 +4167,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
         return snapshot
+
+    def _cwd_short(self) -> str:
+        """Return cwd with $HOME collapsed to ~, or empty string if unset."""
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        if not cwd:
+            return ""
+        try:
+            home = os.path.expanduser("~")
+            p = os.path.abspath(cwd)
+            if home and (p == home or p.startswith(home + os.sep)):
+                return "~" + p[len(home):]
+            return p
+        except Exception:
+            return cwd
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
@@ -4369,7 +4384,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
+                cwd_text = self._cwd_short()
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                if cwd_text:
+                    text += f" · {cwd_text}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
@@ -4385,6 +4403,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if bg_proc_count:
                     parts.append(f"⚙ {bg_proc_count}")
                 parts.append(duration_label)
+                cwd_text = self._cwd_short()
+                if cwd_text:
+                    parts.append(cwd_text)
                 if yolo_active:
                     parts.append("⚠ YOLO")
                 return self._trim_status_bar_text(" · ".join(parts), width)
@@ -4407,6 +4428,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if bg_proc_count:
                 parts.append(f"⚙ {bg_proc_count}")
             parts.append(duration_label)
+            cwd_text = self._cwd_short()
+            if cwd_text:
+                parts.append(cwd_text)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)

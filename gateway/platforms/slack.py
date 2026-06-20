@@ -1612,6 +1612,17 @@ class SlackAdapter(BasePlatformAdapter):
             url = m.group(2).strip()
             if url.startswith("<") and url.endswith(">"):
                 url = url[1:-1].strip()
+            # The entity is stashed behind a placeholder, so it bypasses the
+            # plain-text escape pass (step 6). Slack requires &, <, > inside a
+            # <...> entity to be escaped, else a > in the label closes the
+            # entity early and breaks the link (e.g. a breadcrumb "docs > x").
+            # The URL is left raw so query-string '&' is preserved (Slack
+            # accepts it in the URL component of a link entity).
+            label = (
+                label.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
             return _ph(f"<{url}|{label}>")
 
         text = re.sub(

@@ -2010,6 +2010,23 @@ class TestFormatMessage:
         result = adapter.format_message("AT&T < 5 > 3")
         assert result == "AT&amp;T &lt; 5 &gt; 3"
 
+    def test_link_label_escapes_special_chars(self, adapter):
+        # The link entity is stashed before the plain-text escape pass, so the
+        # label must be escaped when the entity is built. An unescaped '>' in a
+        # label would otherwise close the <...> entity early and break the link.
+        assert (
+            adapter.format_message("[docs > setup](http://x.com)")
+            == "<http://x.com|docs &gt; setup>"
+        )
+        assert (
+            adapter.format_message("[Tom & Jerry](http://x.com)")
+            == "<http://x.com|Tom &amp; Jerry>"
+        )
+        assert (
+            adapter.format_message("[A < B](http://x.com)")
+            == "<http://x.com|A &lt; B>"
+        )
+
     def test_preserves_existing_slack_entities(self, adapter):
         text = "Hey <@U123>, see <https://example.com|example> and <!here>"
         assert adapter.format_message(text) == text

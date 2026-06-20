@@ -89,6 +89,13 @@ def _error(message: str) -> dict:
     return {"error": _sanitize_error_text(message)}
 
 
+def _display_chat_id(platform_name: str, chat_id: str) -> str:
+    """Return a result-safe chat identifier for tool transcripts/log consumers."""
+    if platform_name == "signal" and str(chat_id).startswith("group:"):
+        return "group:***"
+    return chat_id
+
+
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
@@ -538,6 +545,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         # through to the _PHONE_PLATFORMS handler below.
         if _WHATSAPP_JID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
+    stripped_target = target_ref.strip()
+    if platform_name == "signal" and stripped_target.startswith("group:"):
+        group_id = stripped_target[len("group:"):].strip()
+        if group_id:
+            return f"group:{group_id}", None, True
+        return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -1347,6 +1360,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         _signal_send_timeout,
         get_scheduler,
     )
+    from gateway.platforms.signal_format import markdown_to_signal
 
     try:
         http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
@@ -1373,8 +1387,15 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         else:
             att_batches = [[]]
 
+        plain_text, text_styles = markdown_to_signal(message)
+
         async def _post(batch_attachments, batch_message):
             params = {"account": account, "message": batch_message}
+            if batch_message and text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
             if chat_id.startswith("group:"):
                 params["groupId"] = chat_id[6:]
             else:
@@ -1431,7 +1452,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                         f"for Signal rate limit, batch {idx + 1}/{len(att_batches)}.)"
                     )
 
-            batch_message = message if idx == 0 else ""
+            batch_message = plain_text if idx == 0 else ""
 
             for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
                 try:
@@ -1496,7 +1517,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                 f"no attachments delivered"
             )
 
-        result = {"success": True, "platform": "signal", "chat_id": chat_id}
+        result = {"success": True, "platform": "signal", "chat_id": _display_chat_id("signal", chat_id)}
         if warnings:
             result["warnings"] = warnings
         return result

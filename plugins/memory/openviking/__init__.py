@@ -11,9 +11,9 @@ Config via environment variables (profile-scoped via each profile's .env)
 or a linked OpenViking CLI config:
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Optional tenant account override
-  OPENVIKING_USER      — Optional tenant user override
-  OPENVIKING_AGENT     — Tenant agent (default: hermes)
+  OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (default: default)
+  OPENVIKING_USER      — Tenant user for local/trusted mode (default: default)
+  OPENVIKING_AGENT     — Hermes peer ID in OpenViking (default: hermes)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -45,16 +45,18 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
-from utils import atomic_json_write
+from utils import atomic_json_write, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
 _DEFAULT_AGENT = "hermes"
+_AGENT_PROMPT_LABEL = "Hermes peer ID in OpenViking"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
@@ -69,6 +71,7 @@ _TIMEOUT = 30.0
 _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
+_SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -155,6 +158,18 @@ def _derive_openviking_user_text(content: Any) -> str:
     return extract_user_instruction_from_skill_message(content) or ""
 
 
+def _sync_trace_enabled() -> bool:
+    return env_var_enabled(_SYNC_TRACE_ENV)
+
+
+def _preview(value: Any, limit: int = 160) -> str:
+    text = "" if value is None else str(value)
+    text = text.replace("\n", "\\n")
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Process-level atexit safety net — ensures pending sessions are committed
 # even if shutdown_memory_provider is never called (e.g. gateway crash,
@@ -200,10 +215,9 @@ class _VikingClient:
                  agent: Optional[str] = None):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        # Empty account/user fall back to "default" and the tenant headers are
-        # always sent — ROOT API keys require them (preserves the merged
-        # contract from #22414/#21232; an empty string must NOT omit the
-        # header). Use `or` (not `is not None`) so "" also falls back.
+        # Account/user are local/trusted-mode tenant identity. API-key requests
+        # omit these headers by default; trusted-mode retry may send them only
+        # after OpenViking explicitly asks for asserted tenant identity.
         self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
         self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
@@ -211,15 +225,18 @@ class _VikingClient:
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
-    def _headers(self) -> dict:
+    def _headers(self, *, include_tenant: bool | None = None) -> dict:
+        if include_tenant is None:
+            include_tenant = not bool(self._api_key)
+
         h = {"Content-Type": "application/json"}
         if self._agent:
             h["X-OpenViking-Actor-Peer"] = self._agent
-            h["X-OpenViking-Agent"] = self._agent
-        if self._account:
-            h["X-OpenViking-Account"] = self._account
-        if self._user:
-            h["X-OpenViking-User"] = self._user
+        if include_tenant:
+            if self._account:
+                h["X-OpenViking-Account"] = self._account
+            if self._user:
+                h["X-OpenViking-User"] = self._user
         if self._api_key:
             h["X-API-Key"] = self._api_key
             h["Authorization"] = "Bearer " + self._api_key
@@ -228,10 +245,32 @@ class _VikingClient:
     def _url(self, path: str) -> str:
         return f"{self._endpoint}{path}"
 
-    def _multipart_headers(self) -> dict:
-        headers = self._headers()
+    def _multipart_headers(self, *, include_tenant: bool | None = None) -> dict:
+        headers = self._headers(include_tenant=include_tenant)
         headers.pop("Content-Type", None)
         return headers
+
+    @staticmethod
+    def _needs_trusted_identity_retry(exc: Exception) -> bool:
+        message = str(exc)
+        return (
+            "Trusted mode requests must include X-OpenViking-Account" in message
+            or "Trusted mode requests must include X-OpenViking-User" in message
+            or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
+        )
+
+    def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:
+        try:
+            headers = self._multipart_headers() if multipart else self._headers()
+            return self._parse_response(send(headers))
+        except Exception as exc:
+            if not self._api_key or not self._needs_trusted_identity_retry(exc):
+                raise
+            headers = (
+                self._multipart_headers(include_tenant=True)
+                if multipart else self._headers(include_tenant=True)
+            )
+            return self._parse_response(send(headers))
 
     def _parse_response(self, resp) -> dict:
         try:
@@ -267,28 +306,33 @@ class _VikingClient:
         return data
 
     def get(self, path: str, **kwargs) -> dict:
-        resp = self._httpx.get(
-            self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
+        return self._send_with_trusted_identity_retry(
+            lambda headers: self._httpx.get(
+                self._url(path), headers=headers, timeout=_TIMEOUT, **kwargs
+            )
         )
-        return self._parse_response(resp)
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
-        resp = self._httpx.post(
-            self._url(path), json=payload or {}, headers=self._headers(),
-            timeout=_TIMEOUT, **kwargs
+        return self._send_with_trusted_identity_retry(
+            lambda headers: self._httpx.post(
+                self._url(path), json=payload or {}, headers=headers,
+                timeout=_TIMEOUT, **kwargs
+            )
         )
-        return self._parse_response(resp)
 
     def upload_temp_file(self, file_path: Path) -> str:
         mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        with file_path.open("rb") as f:
-            resp = self._httpx.post(
-                self._url("/api/v1/resources/temp_upload"),
-                files={"file": (file_path.name, f, mime_type)},
-                headers=self._multipart_headers(),
-                timeout=_TIMEOUT,
-            )
-        data = self._parse_response(resp)
+
+        def _send(headers):
+            with file_path.open("rb") as f:
+                return self._httpx.post(
+                    self._url("/api/v1/resources/temp_upload"),
+                    files={"file": (file_path.name, f, mime_type)},
+                    headers=headers,
+                    timeout=_TIMEOUT,
+                )
+
+        data = self._send_with_trusted_identity_retry(_send, multipart=True)
         result = data.get("result", {})
         temp_file_id = result.get("temp_file_id", "")
         if not temp_file_id:
@@ -456,6 +500,25 @@ ADD_RESOURCE_SCHEMA = {
         "required": ["url"],
     },
 }
+
+
+# Recall tools (read-only) whose results we never re-ingest into OpenViking —
+# echoing recalled memory back into the session transcript would re-store it.
+# Write tools (viking_remember / viking_add_resource) are intentionally NOT
+# here. Derived from the canonical schema names so renames can't desync.
+_OPENVIKING_RECALL_TOOL_NAMES = {
+    SEARCH_SCHEMA["name"],
+    READ_SCHEMA["name"],
+    BROWSE_SCHEMA["name"],
+}
+
+# Canonical tool_status values emitted in OpenViking batch tool parts.
+_TOOL_STATUS_COMPLETED = "completed"
+_TOOL_STATUS_ERROR = "error"
+_TOOL_STATUS_PENDING = "pending"
+# Inbound status aliases (from varied tool-result shapes) -> canonical above.
+_TOOL_STATUS_ERROR_ALIASES = {"error", "failed", "failure"}
+_TOOL_STATUS_COMPLETED_ALIASES = {"completed", "complete", "success", "succeeded"}
 
 
 def _zip_directory(dir_path: Path) -> Path:
@@ -1219,7 +1282,7 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
                 return _SETUP_CANCELLED
             if credential_choice == 0:
                 values["agent"] = _clean_config_value(
-                    prompt("OpenViking agent", default=_DEFAULT_AGENT)
+                    prompt(_AGENT_PROMPT_LABEL, default=_DEFAULT_AGENT)
                 ) or _DEFAULT_AGENT
                 _print_validation_progress("Validating OpenViking local dev access...")
                 valid, message, _role = _validate_openviking_setup_values(values)
@@ -1339,7 +1402,7 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
             prefilled_agent = ""
         else:
             values["agent"] = _clean_config_value(
-                prompt("OpenViking agent", default=_DEFAULT_AGENT)
+                prompt(_AGENT_PROMPT_LABEL, default=_DEFAULT_AGENT)
             ) or _DEFAULT_AGENT
         _print_validation_progress("Validating OpenViking API access...")
         valid, message, role = _validate_openviking_setup_values(
@@ -1697,7 +1760,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
             {
                 "key": "agent",
-                "description": "OpenViking agent ID within the account ([hermes], useful in multi-agent mode)",
+                "description": (
+                    "Hermes peer ID in OpenViking, sent as the actor peer and "
+                    "used for peer-scoped memories"
+                ),
                 "default": "hermes",
                 "env_var": "OPENVIKING_AGENT",
             },
@@ -2129,18 +2195,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _text_part(content: str) -> Dict[str, str]:
         return {"type": "text", "text": content}
 
-    @classmethod
-    def _turn_batch_payload(cls, user_content: str, assistant_content: str) -> Dict[str, Any]:
+    def _turn_batch_payload(self, user_content: str, assistant_content: str) -> Dict[str, Any]:
+        assistant_message: Dict[str, Any] = {
+            "role": "assistant",
+            "parts": [self._text_part(assistant_content)],
+        }
+        if self._agent:
+            assistant_message["peer_id"] = self._agent
         return {
             "messages": [
-                {"role": "user", "parts": [cls._text_part(user_content)]},
-                {"role": "assistant", "parts": [cls._text_part(assistant_content)]},
+                {"role": "user", "parts": [self._text_part(user_content)]},
+                assistant_message,
             ]
         }
 
-    @classmethod
     def _post_session_turn(
-        cls,
+        self,
         client: _VikingClient,
         sid: str,
         user_content: str,
@@ -2148,7 +2218,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     ) -> None:
         client.post(
             f"/api/v1/sessions/{sid}/messages/batch",
-            cls._turn_batch_payload(user_content, assistant_content),
+            self._turn_batch_payload(user_content, assistant_content),
         )
 
     def _session_has_pending_tokens(self, sid: str) -> bool:
@@ -2184,7 +2254,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _commit_session(self, sid: str, turn_count: int, *, context: str) -> bool:
         try:
-            self._client.post(f"/api/v1/sessions/{sid}/commit")
+            self._client.post(
+                f"/api/v1/sessions/{sid}/commit",
+                {"keep_recent_count": 0},
+            )
             self._mark_session_committed(sid)
             logger.info("OpenViking session %s committed %s (%d turns)", sid, context, turn_count)
             return True
@@ -2256,7 +2329,265 @@ class OpenVikingMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             self._prefetch_result = ""
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    @staticmethod
+    def _message_text(content: Any) -> str:
+        """Extract text from OpenAI-style string/list content."""
+        return flatten_message_text(content)
+
+    @classmethod
+    def _message_matches_text(cls, message: Dict[str, Any], expected: Any) -> bool:
+        expected_text = cls._message_text(expected).strip()
+        if not expected_text:
+            return False
+        actual_text = cls._message_text(message.get("content")).strip()
+        return actual_text == expected_text
+
+    @classmethod
+    def _extract_current_turn_messages(
+        cls,
+        messages: Optional[List[Dict[str, Any]]],
+        user_content: str,
+        assistant_content: str,
+    ) -> List[Dict[str, Any]]:
+        """Slice the completed turn out of Hermes' full canonical transcript."""
+        if not messages:
+            return []
+
+        end_idx: Optional[int] = None
+        if cls._message_text(assistant_content).strip():
+            for idx in range(len(messages) - 1, -1, -1):
+                message = messages[idx]
+                if (
+                    isinstance(message, dict)
+                    and message.get("role") == "assistant"
+                    and cls._message_matches_text(message, assistant_content)
+                ):
+                    end_idx = idx
+                    break
+        if end_idx is None:
+            for idx in range(len(messages) - 1, -1, -1):
+                message = messages[idx]
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    end_idx = idx
+                    break
+        if end_idx is None:
+            end_idx = len(messages) - 1
+
+        start_idx: Optional[int] = None
+        if cls._message_text(user_content).strip():
+            for idx in range(end_idx, -1, -1):
+                message = messages[idx]
+                if (
+                    isinstance(message, dict)
+                    and message.get("role") == "user"
+                    and cls._message_matches_text(message, user_content)
+                ):
+                    start_idx = idx
+                    break
+        if start_idx is None:
+            for idx in range(end_idx, -1, -1):
+                message = messages[idx]
+                if isinstance(message, dict) and message.get("role") == "user":
+                    start_idx = idx
+                    break
+        if start_idx is None:
+            return []
+
+        return [message for message in messages[start_idx : end_idx + 1] if isinstance(message, dict)]
+
+    @staticmethod
+    def _tool_call_id(tool_call: Dict[str, Any]) -> str:
+        return str(tool_call.get("id") or tool_call.get("tool_call_id") or "")
+
+    @staticmethod
+    def _tool_call_name(tool_call: Dict[str, Any]) -> str:
+        function = tool_call.get("function")
+        if isinstance(function, dict):
+            return str(function.get("name") or "")
+        return str(tool_call.get("name") or "")
+
+    @staticmethod
+    def _is_openviking_recall_tool_name(tool_name: Any) -> bool:
+        return str(tool_name or "").strip().lower() in _OPENVIKING_RECALL_TOOL_NAMES
+
+    @staticmethod
+    def _tool_call_input(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+        function = tool_call.get("function")
+        raw_args: Any = None
+        if isinstance(function, dict):
+            raw_args = function.get("arguments")
+        if raw_args is None:
+            raw_args = tool_call.get("args")
+        if raw_args is None:
+            return {}
+        if isinstance(raw_args, dict):
+            return raw_args
+        if isinstance(raw_args, str):
+            if not raw_args.strip():
+                return {}
+            try:
+                parsed = json.loads(raw_args)
+            except Exception:
+                return {"value": raw_args}
+            if isinstance(parsed, dict):
+                return parsed
+            return {"value": parsed}
+        return {"value": raw_args}
+
+    @classmethod
+    def _tool_result_status(cls, message: Dict[str, Any]) -> str:
+        raw_status = str(message.get("status") or message.get("tool_status") or "").lower()
+        if raw_status in _TOOL_STATUS_ERROR_ALIASES:
+            return _TOOL_STATUS_ERROR
+        if raw_status in _TOOL_STATUS_COMPLETED_ALIASES:
+            return _TOOL_STATUS_COMPLETED
+
+        text = cls._message_text(message.get("content")).strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                status = str(parsed.get("status") or "").lower()
+                exit_code = parsed.get("exit_code")
+                if (
+                    status in _TOOL_STATUS_ERROR_ALIASES
+                    or parsed.get("success") is False
+                    or bool(parsed.get("error"))
+                    or (isinstance(exit_code, int) and exit_code != 0)
+                ):
+                    return _TOOL_STATUS_ERROR
+
+        return _TOOL_STATUS_COMPLETED
+
+    @classmethod
+    def _messages_to_openviking_batch(
+        cls,
+        messages: List[Dict[str, Any]],
+        *,
+        assistant_peer_id: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Convert Hermes canonical messages into OpenViking batch payloads."""
+        assistant_peer_id = str(assistant_peer_id or "").strip()
+        tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
+        completed_tool_ids: set[str] = set()
+        skipped_tool_ids: set[str] = set()
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "tool":
+                tool_id = str(message.get("tool_call_id") or message.get("id") or "")
+                if tool_id:
+                    completed_tool_ids.add(tool_id)
+                    if cls._is_openviking_recall_tool_name(message.get("name")):
+                        skipped_tool_ids.add(tool_id)
+                continue
+            if message.get("role") != "assistant":
+                continue
+            for tool_call in message.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_id = cls._tool_call_id(tool_call)
+                tool_name = cls._tool_call_name(tool_call)
+                if tool_id:
+                    tool_calls_by_id[tool_id] = {
+                        "tool_name": tool_name,
+                        "tool_input": cls._tool_call_input(tool_call),
+                    }
+                    if cls._is_openviking_recall_tool_name(tool_name):
+                        skipped_tool_ids.add(tool_id)
+
+        payload_messages: List[Dict[str, Any]] = []
+        pending_tool_parts: List[Dict[str, Any]] = []
+
+        def payload_message(role: str, parts: List[Dict[str, Any]]) -> Dict[str, Any]:
+            payload: Dict[str, Any] = {"role": role, "parts": parts}
+            if role == "assistant" and assistant_peer_id:
+                payload["peer_id"] = assistant_peer_id
+            return payload
+
+        def flush_tool_parts() -> None:
+            nonlocal pending_tool_parts
+            if pending_tool_parts:
+                payload_messages.append(payload_message("assistant", pending_tool_parts))
+                pending_tool_parts = []
+
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+
+            role = str(message.get("role") or "")
+            if role in {"system", "developer"}:
+                continue
+
+            if role == "tool":
+                tool_id = str(message.get("tool_call_id") or message.get("id") or "")
+                prior_call = tool_calls_by_id.get(tool_id, {})
+                tool_name = str(message.get("name") or prior_call.get("tool_name") or "")
+                if tool_id in skipped_tool_ids or cls._is_openviking_recall_tool_name(tool_name):
+                    continue
+                tool_part = {
+                    "type": "tool",
+                    "tool_id": tool_id,
+                    "tool_name": tool_name,
+                    "tool_input": prior_call.get("tool_input", {}),
+                    "tool_output": cls._message_text(message.get("content")),
+                    "tool_status": cls._tool_result_status(message),
+                }
+                pending_tool_parts.append(tool_part)
+                continue
+
+            if role not in {"user", "assistant"}:
+                continue
+
+            flush_tool_parts()
+            parts: List[Dict[str, Any]] = []
+            text = cls._message_text(message.get("content"))
+            if text:
+                parts.append({"type": "text", "text": text})
+
+            if role == "assistant":
+                for tool_call in message.get("tool_calls") or []:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    tool_id = cls._tool_call_id(tool_call)
+                    tool_name = cls._tool_call_name(tool_call)
+                    if tool_id in skipped_tool_ids or cls._is_openviking_recall_tool_name(tool_name):
+                        continue
+                    if tool_id in completed_tool_ids:
+                        continue
+                    # Reuse the tool_input parsed in the pre-scan when available
+                    # (non-empty ids are cached); fall back to parsing for the
+                    # uncached empty-id case so we never drop arguments.
+                    prior_call = tool_calls_by_id.get(tool_id) if tool_id else None
+                    tool_input = (
+                        prior_call["tool_input"]
+                        if prior_call is not None
+                        else cls._tool_call_input(tool_call)
+                    )
+                    parts.append({
+                        "type": "tool",
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "tool_input": tool_input,
+                        "tool_status": _TOOL_STATUS_PENDING,
+                    })
+
+            if parts:
+                payload_messages.append(payload_message(role, parts))
+
+        flush_tool_parts()
+        return payload_messages
+
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         """Record the conversation turn in OpenViking's session (non-blocking)."""
         if not self._client:
             return
@@ -2264,6 +2595,40 @@ class OpenVikingMemoryProvider(MemoryProvider):
         user_content = _derive_openviking_user_text(user_content)
         if not user_content:
             return
+
+        turn_messages = (
+            self._extract_current_turn_messages(messages, user_content, assistant_content)
+            if messages is not None
+            else []
+        )
+        if turn_messages:
+            turn_messages = [dict(message) for message in turn_messages]
+            for message in turn_messages:
+                if message.get("role") == "user":
+                    message["content"] = user_content
+                    break
+        batch_messages = self._messages_to_openviking_batch(
+            turn_messages,
+            assistant_peer_id=getattr(self, "_agent", _DEFAULT_AGENT),
+        )
+
+        if _sync_trace_enabled():
+            logger.info(
+                "OpenViking sync_turn trace: session_arg=%r cached_session=%r "
+                "messages_param_supported=true messages_present=%s message_count=%s "
+                "turn_message_count=%d batch_message_count=%d user_len=%d assistant_len=%d "
+                "user_preview=%r assistant_preview=%r",
+                session_id,
+                self._session_id,
+                messages is not None,
+                len(messages) if messages is not None else None,
+                len(turn_messages),
+                len(batch_messages),
+                len(str(user_content or "")),
+                len(str(assistant_content or "")),
+                _preview(user_content),
+                _preview(assistant_content),
+            )
 
         # Snapshot the sid and bump the turn counter atomically so a
         # concurrent on_session_switch/on_session_end can't interleave its
@@ -2276,24 +2641,39 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._turn_count += 1
 
         def _sync():
-            try:
-                client = self._new_client()
+            def _post_turn(client: _VikingClient) -> None:
+                if batch_messages:
+                    payload = {"messages": batch_messages}
+                    if _sync_trace_enabled():
+                        logger.info(
+                            "OpenViking sync_turn trace: POST /api/v1/sessions/%s/messages/batch payload=%s",
+                            sid,
+                            json.dumps(payload, ensure_ascii=False),
+                        )
+                    try:
+                        client.post(f"/api/v1/sessions/{sid}/messages/batch", payload)
+                        return
+                    except Exception as batch_error:
+                        logger.warning(
+                            "OpenViking structured sync failed; falling back to text sync: %s",
+                            batch_error,
+                        )
+
                 self._post_session_turn(
                     client,
                     sid,
                     user_content[:4000],
-                    assistant_content[:4000],
+                    self._message_text(assistant_content)[:4000],
                 )
+
+            try:
+                client = self._new_client()
+                _post_turn(client)
             except Exception as e:
                 logger.debug("OpenViking sync_turn failed, reconnecting: %s", e)
                 try:
                     client = self._new_client()
-                    self._post_session_turn(
-                        client,
-                        sid,
-                        user_content[:4000],
-                        assistant_content[:4000],
-                    )
+                    _post_turn(client)
                 except Exception as retry_error:
                     logger.warning("OpenViking sync_turn failed: %s", retry_error)
 
@@ -2402,9 +2782,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
 
     def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured user/agent/subdir."""
+        """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/{self._user}/agent/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,
@@ -2535,14 +2915,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         payload: Dict[str, Any] = {"query": query}
         mode = args.get("mode", "auto")
-        if mode != "auto":
-            payload["mode"] = mode
         if args.get("scope"):
             payload["target_uri"] = args["scope"]
         if args.get("limit"):
             payload["limit"] = args["limit"]
 
-        resp = self._client.post("/api/v1/search/find", payload)
+        endpoint = "/api/v1/search/search" if mode == "deep" else "/api/v1/search/find"
+        if endpoint == "/api/v1/search/search" and self._session_id:
+            payload["session_id"] = self._session_id
+
+        resp = self._client.post(endpoint, payload)
         result = resp.get("result", {})
 
         # Format results for the model — keep it concise

@@ -87,7 +87,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
-from utils import atomic_replace
+from utils import atomic_replace, env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -433,7 +433,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._rich_draft_disabled: bool = False
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
-        self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
+        self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
@@ -476,6 +476,23 @@ class TelegramAdapter(BasePlatformAdapter):
         self._forum_command_registered: set[int] = set()
         # Lock per la registrazione sicura dei comandi nei forum supergroup
         self._forum_lock = asyncio.Lock()
+        # Status indicator: when enabled, the bot's short description (the line
+        # shown under its name in the profile) is set to "Online" on connect and
+        # "Offline" on clean disconnect, so users can tell whether the gateway is
+        # up. Telegram bots have no real presence/online dot (that's a user-account
+        # feature), so the short description is the closest available surface.
+        # Off by default — this mutates the bot's GLOBAL profile, visible to all
+        # users. Opt in via gateway config: extra.status_indicator: true, or set
+        # custom strings via extra.status_online / extra.status_offline.
+        self._status_indicator_enabled: bool = bool(
+            self.config.extra.get("status_indicator", False)
+        )
+        self._status_online_text: str = str(
+            self.config.extra.get("status_online", "Online")
+        )
+        self._status_offline_text: str = str(
+            self.config.extra.get("status_offline", "Offline")
+        )
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
@@ -2136,7 +2153,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # inject forged updates as if from Telegram. Refuse to
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
-                webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
+                webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
@@ -2245,6 +2262,13 @@ class TelegramAdapter(BasePlatformAdapter):
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
+            # Surface the gateway as "Online" in the bot's short description
+            # (opt-in via extra.status_indicator). Non-fatal.
+            try:
+                await self._set_status_indicator(online=True)
+            except Exception:
+                pass
+
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.
             # Failures here are non-fatal — the bot works fine without topics.
@@ -2265,8 +2289,47 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
 
+    async def _set_status_indicator(self, online: bool) -> None:
+        """Set the bot's short description to the online/offline status text.
+
+        The short description is the line shown under the bot's name in its
+        profile. It is the closest Bot API surface to a presence indicator —
+        bots have no real online/offline dot (that's a user-account feature).
+
+        No-op unless ``extra.status_indicator`` is enabled. Best-effort: any
+        failure is logged at debug and swallowed so it never blocks connect or
+        disconnect. The default (no language_code) description applies to every
+        user who doesn't have a language-specific one set.
+        """
+        if not getattr(self, "_status_indicator_enabled", False):
+            return
+        bot = self._bot
+        if bot is None:
+            return
+        text = self._status_online_text if online else self._status_offline_text
+        # Telegram caps short_description at 120 chars.
+        text = text[:120]
+        try:
+            await bot.set_my_short_description(short_description=text)
+            logger.info("[%s] Set bot status indicator to %r", self.name, text)
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to set bot status indicator to %r: %s",
+                self.name, text, e,
+            )
+
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Mark the bot "Offline" in its short description while the bot's HTTP
+        # client is still alive (before app shutdown closes it). Opt-in via
+        # extra.status_indicator. Non-fatal. This is the clean-shutdown path;
+        # a hard crash leaves the last-known status, which is the expected
+        # limitation of a profile-text indicator.
+        try:
+            await self._set_status_indicator(online=False)
+        except Exception:
+            pass
+
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()

@@ -46,7 +46,7 @@ import httpx
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
+NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
 DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
 NOUS_DEVICE_CODE_SOURCE = "device_code"
 NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
@@ -3837,7 +3838,7 @@ def resolve_codex_runtime_credentials(
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
+    refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
 
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
@@ -4474,7 +4475,7 @@ def resolve_xai_oauth_runtime_credentials(
     data = _read_xai_oauth_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", "20"))
+    refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
     discovery = dict(data.get("discovery") or {})
     token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
     redirect_uri = str(data.get("redirect_uri", "") or "").strip()
@@ -6385,16 +6386,12 @@ def _update_config_for_provider(
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
 
-    # Clear stale api_key/api_mode left over from a previous custom provider.
-    # When the user switches from e.g. a MiniMax custom endpoint
-    # (api_mode=anthropic_messages, api_key=mxp-...) to a built-in provider
-    # (e.g. OpenRouter), the stale api_key/api_mode would override the new
-    # provider's credentials and transport choice.  Built-in providers that
-    # need a specific api_mode (copilot, xai) set it at request-resolution
-    # time via `_copilot_runtime_api_mode` / `_detect_api_mode_for_url`, so
-    # removing the persisted value here is safe.
-    model_cfg.pop("api_key", None)
-    model_cfg.pop("api_mode", None)
+    # Clear stale endpoint credentials left over from a previous custom provider.
+    # Built-in providers resolve credentials from env/auth state, not inline
+    # model.api_key.
+    from hermes_cli.config import clear_model_endpoint_credentials
+
+    clear_model_endpoint_credentials(model_cfg)
 
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like
@@ -7865,6 +7862,7 @@ def _nous_device_code_login(
     timeout_seconds: float = 15.0,
     insecure: bool = False,
     ca_bundle: Optional[str] = None,
+    on_verification: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """Run the Nous device-code flow and return full OAuth state without persisting."""
     pconfig = PROVIDER_REGISTRY["nous"]
@@ -7918,6 +7916,16 @@ def _nous_device_code_login(
                 print("  (Opened browser for verification)")
             else:
                 print("  Could not open browser automatically — use the URL above.")
+
+        # Surface the verification URL/code to an out-of-band consumer (e.g. the
+        # TUI gateway, whose stdout is a JSON-RPC pipe — a plain print() there is
+        # dropped). Fired AFTER the print/browser block and BEFORE polling blocks,
+        # so the consumer can render the link while we wait. Best-effort.
+        if on_verification is not None:
+            try:
+                on_verification(verification_url, user_code)
+            except Exception:
+                pass
 
         effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
         print(f"Waiting for approval (polling every {effective_interval}s)...")
@@ -7982,6 +7990,91 @@ def _nous_device_code_login(
             print("After subscribing, run `hermes model` again to finish setup.")
             raise SystemExit(1)
         raise
+
+
+def nous_token_has_billing_scope() -> bool:
+    """Return True if the currently-held Nous token carries ``billing:manage``.
+
+    Reads the persisted ``scope`` string saved at login (``_save_provider_state``
+    stores ``token_data.get("scope") or scope``). A space-delimited match. Used by
+    the lazy step-up: if False, the first billing call will 403 ``insufficient_scope``
+    anyway, but checking up front lets a surface skip a doomed round-trip.
+    """
+    try:
+        state = get_provider_auth_state("nous") or {}
+    except Exception:
+        return False
+    scope = state.get("scope")
+    if not isinstance(scope, str):
+        return False
+    return NOUS_BILLING_MANAGE_SCOPE in scope.split()
+
+
+def step_up_nous_billing_scope(
+    *,
+    open_browser: bool = True,
+    timeout_seconds: float = 15.0,
+    on_verification: Optional[Callable[[str, str], None]] = None,
+) -> bool:
+    """Re-run the device flow requesting ``billing:manage`` and persist the result.
+
+    The lazy step-up (plan D-A): triggered when a billing endpoint returns
+    ``403 insufficient_scope``. Runs a fresh device-connect with
+    ``inference:invoke tool:invoke billing:manage`` on the scope. The user must be
+    an ADMIN/OWNER and tick "Allow terminal billing" in the portal for the minted
+    token to actually carry the scope; otherwise the server silently downscopes and this
+    returns False.
+
+    Reuses the held credential's portal/inference URLs + client_id so the step-up
+    targets the same deployment (incl. a preview via ``HERMES_PORTAL_BASE_URL`` set
+    at the original login). Persists to the auth store + shared store + pool, exactly
+    like ``_login_nous`` — but WITHOUT the model picker (this is a scope upgrade, not
+    a fresh login).
+
+    Returns True iff the new token carries ``billing:manage``.
+    """
+    prior = get_provider_auth_state("nous") or {}
+    pconfig = PROVIDER_REGISTRY["nous"]
+
+    # Build the step-up scope: existing scopes (if any) + billing:manage, deduped,
+    # order-stable. Fall back to the standard inference+tool+billing set.
+    _raw_scope = prior.get("scope")
+    prior_scope = _raw_scope if isinstance(_raw_scope, str) else ""
+    requested: list[str] = []
+    for tok in (prior_scope.split() or [NOUS_INFERENCE_INVOKE_SCOPE, "tool:invoke"]):
+        if tok and tok not in requested:
+            requested.append(tok)
+    if NOUS_BILLING_MANAGE_SCOPE not in requested:
+        requested.append(NOUS_BILLING_MANAGE_SCOPE)
+    scope = " ".join(requested)
+
+    auth_state = _nous_device_code_login(
+        portal_base_url=prior.get("portal_base_url") or None,
+        inference_base_url=prior.get("inference_base_url") or None,
+        client_id=prior.get("client_id") or pconfig.client_id,
+        scope=scope,
+        open_browser=open_browser,
+        timeout_seconds=timeout_seconds,
+        on_verification=on_verification,
+    )
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "nous", auth_state)
+        _save_auth_store(auth_store)
+
+    # Mirror to shared store + reseed the pool (best-effort), same as _login_nous.
+    try:
+        _write_shared_nous_state(auth_state)
+    except Exception:
+        pass
+    try:
+        _sync_nous_pool_from_auth_store()
+    except Exception:
+        pass
+
+    granted = auth_state.get("scope")
+    return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:

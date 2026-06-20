@@ -954,6 +954,916 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_session_history_reads_from_profile_db_for_remote_profile_session(
+    monkeypatch, tmp_path
+):
+    """session.history must read the per-profile state.db, not the launch one.
+
+    A session bound to another profile (params={"profile":"<name>"} on
+    create/resume) stores its messages in ``<profile_home>/state.db``.  The
+    launch profile's db is the wrong DB and returns count:0 / empty messages.
+    Mirror the create/resume pattern: pick the db via ``session["profile_home"]``
+    when set, fall back to ``_get_db()`` for the default-profile case.
+    """
+    profile_home = tmp_path / "profiles" / "reeve"
+    profile_home.mkdir(parents=True)
+    target = "stored-profile-session"
+    captured = {}
+
+    class ProfileDB:
+        def get_messages_as_conversation(self, key, include_ancestors=False):
+            captured["profile_read"] = (key, include_ancestors)
+            return [
+                {"role": "user", "content": "what time is it in london"},
+                {"role": "tool", "content": "10:39:34 BST"},
+                {"role": "assistant", "content": "It's 10:39:34 BST in London."},
+            ]
+
+        def close(self):
+            captured["profile_closed"] = True
+
+    class LaunchDB:
+        def get_messages_as_conversation(self, *_a, **_kw):
+            captured["launch_read"] = True
+            return []
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+
+    sid = "8db46554"
+    server._sessions[sid] = _session(
+        session_key=target,
+        profile_home=str(profile_home),
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.history", "params": {"session_id": sid}}
+        )
+        # The handler must consult the profile DB, NOT the launch DB.
+        assert captured.get("profile_read") == (target, True)
+        assert "launch_read" not in captured
+        # And the profile DB handle must be closed after use (no leak).
+        assert captured.get("profile_closed") is True
+        # The messages from the profile DB must be in the response.
+        assert resp["result"]["count"] == 3
+        # Spot-check that the user prompt and assistant answer made it through
+        # (the tool row's transformation is exercised by the dedicated
+        # _history_to_messages tests; here we only care that the right DB was
+        # read, not how the rows are post-processed).
+        msgs = resp["result"]["messages"]
+        assert msgs[0] == {"role": "user", "text": "what time is it in london"}
+        assert msgs[-1] == {
+            "role": "assistant",
+            "text": "It's 10:39:34 BST in London.",
+        }
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_session_history_falls_back_to_launch_db_for_default_profile_session(
+    monkeypatch,
+):
+    """Default-profile parity: a session with no profile_home reads launch DB.
+
+    Single-profile setups (no app-global remote mode) never set ``profile_home``
+    on the session.  The handler must still fall through to ``_get_db()`` so
+    those sessions keep returning their messages unchanged — otherwise the fix
+    for the per-profile case would silently break every non-profile setup.
+    """
+    target = "stored-default-session"
+    captured = {}
+
+    class LaunchDB:
+        def get_messages_as_conversation(self, key, include_ancestors=False):
+            captured["launch_read"] = (key, include_ancestors)
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+
+    def _profile_db_should_not_open(db_path=None):
+        captured["profile_db_opened"] = True
+        raise AssertionError(
+            f"default-profile session.history must not open a per-profile DB "
+            f"(attempted db_path={db_path!r})"
+        )
+
+    monkeypatch.setattr("hermes_state.SessionDB", _profile_db_should_not_open)
+
+    sid = "3f689026"
+    server._sessions[sid] = _session(session_key=target)  # no profile_home
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.history", "params": {"session_id": sid}}
+        )
+        assert captured.get("launch_read") == (target, True)
+        assert "profile_db_opened" not in captured
+        assert resp["result"]["count"] == 2
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_session_history_returns_4001_for_unknown_short_alias(monkeypatch):
+    """A short alias that isn't in ``_sessions`` AND has no alias_meta entry
+    must surface code 4001 — and must NOT touch the DB to do it.
+
+    With the t_07054503 fix, an unknown alias that DOES have alias_meta gets a
+    disk-only rehydrate (covered by the sibling rehydrate test below).  The
+    no-meta path must remain a pure 4001 with no DB lookup, so a missing alias
+    that was never minted by this gateway still surfaces honestly.
+    """
+    # Sanity: ``_get_db`` and ``SessionDB`` must NOT be touched for an unknown sid.
+    poisoned = {"called": False}
+
+    def _poison(*_a, **_kw):
+        poisoned["called"] = True
+        raise AssertionError("unknown-sid history must not query any DB")
+
+    monkeypatch.setattr(server, "_get_db", _poison)
+    monkeypatch.setattr("hermes_state.SessionDB", _poison)
+
+    # Ensure the alias is absent from BOTH _sessions and _alias_meta — a stale
+    # alias_meta entry would route through the disk-rehydrate path and hit the
+    # poisoned _get_db, which is a different (covered elsewhere) scenario.
+    server._sessions.pop("ghost", None)
+    server._forget_alias_meta("ghost")
+    resp = server.handle_request(
+        {"id": "1", "method": "session.history", "params": {"session_id": "ghost"}}
+    )
+    assert resp["error"]["code"] == 4001
+    assert resp["error"]["message"] == "session not found"
+    assert poisoned["called"] is False
+
+
+# ── t_07054503: post-eviction session.history rehydrate + cross-profile resume ──
+
+
+def test_record_alias_meta_remembers_session_key_and_profile_home():
+    """The alias-meta sidecar must store the (session_key, profile_home) tuple
+    keyed by short alias.  This is what survives the WS-orphan reap that pops
+    the in-memory _sessions entry; session.history needs it to know which
+    per-profile DB to read from when iOS reconnects after backgrounding.
+    """
+    sid = "rec-alias-test"
+    server._forget_alias_meta(sid)
+    try:
+        server._record_alias_meta(
+            sid,
+            session_key="20260618_145532_d95e74",
+            profile_home="/Users/tobyg/.hermes/profiles/reeve",
+        )
+        meta = server._lookup_alias_meta(sid)
+        assert meta is not None
+        assert meta["session_key"] == "20260618_145532_d95e74"
+        assert meta["profile_home"] == "/Users/tobyg/.hermes/profiles/reeve"
+        # last_seen is set on every write — used by the TTL eviction in lookup.
+        assert isinstance(meta["last_seen"], float)
+    finally:
+        server._forget_alias_meta(sid)
+
+
+def test_lookup_alias_meta_returns_none_after_ttl(monkeypatch):
+    """A very long-overdue alias_meta entry must be opportunistically dropped
+    so an unknown post-TTL sid surfaces as 4001 instead of hitting the disk
+    with stale profile-home data.  The TTL is a defensive ceiling, not the
+    primary lifecycle (session.close drops the entry actively).
+    """
+    sid = "ttl-test-alias"
+    server._forget_alias_meta(sid)
+    monkeypatch.setattr(server, "_ALIAS_META_TTL_S", 0.001)  # 1ms
+    try:
+        server._record_alias_meta(sid, session_key="k", profile_home=None)
+        # Sleep past the TTL.
+        time.sleep(0.005)
+        assert server._lookup_alias_meta(sid) is None
+    finally:
+        monkeypatch.setattr(server, "_ALIAS_META_TTL_S", 24 * 3600.0)
+        server._forget_alias_meta(sid)
+
+
+def test_session_history_rehydrates_from_disk_for_evicted_alias_via_alias_meta(
+    monkeypatch, tmp_path
+):
+    """Manifestation 1 of t_07054503: iOS backgrounds for ~3 minutes, the
+    WS-orphan reaper pops _sessions[alias], app comes back, session.history
+    used to 4001 even though the on-disk row was intact.
+
+    With the fix, session.history consults _alias_meta — set at every
+    session.create/resume site — to learn the long session_key + profile_home,
+    opens that profile's state.db, reads the conversation, and returns it.
+    The iOS sessionGone path NEVER fires for a session whose disk row exists.
+    """
+    profile_home = tmp_path / "profiles" / "reeve"
+    profile_home.mkdir(parents=True)
+    sid = "evicted-alias"
+    long_key = "20260618_145532_d95e74"
+    captured = {}
+
+    class ProfileDB:
+        def get_session(self, key):
+            captured["get_session_called_with"] = key
+            return {"id": key, "title": "what time is it in london"}
+
+        def get_messages_as_conversation(self, key, include_ancestors=False):
+            captured["read_key"] = key
+            captured["include_ancestors"] = include_ancestors
+            return [
+                {"role": "user", "content": "what time is it in london"},
+                {"role": "tool", "content": "14:55 BST"},
+                {"role": "assistant", "content": "It's 14:55 BST in London."},
+                {"role": "assistant", "content": "anything else?"},
+            ]
+
+        def close(self):
+            captured["closed"] = True
+
+    class LaunchDB:
+        def get_messages_as_conversation(self, *_a, **_kw):
+            captured["launch_read"] = True
+            return []
+
+        def get_session(self, *_a, **_kw):
+            captured["launch_get_session"] = True
+            return None
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+
+    # Critical setup: the alias was minted earlier (session.create/resume)
+    # and recorded in alias_meta, then the WS-orphan reaper popped _sessions.
+    # alias_meta survives — that's the whole sidecar invariant.
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(
+        sid, session_key=long_key, profile_home=str(profile_home)
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.history", "params": {"session_id": sid}}
+        )
+        # The disk read MUST go to the profile DB, not the launch DB.
+        assert captured.get("read_key") == long_key
+        assert captured.get("include_ancestors") is True
+        assert "launch_read" not in captured
+        # The profile DB handle MUST be closed after use (no leak).
+        assert captured.get("closed") is True
+        # The messages from the profile DB MUST be in the response — no 4001,
+        # no count:0.
+        assert "error" not in resp, f"unexpected error: {resp}"
+        assert resp["result"]["count"] == 4
+        msgs = resp["result"]["messages"]
+        assert msgs[0] == {"role": "user", "text": "what time is it in london"}
+        assert msgs[-1] == {"role": "assistant", "text": "anything else?"}
+    finally:
+        server._forget_alias_meta(sid)
+
+
+def test_session_history_still_4001_when_alias_meta_points_at_missing_disk_row(
+    monkeypatch, tmp_path
+):
+    """alias_meta is a hint, not a promise.  If the row was deleted on disk
+    while iOS was backgrounded, session.history must still 4001 honestly so
+    the iOS sessionGone path fires (the deletion really did happen).  The
+    fix MUST NOT manufacture an empty conversation to mask a real deletion.
+    """
+    profile_home = tmp_path / "profiles" / "reeve"
+    profile_home.mkdir(parents=True)
+    sid = "gone-on-disk"
+    long_key = "20260618_999999_deadbeef"
+
+    class ProfileDB:
+        def get_session(self, key):
+            return None  # row really is gone
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(
+        sid, session_key=long_key, profile_home=str(profile_home)
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.history", "params": {"session_id": sid}}
+        )
+        assert resp["error"]["code"] == 4001
+        assert resp["error"]["message"] == "session not found"
+    finally:
+        server._forget_alias_meta(sid)
+
+
+def test_session_close_drops_alias_meta_so_subsequent_history_4001s(monkeypatch):
+    """An explicit session.close is the one path that semantically means
+    "this session is gone for good" — alias_meta MUST be cleared so a later
+    session.history on the same sid honestly 4001s instead of stale-rehydrating.
+    The reap paths intentionally do NOT clear it (that's the sidecar's whole
+    purpose); only session.close does.
+    """
+    sid = "explicit-close-test"
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(sid, session_key="some-key", profile_home=None)
+    # Stub the underlying close path so we don't have to wire up a full agent.
+    monkeypatch.setattr(server, "_close_session_by_id", lambda _sid, **_kw: True)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": sid}}
+        )
+        assert resp["result"]["closed"] is True
+        # alias_meta must be gone now.
+        assert server._lookup_alias_meta(sid) is None
+    finally:
+        server._forget_alias_meta(sid)
+
+
+def _install_prompt_submit_no_op_agent_path(monkeypatch):
+    """Stub the post-_sess_nowait machinery prompt.submit fires off in a daemon
+    thread, so a test can assert the synchronous return value without paying
+    for a real AIAgent build or a real model call.
+
+    prompt.submit's synchronous path stops at _ok(rid, {"status":"streaming"});
+    everything past that runs on a daemon thread. We don't want that thread to
+    try and build an agent (no provider creds in a unit test), nor to invoke
+    _run_prompt_submit against a None agent. Replacing those three with no-ops
+    lets the assertion target the wire shape the iOS client actually sees.
+    """
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_a, **_kw: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_kw: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_a, **_kw: None)
+
+
+def test_prompt_submit_rehydrates_reaped_alias_via_alias_meta(monkeypatch, tmp_path):
+    """t_c136726a: the false-positive 4001 a quickly-reconnecting iOS client
+    hits on the first prompt after the WS-orphan reaper popped its alias.
+
+    Setup mirrors the production incident: the alias was minted via
+    session.create / session.resume earlier (so _record_alias_meta ran), then
+    the 20s WS-orphan reaper popped _sessions[sid] WITHOUT calling
+    _forget_alias_meta (only session.close does that). The underlying state.db
+    row is still on disk. iOS sends prompt.submit(session_id=<reaped-alias>).
+
+    Before the fix the handler 4001'd at _sess_nowait. After the fix it
+    consults _lookup_alias_meta, rehydrates _sessions[sid] under the SAME
+    short alias from the on-disk row, and returns status:streaming so the
+    user's message goes through.
+    """
+    profile_home = tmp_path / "profiles" / "reeve"
+    profile_home.mkdir(parents=True)
+    sid = "reaped-alias"
+    long_key = "20260620_211247_1f9187"
+
+    class ProfileDB:
+        def get_session(self, key):
+            assert key == long_key
+            return {"id": key, "title": "verity opus chat"}
+
+        def get_messages_as_conversation(self, key, include_ancestors=False):
+            assert key == long_key
+            return [
+                {"role": "user", "content": "morning verity"},
+                {"role": "assistant", "content": "morning sir."},
+            ]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
+    _install_prompt_submit_no_op_agent_path(monkeypatch)
+
+    # Pre-state: the reaper popped _sessions[sid] but alias_meta survived.
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(
+        sid, session_key=long_key, profile_home=str(profile_home)
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "are you still there?"},
+            }
+        )
+        assert "error" not in resp, f"unexpected error: {resp}"
+        assert resp["result"]["status"] == "streaming"
+        # Rehydrate must reuse the SAME short alias the iOS client referenced —
+        # not mint a fresh sid — so subsequent calls keep working without iOS
+        # needing to know anything happened.
+        assert sid in server._sessions
+        rehydrated = server._sessions[sid]
+        assert rehydrated["session_key"] == long_key
+        assert rehydrated["profile_home"] == str(profile_home)
+        # Cache safety (AGENTS.md: prompt caching is sacred).  The deferred
+        # _start_agent_build reads ``resume_session_id`` and passes it as
+        # ``session_id=`` to _make_agent, which keys the system prompt off
+        # the SAME session_id the reaped agent used.  That keeps the cached
+        # prefix byte-stable across the reap so the next API call doesn't
+        # pay for a fresh prefill.
+        assert rehydrated["resume_session_id"] == long_key
+    finally:
+        sess = server._sessions.pop(sid, None)
+        if sess is not None:
+            server._teardown_session(sess)
+        server._forget_alias_meta(sid)
+
+
+def test_prompt_submit_rehydrate_preserves_system_prompt_cache_key(
+    monkeypatch, tmp_path
+):
+    """t_c136726a step 6 (cache safety): the rehydrate MUST keep the system
+    prompt byte-stable across the reap, because AGENTS.md is explicit that
+    prompt caching is sacred — rebuilding the prefix multiplies per-turn cost.
+
+    The mechanism that guarantees byte-stability is ``_make_agent(session_id=)``:
+    the system prompt is keyed off ``session_id`` (alongside profile + model),
+    so as long as the post-rehydrate agent is built with the SAME long key the
+    pre-reap agent used, the cached prefix is reused.
+
+    This test snapshots the kwargs ``_start_agent_build`` passes to
+    ``_make_agent`` after a rehydrate and asserts ``session_id == long_key``.
+    A future refactor that rebuilds the system prompt under a different key
+    (e.g. the short alias) would regress this and burn cache; this test
+    catches that without booting a real agent (no provider creds needed).
+    """
+    profile_home = tmp_path / "profiles" / "verity"
+    profile_home.mkdir(parents=True)
+    sid = "reaped-cache-stable"
+    long_key = "20260620_211247_1f9187"
+
+    class ProfileDB:
+        def get_session(self, key):
+            return {"id": key, "title": "verity opus chat"}
+
+        def get_messages_as_conversation(self, key, include_ancestors=False):
+            return [{"role": "user", "content": "morning verity"}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
+
+    # Capture every call to _make_agent so we can prove the rehydrate path
+    # passes the long key through, not the short alias.
+    captured_make_agent_kwargs: list[dict] = []
+
+    class _FakeAgent:
+        # _start_agent_build sets agent_ready / agent on success — give it
+        # the surface area it touches so the build thread doesn't trip on
+        # missing attrs or exception paths.
+        def __init__(self, *_a, **_kw):
+            self._cached_system_prompt = ""
+
+        def attach_pre_agent_callback(self, _cb):
+            pass
+
+        def attach_post_agent_callback(self, _cb):
+            pass
+
+    def fake_make_agent(sid_arg, key_arg, session_id=None, session_db=None, **kwargs):
+        captured_make_agent_kwargs.append(
+            {"sid": sid_arg, "key": key_arg, "session_id": session_id}
+        )
+        return _FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    # _start_agent_build does various optional registration steps; suppress
+    # the ones that would need real worker / approval / completion infra.
+    monkeypatch.setattr(server, "_attach_worker", lambda *_a, **_kw: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_kw: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_a, **_kw: None)
+
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(
+        sid, session_key=long_key, profile_home=str(profile_home)
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "are you still there?"},
+            }
+        )
+        assert "error" not in resp, f"unexpected error: {resp}"
+        assert resp["result"]["status"] == "streaming"
+        # Wait for the deferred agent build to fire — prompt.submit kicks it
+        # off via a daemon thread inside _start_agent_build.  The build
+        # publishes via agent_ready; wait a bounded time for capture.
+        session_dict = server._sessions[sid]
+        agent_ready: threading.Event = session_dict["agent_ready"]
+        assert agent_ready.wait(timeout=2.0), (
+            "_start_agent_build daemon never published agent_ready — "
+            "rehydrate path may not be wiring the build correctly"
+        )
+        assert captured_make_agent_kwargs, (
+            "expected _make_agent to be called by _start_agent_build, "
+            "but no calls were captured"
+        )
+        # The cache-stability invariant: _make_agent's session_id MUST be the
+        # SAME long key the pre-reap agent used, NOT the short alias.  If
+        # this assertion fails, the rehydrate broke prompt caching.
+        kwargs = captured_make_agent_kwargs[-1]
+        assert kwargs["session_id"] == long_key, (
+            f"cache-stability regression: _make_agent was called with "
+            f"session_id={kwargs['session_id']!r} but the long key is "
+            f"{long_key!r}.  AGENTS.md: prompt caching is sacred — a "
+            f"different session_id rebuilds the cached system prompt and "
+            f"burns the cache prefix every turn after rehydrate."
+        )
+        # Belt-and-braces: ``key`` arg (the alias-mapped session_key) MUST
+        # also be the long key — both _make_agent params resolve to it.
+        assert kwargs["key"] == long_key
+    finally:
+        sess = server._sessions.pop(sid, None)
+        if sess is not None:
+            server._teardown_session(sess)
+        server._forget_alias_meta(sid)
+
+
+
+def test_prompt_submit_still_4001_when_alias_meta_points_at_missing_disk_row(
+    monkeypatch, tmp_path
+):
+    """The negative case for the rehydrate fallback: if the alias-meta hint
+    points at a row that's actually gone from disk (genuine deletion, not a
+    transient eviction), prompt.submit must still 4001. The fallback MUST NOT
+    manufacture an empty live session to mask a real loss — iOS's
+    sessionGone path needs to fire when the session really is gone.
+    """
+    profile_home = tmp_path / "profiles" / "reeve"
+    profile_home.mkdir(parents=True)
+    sid = "ghost-on-disk"
+
+    class ProfileDB:
+        def get_session(self, _key):
+            return None  # row really is gone
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
+    _install_prompt_submit_no_op_agent_path(monkeypatch)
+
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(
+        sid, session_key="20260620_000000_deadbeef", profile_home=str(profile_home)
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "hello?"},
+            }
+        )
+        assert resp["error"]["code"] == 4001
+        assert resp["error"]["message"] == "session not found"
+        # And critically — no zombie entry was inserted into _sessions.
+        assert sid not in server._sessions
+    finally:
+        server._forget_alias_meta(sid)
+
+
+def test_prompt_submit_still_4001_after_session_close_clears_alias_meta(
+    monkeypatch,
+):
+    """session.close is the one path that semantically means "this session is
+    gone for good" (alias_meta is cleared). A later prompt.submit on that sid
+    must still 4001 — the rehydrate fallback MUST NOT bring a closed session
+    back from the dead just because the disk row hadn't been deleted yet.
+    """
+    sid = "closed-alias"
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(
+        sid, session_key="some-long-key", profile_home=None
+    )
+    _install_prompt_submit_no_op_agent_path(monkeypatch)
+    monkeypatch.setattr(server, "_close_session_by_id", lambda _sid, **_kw: True)
+    try:
+        close_resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": sid}}
+        )
+        assert close_resp["result"]["closed"] is True
+        # session.close cleared alias_meta. prompt.submit must NOT rehydrate.
+        resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "are you back?"},
+            }
+        )
+        assert resp["error"]["code"] == 4001
+        assert sid not in server._sessions
+    finally:
+        server._forget_alias_meta(sid)
+
+
+def test_prompt_submit_rehydrate_reuses_live_session_when_sibling_alias_exists(
+    monkeypatch, tmp_path
+):
+    """Multi-alias safety: if the same long session_key is already live under
+    a DIFFERENT short alias (e.g. another tab held onto it through the
+    disconnect window), rehydrating the reaped alias MUST point our sid at
+    the SAME live session dict — not double-mint a second live session
+    against the same row. Otherwise two _sessions entries race the same
+    state.db rows, history version, and inflight_turn lock.
+    """
+    profile_home = tmp_path / "profiles" / "reeve"
+    profile_home.mkdir(parents=True)
+    long_key = "20260620_999999_sibling"
+    reaped_sid = "reaped"
+    live_sid = "stillalive"
+
+    class ProfileDB:
+        def get_session(self, key):
+            return {"id": key, "title": "shared chat"}
+
+        def get_messages_as_conversation(self, key, include_ancestors=False):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
+    _install_prompt_submit_no_op_agent_path(monkeypatch)
+
+    # The live sibling: same long_key, separate alias still in _sessions.
+    live_session = {
+        "agent": types.SimpleNamespace(),
+        "agent_ready": threading.Event(),
+        "agent_error": None,
+        "session_key": long_key,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "inflight_turn": None,
+        "attached_images": [],
+        "image_counter": 0,
+        "cwd": str(tmp_path),
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "tool_started_at": {},
+        "edit_snapshots": {},
+        "transport": server._stdio_transport,
+        "profile_home": str(profile_home),
+        "last_active": time.time(),
+        "created_at": time.time(),
+    }
+    live_session["agent_ready"].set()
+    server._sessions[live_sid] = live_session
+    # The reaped sibling: alias_meta survived, _sessions entry did not.
+    server._sessions.pop(reaped_sid, None)
+    server._record_alias_meta(
+        reaped_sid, session_key=long_key, profile_home=str(profile_home)
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": reaped_sid, "text": "still there?"},
+            }
+        )
+        # Either the helper points reaped_sid at the live session dict, or it
+        # returns the live session's existing entry by sid mapping — both
+        # satisfy the no-double-mint contract.  What MUST NOT happen is a
+        # second entry with the SAME session_key existing alongside the live
+        # sibling, because two _sessions sharing one session_key race the
+        # same history_lock and double-write to state.db.
+        same_key_aliases = [
+            s for s in server._sessions.values()
+            if str(s.get("session_key") or "") == long_key
+        ]
+        # The live sibling is one of them; the reaped alias must either be
+        # absent OR point at the SAME dict.
+        if reaped_sid in server._sessions:
+            assert server._sessions[reaped_sid] is live_session, (
+                "rehydrate double-minted a second live session for the same "
+                "long key instead of reusing the existing one"
+            )
+        # Exactly one underlying live session for this long key (the sibling).
+        unique_ids = {id(s) for s in same_key_aliases}
+        assert len(unique_ids) == 1, (
+            f"expected exactly one live session dict for {long_key}, "
+            f"got {len(unique_ids)} (aliases: "
+            f"{[k for k, v in server._sessions.items() if v in same_key_aliases]})"
+        )
+        assert "error" not in resp, f"unexpected error: {resp}"
+        assert resp["result"]["status"] == "streaming"
+    finally:
+        server._sessions.pop(reaped_sid, None)
+        sess = server._sessions.pop(live_sid, None)
+        if sess is not None:
+            server._teardown_session(sess)
+        server._forget_alias_meta(reaped_sid)
+        server._forget_alias_meta(live_sid)
+
+
+def test_session_title_rehydrates_reaped_alias_via_alias_meta(monkeypatch, tmp_path):
+    """Sibling-handler proof for the rehydrate wrapper.
+
+    The card explicitly asks us to wire the rehydrate into other handlers
+    where it's safe (uniform semantics).  This is the canonical example:
+    iOS renames a chat post-reconnect; without the wrapper it 4001s; with
+    the wrapper it rehydrates and persists the title to the SAME DB row.
+
+    If this test starts failing, the wrapper machinery
+    (``_sess_nowait_or_rehydrate``) regressed — not just prompt.submit's
+    open-coded fallback, the shared one every sibling handler depends on.
+    """
+    profile_home = tmp_path / "profiles" / "reeve"
+    profile_home.mkdir(parents=True)
+    sid = "reaped-for-title"
+    long_key = "20260620_rename_xyz789"
+    persisted = {}
+
+    class ProfileDB:
+        def get_session(self, key):
+            return {"id": key, "title": "old title"}
+
+        def get_messages_as_conversation(self, key, include_ancestors=False):
+            return []
+
+        def set_session_title(self, key, new_title):
+            persisted["row_id"] = key
+            persisted["new_title"] = new_title
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
+
+    server._sessions.pop(sid, None)
+    server._record_alias_meta(
+        sid, session_key=long_key, profile_home=str(profile_home)
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": sid, "title": "new title from ios"},
+            }
+        )
+        assert "error" not in resp, f"unexpected error: {resp}"
+        # The title persists to the SAME long key, not the short alias —
+        # rehydrate carried the (alias → long_key) mapping correctly.
+        assert persisted.get("row_id") == long_key
+        assert persisted.get("new_title") == "new title from ios"
+        # And the rehydrated session lives under the SAME short alias.
+        assert sid in server._sessions
+        assert server._sessions[sid]["session_key"] == long_key
+    finally:
+        sess = server._sessions.pop(sid, None)
+        if sess is not None:
+            server._teardown_session(sess)
+        server._forget_alias_meta(sid)
+
+
+def test_locate_stored_session_across_profiles_finds_reeve_row(monkeypatch, tmp_path):
+    """Manifestation 2 of t_07054503: cold-launch session.resume(long_key)
+    with no ``profile`` param.  iOS doesn't know which profile owns the
+    session — that's why it sends no profile.  The gateway must walk the
+    named profile DBs (~/.hermes/profiles/<name>/state.db) and find the row.
+    """
+    # Set up a fake profiles root with two profiles; only "reeve" has the row.
+    profiles_root = tmp_path / "profiles"
+    (profiles_root / "reeve").mkdir(parents=True)
+    (profiles_root / "reeve" / "state.db").write_bytes(b"")
+    (profiles_root / "mia").mkdir(parents=True)
+    (profiles_root / "mia" / "state.db").write_bytes(b"")
+    long_key = "20260618_145532_d95e74"
+    opened = []
+
+    class LaunchDB:
+        def get_session(self, key):
+            opened.append(("launch", key))
+            return None
+
+        def get_session_by_title(self, _key):
+            return None
+
+    class ReeveDB:
+        def __init__(self, db_path):
+            opened.append(("open", str(db_path)))
+            self.db_path = db_path
+
+        def get_session(self, key):
+            opened.append((str(self.db_path), "get", key))
+            if "reeve" in str(self.db_path) and key == long_key:
+                return {"id": long_key}
+            return None
+
+        def get_session_by_title(self, _key):
+            return None
+
+        def close(self):
+            opened.append((str(self.db_path), "close"))
+
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+    monkeypatch.setattr("hermes_state.SessionDB", ReeveDB)
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+    )
+    # Make sure the launch home doesn't accidentally match either profile dir.
+    monkeypatch.setattr(server, "_hermes_home", str(tmp_path / "launch_home"))
+
+    located = server._locate_stored_session_across_profiles(long_key)
+    assert located is not None
+    matched_id, profile_home = located
+    assert matched_id == long_key
+    assert profile_home is not None
+    assert "reeve" in str(profile_home)
+    # All probed profile DBs must be closed (no leak when walking through many).
+    closes = [op for op in opened if len(op) >= 2 and op[-1] == "close"]
+    assert closes, f"profile DB handles must be closed; got {opened}"
+
+
+def test_locate_stored_session_across_profiles_returns_none_when_no_db_owns_row(
+    monkeypatch, tmp_path
+):
+    """If neither the launch DB nor any named-profile DB has the row, the
+    locator returns None so the resume handler can surface 4007 honestly.
+    Never invent ownership.
+    """
+    profiles_root = tmp_path / "profiles"
+    (profiles_root / "reeve").mkdir(parents=True)
+    (profiles_root / "reeve" / "state.db").write_bytes(b"")
+
+    class EmptyDB:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def get_session(self, _key):
+            return None
+
+        def get_session_by_title(self, _key):
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "_get_db", lambda: EmptyDB())
+    monkeypatch.setattr("hermes_state.SessionDB", EmptyDB)
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+    )
+    monkeypatch.setattr(server, "_hermes_home", str(tmp_path / "launch_home"))
+
+    located = server._locate_stored_session_across_profiles("does-not-exist")
+    assert located is None
+
+
+def test_locate_stored_session_across_profiles_prefers_launch_db(monkeypatch, tmp_path):
+    """When the launch DB owns the row, the cross-profile walk must NOT
+    open any named-profile DB.  This preserves the default-profile parity:
+    a single-profile installation never pays the profile-walk cost.
+    """
+    profiles_root = tmp_path / "profiles"
+    (profiles_root / "reeve").mkdir(parents=True)
+    (profiles_root / "reeve" / "state.db").write_bytes(b"")
+    long_key = "default-profile-row"
+    opened = []
+
+    class LaunchDB:
+        def get_session(self, key):
+            opened.append(("launch_get", key))
+            return {"id": key} if key == long_key else None
+
+        def get_session_by_title(self, _key):
+            return None
+
+    def _profile_db_should_not_open(db_path=None):
+        opened.append(("profile_open", str(db_path)))
+        raise AssertionError(
+            f"launch DB hit must NOT trigger profile walk (db_path={db_path!r})"
+        )
+
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+    monkeypatch.setattr("hermes_state.SessionDB", _profile_db_should_not_open)
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+    )
+
+    located = server._locate_stored_session_across_profiles(long_key)
+    assert located is not None
+    matched_id, profile_home = located
+    assert matched_id == long_key
+    assert profile_home is None  # launch profile (default-profile parity)
+    # Confirm: only launch_get fired, no profile_open.
+    assert all(op[0] == "launch_get" for op in opened), f"unexpected ops: {opened}"
+
+
 def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     captured = {}
 

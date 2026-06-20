@@ -163,6 +163,77 @@ _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
+# ── Short-alias → on-disk lookup map (post-eviction rehydration) ─────────────
+# Every session.create / session.resume mints a short alias and stuffs it into
+# ``_sessions[alias]`` alongside the long ``session_key`` and ``profile_home``.
+# When the WS-orphan reaper (or the idle reaper) pops that entry, a later
+# ``session.history(alias)`` from a quickly-reconnecting iOS client used to
+# 4001 because nothing remembered which long key + profile DB to read from.
+# This sidecar keeps the alias→(session_key, profile_home) mapping alive for a
+# generous TTL so the history handler can do a read-only rehydrate against the
+# right profile's state.db without rebuilding the agent. The mapping is tiny
+# (one tuple per alias), independent of agent state, and survives the reap
+# exactly because it lives outside ``_sessions``. A long-overdue alias is
+# treated as genuinely unknown — the iOS client's sessionGone path still fires.
+try:
+    _ALIAS_META_TTL_S = float(
+        os.environ.get("HERMES_TUI_ALIAS_META_TTL_S") or 24 * 3600
+    )
+except (TypeError, ValueError):
+    _ALIAS_META_TTL_S = float(24 * 3600)
+_ALIAS_META_TTL_S = max(0.0, _ALIAS_META_TTL_S)
+_alias_meta: dict[str, dict] = {}
+_alias_meta_lock = threading.Lock()
+
+
+def _record_alias_meta(
+    sid: str, *, session_key: str, profile_home: str | None
+) -> None:
+    """Remember alias→(session_key, profile_home) so a post-eviction
+    ``session.history(alias)`` can still find the disk row.
+
+    Called at every ``_sessions[sid] = {...}`` mint site. Idempotent — repeat
+    calls just refresh ``last_seen`` so an actively-used alias never expires.
+    """
+    if not sid or not session_key:
+        return
+    with _alias_meta_lock:
+        _alias_meta[sid] = {
+            "session_key": str(session_key),
+            "profile_home": str(profile_home) if profile_home else None,
+            "last_seen": time.time(),
+        }
+
+
+def _lookup_alias_meta(sid: str) -> dict | None:
+    """Return the saved metadata for ``sid``, or None if absent or expired.
+
+    Expired entries are dropped opportunistically — there's no separate sweeper
+    because the lookup path is the only consumer that cares about freshness,
+    and a stale entry surfacing as 4001/None preserves the existing wire
+    contract (iOS already has belt-and-braces guards for that).
+    """
+    with _alias_meta_lock:
+        meta = _alias_meta.get(sid)
+        if not meta:
+            return None
+        if _ALIAS_META_TTL_S > 0 and (time.time() - meta["last_seen"]) > _ALIAS_META_TTL_S:
+            _alias_meta.pop(sid, None)
+            return None
+        return dict(meta)
+
+
+def _forget_alias_meta(sid: str) -> None:
+    """Drop the alias mapping when a session is explicitly closed (session.close).
+
+    The reap paths intentionally do NOT call this — they're the whole reason
+    this sidecar exists. session.close is the only path that semantically
+    means "this session is gone for good"; anything else is a transient
+    eviction the alias map deliberately survives.
+    """
+    with _alias_meta_lock:
+        _alias_meta.pop(sid, None)
+
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
@@ -691,10 +762,365 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+def _locate_stored_session_across_profiles(long_id: str) -> tuple[str, Path | None] | None:
+    """Find which profile's state.db contains ``long_id``.
+
+    On a cold-launch resume, iOS sends only the long ``session_key`` (no
+    ``profile`` param — it doesn't know which profile minted the session and
+    has nothing in cache to tell it).  The launch profile is *one* DB on the
+    host; the session may live in any of the named-profile DBs at
+    ``~/.hermes/profiles/<name>/state.db``.  This walks those (plus the launch
+    DB) and returns ``(matched_id, profile_home)`` for the first hit, or None
+    when no host DB owns the row.
+
+    ``matched_id`` may differ from ``long_id`` when the DB resolved a title
+    instead of an id (mirrors the ``session.resume`` title-fallback at L4116).
+
+    ``profile_home`` is ``None`` when the row lives in the launch profile (the
+    default-profile case — preserves wire-compatible behaviour).  Otherwise
+    a path under ``~/.hermes/profiles/<name>/``, suitable for passing to
+    ``SessionDB(db_path=...)`` and ``set_hermes_home_override`` exactly like
+    ``_profile_home`` returns.
+    """
+    if not long_id:
+        return None
+    from hermes_state import SessionDB
+
+    def _probe(db, profile_home: Path | None) -> tuple[str, Path | None] | None:
+        try:
+            row = db.get_session(long_id)
+        except Exception:
+            return None
+        if row:
+            return long_id, profile_home
+        try:
+            row = db.get_session_by_title(long_id)
+        except Exception:
+            return None
+        if row:
+            return str(row.get("id") or long_id), profile_home
+        return None
+
+    # 1. Launch profile first — it's the cheapest probe (already-open handle).
+    launch_db = _get_db()
+    if launch_db is not None:
+        hit = _probe(launch_db, None)
+        if hit is not None:
+            return hit
+
+    # 2. Named profiles under <hermes_root>/profiles/<name>/state.db.  Lazy:
+    # the walk stops on the first hit, so we don't pay for every profile in
+    # the common case where the row IS in one of the first few.
+    try:
+        from hermes_cli.profiles import _get_profiles_root, _PROFILE_ID_RE
+    except Exception:
+        return None
+    try:
+        profiles_root = Path(_get_profiles_root())
+    except Exception:
+        return None
+    if not profiles_root.is_dir():
+        return None
+    launch_home = Path(_hermes_home).resolve()
+    for entry in sorted(profiles_root.iterdir()):
+        try:
+            if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
+                continue
+            if entry.resolve() == launch_home:
+                continue  # same as the launch DB we already probed
+            db_path = entry / "state.db"
+            if not db_path.exists():
+                continue
+            profile_db = None
+            try:
+                profile_db = SessionDB(db_path=db_path)
+            except Exception:
+                continue
+            try:
+                hit = _probe(profile_db, entry)
+                if hit is not None:
+                    return hit
+            finally:
+                with contextlib.suppress(Exception):
+                    profile_db.close()
+        except Exception:
+            continue
+    return None
+
+
 # Placeholder ``terminal.cwd`` values that don't name a real directory — the
 # gateway resolves these to the home dir at runtime, so they must NOT be treated
 # as an explicit workspace (mirrors gateway/run.py's config bridge).
 _CWD_PLACEHOLDERS = {".", "auto", "cwd"}
+
+# ── Post-eviction alias-meta rehydrate: handler audit ────────────────
+# Anything that calls ``_sess_nowait`` / ``_sess`` first thing and returns
+# 4001 on miss is a candidate for the rehydrate fallback below.  This is
+# the audit log for which methods we wired vs. left alone, so a future
+# contributor doesn't have to re-derive the call.
+#
+# Rehydrate-aware (use ``_sess_nowait_or_rehydrate`` / ``_sess_or_rehydrate``):
+#   * prompt.submit       — the bug this whole sidecar exists to fix
+#   * session.history     — original parent of the sidecar (t_28c8c912)
+#   * session.title       — iOS rename post-reconnect persists to the SAME DB row
+#   * session.cwd.set     — iOS picker changes cwd of a quietly-reaped alias
+#   * session.usage       — iOS reads usage of a chat it thinks is alive
+#   * session.status      — iOS reads chat status (cwd/branch/model/tokens)
+#   * session.undo        — mutates session history; rebuild + persist is safe
+#   * session.compress    — auto-compaction against the SAME long key
+#   * session.save        — snapshot to disk; rebuild gives the same conversation
+#   * session.branch      — fork from a parent the user still considers alive
+#   * terminal.resize     — frequent UI signal; false-positive 4001 would cascade
+#
+# NOT rehydrate-aware (kept on ``_sess_nowait`` / ``_sess`` — see per-handler
+# rationale at each call site):
+#   * session.interrupt   — reaped alias has no running turn; rehydrate-and-no-op
+#                            misleads iOS into thinking a cancel succeeded.
+#   * session.steer       — same reason as interrupt: nothing to steer post-reap.
+#   * approval.respond,
+#     clarify.respond,
+#     sudo.respond,
+#     secret.respond,
+#     terminal.read.respond — respond to an in-flight prompt tied to the
+#                            original run.  Reap discards the prompt
+#                            registry entry, so a rebuilt session has
+#                            nothing to deliver the response to.
+#   * process.list / kill — process registry is keyed off the original
+#                            session lifecycle; rehydrate creates a fresh
+#                            session with no processes.
+#   * slash.exec          — subprocess identity (_SlashWorker) is bound to
+#                            the original session start; a rebuilt session
+#                            spawns a NEW worker which is a different
+#                            process context than the iOS UI's prior state.
+#   * rollback.list / restore / diff — checkpoint mgr is per-agent and
+#                            rebuilt fresh on rehydrate, losing the
+#                            in-memory checkpoint snapshots the user is
+#                            looking at.
+#   * handoff.request / state / fail — desktop-only handoff RPCs, not
+#                            invoked by the iOS rev-1 surface.
+#   * image.attach / pdf.attach / file.attach / clipboard.paste /
+#     image.attach_bytes / image.detach / input.detect_drop /
+#     prompt.background / preview.restart — composer-side state on the
+#                            DESKTOP path (attached_images, edit_snapshots,
+#                            etc.) that doesn't survive a reap.  Adding
+#                            rehydrate here would create a session with an
+#                            empty composer, masking that the prior
+#                            composer state really was lost.
+
+
+def _install_lazy_session_under_alias(
+    sid: str,
+    target: str,
+    *,
+    cols: int,
+    history: list,
+    profile_home: Path | None,
+    lease,
+    close_on_disconnect: bool,
+    transport_obj,
+    cwd: str | None = None,
+) -> dict:
+    """Install a lazy-watch ``_sessions[sid]`` entry pointing at ``target``.
+
+    Factored out of ``session.resume``'s lazy branch (and reused by
+    ``_rehydrate_alias_from_meta``) so the install shape stays in lockstep
+    between the two callers — both need the SAME field set so a later
+    ``_start_agent_build`` upgrades correctly (``resume_session_id``
+    preserves the long key for ``_make_agent`` so the system prompt key
+    stays byte-stable, which is the cache-safety lever called out in
+    AGENTS.md).
+
+    Must be called under ``_session_resume_lock`` AND with the caller
+    having already established the lease (or accepted ``None``). The helper
+    grabs ``_sessions_lock`` itself for the dict mutation, records the
+    alias-meta sidecar so a later eviction stays rehydratable, and returns
+    the freshly-installed session dict.
+
+    Caller is responsible for the race-check (``_find_live_session_by_key``)
+    BEFORE calling this — the helper unconditionally installs, so calling
+    it when a live sibling already owns ``target`` would double-mint.
+    """
+    now = time.time()
+    profile_home_str = str(profile_home) if profile_home is not None else None
+    with _sessions_lock:
+        _sessions[sid] = {
+            "agent": None,
+            "agent_error": None,
+            "agent_ready": threading.Event(),
+            "attached_images": [],
+            "close_on_disconnect": close_on_disconnect,
+            "active_session_lease": lease,
+            "cols": cols,
+            "created_at": now,
+            "display_history_prefix": [],
+            "edit_snapshots": {},
+            "explicit_cwd": False,
+            "history": history,
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "image_counter": 0,
+            "cwd": cwd or os.getenv("TERMINAL_CWD", os.getcwd()),
+            "inflight_turn": None,
+            "last_active": now,
+            "lazy": True,
+            "pending_title": None,
+            "profile_home": profile_home_str,
+            "resume_session_id": target,
+            "running": False,
+            "session_key": target,
+            "show_reasoning": _load_show_reasoning(),
+            "slash_worker": None,
+            "tool_progress_mode": _load_tool_progress_mode(),
+            "tool_started_at": {},
+            "transport": transport_obj or _stdio_transport,
+        }
+        _register_session_cwd(_sessions[sid])
+    _record_alias_meta(sid, session_key=target, profile_home=profile_home_str)
+    return _sessions[sid]
+
+
+def _rehydrate_alias_from_meta(sid: str, meta: dict) -> bool:
+    """Rebuild a live ``_sessions[sid]`` entry from the alias-meta sidecar.
+
+    Symmetric companion to ``session.history``'s disk-only rehydrate
+    (L5189-5223 — read-only, just returns the messages). The history
+    handler's job is read-only so a disk read is enough; ``prompt.submit``'s
+    job is to RUN, so it needs a live ``_sessions[sid]`` entry pointing at
+    the right long key + profile DB.  This helper does that part.
+
+    Flow:
+
+    * Open the profile-bound (or launch) DB and verify the row really exists
+      on disk — a stale alias-meta hint pointing at a deleted row must NOT
+      manufacture an empty live session.  Returns False so the caller can
+      surface the original 4001 and iOS's sessionGone path fires.
+    * Acquire ``_session_resume_lock`` (matches session.resume's critical
+      section so the WS-orphan reaper and concurrent resumes don't race us).
+    * If another short alias is already live for the same long key, point
+      ``_sessions[sid]`` at the SAME session dict — never double-mint, or
+      two aliases would race the same history_lock + state.db rows.
+    * Otherwise claim an active-session lease and call
+      ``_install_lazy_session_under_alias`` so a subsequent
+      ``_start_agent_build`` upgrades it via the normal path
+      (``resume_session_id`` keeps the agent on the SAME long key, so the
+      system-prompt cache prefix stays byte-stable across the reap — see
+      AGENTS.md: prompt caching is sacred).
+
+    Reuses the SAME short alias the iOS client referenced — the whole point
+    is the client's ``session_id`` parameter keeps working without it
+    knowing anything happened.  Returns True iff ``_sessions[sid]`` now
+    maps to a live session.
+    """
+    target = str(meta.get("session_key") or "")
+    if not target:
+        return False
+    profile_home_raw = meta.get("profile_home")
+    profile_home = Path(profile_home_raw) if profile_home_raw else None
+
+    db = None
+    close_db = False
+    if profile_home is not None:
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB(db_path=profile_home / "state.db")
+            close_db = True
+        except Exception:
+            logger.debug(
+                "rehydrate: failed to open profile db", exc_info=True
+            )
+            return False
+    else:
+        db = _get_db()
+    if db is None:
+        return False
+
+    history: list = []
+    try:
+        row = db.get_session(target)
+        if not row:
+            # Stale alias-meta hint — the row really is gone.  Surface 4001
+            # honestly so iOS's sessionGone fires (matches session.history
+            # negative-test invariant at server.py L5213-5216).
+            return False
+        try:
+            db.reopen_session(target)
+        except Exception:
+            logger.debug(
+                "rehydrate: reopen_session failed (non-fatal)", exc_info=True
+            )
+        try:
+            # The child's OWN conversation only — mirrors session.resume
+            # lazy path (L4404-4408): a delegated child must NOT pull its
+            # parent's transcript via include_ancestors.
+            history = list(db.get_messages_as_conversation(target))
+        except Exception:
+            logger.debug(
+                "rehydrate: read history failed", exc_info=True
+            )
+            return False
+    finally:
+        if close_db:
+            with contextlib.suppress(Exception):
+                db.close()
+
+    transport_obj = current_transport() or _stdio_transport
+    cwd = _profile_configured_cwd(profile_home)
+
+    with _session_resume_lock:
+        # Idempotency: if the entry was re-populated between the _sess_nowait
+        # miss in prompt.submit and our acquire of _session_resume_lock
+        # (concurrent resume from another tab), nothing more to do.
+        if sid in _sessions:
+            return True
+        # Multi-alias safety: if another short alias is already live for the
+        # same long key, point our sid at that EXACT session dict instead of
+        # double-minting — two _sessions sharing one session_key would race
+        # the same history_lock and double-write to state.db.
+        live = _find_live_session_by_key(target)
+        if live is not None:
+            with _sessions_lock:
+                _sessions[sid] = live[1]
+            _record_alias_meta(
+                sid,
+                session_key=target,
+                profile_home=str(profile_home) if profile_home is not None else None,
+            )
+            return True
+        # Fresh install under our reused sid.  Claim an active-session lease
+        # the same way session.resume does (the original lease was released
+        # when the reaper finalized the old session — see _release_active_
+        # session_slot in _finalize_session).
+        lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
+        if limit_message is not None:
+            # Session-cap hit on rehydrate.  Don't surface 4090 here — let
+            # the caller's second _sess_nowait miss return the original
+            # 4001, which is the wire contract the iOS client already knows
+            # how to handle.  Cap pressure on a transient-reap rebuild is
+            # exceptional; the cap message would just confuse the client.
+            return False
+        try:
+            _install_lazy_session_under_alias(
+                sid,
+                target,
+                cols=80,
+                history=history,
+                profile_home=profile_home,
+                lease=lease,
+                close_on_disconnect=False,
+                transport_obj=transport_obj,
+                cwd=cwd,
+            )
+        except Exception:
+            logger.debug(
+                "rehydrate: install_lazy_session_under_alias failed",
+                exc_info=True,
+            )
+            if lease is not None:
+                with contextlib.suppress(Exception):
+                    lease.release()
+            return False
+        return True
 
 
 def _profile_configured_cwd(profile_home: Path | None) -> str | None:
@@ -1034,6 +1460,58 @@ def _sess(params, rid):
     return (s, _wait_agent(s, rid))
 
 
+def _sess_nowait_or_rehydrate(params, rid):
+    """``_sess_nowait`` extended with the post-eviction alias-meta rehydrate.
+
+    Identical wire contract to ``_sess_nowait`` for the genuine-loss case
+    (returns ``(None, 4001 err)``) but, before giving up, consults the
+    alias-meta sidecar and lazy-installs ``_sessions[sid]`` from disk when
+    the WS-orphan / idle reaper popped the alias while iOS was
+    backgrounded.  Symmetric with the disk-rehydrate path
+    ``session.history`` already takes (server.py L5404+) — applied here
+    once so every iOS-surface RPC that is reasonable to call against a
+    quietly-reaped alias picks up the same survival behaviour for free
+    (instead of every handler open-coding the meta lookup + reinstall).
+
+    The handler-by-handler opt-in is deliberate: read-modify-only RPCs
+    that depend on runtime state which doesn't survive a reap
+    (in-flight prompts/clarify/approval, per-process registries, slash
+    worker subprocess identity, agent-bound rollback checkpoints) keep
+    using ``_sess_nowait`` / ``_sess`` so they 4001 honestly instead of
+    rehydrating a session that's missing the state they need.  See the
+    surrounding handler comments for the per-method rationale.
+    """
+    s, err = _sess_nowait(params, rid)
+    if err is None:
+        return s, None
+    sid = str(params.get("session_id") or "")
+    if not sid:
+        return s, err
+    meta = _lookup_alias_meta(sid)
+    if not meta:
+        return s, err
+    if not _rehydrate_alias_from_meta(sid, meta):
+        return s, err
+    return _sess_nowait(params, rid)
+
+
+def _sess_or_rehydrate(params, rid):
+    """``_sess`` extended with the post-eviction alias-meta rehydrate.
+
+    Same as ``_sess_nowait_or_rehydrate`` but also drives
+    ``_start_agent_build`` + ``_wait_agent`` so handlers that need a
+    constructed agent get it.  After a rehydrate the rebuilt agent
+    initialises against the SAME long ``session_key``, which keeps the
+    system-prompt cache key byte-stable across the reap (AGENTS.md:
+    prompt caching is sacred).
+    """
+    s, err = _sess_nowait_or_rehydrate(params, rid)
+    if err is not None or s is None:
+        return None, err
+    _start_agent_build(params.get("session_id") or "", s)
+    return s, _wait_agent(s, rid)
+
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":
@@ -1213,6 +1691,53 @@ def _session_db(session: dict):
         db = _get_db()
     try:
         yield db
+    finally:
+        if close_db and db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+
+
+def _read_history_from_disk(
+    session_key: str, profile_home: str | None
+) -> list | None:
+    """Read a session's full message history from disk without a live session.
+
+    Used by ``session.history`` to rehydrate after the WS-orphan or idle
+    reaper has popped the alias from ``_sessions``.  Returns the conversation
+    list (possibly empty) when the row exists, or ``None`` when the on-disk
+    row really is gone (so the caller can surface 4001 honestly).  Opens a
+    fresh DB handle keyed to ``profile_home`` and closes it before returning;
+    this is the same pattern ``_session_db`` uses for live sessions, just
+    without the session dict to hang it off.
+    """
+    if not session_key:
+        return None
+    db = None
+    close_db = False
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            close_db = True
+        except Exception:
+            logger.debug(
+                "failed to open profile db for disk-only history read",
+                exc_info=True,
+            )
+            return None
+    else:
+        db = _get_db()
+    if db is None:
+        return None
+    try:
+        row = db.get_session(session_key)
+        if not row:
+            return None
+        return list(db.get_messages_as_conversation(session_key, include_ancestors=True))
+    except Exception:
+        logger.debug("disk-only history read failed", exc_info=True)
+        return None
     finally:
         if close_db and db is not None:
             with contextlib.suppress(Exception):
@@ -2366,6 +2891,38 @@ def _current_profile_name() -> str:
         return "default"
 
 
+def _session_profile_name(session: dict | None) -> str:
+    """Profile name THIS session is bound to, regardless of the gateway's launch profile.
+
+    The desktop's app-global remote mode lets a client pick a profile per session
+    (params={"profile": "<name>"}); that profile_home is stored on the session
+    at create/resume time (see L3916 / L4176 / L4311). Reading it back here keeps
+    the info echo honest:
+
+    * session.create response → echoes the picked profile, not the launch one.
+    * session.resume response → echoes the stored profile even when the client
+      didn't re-send ``profile`` in params.
+    * Any sibling _session_info() consumer (status refresh, session.info emits,
+      slash-command updates, etc.) sees the same truth.
+
+    profile_home is a string written by ``_profile_home()`` (L677), which routes
+    through ``hermes_cli.profiles.get_profile_dir(name)`` (L331). That helper
+    returns ``~/.hermes`` for ``default`` and ``~/.hermes/profiles/<name>`` for
+    everything else, so the basename of profile_home IS the profile name for the
+    non-launch case. When profile_home is None / missing the session is bound to
+    the launch profile and we fall back to the gateway-global lookup (correct in
+    that case — same answer either way).
+    """
+    if session is not None:
+        home_str = session.get("profile_home")
+        if home_str:
+            try:
+                return Path(home_str).name or _current_profile_name()
+            except Exception:
+                pass
+    return _current_profile_name()
+
+
 # Monotonic GUI<->backend contract version. The desktop app refuses to drive a
 # backend reporting less than its required value (or none at all — a pre-GUI
 # checkout), surfacing a one-click "update to align" prompt instead of failing
@@ -2429,7 +2986,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_behind": None,
         "update_command": "",
         "usage": _get_usage(agent),
-        "profile_name": _current_profile_name(),
+        "profile_name": _session_profile_name(session),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -3473,6 +4030,9 @@ def _init_session(
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
+    # Record alias→session_key for post-eviction history rehydration.  The
+    # default-profile mint path has no profile_home (it's the launch profile).
+    _record_alias_meta(sid, session_key=key, profile_home=None)
     db = session_db if session_db is not None else _get_db()
     if db is not None:
         row = db.get_session(key)
@@ -3923,6 +4483,11 @@ def _(rid, params: dict) -> dict:
             "transport": current_transport() or _stdio_transport,
         }
         _register_session_cwd(_sessions[sid])
+    _record_alias_meta(
+        sid,
+        session_key=key,
+        profile_home=str(profile_home) if profile_home is not None else None,
+    )
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -3958,7 +4523,7 @@ def _(rid, params: dict) -> dict:
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                "profile_name": _current_profile_name(),
+                "profile_name": _session_profile_name(_sessions[sid]),
             },
         },
     )
@@ -4084,6 +4649,36 @@ def _(rid, params: dict) -> dict:
         found = db.get_session_by_title(target)
         if found:
             target = found["id"]
+        elif profile is None:
+            # No explicit profile param AND the launch DB has no row.  On the
+            # cold-launch resume path iOS only has the long session_key — it
+            # has no way to know which profile minted the session, so it sends
+            # no ``profile``.  Walk the named profile DBs to find which one
+            # owns the row; if we find it, rebind ``db``/``profile_home``
+            # exactly as if the client had passed the right ``profile`` and
+            # let the rest of the handler do its normal thing.  This is the
+            # gateway side of the t_07054503 cross-profile cold-launch fix.
+            located = _locate_stored_session_across_profiles(target)
+            if located is None:
+                return _err(rid, 4007, "session not found")
+            target, profile_home = located
+            if profile_home is not None:
+                from hermes_state import SessionDB
+
+                # Close the previous launch handle?  No — ``_get_db()`` returns
+                # the shared singleton; the caller will keep using it for
+                # other sessions.  We just open a fresh profile-bound handle
+                # for this resume and proceed.  Matches the explicit-profile
+                # path above (L4317-L4320).
+                try:
+                    db = SessionDB(db_path=profile_home / "state.db")
+                except Exception as e:
+                    return _err(rid, 5000, f"profile db open failed: {e}")
+            found = db.get_session(target)
+            if not found:
+                # Race: another worker deleted the row between the cross-
+                # profile probe and the re-fetch.  Surface 4007 as the canon.
+                return _err(rid, 4007, "session not found")
         else:
             return _err(rid, 4007, "session not found")
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
@@ -4138,7 +4733,6 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5000, f"resume failed: {e}")
         messages = _history_to_messages(history)
         cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
-        now = time.time()
         # A delegated child mid-run emits no native session events of its own —
         # report its liveness from the relay registry so the window paints a
         # busy indicator instead of a dead idle transcript.
@@ -4149,41 +4743,26 @@ def _(rid, params: dict) -> dict:
                 if lease is not None:
                     lease.release()
                 return _ok(rid, _reuse_live_payload(*live))
-            with _sessions_lock:
-                _sessions[sid] = {
-                    "agent": None,
-                    "agent_error": None,
-                    "agent_ready": threading.Event(),
-                    "attached_images": [],
-                    "close_on_disconnect": is_truthy_value(
-                        params.get("close_on_disconnect", False)
-                    ),
-                    "active_session_lease": lease,
-                    "cols": cols,
-                    "created_at": now,
-                    "display_history_prefix": [],
-                    "edit_snapshots": {},
-                    "explicit_cwd": False,
-                    "history": history,
-                    "history_lock": threading.Lock(),
-                    "history_version": 0,
-                    "image_counter": 0,
-                    "cwd": cwd,
-                    "inflight_turn": None,
-                    "last_active": now,
-                    "lazy": True,
-                    "pending_title": None,
-                    "profile_home": str(profile_home) if profile_home is not None else None,
-                    "resume_session_id": target,
-                    "running": False,
-                    "session_key": target,
-                    "show_reasoning": _load_show_reasoning(),
-                    "slash_worker": None,
-                    "tool_progress_mode": _load_tool_progress_mode(),
-                    "tool_started_at": {},
-                    "transport": current_transport() or _stdio_transport,
-                }
-                _register_session_cwd(_sessions[sid])
+            # Install via the shared helper so the lazy session shape stays in
+            # lockstep with the post-eviction rehydrate path
+            # (_rehydrate_alias_from_meta).  Both callers MUST produce
+            # identical field sets; otherwise a later _start_agent_build
+            # upgrade behaves differently depending on which path minted the
+            # entry, breaking the cache-stable-resume_session_id invariant.
+            session = _install_lazy_session_under_alias(
+                sid,
+                target,
+                cols=cols,
+                history=history,
+                profile_home=profile_home,
+                lease=lease,
+                close_on_disconnect=is_truthy_value(
+                    params.get("close_on_disconnect", False)
+                ),
+                transport_obj=current_transport(),
+                cwd=cwd,
+            )
+        now = float(session["created_at"])
         return _ok(
             rid,
             {
@@ -4199,7 +4778,7 @@ def _(rid, params: dict) -> dict:
                     "skills": {},
                     "lazy": True,
                     "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                    "profile_name": _current_profile_name(),
+                    "profile_name": _session_profile_name(session),
                 },
                 "inflight": None,
                 "running": child_running,
@@ -4310,6 +4889,14 @@ def _(rid, params: dict) -> dict:
                 if profile_home is not None:
                     _sessions[sid]["profile_home"] = str(profile_home)
                 _sessions[sid]["active_session_lease"] = lease
+                # Record alias→(session_key, profile_home) so a post-WS-orphan-reap
+                # session.history(sid) can still find the disk row when iOS
+                # reconnects after backgrounding (see ``_record_alias_meta`` doc).
+                _record_alias_meta(
+                    sid,
+                    session_key=target,
+                    profile_home=str(profile_home) if profile_home is not None else None,
+                )
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -4334,7 +4921,10 @@ def _(rid, params: dict) -> dict:
 
 @method("session.cwd.set")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
+    # Rehydrate-aware: iOS setting cwd against a quietly-reaped alias picks
+    # up the lazy reinstall and the persist below lands on the SAME state.db
+    # row.  See ``_sess_nowait_or_rehydrate`` for the post-eviction contract.
+    session, err = _sess_nowait_or_rehydrate(params, rid)
     if err:
         return err
     if session.get("running"):
@@ -4585,7 +5175,9 @@ def _(rid, params: dict) -> dict:
 
 @method("session.title")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
+    # Rehydrate-aware: iOS renaming a chat post-reconnect should land on
+    # the same DB row, not 4001 just because the short alias was reaped.
+    session, err = _sess_nowait_or_rehydrate(params, rid)
     if err:
         return err
     db = _get_db()
@@ -4787,7 +5379,10 @@ def _(rid, params: dict) -> dict:
 
 @method("session.usage")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
+    # Rehydrate-aware: iOS reading per-session usage for a quietly-reaped
+    # alias shows the persisted DB totals instead of an honest-but-useless
+    # 4001.
+    session, err = _sess_nowait_or_rehydrate(params, rid)
     if err:
         return err
     agent = session.get("agent")
@@ -4844,7 +5439,9 @@ def _(rid, params: dict) -> dict:
 
 @method("session.status")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
+    # Rehydrate-aware: iOS reading status (cwd, branch, model, tokens) for a
+    # reaped alias surfaces the rebuilt-from-disk shape instead of 4001.
+    session, err = _sess_nowait_or_rehydrate(params, rid)
     if err:
         return err
 
@@ -4901,16 +5498,54 @@ def _(rid, params: dict) -> dict:
 
 @method("session.history")
 def _(rid, params: dict) -> dict:
+    sid = str(params.get("session_id") or "")
     session, err = _sess_nowait(params, rid)
-    if err:
-        return err
-    history = list(session.get("history", []))
-    db = _get_db()
-    if db is not None and session.get("session_key"):
+    if err is not None:
+        # The short alias isn't in ``_sessions`` — either it never existed (a
+        # genuine 4001) or the WS-orphan / idle reaper popped it while iOS was
+        # backgrounded.  In the second case the row is still on disk; the
+        # alias-meta sidecar remembers which long key + profile DB to read from
+        # so a quick post-reconnect ``session.history`` rehydrates cleanly
+        # instead of falsely 4001'ing and triggering the iOS sessionGone path.
+        meta = _lookup_alias_meta(sid)
+        if not meta:
+            return err
         try:
-            history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True
+            history = _read_history_from_disk(
+                meta["session_key"], meta.get("profile_home")
             )
+        except Exception:
+            logger.debug(
+                "session.history disk-only rehydrate failed for evicted alias",
+                exc_info=True,
+            )
+            return err
+        if history is None:
+            # The row really is gone — the disk lookup said so, not just the
+            # in-memory miss.  Hand 4001 back so iOS's sessionGone fires.
+            return err
+        return _ok(
+            rid,
+            {
+                "count": len(history),
+                "messages": _history_to_messages(history),
+            },
+        )
+    history = list(session.get("history", []))
+    # A reeve-bound (or any non-launch-profile) session's messages live in
+    # ``<profile_home>/state.db``, NOT the launch profile's db that ``_get_db()``
+    # opens.  Use the profile-aware ``_session_db`` context manager — the same
+    # one ``_set_session_cwd`` uses — so the reconcile-after-stream and
+    # tap-to-resume history reads hit the right db.  Falls back to ``_get_db()``
+    # when the session has no ``profile_home`` set (the default-profile case),
+    # which preserves wire-compatible behaviour for single-profile setups.
+    if session.get("session_key"):
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    history = db.get_messages_as_conversation(
+                        session["session_key"], include_ancestors=True
+                    )
         except Exception:
             pass
     return _ok(
@@ -4924,7 +5559,10 @@ def _(rid, params: dict) -> dict:
 
 @method("session.undo")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    # Rehydrate-aware: an undo against a reaped alias rebuilds the live
+    # session from disk and mutates the SAME DB row; the agent isn't running
+    # post-reap so the busy-guard below never trips spuriously.
+    session, err = _sess_or_rehydrate(params, rid)
     if err:
         return err
     # Reject during an in-flight turn.  If we mutated history while
@@ -4952,7 +5590,10 @@ def _(rid, params: dict) -> dict:
 
 @method("session.compress")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    # Rehydrate-aware: manual compression against a reaped alias rebuilds
+    # the live session, runs against the SAME long key, and writes back to
+    # the SAME DB row — same cache-stability guarantees as prompt.submit.
+    session, err = _sess_or_rehydrate(params, rid)
     if err:
         return err
     if session.get("running"):
@@ -5048,7 +5689,10 @@ def _(rid, params: dict) -> dict:
 
 @method("session.save")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    # Rehydrate-aware: snapshotting a reaped alias to disk should pick up
+    # the SAME conversation it would have before the reap; rehydrate gives
+    # us the agent + history we need.
+    session, err = _sess_or_rehydrate(params, rid)
     if err:
         return err
 
@@ -5110,12 +5754,23 @@ def _(rid, params: dict) -> dict:
     # idempotent teardown path (pop + _teardown_session) and returns False
     # when the session is already gone.
     with _session_resume_lock:
-        return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
+        closed = _close_session_by_id(sid, end_reason="tui_close")
+    # An explicit close is the one path that means "this alias is gone for
+    # good" — drop the alias-meta sidecar entry so a later session.history on
+    # this sid honestly 4001s instead of disk-only rehydrating.  Reap paths
+    # deliberately do NOT do this; they're the eviction the sidecar exists
+    # to survive.
+    if closed and sid:
+        _forget_alias_meta(sid)
+    return _ok(rid, {"closed": closed})
 
 
 @method("session.branch")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    # Rehydrate-aware: branching off a reaped alias forks the SAME parent
+    # row; without the rehydrate iOS would 4001 and the user couldn't fork
+    # a chat that's still very much present on disk.
+    session, err = _sess_or_rehydrate(params, rid)
     if err:
         return err
     db = _get_db()
@@ -5186,6 +5841,13 @@ def _(rid, params: dict) -> dict:
 
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
+    # No rehydrate here — by construction a reaped alias has no in-flight
+    # run (the reaper bails out for ``running=True`` sessions), so calling
+    # interrupt on one would either rebuild a live session just to no-op
+    # against it (returning success when nothing was cancelled — misleading
+    # for iOS, which would think a cancellation it didn't expect succeeded)
+    # or 4001 honestly so the iOS UI corrects its stale "still running"
+    # view.  Honest 4001 is the right wire contract here.
     session, err = _sess(params, rid)
     if err:
         return err
@@ -5442,6 +6104,12 @@ def _(rid, params: dict) -> dict:
     text = (params.get("text") or "").strip()
     if not text:
         return _err(rid, 4002, "text is required")
+    # No rehydrate here — steer queues text onto a RUNNING turn's next tool
+    # result.  A reaped alias has no running turn (the reaper bails out for
+    # ``running=True`` sessions), so rehydrate-and-steer would queue into a
+    # session with nothing to steer, returning success while having no
+    # effect.  Honest 4001 lets the iOS UI correct its stale "still
+    # running" view.
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -5457,7 +6125,10 @@ def _(rid, params: dict) -> dict:
 
 @method("terminal.resize")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
+    # Rehydrate-aware: iOS sends terminal.resize frequently as the keyboard
+    # appears/disappears; a single false-positive 4001 on resize would
+    # cascade UI noise.
+    session, err = _sess_nowait_or_rehydrate(params, rid)
     if err:
         return err
     session["cols"] = int(params.get("cols", 80))
@@ -5471,8 +6142,18 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
-    session, err = _sess_nowait(params, rid)
-    if err:
+    # ``_sess_nowait_or_rehydrate`` adds the post-eviction alias-meta fallback
+    # symmetric with ``session.history``: a ``prompt.submit`` against a
+    # session whose short alias was popped by the WS-orphan / idle reaper
+    # while iOS was backgrounded transparently rebuilds the live entry
+    # under the SAME short alias instead of falsely 4001'ing.  Returns the
+    # original 4001 when the row is genuinely gone from disk OR when
+    # session.close cleared the alias-meta — iOS's sessionGone path still
+    # fires for true loss.  See ``_rehydrate_alias_from_meta`` for the
+    # divergence from session.history's read-only disk rehydrate (this
+    # handler has to RUN so it needs a live _sessions[sid]).
+    session, err = _sess_nowait_or_rehydrate(params, rid)
+    if err is not None:
         return err
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect

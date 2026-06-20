@@ -33,6 +33,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import random
 import logging
 import mimetypes
 import os
@@ -522,6 +523,36 @@ class WeComAdapter(BasePlatformAdapter):
         # this chat can fall back to APP_CMD_RESPONSE (required for groups —
         # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
         self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
+
+        # Instant random acknowledgment — fire-and-forget, no response wait.
+        # Uses _send_json directly to avoid the deadlock with _read_events.
+        _acks = [
+            "收到，让我看看 👀",
+            "好嘞，稍等 🔍",
+            "收到收到，容我想想 💭",
+            "来了来了 🏃",
+            "嗯嗯，在查了 📡",
+            "等一下哦～ ⏳",
+            "收到！正在处理 ✨",
+            "嗨～我看看哈 🤔",
+        ]
+        ack_req_id = self._payload_req_id(payload)
+        if ack_req_id:
+            async def _send_ack():
+                try:
+                    await self._send_json({
+                        "cmd": "aibot_send_msg",
+                        "headers": {"req_id": f"ack-{uuid.uuid4().hex}"},
+                        "body": {
+                            "chatid": chat_id,
+                            "msgtype": "markdown",
+                            "markdown": {"content": random.choice(_acks)},
+                        },
+                    })
+                    logger.info("[%s] Ack sent to %s", self.name, chat_id)
+                except Exception as e:
+                    logger.error("[%s] Ack failed for %s: %s", self.name, chat_id, e)
+            asyncio.create_task(_send_ack())
 
         text, reply_text = self._extract_text(body)
         # Strip leading @mention in group chats so slash commands like

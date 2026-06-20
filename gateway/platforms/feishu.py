@@ -2868,12 +2868,22 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
-        if action_value:
-            try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
-            except Exception:
-                pass
+        # If the button value contains a "prompt" key, route it as a plain
+        # TEXT message so Hermes handles it naturally through the agent pipeline.
+        # This allows any interactive card to send arbitrary prompts to Hermes
+        # without requiring hardcoded command handlers.
+        prompt_text = action_value.get("prompt") if isinstance(action_value, dict) else None
+        if prompt_text:
+            synthetic_text = str(prompt_text)
+            msg_type = MessageType.TEXT
+        else:
+            synthetic_text = f"/card {action_tag}"
+            if action_value:
+                try:
+                    synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
+                except Exception:
+                    pass
+            msg_type = MessageType.COMMAND
 
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
         sender_profile = await self._resolve_sender_profile(sender_id)
@@ -2889,13 +2899,16 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         synthetic_event = MessageEvent(
             text=synthetic_text,
-            message_type=MessageType.COMMAND,
+            message_type=msg_type,
             source=source,
             raw_message=data,
             message_id=token or str(uuid.uuid4()),
             timestamp=datetime.now(),
         )
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
+        logger.info(
+            "[Feishu] Routing card action %r from %s in %s as synthetic %s: %r",
+            action_tag, open_id, chat_id, msg_type.value if hasattr(msg_type, 'value') else msg_type, synthetic_text[:80],
+        )
         await self._handle_message_with_guards(synthetic_event)
 
     # =========================================================================

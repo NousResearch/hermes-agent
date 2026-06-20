@@ -1619,7 +1619,7 @@
     }
 
     const profileOptions = profiles.map(function (p) {
-      const tag = p.is_default ? " (default)" : "";
+      const tag = (p.is_default && p.name !== "default") ? " (default)" : "";
       return h(SelectOption, { key: p.name, value: p.name }, p.name + tag);
     });
 

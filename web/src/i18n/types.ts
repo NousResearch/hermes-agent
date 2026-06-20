@@ -923,4 +923,202 @@ export interface Translations {
     removeHook: string;
     removeHookDesc: string;
   };
+
+  // ── Profile Builder (step-by-step wizard) ──
+  profileBuilder: {
+    title: string;
+    cancel: string;
+    steps: {
+      identity: string;
+      model: string;
+      skills: string;
+      mcp: string;
+      review: string;
+    };
+    identity: {
+      nameLabel: string;
+      namePlaceholder: string;
+      nameRule: string;
+      descLabel: string;
+      descPlaceholder: string;
+    };
+    model: {
+      hint: string;
+      filterPlaceholder: string;
+      loading: string;
+      useDefault: string;
+    };
+    skills: {
+      keepAllLabel: string;
+      chooseHint: string;
+      filterPlaceholder: string;
+      loading: string;
+      hubLabel: string;
+      hubSearchPlaceholder: string;
+      search: string;
+      searching: string;
+      add: string;
+      remove: string;
+    };
+    mcp: {
+      hint: string;
+      namePlaceholder: string;
+      urlPlaceholder: string;
+      commandPlaceholder: string;
+      argsPlaceholder: string;
+      addServer: string;
+      remove: string;
+      nameRequired: string;
+      urlOrCommandRequired: string;
+    };
+    review: {
+      name: string;
+      description: string;
+      model: string;
+      defaultModel: string;
+      skills: string;
+      keepAll: string;
+      keptCount: string;
+      mcp: string;
+      none: string;
+      createProfile: string;
+      creating: string;
+      created: string;
+      createdPending: string;
+      createFailed: string;
+      invalidName: string;
+      selectModel: string;
+    };
+  };
+
+  // ── Cron Blueprints ──
+  blueprints: {
+    setup: string;
+    cancel: string;
+    scheduleIt: string;
+    loading: string;
+    loadError: string;
+    noBlueprints: string;
+    scheduled: string;
+    tabLabel: string;
+  };
+
+  // ── Files page ──
+  files: {
+    title: string;
+    pathPlaceholder: string;
+    go: string;
+    upload: string;
+    create: string;
+    uploading: string;
+    dropHere: string;
+    releaseToUpload: string;
+    chooseFiles: string;
+    loading: string;
+    noFiles: string;
+    name: string;
+    size: string;
+    modified: string;
+    actions: string;
+    createFolder: string;
+    folderName: string;
+    cancel: string;
+    createBtn: string;
+    creating: string;
+    target: string;
+    pathRequired: string;
+    folderNameRequired: string;
+    folderCreated: string;
+    createFailed: string;
+    uploadFailed: string;
+    deleteFailed: string;
+    deleted: string;
+    directoryUnavailable: string;
+  };
+
+  // ── MCP page ──
+  mcpPage: {
+    addServer: string;
+    removeServer: string;
+    removeConfirm: string;
+    name: string;
+    transport: string;
+    url: string;
+    command: string;
+    args: string;
+    env: string;
+    envPlaceholder: string;
+    add: string;
+    adding: string;
+    nameRequired: string;
+    urlRequired: string;
+    commandRequired: string;
+    install: string;
+    installTitle: string;
+    installHint: string;
+    installing: string;
+    installed: string;
+    installFailed: string;
+    installBackground: string;
+    testTools: string;
+    testFailed: string;
+    toggleNote: string;
+    addFailed: string;
+    deleteSuccess: string;
+  };
+
+  // ── Webhooks page ──
+  webhooks: {
+    title: string;
+    newWebhook: string;
+    name: string;
+    namePlaceholder: string;
+    description: string;
+    descriptionPlaceholder: string;
+    events: string;
+    create: string;
+    creating: string;
+    created: string;
+    webhookUrl: string;
+    secret: string;
+    secretShownOnce: string;
+    copySecret: string;
+    copied: string;
+    delete: string;
+    deleteConfirmTitle: string;
+    deleteConfirmMessage: string;
+    deleteSuccess: string;
+    noWebhooks: string;
+    test: string;
+    testSent: string;
+    testFailed: string;
+    refresh: string;
+  };
+
+  // ── Model Info Card ──
+  modelInfo: {
+    contextWindow: string;
+    maxOutput: string;
+    supportsVision: string;
+    supportsTools: string;
+    supportsReasoning: string;
+    loading: string;
+    noInfo: string;
+  };
+
+  // ── Skill Editor Dialog ──
+  skillEditor: {
+    createTitle: string;
+    editTitle: string;
+    name: string;
+    namePlaceholder: string;
+    category: string;
+    categoryOptional: string;
+    content: string;
+    save: string;
+    saving: string;
+    saved: string;
+    saveFailed: string;
+    cancel: string;
+  };
 }

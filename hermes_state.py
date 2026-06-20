@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
@@ -2464,6 +2465,22 @@ class SessionDB:
             return str(content)
 
     @classmethod
+    def _redact_for_storage(cls, value: Any) -> Any:
+        """Redact secrets before transcript content reaches SQLite."""
+        if isinstance(value, str):
+            return redact_sensitive_text(value, force=True)
+        if isinstance(value, list):
+            return [cls._redact_for_storage(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._redact_for_storage(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: cls._redact_for_storage(item)
+                for key, item in value.items()
+            }
+        return value
+
+    @classmethod
     def _decode_content(cls, content: Any) -> Any:
         """Reverse :meth:`_encode_content`; returns scalars unchanged."""
         if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
@@ -2510,21 +2527,26 @@ class SessionDB:
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
-            json.dumps(reasoning_details)
+            json.dumps(self._redact_for_storage(reasoning_details))
             if reasoning_details else None
         )
         codex_items_json = (
-            json.dumps(codex_reasoning_items)
+            json.dumps(self._redact_for_storage(codex_reasoning_items))
             if codex_reasoning_items else None
         )
         codex_message_items_json = (
-            json.dumps(codex_message_items)
+            json.dumps(self._redact_for_storage(codex_message_items))
             if codex_message_items else None
         )
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        tool_calls_json = (
+            json.dumps(self._redact_for_storage(tool_calls))
+            if tool_calls else None
+        )
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
-        stored_content = self._encode_content(content)
+        stored_content = self._encode_content(self._redact_for_storage(content))
+        stored_reasoning = self._redact_for_storage(reasoning)
+        stored_reasoning_content = self._redact_for_storage(reasoning_content)
 
         message_timestamp = time.time()
         if timestamp is not None:
@@ -2558,8 +2580,8 @@ class SessionDB:
                     message_timestamp,
                     token_count,
                     finish_reason,
-                    reasoning,
-                    reasoning_content,
+                    stored_reasoning,
+                    stored_reasoning_content,
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
@@ -2627,15 +2649,32 @@ class SessionDB:
                 )
 
                 reasoning_details_json = (
-                    json.dumps(reasoning_details) if reasoning_details else None
+                    json.dumps(self._redact_for_storage(reasoning_details))
+                    if reasoning_details else None
                 )
                 codex_items_json = (
-                    json.dumps(codex_reasoning_items) if codex_reasoning_items else None
+                    json.dumps(self._redact_for_storage(codex_reasoning_items))
+                    if codex_reasoning_items else None
                 )
                 codex_message_items_json = (
-                    json.dumps(codex_message_items) if codex_message_items else None
+                    json.dumps(self._redact_for_storage(codex_message_items))
+                    if codex_message_items else None
                 )
-                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                tool_calls_json = (
+                    json.dumps(self._redact_for_storage(tool_calls))
+                    if tool_calls else None
+                )
+                stored_content = self._encode_content(
+                    self._redact_for_storage(msg.get("content"))
+                )
+                stored_reasoning = (
+                    self._redact_for_storage(msg.get("reasoning"))
+                    if role == "assistant" else None
+                )
+                stored_reasoning_content = (
+                    self._redact_for_storage(msg.get("reasoning_content"))
+                    if role == "assistant" else None
+                )
                 # Accept either `platform_message_id` (new explicit name) or
                 # `message_id` (yuanbao's existing convention on message dicts).
                 platform_msg_id = (
@@ -2651,15 +2690,15 @@ class SessionDB:
                     (
                         session_id,
                         role,
-                        self._encode_content(msg.get("content")),
+                        stored_content,
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
                         message_timestamp,
                         msg.get("token_count"),
                         msg.get("finish_reason"),
-                        msg.get("reasoning") if role == "assistant" else None,
-                        msg.get("reasoning_content") if role == "assistant" else None,
+                        stored_reasoning,
+                        stored_reasoning_content,
                         reasoning_details_json,
                         codex_items_json,
                         codex_message_items_json,

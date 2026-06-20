@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import sqlite3
 import time
 import pytest
@@ -667,6 +668,77 @@ class TestMessageStorage:
                 "SELECT content FROM messages WHERE session_id = ?", ("s1",)
             ).fetchone()
         assert row["content"] == "plain text"
+
+    def test_append_message_redacts_secrets_before_sqlite_storage(self, db):
+        db.create_session(session_id="s1", source="cli")
+        openai_key = "sk-proj-" + "a" * 32
+        google_api_key = "AIza" + "b" * 36
+        reasoning_secret = "sk-reason-" + "c" * 32
+        tool_secret = "sk-tool-" + "d" * 32
+
+        db.append_message(
+            "s1",
+            role="assistant",
+            content=f"OPENAI_API_KEY={openai_key} google={google_api_key}",
+            reasoning=f"reasoning_secret={reasoning_secret}",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": json.dumps({"api_key": tool_secret}),
+                    },
+                }
+            ],
+        )
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content, reasoning, tool_calls FROM messages WHERE session_id = ?",
+                ("s1",),
+            ).fetchone()
+
+        raw = json.dumps(dict(row))
+        assert openai_key not in raw
+        assert google_api_key not in raw
+        assert reasoning_secret not in raw
+        assert tool_secret not in raw
+        assert "***" in raw or "..." in raw
+
+    def test_replace_messages_redacts_structured_content_before_sqlite_storage(self, db):
+        db.create_session(session_id="s1", source="cli")
+        api_key = "AIza" + "e" * 36
+        nested_key = "sk-replace-" + "f" * 32
+
+        db.replace_messages(
+            "s1",
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"token {api_key}"},
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": "ok",
+                    "codex_message_items": [
+                        {"type": "message", "payload": {"api_key": nested_key}},
+                    ],
+                },
+            ],
+        )
+
+        with db._lock:
+            rows = db._conn.execute(
+                "SELECT content, codex_message_items FROM messages WHERE session_id = ?",
+                ("s1",),
+            ).fetchall()
+
+        raw = json.dumps([dict(row) for row in rows])
+        assert api_key not in raw
+        assert nested_key not in raw
+        assert "***" in raw or "..." in raw
 
     def test_replace_messages_persists_tool_name(self, db):
         """`replace_messages` (used by /retry, /undo, /compress) must write

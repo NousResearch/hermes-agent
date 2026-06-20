@@ -149,6 +149,11 @@ class WeComAdapter(BasePlatformAdapter):
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
 
+    # Platform capability declarations
+    SUPPORTS_MESSAGE_EDITING = False  # WeCom API 不支持编辑已发送消息
+    SUPPORTS_STREAM_MESSAGES = True   # 支持 stream 消息类型的流式回复
+    REQUIRES_EDIT_FINALIZE = True     # 需要显式 finish=true 结束流
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
 
@@ -184,6 +189,8 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._progress_stream_ids: Dict[str, str] = {}  # chat_id -> stream_id for tool progress
+        self._progress_sent_content: Dict[str, str] = {}  # chat_id -> sent content tracker
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -1511,6 +1518,45 @@ class WeComAdapter(BasePlatformAdapter):
 # ------------------------------------------------------------------
 
 _QR_GENERATE_URL = "https://work.weixin.qq.com/ai/qc/generate"
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Pseudo-edit for tool progress messages using stream msgtype."""
+        reply_req_id = self._reply_req_id_for_message(None)
+        if not reply_req_id and chat_id in self._last_chat_req_ids:
+            reply_req_id = self._last_chat_req_ids[chat_id]
+        if not reply_req_id:
+            return await self.send(chat_id=chat_id, content=content)
+        stream_id = self._progress_stream_ids.get(chat_id)
+        if not stream_id:
+            stream_id = f"progress_{uuid.uuid4().hex[:12]}"
+            self._progress_stream_ids[chat_id] = stream_id
+            self._progress_sent_content[chat_id] = ""
+        last_sent = self._progress_sent_content.get(chat_id, "")
+        if content.startswith(last_sent):
+            incremental = content[len(last_sent):]
+        else:
+            stream_id = f"progress_{uuid.uuid4().hex[:12]}"
+            self._progress_stream_ids[chat_id] = stream_id
+            incremental = content
+        self._progress_sent_content[chat_id] = content
+        try:
+            response = await self._send_reply_stream(reply_req_id, stream_id, incremental, finish=finalize)
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout")
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+        if self._response_error(response):
+            return SendResult(success=False, error=self._response_error(response))
+        return SendResult(success=True, message_id=stream_id, raw_response=response)
+
+
 _QR_QUERY_URL = "https://work.weixin.qq.com/ai/qc/query_result"
 _QR_CODE_PAGE = "https://work.weixin.qq.com/ai/qc/gen?source=hermes&scode="
 _QR_POLL_INTERVAL = 3  # seconds

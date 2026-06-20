@@ -779,22 +779,21 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                     api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
                     conversation_history: Any = None, user_message: Any = None,
                     turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
-    # Older Hermes branches used pre_llm_call for request-scoped tracing and
-    # passed the actual API messages. Current Hermes also has a turn-scoped
-    # pre_llm_call used for context injection; tracing that hook creates an
-    # extra orphan/root trace before the real request trace. Only trace the
-    # legacy request-shaped call here.
-    if not isinstance(messages, list):
-        return
-
     client = _get_langfuse()
     if client is None:
         return
 
-    # messages is a list only for legacy Hermes branches that fired
-    # pre_llm_call with API messages directly. Current Hermes fires
-    # pre_llm_call for context injection (conversation_history/user_message,
-    # no messages list) — tracing that would create orphan traces.
+    # Normalize the various message-argument shapes into the standard list.
+    # Current Hermes fires pre_llm_call for turn-scoped context injection and
+    # passes conversation_history / user_message (no raw messages list). Older
+    # Hermes branches passed the actual API messages directly. The helper
+    # handles both shapes — see _coerce_request_messages.
+    input_messages = _coerce_request_messages(
+        messages=messages,
+        conversation_history=conversation_history,
+        user_message=user_message,
+    )
+
     task_key = _trace_key(
         task_id,
         session_id,
@@ -813,7 +812,7 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                 provider=provider,
                 model=model,
                 api_mode=api_mode,
-                messages=messages,
+                messages=input_messages,
                 client=client,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
@@ -928,7 +927,23 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
         generation = state.generations.pop(req_key, None) if state else None
-    if state is None or generation is None:
+    if state is None:
+        return
+
+    # Turn-scoped post_llm_call (from turn_finalizer): the pre_llm_call
+    # created the root trace but no api_request-scoped generation exists.
+    # Finish the root trace directly.
+    if generation is None:
+        if assistant_response is not None:
+            output = {"content": _safe_value(assistant_response), "reasoning": None, "tool_calls": []}
+        elif assistant_message is not None:
+            output = _serialize_assistant_message(assistant_message)
+        else:
+            output = {}
+        has_tools = _assistant_has_tool_calls(assistant_message) if assistant_message else False
+        has_content = bool(output.get("content"))
+        if not has_tools and has_content:
+            _finish_trace(task_key, output=output)
         return
 
     # Handle both call patterns:

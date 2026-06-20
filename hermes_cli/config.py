@@ -2288,6 +2288,15 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+        "reply_prefix": None,
+        # Default public-group behavior: read/retain all group context, but
+        # only visibly reply when mentioned, replied-to, slash-invoked, or in a
+        # configured free-response chat.
+        "require_mention": True,
+        "free_response_chats": "",
+        "observe_unmentioned_group_messages": True,
+        "group_policy": "open",
+        "group_allow_from": "*",
     },
 
     # Telegram platform settings (gateway mode)
@@ -2708,6 +2717,22 @@ DEFAULT_CONFIG = {
             # bounding CPU / memory / upstream-LLM-quota exhaustion from a
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
+        },
+
+        # Gateway-level WhatsApp group routing policy. Runs before agent/LLM
+        # dispatch so groups default to quiet observation unless Hermes is
+        # directly addressed or the group is explicitly configured otherwise.
+        "whatsapp_group_routing": {
+            "enabled": True,
+            "group_mode": "mention_only",  # observe_only, mention_only, authorized_coordination, active_ops
+            "allowed_public_reply": False,
+            "allowed_dm_followup": False,
+            "noise_tolerance": "low",  # low, medium, high
+            "default_followup_channel": "private_jacob",  # private_jacob, direct_owner, group
+            "aliases": {
+                "hermes": ["hermes", "jack"],
+                "jacob": ["jacob"],
+            },
         },
     },
 

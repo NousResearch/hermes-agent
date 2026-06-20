@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp import WhatsAppAdapter
+from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
 class _FakeResponse:
@@ -129,3 +129,23 @@ async def test_whatsapp_send_omits_empty_mentions():
 
     assert result.success is True
     assert "mentions" not in fake_session.posts[0]["json"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blankish", [" ", "\u200b", "\u200b \n\u2060", "[SILENT]"])
+async def test_whatsapp_send_suppresses_non_visible_content(blankish):
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter.platform = Platform.WHATSAPP
+    adapter.config = PlatformConfig(enabled=True, extra={})
+    adapter._running = True
+    adapter._bridge_port = 3000
+    fake_session = _FakeSession()
+    adapter._http_session = fake_session
+    adapter._check_managed_bridge_exit = _no_bridge_exit
+    adapter._outgoing_chunk_limit = lambda: 4096
+
+    result = await adapter.send("120363406770604689@g.us", blankish)
+
+    assert result.success is True
+    assert result.message_id is None
+    assert fake_session.posts == []

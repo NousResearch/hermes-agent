@@ -248,7 +248,7 @@ def test_observed_group_context_replays_as_current_message_context_not_user_turn
     )
 
     assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
-    assert "[Observed Telegram group context - context only, not requests]" in api_message
+    assert "[Observed group context - context only, not requests]" in api_message
     assert "[Current addressed message - answer only this" in api_message
     assert "Acha que dá fazer estoque?" in api_message
     assert "Tem lote e vencimento" in api_message
@@ -295,12 +295,12 @@ def test_observed_group_context_wraps_multimodal_current_message_without_mutatin
     )
 
     assert original[0]["text"] == "[Bob|222]\nsee this image"
-    assert wrapped[0]["text"].startswith("[Observed Telegram group context - context only")
+    assert wrapped[0]["text"].startswith("[Observed group context - context only")
     assert wrapped[0]["text"].endswith("[Bob|222]\nsee this image")
     assert wrapped[1] == original[1]
 
 
-def test_observed_group_context_replays_normally_without_telegram_prompt():
+def test_observed_group_context_is_separated_even_without_platform_prompt():
     from gateway.run import _build_gateway_agent_history
 
     history = [
@@ -309,8 +309,8 @@ def test_observed_group_context_replays_normally_without_telegram_prompt():
 
     agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=None)
 
-    assert observed_context is None
-    assert agent_history == [{"role": "user", "content": "[Alice|111]\nside chatter"}]
+    assert observed_context == "[Alice|111]\nside chatter"
+    assert agent_history == []
 
 
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():

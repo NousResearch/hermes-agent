@@ -266,6 +266,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    _has_visible_delivery_text,
     cache_image_from_url,
     cache_audio_from_url,
 )
@@ -394,8 +395,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             or config.extra.get("allowFrom")
             or os.getenv("WHATSAPP_ALLOWED_USERS")
         )
+        # Jacob correction 2026-06-16: reactions are public WhatsApp noise.
+        # Use a real quiet-window debounce so rapid multi-message thoughts get
+        # one reaction on the latest/key message instead of one reaction per
+        # sentence. Configurable via whatsapp.extra.reaction_batch_delay_seconds.
         self._reaction_batch_delay_seconds = self._coerce_float_extra(
-            "reaction_batch_delay_seconds", 4.0
+            "reaction_batch_delay_seconds", 30.0
         )
         self._pending_reactions: Dict[str, Dict[str, Any]] = {}
         self._pending_reaction_tasks: Dict[str, asyncio.Task] = {}
@@ -460,7 +465,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _should_react_to_event(self, event: MessageEvent) -> bool:
         """Return True when this inbound WhatsApp message should get a receipt reaction."""
-        if not self._reactions_enabled:
+        if not getattr(self, "_reactions_enabled", False):
             return False
         if getattr(event.source, "chat_type", None) != "group":
             return False
@@ -488,7 +493,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _should_react_to_message_data(self, data: Dict[str, Any]) -> bool:
         """Return True when raw incoming WhatsApp data should get a receipt reaction."""
-        if not self._reactions_enabled:
+        if not getattr(self, "_reactions_enabled", False):
             return False
         if not data.get("isGroup", False):
             return False
@@ -580,32 +585,65 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "participant": raw_message.get("senderId") or raw_message.get("participant") or sender_id,
                 "emoji": emoji,
             }
-            async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/react",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status == 200:
-                    logger.info(
-                        "[%s] Reacted to WhatsApp group message %s in %s with %s",
+            for attempt in range(2):
+                async with self._http_session.post(
+                    f"http://127.0.0.1:{self._bridge_port}/react",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        logger.info(
+                            "[%s] Reacted to WhatsApp group message %s in %s with %s",
+                            self.name,
+                            message_id,
+                            chat_id,
+                            emoji,
+                        )
+                        return True
+
+                    body = await resp.text()
+                    if resp.status == 429 and attempt == 0:
+                        retry_after = self._extract_reaction_retry_after_seconds(body)
+                        if retry_after > 0:
+                            logger.info(
+                                "[%s] WhatsApp reaction delayed for message %s in %s; retrying in %.1fs",
+                                self.name,
+                                message_id,
+                                chat_id,
+                                retry_after,
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
+
+                    logger.warning(
+                        "[%s] WhatsApp reaction failed (%s) for message %s in %s: %s",
                         self.name,
+                        resp.status,
                         message_id,
                         chat_id,
-                        emoji,
+                        body[:300],
                     )
-                    return True
-                body = await resp.text()
-                logger.warning(
-                    "[%s] WhatsApp reaction failed (%s) for message %s in %s: %s",
-                    self.name,
-                    resp.status,
-                    message_id,
-                    chat_id,
-                    body[:300],
-                )
+                    return False
         except Exception as exc:
             logger.warning("[%s] WhatsApp reaction failed for %s in %s: %s", self.name, message_id, chat_id, exc)
         return False
+
+    @staticmethod
+    def _extract_reaction_retry_after_seconds(body: str) -> float:
+        """Parse bridge retryAfterSeconds from a 429 reaction response."""
+        try:
+            payload = json.loads(body or "{}")
+        except Exception:
+            return 0.0
+        try:
+            retry_after = float(payload.get("retryAfterSeconds") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if retry_after <= 0:
+            return 0.0
+        # Keep the bridge's retry contract useful without letting a malformed
+        # response park the gateway's background task indefinitely.
+        return min(retry_after, 60.0)
 
     def _effective_reply_prefix(self) -> str:
         """Return the prefix the Node bridge will add in self-chat mode."""
@@ -651,7 +689,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false").lower() in {"true", "1", "yes", "on"}
+        return os.getenv("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "true").lower() in {"true", "1", "yes", "on"}
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
@@ -744,7 +782,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return ""
         normalized = str(value).strip()
         if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
+            local, server = normalized.split("@", 1)
+            normalized = f"{local.split(':', 1)[0]}@{server}"
         return normalized
 
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
@@ -834,6 +873,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
         return self._should_consider_reply_to_reaction_sender_message(data)
 
+    def _whatsapp_direct_group_trigger_reason(self, data: Dict[str, Any]) -> Optional[str]:
+        """Return why a group message directly addressed Hermes, if it did.
+
+        The gateway pre-dispatch hard gate runs after the adapter has already
+        cleaned visible bot mention text out of ``event.text``. Preserve the
+        adapter's original direct-trigger decision in ``raw_message`` so the
+        second gate does not misclassify a native/display @Jack mention as a
+        mention of another participant.
+        """
+        chat_id_raw = str(data.get("chatId") or "")
+        if self._is_broadcast_chat(chat_id_raw) or not data.get("isGroup", False):
+            return None
+        body = str(data.get("body") or "").strip()
+        if body.startswith("/"):
+            return "slash_command"
+        if self._message_is_reply_to_bot(data):
+            return "reply_to_hermes_message"
+        if self._message_mentions_bot(data):
+            return "mentioned_hermes_metadata"
+        if self._message_matches_mention_patterns(data):
+            return "direct_hermes_text_address"
+        return None
+
     def _should_consider_reply_to_reaction_sender_message(self, data: Dict[str, Any]) -> bool:
         """Let approved Jacob-origin group messages reach the agent for reply/silence choice.
 
@@ -841,7 +903,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         gateway should still dispatch the message so Jack can decide whether a
         concise WhatsApp reply is useful.
         """
-        if not self._reactions_enabled:
+        if not getattr(self, "_reactions_enabled", False):
             return False
         if not self._coerce_bool_extra("reply_consider_reaction_senders", True):
             return False
@@ -873,7 +935,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         sender_id = event.source.user_id or "unknown"
         sender = event.source.user_name or sender_id
         text = event.text or ""
-        return f"[{sender} ({sender_id})]: {text}" if text else f"[{sender} ({sender_id})]"
+        media_bits = []
+        if event.media_urls:
+            for idx, url in enumerate(event.media_urls, start=1):
+                mtype = ""
+                if idx - 1 < len(event.media_types):
+                    mtype = event.media_types[idx - 1] or ""
+                label = "media"
+                if event.message_type == MessageType.PHOTO:
+                    label = "image"
+                elif event.message_type == MessageType.VIDEO:
+                    label = "video"
+                elif event.message_type == MessageType.VOICE:
+                    label = "voice"
+                elif event.message_type == MessageType.DOCUMENT:
+                    label = "document"
+                suffix = f" ({mtype})" if mtype else ""
+                media_bits.append(f"[{label} received{suffix}: {url}]")
+        observed = "\n".join(part for part in [text, *media_bits] if part)
+        return f"[{sender} ({sender_id})]: {observed}" if observed else f"[{sender} ({sender_id})]"
 
     @staticmethod
     def _whatsapp_group_observe_shared_source(source):
@@ -1397,7 +1477,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if bridge_exit:
             return SendResult(success=False, error=bridge_exit)
 
-        if not content or not content.strip():
+        if not _has_visible_delivery_text(content):
+            logger.warning(
+                "[Whatsapp] Suppressing non-visible/silent send (%d chars) to %s",
+                len(str(content or "")), chat_id,
+            )
             return SendResult(success=True, message_id=None)
 
         chat_id = to_whatsapp_jid(chat_id)
@@ -1407,6 +1491,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             # Format and chunk the message
             formatted = self.format_message(content)
+            if not _has_visible_delivery_text(formatted):
+                logger.warning(
+                    "[Whatsapp] Suppressing non-visible/silent formatted send (%d chars) to %s",
+                    len(str(formatted or "")), chat_id,
+                )
+                return SendResult(success=True, message_id=None)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
             raw_mentions = metadata.get("mentions") if isinstance(metadata, dict) else None
@@ -1430,6 +1520,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
+                    if resp.status == 204:
+                        # Bridge-level no-visible-content guard suppressed the send.
+                        continue
                     if resp.status == 200:
                         data = await resp.json()
                         last_message_id = data.get("messageId")
@@ -1759,6 +1852,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             should_observe = False if should_process else self._should_observe_unmentioned_group_message(data)
             if not should_process and not should_observe:
                 return None
+            direct_group_trigger_reason = self._whatsapp_direct_group_trigger_reason(data) if should_process else None
+            if direct_group_trigger_reason:
+                data["_hermes_direct_group_trigger_reason"] = direct_group_trigger_reason
 
             # Determine message type
             msg_type = MessageType.TEXT

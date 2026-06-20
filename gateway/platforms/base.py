@@ -34,6 +34,31 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_INVISIBLE_DELIVERY_CHARS_RE = re.compile(r"[\u200B\u200C\u200D\u2060\uFEFF\u180E\u2061-\u2064]")
+_SILENT_FINAL_RESPONSE_SENTINELS = {"[SILENT]", "[[SILENT]]", "<SILENT>", "SILENCIO"}
+_NO_DELIVERY_STATUS_RE = re.compile(
+    r"^silencio\s*(?:[.!¡!。]|[-–—:]\s*(?:no\s+(?:(?:fui|estoy|me)\s+)?aludid[oa]|no\s+(?:reply|respuesta)|sin\s+respuesta).*)?$",
+    re.IGNORECASE,
+)
+_INTERNAL_NOTES_LEAK_RE = re.compile(
+    r"(?:trilium|trillium|trillum|notes\.revoluciones\.mx)",
+    re.IGNORECASE,
+)
+
+
+def _contains_internal_notes_leak(text) -> bool:
+    return bool(_INTERNAL_NOTES_LEAK_RE.search(str(text or "")))
+
+
+def _has_visible_delivery_text(text) -> bool:
+    cleaned = _INVISIBLE_DELIVERY_CHARS_RE.sub("", str(text or ""))
+    candidate = cleaned.strip().strip("`\"'“”‘’").strip()
+    if not candidate:
+        return False
+    return (
+        candidate.upper() not in _SILENT_FINAL_RESPONSE_SENTINELS
+        and not _NO_DELIVERY_STATUS_RE.fullmatch(candidate)
+    )
 
 
 def _platform_name(platform) -> str:
@@ -2191,6 +2216,10 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Optional early pre-dispatch policy. Runs before session guarding and
+        # before _process_message_background starts typing indicators, so a
+        # skip result creates no visible platform output.
+        self._pre_dispatch_handler: Optional[Callable[[MessageEvent], Awaitable[dict | None]]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2622,6 +2651,17 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_pre_dispatch_handler(self, handler: Optional[Callable[[MessageEvent], Awaitable[dict | None]]]) -> None:
+        """Set an optional early policy hook for incoming messages.
+
+        The handler runs in :meth:`handle_message` before the adapter starts any
+        background processing or typing indicators. Return
+        ``{"action": "skip"}`` to create a true no-visible-output path,
+        ``{"action": "rewrite", "text": "..."}`` to replace the inbound text,
+        or ``{"action": "allow"}``/``None`` for normal dispatch.
+        """
+        self._pre_dispatch_handler = handler
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -4329,6 +4369,27 @@ class BasePlatformAdapter(ABC):
         # downstream delivery all agree on the same lane.
         self._apply_topic_recovery(event)
 
+        pre_dispatch = getattr(self, "_pre_dispatch_handler", None)
+        if pre_dispatch is not None and not getattr(event, "internal", False):
+            try:
+                pre_result = await pre_dispatch(event)
+            except Exception:
+                logger.warning("[%s] pre-dispatch handler failed", self.name, exc_info=True)
+                pre_result = None
+            if isinstance(pre_result, dict):
+                action = pre_result.get("action")
+                if action == "skip":
+                    logger.info(
+                        "[%s] pre-dispatch skip: reason=%s platform=%s chat=%s",
+                        self.name,
+                        pre_result.get("reason"),
+                        _platform_name(getattr(event.source, "platform", None)),
+                        getattr(event.source, "chat_id", "unknown"),
+                    )
+                    return
+                if action == "rewrite" and isinstance(pre_result.get("text"), str):
+                    event.text = pre_result["text"]
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
@@ -4719,7 +4780,26 @@ class BasePlatformAdapter(ABC):
                         except OSError:
                             pass
 
-                # Send the text portion
+                # Send the text portion. Guard against final responses that are
+                # technically non-empty but render as an empty WhatsApp/Telegram
+                # bubble (zero-width characters) or internal no-reply sentinels.
+                if text_content and not _has_visible_delivery_text(text_content):
+                    logger.warning(
+                        "[%s] Suppressing non-visible/silent response (%d chars) to %s",
+                        self.name, len(text_content), event.source.chat_id,
+                    )
+                    text_content = ""
+                if (
+                    text_content
+                    and event.source.platform == Platform.WHATSAPP
+                    and event.source.chat_type == "group"
+                    and _contains_internal_notes_leak(text_content)
+                ):
+                    logger.error(
+                        "[%s] Suppressing WhatsApp group response with internal notes leak to %s",
+                        self.name, event.source.chat_id,
+                    )
+                    text_content = ""
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)

@@ -391,6 +391,17 @@ _GATEWAY_DIAGNOSTIC_MESSAGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_INTERNAL_CONTROL_MESSAGE_RE = re.compile(
+    r"("
+    r"^\[IMPORTANT:\s*(?:Background process|.*watch pattern|.*Watch pattern)"
+    r"|^\[Background process\s+proc_[A-Za-z0-9_\-]+\s+(?:finished|completed|is still running)"
+    r"|^\s*⏩\s*Steer queued\s+[—-]\s+arrives after the next tool call"
+    r"|^\s*Steer (?:queued|failed|rejected)\b"
+    r"|^\[Your active task list was preserved across context compression\]"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _looks_like_gateway_diagnostic_message(text: str) -> bool:
     if not text:
@@ -398,6 +409,7 @@ def _looks_like_gateway_diagnostic_message(text: str) -> bool:
     body = str(text).strip()
     return bool(
         _GATEWAY_DIAGNOSTIC_MESSAGE_RE.search(body)
+        or _GATEWAY_INTERNAL_CONTROL_MESSAGE_RE.search(body)
         or _looks_like_gateway_provider_error(body)
     )
 
@@ -466,14 +478,38 @@ def _gateway_effective_suppress_provider_diagnostics(config: Any, platform: Any)
     )
 
 
-_SILENT_FINAL_RESPONSE_SENTINELS = {"[SILENT]", "[[SILENT]]", "<SILENT>"}
+_SILENT_FINAL_RESPONSE_SENTINELS = {"[SILENT]", "[[SILENT]]", "<SILENT>", "SILENCIO"}
+_INVISIBLE_DELIVERY_CHARS_RE = re.compile(r"[\u200B\u200C\u200D\u2060\uFEFF\u180E\u2061-\u2064]")
+_NO_DELIVERY_STATUS_RE = re.compile(
+    r"^silencio\s*(?:[.!¡!。]|[-–—:]\s*(?:no\s+(?:(?:fui|estoy|me)\s+)?aludid[oa]|no\s+(?:reply|respuesta)|sin\s+respuesta).*)?$",
+    re.IGNORECASE,
+)
+
+
+def _strip_invisible_delivery_chars(text: Any) -> str:
+    """Remove characters that can make a chat bubble look blank."""
+    return _INVISIBLE_DELIVERY_CHARS_RE.sub("", str(text or ""))
+
+
+def _normalize_no_delivery_candidate(text: Any) -> str:
+    """Normalize exact model no-reply markers before delivery decisions."""
+    return _strip_invisible_delivery_chars(text).strip().strip("`\"'“”‘’").strip()
+
+
+def _has_visible_delivery_text(text: Any) -> bool:
+    """Return True only when *text* has visible, non-whitespace content."""
+    return bool(_strip_invisible_delivery_chars(text).strip())
 
 
 def _is_silent_final_response_sentinel(text: Any) -> bool:
     """Return True when a model final response means no visible reply."""
     if text is None:
         return False
-    return str(text).strip().upper() in _SILENT_FINAL_RESPONSE_SENTINELS
+    candidate = _normalize_no_delivery_candidate(text)
+    return (
+        candidate.upper() in _SILENT_FINAL_RESPONSE_SENTINELS
+        or bool(_NO_DELIVERY_STATUS_RE.fullmatch(candidate))
+    )
 
 
 def _sanitize_gateway_final_response(
@@ -485,6 +521,10 @@ def _sanitize_gateway_final_response(
     """Sanitize final gateway replies before sending them to chat."""
     if not text:
         return text
+
+    text = _strip_invisible_delivery_chars(text)
+    if not text.strip():
+        return ""
 
     if _is_silent_final_response_sentinel(text):
         return ""
@@ -517,6 +557,12 @@ def _prepare_gateway_status_message(
 
     text = _redact_gateway_user_facing_secrets(text)
     if suppress_provider_diagnostics and _looks_like_gateway_diagnostic_message(text):
+        return None
+
+    # WhatsApp has no safe non-chat status surface. Internal progress/status
+    # banners in WhatsApp groups are user-visible noise, so suppress them
+    # unconditionally instead of falling back to adapter.send().
+    if _gateway_platform_value(platform) == "whatsapp":
         return None
 
     if _gateway_platform_value(platform) != "telegram":
@@ -829,19 +875,20 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
 
 
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
 
-def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
+def _uses_observed_group_context(channel_prompt: Optional[str]) -> bool:
+    """Return True for turns that may include observed group chatter.
 
-    Telegram's observe-unmentioned mode persists skipped group chatter so a
-    later @mention can see it. Those rows must not replay as ordinary user
-    turns: a weak wake word like ``@bot cambio`` should not make the model treat
-    old unmentioned chatter as pending work. The Telegram adapter marks these
-    turns with a channel prompt; this helper keeps the run-path check explicit
-    and unit-testable.
+    Observe-unmentioned mode persists skipped group chatter so a later direct
+    trigger can see it. Those rows must not replay as ordinary user turns: a
+    weak wake word like ``@bot cambio`` should not make the model treat old
+    unmentioned chatter as pending work. Telegram historically marked these
+    turns with a channel prompt; WhatsApp stores rows with ``observed=True``
+    and may not have a prompt marker, so callers also separate rows by that
+    flag below.
     """
 
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
@@ -894,7 +941,7 @@ def _build_gateway_agent_history(
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
     observed_group_context: List[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+    separate_observed_context = _uses_observed_group_context(channel_prompt)
 
     for msg in history or []:
         role = msg.get("role")
@@ -913,7 +960,7 @@ def _build_gateway_agent_history(
         content = msg.get("content")
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-        if separate_observed_context and msg.get("observed") and role == "user" and content:
+        if (separate_observed_context or msg.get("observed")) and msg.get("observed") and role == "user" and content:
             observed_group_context.append(str(content).strip())
             continue
 
@@ -6172,6 +6219,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter.set_pre_dispatch_handler(self._pre_gateway_dispatch)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -6972,6 +7020,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    adapter.set_pre_dispatch_handler(self._pre_gateway_dispatch)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -7819,6 +7868,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return
 
+        # WhatsApp has no private/status surface for internal operational
+        # notices; sending them through adapter.send() makes them visible in
+        # user chats/groups. Suppress instead.
+        if getattr(source, "platform", None) == Platform.WHATSAPP:
+            logger.debug("Suppressing internal platform notice for WhatsApp")
+            return
+
         config = getattr(self, "config", None)
         notice_delivery = "public"
         if config and hasattr(config, "get_notice_delivery"):
@@ -7843,6 +7899,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         await adapter.send(source.chat_id, content, metadata=metadata)
+
+    async def _pre_gateway_dispatch(self, event: MessageEvent) -> Optional[dict]:
+        """Run the hard pre-dispatch gate before adapter-visible processing.
+
+        This is the gateway-level no-reply path for WhatsApp groups: skipped
+        events are ingested/logged by the policy and never reach typing,
+        reactions, agent/LLM dispatch, or sendMessage.
+        """
+        source = event.source
+        platform_name = source.platform.value if getattr(source, "platform", None) else "unknown"
+        results: list[dict] = []
+
+        if platform_name == "whatsapp" and getattr(source, "chat_type", None) == "group":
+            try:
+                from gateway.group_routing import route_whatsapp_group_event
+
+                decision = route_whatsapp_group_event(
+                    event,
+                    gateway_config=self.config,
+                    session_store=self.session_store,
+                )
+                result = decision.as_hook_result()
+                results.append(result)
+            except Exception as exc:
+                logger.warning("WhatsApp group routing policy failed: %s", exc, exc_info=True)
+
+        # Preserve the public plugin hook as an extension point. It now runs
+        # early enough to return a true no-visible-output skip. The later
+        # _handle_message hook pass is skipped when this marker is set.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            plugin_results = _invoke_hook(
+                "pre_gateway_dispatch",
+                event=event,
+                gateway=self,
+                session_store=self.session_store,
+            )
+        except Exception as _hook_exc:
+            logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
+            plugin_results = []
+
+        for plugin_result in plugin_results:
+            if isinstance(plugin_result, dict):
+                results.append(plugin_result)
+
+        setattr(event, "_pre_gateway_dispatch_evaluated", True)
+        for result in results:
+            action = result.get("action")
+            if action == "skip":
+                return result
+            if action == "rewrite":
+                return result
+            if action == "allow":
+                return result
+        return {"action": "allow", "reason": "pre_dispatch_no_policy_match"}
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -7886,7 +7998,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
-        if not is_internal:
+        if not is_internal and not getattr(event, "_pre_gateway_dispatch_evaluated", False):
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
@@ -13863,6 +13975,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        if platform_name == "whatsapp":
+            logger.info(
+                "Suppressing watch-pattern process notification for WhatsApp chat=%s process=%s",
+                source.chat_id,
+                evt.get("session_id", "unknown"),
+            )
+            return
         adapter = None
         for p, a in self.adapters.items():
             if p.value == platform_name:
@@ -13982,6 +14101,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message_id = str(watcher.get("message_id") or "").strip() or None
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
+        if str(platform_name).strip().lower() == "whatsapp":
+            # WhatsApp chats/groups are customer-facing surfaces, not an operator
+            # console. Keep background process lifecycle/output notifications out
+            # of WhatsApp even when a tool was started with notify_on_complete.
+            agent_notify = False
+            notify_mode = "off"
+            logger.debug(
+                "Process watcher notifications forced off for WhatsApp process %s chat=%s",
+                session_id,
+                chat_id,
+            )
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -16425,7 +16555,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return
                 _deliver_bg_review_message(message)
 
-            agent.background_review_callback = _bg_review_send
+            # Background review delivery is internal status, not user content.
+            # WhatsApp has no non-chat status surface; never send these banners
+            # into WhatsApp chats/groups.
+            if source.platform == Platform.WHATSAPP:
+                agent.background_review_callback = None
+            else:
+                agent.background_review_callback = _bg_review_send
             # Register the release hook on the adapter so base.py's finally
             # block can fire it after delivering the main response.
             if _status_adapter and session_key:

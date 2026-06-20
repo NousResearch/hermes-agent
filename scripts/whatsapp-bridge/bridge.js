@@ -80,6 +80,29 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+const INVISIBLE_DELIVERY_CHARS_RE = /[\u200B\u200C\u200D\u2060\uFEFF\u180E\u2061-\u2064]/g;
+const SILENT_FINAL_RESPONSE_SENTINELS = new Set(['[SILENT]', '[[SILENT]]', '<SILENT>', 'SILENCIO']);
+const NO_DELIVERY_STATUS_RE = /^silencio\s*(?:[.!¡!。]|[-–—:]\s*(?:no\s+(?:(?:fui|estoy|me)\s+)?aludid[oa]|no\s+(?:reply|respuesta)|sin\s+respuesta).*)?$/i;
+const INTERNAL_STATUS_BANNER_RE = /^[^A-Za-z0-9]*(?:Self-improvement review:|Memory updated\b|User profile updated\b|Skill '[^']+' (?:created|updated|patched)\b|Model returned empty after tool calls|Preflight compression:|Compacting context|compacting context|Session compressed \d+ times|Codex gpt-5\.5 caps context|Opt back out:|Interrupted during API call|Interrupting current task|\[IMPORTANT:\s*Background process|Hermes Gateway Starting)/i;
+
+function isInternalStatusBanner(message) {
+  const cleaned = String(message ?? '').replace(INVISIBLE_DELIVERY_CHARS_RE, '').trim();
+  if (!cleaned) return false;
+  return cleaned.split(/\r?\n/).every(line => {
+    const t = line.trim();
+    return !t || INTERNAL_STATUS_BANNER_RE.test(t);
+  });
+}
+
+function hasVisibleDeliveryText(message) {
+  const cleaned = String(message ?? '').replace(INVISIBLE_DELIVERY_CHARS_RE, '').trim();
+  const candidate = cleaned.replace(/^[`"'“”‘’]+|[`"'“”‘’]+$/g, '').trim();
+  return candidate.length > 0
+    && !SILENT_FINAL_RESPONSE_SENTINELS.has(candidate.toUpperCase())
+    && !NO_DELIVERY_STATUS_RE.test(candidate)
+    && !isInternalStatusBanner(candidate);
+}
+
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
@@ -180,9 +203,59 @@ function findRecentMessageKey(chatId, messageId = null) {
   return items[items.length - 1];
 }
 
+function groupReactionGuard(chatId, target) {
+  if (!chatId?.endsWith('@g.us') || !target) return { allowed: true };
+  const now = Date.now();
+  const targetMs = Number(target.timestamp || 0) * 1000;
+  if (targetMs && now - targetMs < MIN_GROUP_REACTION_DELAY_MS) {
+    return {
+      allowed: false,
+      status: 429,
+      error: 'Group reaction delayed by anti-spam policy; wait before reacting to message bursts.',
+      retryAfterSeconds: Math.ceil((MIN_GROUP_REACTION_DELAY_MS - (now - targetMs)) / 1000),
+    };
+  }
+  const cutoff = now - GROUP_REACTION_WINDOW_MS;
+  const prior = (recentGroupReactions.get(chatId) || []).filter(ts => ts >= cutoff);
+  if (prior.length >= MAX_GROUP_REACTIONS_PER_WINDOW) {
+    return {
+      allowed: false,
+      status: 429,
+      error: 'Group reaction cap reached; avoid reacting to every message in a burst.',
+      retryAfterSeconds: Math.ceil((prior[0] + GROUP_REACTION_WINDOW_MS - now) / 1000),
+    };
+  }
+  recentGroupReactions.set(chatId, prior);
+  return { allowed: true };
+}
+
+function recordGroupReaction(chatId) {
+  if (!chatId?.endsWith('@g.us')) return;
+  const now = Date.now();
+  const cutoff = now - GROUP_REACTION_WINDOW_MS;
+  const prior = (recentGroupReactions.get(chatId) || []).filter(ts => ts >= cutoff);
+  prior.push(now);
+  recentGroupReactions.set(chatId, prior);
+}
+
+function sanitizeGroupOutboundText(chatId, text) {
+  if (!chatId?.endsWith('@g.us')) return text;
+  let out = String(text ?? '');
+  // External groups should never see private stack/tool names or internal note-system brands.
+  out = out.replace(/https?:\/\/notes\.revoluciones\.mx\S*/gi, 'notes');
+  out = out.replace(/\bTrill?ium\b/gi, 'notes');
+  return out;
+}
+
 function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  const text = String(value).trim();
+  const atIdx = text.indexOf('@');
+  if (atIdx > 0) {
+    const local = text.slice(0, atIdx).split(':')[0];
+    return `${local}${text.slice(atIdx)}`;
+  }
+  return text;
 }
 
 function getMessageContent(msg) {
@@ -235,6 +308,10 @@ const MAX_QUEUE_SIZE = 100;
 // consumes /messages destructively, so /react needs its own small cache.
 const recentMessageKeys = new Map();
 const MAX_RECENT_KEYS_PER_CHAT = 50;
+const MIN_GROUP_REACTION_DELAY_MS = Number(process.env.WHATSAPP_GROUP_REACTION_DELAY_MS || 30000);
+const GROUP_REACTION_WINDOW_MS = Number(process.env.WHATSAPP_GROUP_REACTION_WINDOW_MS || 120000);
+const MAX_GROUP_REACTIONS_PER_WINDOW = Number(process.env.WHATSAPP_GROUP_REACTION_MAX_PER_WINDOW || 2);
+const recentGroupReactions = new Map();
 
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
@@ -566,9 +643,11 @@ app.post('/react', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, emoji = '👍', messageId, participant } = req.body || {};
-  if (!chatId || !emoji) {
-    return res.status(400).json({ error: 'chatId and emoji are required' });
+  const body = req.body || {};
+  const { chatId, messageId, participant } = body;
+  const emoji = Object.prototype.hasOwnProperty.call(body, 'emoji') ? String(body.emoji ?? '') : '👍';
+  if (!chatId) {
+    return res.status(400).json({ error: 'chatId is required' });
   }
 
   const cached = findRecentMessageKey(chatId, messageId || null);
@@ -576,6 +655,13 @@ app.post('/react', async (req, res) => {
   const targetParticipant = participant || cached?.participant || null;
   if (!targetMessageId) {
     return res.status(404).json({ error: 'No recent incoming message cached for chatId; provide messageId and participant' });
+  }
+  const reactionGuard = groupReactionGuard(chatId, cached);
+  if (!reactionGuard.allowed) {
+    return res.status(reactionGuard.status || 429).json({
+      error: reactionGuard.error,
+      retryAfterSeconds: reactionGuard.retryAfterSeconds,
+    });
   }
 
   const key = { remoteJid: chatId, id: targetMessageId, fromMe: false };
@@ -585,6 +671,7 @@ app.post('/react', async (req, res) => {
 
   try {
     const sent = await sendWithTimeout(chatId, { react: { text: emoji, key } });
+    recordGroupReaction(chatId);
     res.json({
       success: true,
       messageId: sent?.key?.id || null,
@@ -639,12 +726,20 @@ app.post('/send', async (req, res) => {
   }
 
   const { chatId, message, replyTo, mentions } = req.body;
-  if (!chatId || !message) {
+  if (!chatId || message === undefined || message === null) {
     return res.status(400).json({ error: 'chatId and message are required' });
+  }
+  const outwardMessage = sanitizeGroupOutboundText(chatId, message);
+  if (!hasVisibleDeliveryText(outwardMessage)) {
+    return res.status(204).end();
   }
 
   try {
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const formattedMessage = formatOutgoingMessage(outwardMessage);
+    if (!hasVisibleDeliveryText(formattedMessage)) {
+      return res.status(204).end();
+    }
+    const chunks = splitLongMessage(formattedMessage);
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const sent = await sendWithTimeout(chatId, textPayload(chunks[i], i === 0 ? mentions : []));
@@ -678,13 +773,21 @@ app.post('/edit', async (req, res) => {
   }
 
   const { chatId, messageId, message, mentions } = req.body;
-  if (!chatId || !messageId || !message) {
+  if (!chatId || !messageId || message === undefined || message === null) {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
+  }
+  const outwardMessage = sanitizeGroupOutboundText(chatId, message);
+  if (!hasVisibleDeliveryText(outwardMessage)) {
+    return res.status(400).json({ error: 'message has no visible content' });
   }
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const formattedMessage = formatOutgoingMessage(outwardMessage);
+    if (!hasVisibleDeliveryText(formattedMessage)) {
+      return res.status(400).json({ error: 'message has no visible content after formatting' });
+    }
+    const chunks = splitLongMessage(formattedMessage);
     const messageIds = [];
 
     await sendWithTimeout(chatId, textPayload(chunks[0], mentions, { edit: key }));
@@ -760,6 +863,9 @@ app.post('/send-media', async (req, res) => {
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
+  const outwardCaption = caption === undefined || caption === null
+    ? undefined
+    : sanitizeGroupOutboundText(chatId, caption);
 
   try {
     if (!existsSync(filePath)) {
@@ -773,10 +879,10 @@ app.post('/send-media', async (req, res) => {
 
     switch (type) {
       case 'image':
-        msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        msgPayload = { image: buffer, caption: outwardCaption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
         break;
       case 'video':
-        msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        msgPayload = { video: buffer, caption: outwardCaption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
@@ -811,7 +917,7 @@ app.post('/send-media', async (req, res) => {
         msgPayload = {
           document: buffer,
           fileName: fileName || path.basename(filePath),
-          caption: caption || undefined,
+          caption: outwardCaption || undefined,
           mimetype: MIME_MAP[ext] || 'application/octet-stream',
         };
         break;
@@ -821,7 +927,7 @@ app.post('/send-media', async (req, res) => {
 
     trackSentMessageId(sent, {
       chatId,
-      text: caption || fileName || filePath,
+      text: outwardCaption || fileName || filePath,
       kind: type || 'media',
     });
 

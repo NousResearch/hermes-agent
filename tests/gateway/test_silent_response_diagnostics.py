@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 import yaml
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.run import (
+    GatewayRunner,
+    _format_gateway_process_notification,
     _gateway_effective_allow_silent_response,
     _gateway_effective_suppress_provider_diagnostics,
     _normalize_empty_agent_response,
@@ -131,6 +137,104 @@ def test_gateway_lifecycle_text_is_preserved_when_diagnostic_suppression_off():
         )
         == "Gateway running with 1 platform(s)"
     )
+
+
+def test_whatsapp_suppresses_internal_control_final_messages():
+    internal_messages = [
+        "⏩ Steer queued — arrives after the next tool call: 'send this later'",
+        "Steer failed: no active run",
+        "[IMPORTANT: Background process proc_123 completed (exit code 0).\nCommand: true\nOutput:\nok]",
+        "[Background process proc_123 finished with exit code 0~ Here's the final output:\nok]",
+        "[Your active task list was preserved across context compression]",
+    ]
+
+    for message in internal_messages:
+        assert (
+            _sanitize_gateway_final_response(
+                Platform.WHATSAPP,
+                message,
+                suppress_provider_diagnostics=True,
+            )
+            == ""
+        )
+
+
+def test_formatted_watch_notification_is_suppressed_for_whatsapp_final_text():
+    notification = _format_gateway_process_notification(
+        {
+            "type": "watch_match",
+            "session_id": "proc_test",
+            "command": "python long_task.py",
+            "pattern": "ready",
+            "output": "ready",
+        }
+    )
+
+    assert notification
+    assert (
+        _sanitize_gateway_final_response(
+            Platform.WHATSAPP,
+            notification,
+            suppress_provider_diagnostics=True,
+        )
+        == ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_watch_notification_injection_drops_whatsapp_adapter_delivery():
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner.adapters = {Platform.WHATSAPP: adapter}
+
+    await runner._inject_watch_notification(
+        "[IMPORTANT: Background process proc_test matched watch pattern \"ready\".]",
+        {
+            "session_id": "proc_test",
+            "platform": "whatsapp",
+            "chat_id": "120363@example@g.us",
+        },
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_watcher_forces_whatsapp_notifications_off(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.process_registry as process_registry_module
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters = {Platform.WHATSAPP: adapter}
+
+    fake_session = SimpleNamespace(
+        output_buffer="done",
+        exited=True,
+        exit_code=0,
+        command="python long_task.py",
+    )
+    fake_registry = SimpleNamespace(
+        get=lambda session_id: fake_session,
+        is_completion_consumed=lambda session_id: False,
+    )
+
+    monkeypatch.setattr(process_registry_module, "process_registry", fake_registry)
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", AsyncMock())
+
+    await runner._run_process_watcher(
+        {
+            "session_id": "proc_test",
+            "check_interval": 0,
+            "session_key": "agent:main:whatsapp:dm:chat",
+            "platform": "whatsapp",
+            "chat_id": "chat@lid",
+            "notify_on_complete": True,
+        }
+    )
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
 
 
 def test_effective_policy_reads_global_and_platform_specific_flags():

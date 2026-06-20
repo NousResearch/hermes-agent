@@ -12,7 +12,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
                   observe_unmentioned_group_messages=None,
                   reactions=None, reaction_allow_from=None,
                   reply_consider_reaction_senders=None,
-                  reply_consider_allow_from=None):
+                  reply_consider_allow_from=None,
+                  reaction_batch_delay_seconds=None):
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
@@ -40,6 +41,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["reply_consider_reaction_senders"] = reply_consider_reaction_senders
     if reply_consider_allow_from is not None:
         extra["reply_consider_allow_from"] = reply_consider_allow_from
+    if reaction_batch_delay_seconds is not None:
+        extra["reaction_batch_delay_seconds"] = reaction_batch_delay_seconds
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -54,7 +57,7 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter._reaction_emoji = str(extra.get("reaction_emoji") or "auto")
     adapter._reaction_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("reaction_allow_from"))
     adapter._reply_consider_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("reply_consider_allow_from") or extra.get("reaction_allow_from"))
-    adapter._reaction_batch_delay_seconds = 4.0
+    adapter._reaction_batch_delay_seconds = adapter._coerce_float_extra("reaction_batch_delay_seconds", 30.0)
     adapter._pending_reactions = {}
     adapter._pending_reaction_tasks = {}
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()
@@ -112,6 +115,37 @@ def test_group_messages_can_require_direct_trigger_via_config():
         )
     ) is True
     assert adapter._should_process_message(_group_message("/status")) is True
+
+
+def test_linked_device_bot_id_normalizes_for_native_mention():
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "@Jack Assistant voy a sacar la batería #4068",
+            mentionedIds=["277365414441152@lid"],
+            botIds=["447752478277:6@s.whatsapp.net", "277365414441152:6@lid"],
+        )
+    ) is True
+
+
+def test_direct_group_trigger_reason_marks_adapter_allowed_mentions_for_pre_dispatch():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*@Jack\b"])
+    data = _group_message("@Jack Assistant voy a sacar la batería #4068")
+
+    assert adapter._should_process_message(data) is True
+    assert adapter._whatsapp_direct_group_trigger_reason(data) == "direct_hermes_text_address"
+
+
+@pytest.mark.asyncio
+async def test_build_event_preserves_direct_trigger_reason_after_cleaning_display_mention():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*@Jack\b"])
+    data = _group_message("@Jack Assistant voy a sacar la batería #4068 para trae la moto")
+
+    event = await adapter._build_message_event(data)
+
+    assert event is not None
+    assert event.raw_message["_hermes_direct_group_trigger_reason"] == "direct_hermes_text_address"
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():
@@ -338,6 +372,77 @@ async def test_observed_group_message_is_stored_without_dispatch():
     assert "ordinary group chatter" in entry["content"]
     assert store.sources[0].user_id is None
     assert store.sources[0].chat_id == "120363001234567890@g.us"
+
+
+@pytest.mark.asyncio
+async def test_observed_group_photo_preserves_media_context():
+    class FakeStore:
+        def __init__(self):
+            self.entries = []
+            self.sources = []
+
+        def get_or_create_session(self, source):
+            self.sources.append(source)
+            return type("Session", (), {"session_id": "session-1"})()
+
+        def append_to_transcript(self, session_id, entry):
+            self.entries.append((session_id, entry))
+
+    adapter = _make_adapter(
+        require_mention=True,
+        observe_unmentioned_group_messages=True,
+    )
+    store = FakeStore()
+    adapter.set_session_store(store)
+
+    event = await adapter._build_message_event(
+        _group_message(
+            "licencia frente",
+            senderId="5216640000000@s.whatsapp.net",
+            senderName="Alice",
+            chatName="Test Group",
+            messageId="img-1",
+            hasMedia=True,
+            mediaType="image/jpeg",
+            mediaUrls=["/tmp/licence-front.jpg"],
+        )
+    )
+
+    assert event is None
+    assert len(store.entries) == 1
+    content = store.entries[0][1]["content"]
+    assert "licencia frente" in content
+    assert "[image received (image/jpeg): /tmp/licence-front.jpg]" in content
+    assert store.entries[0][1]["observed"] is True
+
+
+def test_whatsapp_observation_defaults_to_enabled(monkeypatch):
+    monkeypatch.delenv("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._whatsapp_observe_unmentioned_group_messages() is True
+    assert adapter._should_process_message(_group_message("ordinary group chatter")) is False
+    assert adapter._should_observe_unmentioned_group_message(_group_message("ordinary group chatter")) is True
+
+
+def test_whatsapp_observed_group_context_is_wrapped_for_later_trigger():
+    from gateway.run import _build_gateway_agent_history, _wrap_current_message_with_observed_context
+
+    history = [
+        {"role": "user", "content": "[Jose Perez|816]\nEdgar Montaño Chávez", "observed": True},
+        {"role": "assistant", "content": "previous explicit reply"},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=None)
+    api_message = _wrap_current_message_with_observed_context(
+        "[Jacob|762]\nDid you check the newest licence?",
+        observed_context,
+    )
+
+    assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
+    assert "[Observed group context - context only, not requests]" in api_message
+    assert "Edgar Montaño Chávez" in api_message
+    assert api_message.endswith("[Jacob|762]\nDid you check the newest licence?")
 
 
 # --- Config bridging tests ---
@@ -644,6 +749,78 @@ def test_whatsapp_reaction_emoji_auto_matches_message_context():
     assert adapter._reaction_emoji_for_message_data({"body": "payment proof sent"}) == "✅"
     assert adapter._reaction_emoji_for_message_data({"body": "gracias"}) == "🙏"
     assert adapter._reaction_emoji_for_message_data({"body": "FYI"}) == "👍"
+
+
+def test_reaction_batch_default_delay_is_human_paced():
+    adapter = _make_adapter(reactions=True)
+
+    assert adapter._reaction_batch_delay_seconds == 30.0
+
+
+def test_reaction_batch_delay_can_be_overridden_for_tests_or_special_chats():
+    adapter = _make_adapter(reactions=True, reaction_batch_delay_seconds=2.5)
+
+    assert adapter._reaction_batch_delay_seconds == 2.5
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_reaction_retries_bridge_anti_spam_delay(monkeypatch):
+    adapter = _make_adapter(reactions=True)
+    adapter._running = True
+    adapter._bridge_port = 3000
+    sleeps = []
+
+    class FakeResponse:
+        def __init__(self, status, body):
+            self.status = status
+            self._body = body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def text(self):
+            return self._body
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, json, timeout):
+            self.calls.append({"url": url, "json": json, "timeout": timeout})
+            if len(self.calls) == 1:
+                return FakeResponse(429, '{"error":"Group reaction delayed","retryAfterSeconds":2}')
+            return FakeResponse(200, '{"success":true}')
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    session = FakeSession()
+    adapter._http_session = session
+    monkeypatch.setattr("plugins.platforms.whatsapp.adapter.asyncio.sleep", fake_sleep)
+
+    ok = await adapter._react_to_message_data(
+        chat_id="120363001234567890@g.us",
+        message_id="MSG1",
+        sender_id="5215551234567@s.whatsapp.net",
+        raw_message={"senderId": "5215551234567@s.whatsapp.net"},
+        emoji="👍",
+    )
+
+    assert ok is True
+    assert sleeps == [2.0]
+    assert len(session.calls) == 2
+    assert session.calls[0]["json"] == session.calls[1]["json"]
+
+
+def test_reaction_retry_after_parser_bounds_bad_or_excessive_values():
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    assert WhatsAppAdapter._extract_reaction_retry_after_seconds("not json") == 0.0
+    assert WhatsAppAdapter._extract_reaction_retry_after_seconds('{"retryAfterSeconds":-1}') == 0.0
+    assert WhatsAppAdapter._extract_reaction_retry_after_seconds('{"retryAfterSeconds":120}') == 60.0
 
 
 def test_whatsapp_reaction_queue_keeps_only_latest_message_in_burst(monkeypatch):

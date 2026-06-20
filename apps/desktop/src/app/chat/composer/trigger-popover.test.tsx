@@ -15,9 +15,11 @@ function renderPopover(kind: '@' | '/', loading = false) {
         activeIndex={0}
         items={[]}
         kind={kind}
+        listboxId="test-composer-completion-listbox"
         loading={loading}
         onHover={onHover}
         onPick={onPick}
+        optionIdPrefix="test-composer-completion"
       />
     </I18nProvider>
   )

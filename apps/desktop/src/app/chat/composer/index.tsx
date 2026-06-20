@@ -726,11 +726,23 @@ export function ChatBar({
     />
   )
 
+  const triggerKindId = trigger?.kind === '@' ? 'at' : 'slash'
+  const triggerListboxId = `composer-${triggerKindId}-completion-listbox`
+  const triggerOptionIdPrefix = `composer-${triggerKindId}-completion`
+
+  const activeTriggerOptionId =
+    trigger && !argStageEmpty && triggerItems[triggerActive] ? `${triggerOptionIdPrefix}-${triggerActive}` : undefined
+
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
+        aria-activedescendant={activeTriggerOptionId}
+        aria-autocomplete="list"
+        aria-controls={trigger && !argStageEmpty ? triggerListboxId : undefined}
         aria-disabled={inputDisabled ? true : undefined}
+        aria-expanded={trigger && !argStageEmpty ? true : undefined}
         aria-label={t.composer.message}
+        aria-multiline="true"
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
@@ -871,9 +883,11 @@ export function ChatBar({
               activeIndex={triggerActive}
               items={triggerItems}
               kind={trigger.kind}
+              listboxId={triggerListboxId}
               loading={triggerLoading}
               onHover={setTriggerActive}
               onPick={replaceTriggerWithChip}
+              optionIdPrefix={triggerOptionIdPrefix}
             />
           )}
           {/* Session-scoped status stack (todos, subagents, background tasks,

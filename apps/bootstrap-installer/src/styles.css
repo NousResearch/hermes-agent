@@ -52,6 +52,12 @@
   );
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .hermes-fade-in {
+    animation: none;
+  }
+}
+
 /*
  * Dark appearance — Nous dark seeds.
  *

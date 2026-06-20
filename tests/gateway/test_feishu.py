@@ -2105,6 +2105,62 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_text, "父消息内容")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_standalone_send_bypasses_public_send_hook_for_text(self):
+        """Explicit send_message delivery must bypass streaming send wrappers."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _standalone_send
+
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_raw"),
+                )
+
+        fake_client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(self, func, *args):
+            return func(*args)
+
+        async def _suppressed_send(self, *args, **kwargs):
+            captured["send_hook_called"] = True
+            return SimpleNamespace(success=True, message_id="om_suppressed")
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch.object(
+                FeishuAdapter,
+                "_build_lark_client",
+                return_value=fake_client,
+            ),
+            patch.object(FeishuAdapter, "_run_blocking", _direct),
+            patch.object(FeishuAdapter, "send", _suppressed_send),
+        ):
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(extra={}),
+                    "oc_chat",
+                    "hello from send_message",
+                )
+            )
+
+        self.assertEqual(
+            result,
+            {
+                "success": True,
+                "platform": "feishu",
+                "chat_id": "oc_chat",
+                "message_id": "om_raw",
+            },
+        )
+        self.assertNotIn("send_hook_called", captured)
+        self.assertEqual(captured["request"].request_body.receive_id, "oc_chat")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

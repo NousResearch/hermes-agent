@@ -5462,13 +5462,37 @@ class TelegramAdapter(BasePlatformAdapter):
                 if re.fullmatch(r"[a-z0-9_]{2,29}bot", command_target, re.IGNORECASE):
                     mentioned_bot_usernames.add(command_target)
 
-        # Entity-less fallback for older/client-specific updates. If Telegram
-        # supplied entities for a source, trust them and do not regex-rescue
-        # malformed/URL/code spans that the server did not mark as mentions.
+        # Raw fallback for older/client-specific updates. Telegram usually
+        # supplies mention entities, but some clients/forwards can include
+        # unrelated formatting entities while leaving a bot handle as plain
+        # text. In that case, still rescue narrow bot-looking handles, while
+        # keeping URL/code/link/email spans protected from false positives.
+        protected_entity_types = {"url", "email", "code", "pre", "text_link"}
+
         for raw_text, entities in _iter_sources():
-            if not raw_text or entities:
+            if not raw_text:
                 continue
+
+            protected_spans: list[tuple[int, int]] = []
+            has_mention_like_entity = False
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type in {"mention", "text_mention", "bot_command"}:
+                    has_mention_like_entity = True
+                    continue
+                if entity_type not in protected_entity_types:
+                    continue
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+                if offset >= 0 and length > 0:
+                    protected_spans.append((offset, offset + length))
+
+            if has_mention_like_entity:
+                continue
+
             for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
+                if any(match.start() < end and match.end() > start for start, end in protected_spans):
+                    continue
                 mentioned_bot_usernames.add(match.group(1).lower())
 
         return mentioned_bot_usernames

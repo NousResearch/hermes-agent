@@ -524,6 +524,29 @@ def test_raw_bot_mention_fallback_does_not_match_email_or_substring():
     assert adapter._should_process_message(_group_message("hi @hermes_bot")) is True
 
 
+def test_raw_bot_mention_fallback_works_when_other_entities_are_present():
+    adapter = _make_adapter(require_mention=True, bot_username="eugeneHermesCoderBot")
+    text = "@eugeneHermesCoderBot 이제 이 메시지 받을 수 있어?"
+
+    assert adapter._should_process_message(
+        _group_message(
+            text,
+            # Some Telegram clients/forwards can include formatting or other
+            # non-mention entities while leaving the bot handle as plain text.
+            # The mention gate should still recognize the explicit bot handle.
+            entities=[SimpleNamespace(type="bold", offset=text.index("이제"), length=2)],
+        )
+    ) is True
+
+    code_text = "@eugeneHermesCoderBot"
+    assert adapter._should_process_message(
+        _group_message(
+            code_text,
+            entities=[SimpleNamespace(type="code", offset=0, length=len(code_text))],
+        )
+    ) is False
+
+
 def test_exclusive_bot_mentions_can_be_disabled_for_legacy_groups():
     adapter = _make_adapter(
         require_mention=True,

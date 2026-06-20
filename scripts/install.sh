@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://nautilus.dev/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/TJ-coding/nautilus-agent/main/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -43,8 +43,8 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:tj-coding/nautilus-agent.git"
-REPO_URL_HTTPS="https://github.com/tj-coding/nautilus-agent.git"
+REPO_URL_SSH="git@github.com:TJ-coding/nautilus-agent.git"
+REPO_URL_HTTPS="https://github.com/TJ-coding/nautilus-agent.git"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -451,7 +451,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://nautilus.dev/install.ps1)"
+            log_info "  iex (irm https://raw.githubusercontent.com/TJ-coding/nautilus-agent/main/scripts/install.ps1)"
             exit 1
             ;;
         *)

@@ -575,7 +575,9 @@ def _attach_active_wake_receipt(
     using fields that AgentFlow can use for delivery_attempt classification:
 
       - success/error            visible platform send status
-      - triggered_agent          true iff a wake turn was accepted/scheduled
+      - scheduled_agent          true iff a wake turn was scheduled on the gateway loop
+      - triggered_agent          legacy alias for scheduled_agent; not proof of
+                                 operator-session acceptance (deprecated)
       - trigger_error            SEND_FAILED, NOT_WIRED, or sanitized failure
       - message_id               platform message id when the send returned one
       - receipt_correlation      caller correlation or a deterministic stable id
@@ -594,6 +596,7 @@ def _attach_active_wake_receipt(
 
     if not visible_success:
         # A failed visible send must never active-wake/close an origin_return.
+        receipt["scheduled_agent"] = False
         receipt["triggered_agent"] = False
         receipt["trigger_error"] = "SEND_FAILED"
         return receipt
@@ -604,7 +607,7 @@ def _attach_active_wake_receipt(
         thread_id=thread_id,
         message=message,
     )
-    receipt.update(trigger_result)
+    receipt.update({k: v for k, v in trigger_result.items() if not k.startswith("_")})
     return receipt
 
 
@@ -642,7 +645,11 @@ def _trigger_gateway_agent(
 
     loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
     if platform is None:
-        return {"triggered_agent": False, "trigger_error": "NOT_WIRED"}
+        return {
+            "scheduled_agent": False,
+            "triggered_agent": False,
+            "trigger_error": "NOT_WIRED",
+        }
     return _trigger_adapter_active_wake(
         platform=platform,
         adapter=adapter,
@@ -651,6 +658,7 @@ def _trigger_gateway_agent(
         chat_id=chat_id,
         thread_id=thread_id,
         message=message,
+        runner=runner,
     )
 
 
@@ -663,13 +671,25 @@ def _trigger_adapter_active_wake(
     chat_id: str,
     thread_id: str | None,
     message: str,
-    user_id: str = "hermes-active-wake",
+    user_id: str | None = None,
     user_name: str = "Hermes Active Wake",
+    runner=None,
 ) -> dict:
-    """Schedule one sanitized internal active-wake MessageEvent on an adapter."""
+    """Schedule one sanitized internal active-wake MessageEvent on an adapter.
+
+    P1 receipt contract: the synthetic event targets the channel/thread session
+    directly instead of appending the old ``hermes-active-wake`` participant id,
+    so group-per-user isolation cannot create a ghost session.  Scheduling is
+    still separate from acceptance; the running gateway mutates the attached
+    acceptance dict once it has resolved/claimed the target session.
+    """
     handle_message = getattr(adapter, "handle_message", None) if adapter is not None else None
     if adapter is None or loop is None or not callable(handle_message):
-        return {"triggered_agent": False, "trigger_error": "NOT_WIRED"}
+        return {
+            "scheduled_agent": False,
+            "triggered_agent": False,
+            "trigger_error": "NOT_WIRED",
+        }
 
     try:
         from gateway.session import SessionSource
@@ -680,17 +700,37 @@ def _trigger_adapter_active_wake(
             chat_id=str(chat_id),
             chat_type="group",
             thread_id=str(thread_id) if thread_id else None,
+            # Intentionally do not impersonate a real user, and do not use the
+            # legacy hermes-active-wake synthetic user id.  With no participant
+            # id, build_session_key routes to the real channel/thread operator
+            # session instead of ``:<chat>:hermes-active-wake``.
             user_id=user_id,
             user_name=user_name,
             is_bot=False,
             message_id=None,
         )
+        target_session_key = None
+        if runner is not None:
+            try:
+                target_session_key = runner._session_key_for_source(source)
+            except Exception:
+                target_session_key = None
+        acceptance: dict[str, object] = {
+            "accepted_by_session": False,
+            "started_by_session": False,
+            "active_wake_status": "scheduled",
+        }
+        if target_session_key:
+            acceptance["target_session_key"] = target_session_key
         wake_event = MessageEvent(
             text=message,
             message_type=MessageType.TEXT,
             source=source,
             internal=True,
         )
+        setattr(wake_event, "_hermes_active_wake_acceptance", acceptance)
+        if target_session_key:
+            setattr(wake_event, "_hermes_active_wake_target_session_key", target_session_key)
         from agent.async_utils import safe_schedule_threadsafe
         future = safe_schedule_threadsafe(
             handle_message(wake_event),
@@ -699,11 +739,24 @@ def _trigger_adapter_active_wake(
             log_message="active_wake request scheduling failed",
         )
         if future is None:
-            return {"triggered_agent": False, "trigger_error": "NOT_WIRED"}
-        return {"triggered_agent": True}
+            return {
+                "scheduled_agent": False,
+                "triggered_agent": False,
+                "trigger_error": "NOT_WIRED",
+            }
+        # ``triggered_agent`` is retained for older callers but is scheduling
+        # semantics only. Do not treat it as operator-session acceptance.
+        return {
+            "scheduled_agent": True,
+            "triggered_agent": True,
+            "active_wake_status": "scheduled",
+            "target_session_key": target_session_key,
+            "_acceptance": acceptance,
+        }
     except Exception as exc:
         logger.debug("active_wake request failed for %s:%s: %s", platform_name, chat_id, exc)
         return {
+            "scheduled_agent": False,
             "triggered_agent": False,
             "trigger_error": _sanitize_error_text(str(exc)) or "ACTIVE_WAKE_FAILED",
         }

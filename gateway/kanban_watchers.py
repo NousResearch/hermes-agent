@@ -494,6 +494,7 @@ class GatewayKanbanWatchersMixin:
         receipt["active_wake_required"] = True
 
         if not bool(receipt.get("success")):
+            receipt["scheduled_agent"] = False
             receipt["triggered_agent"] = False
             receipt["trigger_error"] = "SEND_FAILED"
             return receipt
@@ -508,17 +509,25 @@ class GatewayKanbanWatchersMixin:
             chat_id=chat_id,
             thread_id=thread_id,
             message=wake_text,
+            runner=self,
         )
-        receipt.update(trigger_result)
-        if trigger_result.get("triggered_agent"):
-            # If scheduled onto this running loop, yield once so the task is
-            # accepted before the receipt event is persisted. This keeps tests
-            # deterministic without waiting for the model turn to complete.
-            try:
-                if asyncio.get_running_loop() is loop:
-                    await asyncio.sleep(0)
-            except RuntimeError:
-                pass
+        acceptance = trigger_result.get("_acceptance") if isinstance(trigger_result, dict) else None
+        receipt.update({k: v for k, v in trigger_result.items() if not str(k).startswith("_")})
+        if trigger_result.get("scheduled_agent"):
+            # If scheduled onto this running loop, yield briefly so the gateway
+            # can resolve/claim the real operator session before the receipt is
+            # persisted.  Do not wait for the model turn itself; acceptance is a
+            # pre-turn state transition that mutates ``acceptance`` quickly.
+            if isinstance(acceptance, dict):
+                try:
+                    if asyncio.get_running_loop() is loop:
+                        for _ in range(10):
+                            if acceptance.get("active_wake_status") != "scheduled":
+                                break
+                            await asyncio.sleep(0)
+                except RuntimeError:
+                    pass
+                receipt.update(acceptance)
         return receipt
 
     @staticmethod
@@ -553,12 +562,17 @@ class GatewayKanbanWatchersMixin:
             "success",
             "message_id",
             "receipt_correlation",
+            "scheduled_agent",
             "triggered_agent",
             "trigger_error",
             "platform",
             "chat_id",
             "thread_id",
             "active_wake_required",
+            "active_wake_status",
+            "accepted_by_session",
+            "started_by_session",
+            "target_session_key",
         }
         payload = {key: receipt[key] for key in allowed if key in receipt}
         payload["notified_event_kind"] = event_kind
@@ -576,6 +590,30 @@ class GatewayKanbanWatchersMixin:
                 "notify_active_wake_receipt",
                 payload,
             )
+            try:
+                from hermes_cli import kanban_db_ack_ledger as _ack
+                _ack.record_ack_active_wake(
+                    conn,
+                    task_id=sub["task_id"],
+                    triggered_agent=bool(payload.get("scheduled_agent")),
+                    trigger_error=payload.get("trigger_error"),
+                    correlation_id=payload.get("receipt_correlation"),
+                    status=str(payload.get("active_wake_status") or ("scheduled" if payload.get("scheduled_agent") else "failed")),
+                    accepted_by_session=bool(payload.get("accepted_by_session")),
+                    started_by_session=bool(payload.get("started_by_session")),
+                    target_session_key=payload.get("target_session_key"),
+                )
+                if payload.get("accepted_by_session") or payload.get("started_by_session"):
+                    _ack.record_ack_operator_receipt(
+                        conn,
+                        task_id=sub["task_id"],
+                        status="observed",
+                        actor="gateway",
+                        actor_ref=payload.get("target_session_key"),
+                        correlation_id=payload.get("receipt_correlation"),
+                    )
+            except Exception as ledger_exc:
+                logger.debug("kanban notifier: ack ledger receipt shadow-write failed: %s", ledger_exc)
             conn.commit()
         finally:
             conn.close()

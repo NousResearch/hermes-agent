@@ -175,6 +175,10 @@ def record_ack_active_wake(
     triggered_agent: bool = False,
     trigger_error: Optional[str] = None,
     correlation_id: Optional[str] = None,
+    status: Optional[str] = None,
+    accepted_by_session: bool = False,
+    started_by_session: bool = False,
+    target_session_key: Optional[str] = None,
     created_at: Optional[int] = None,
 ) -> int:
     """Shadow-write an active wake attempt. ``trigger_error`` is sanitized."""
@@ -190,8 +194,9 @@ def record_ack_active_wake(
             """
             INSERT INTO ack_active_wake
                 (task_id, subscription_id, triggered_agent, trigger_error,
-                 correlation_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 correlation_id, status, accepted_by_session,
+                 started_by_session, target_session_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -199,6 +204,10 @@ def record_ack_active_wake(
                 1 if triggered_agent else 0,
                 safe_error,
                 corr,
+                status,
+                1 if accepted_by_session else 0,
+                1 if started_by_session else 0,
+                target_session_key,
                 now,
             ),
         )

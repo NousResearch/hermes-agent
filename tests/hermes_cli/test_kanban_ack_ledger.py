@@ -133,6 +133,10 @@ def test_active_wake_sanitizes_trigger_error(kanban_home):
             triggered_agent=False,
             trigger_error="wake refused: api_key=super_secret",
             correlation_id="corr-1",
+            status="started",
+            accepted_by_session=True,
+            started_by_session=True,
+            target_session_key="agent:main:discord:group:1497895797579190357",
         )
         rows = ack.list_ack_active_wakes(conn, tid)
 
@@ -143,6 +147,10 @@ def test_active_wake_sanitizes_trigger_error(kanban_home):
     assert "super_secret" not in row["trigger_error"]
     assert "api_key=***" in row["trigger_error"]
     assert row["correlation_id"] == "corr-1"
+    assert row["status"] == "started"
+    assert int(row["accepted_by_session"]) == 1
+    assert int(row["started_by_session"]) == 1
+    assert row["target_session_key"] == "agent:main:discord:group:1497895797579190357"
 
 
 def test_operator_receipt_status_validation(kanban_home):

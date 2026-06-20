@@ -576,13 +576,18 @@ class TestActiveWakeSmoke:
         assert data["success"] is True
         assert data["message_id"] == "msg-smoke-1"
         assert data["receipt_correlation"] == "corr-test"
+        assert data["scheduled_agent"] is True
         assert data["triggered_agent"] is True
+        assert "accepted_by_session" not in data
+        assert "operator_receipt" not in data
         assert fake_adapter.sent[0]["chat_id"] == "12345"
         await asyncio.sleep(0)
         assert len(fake_adapter.events) == 1
         event = fake_adapter.events[0]
         assert event.internal is True
         assert event.source.chat_id == "12345"
+        assert event.source.user_id is None
+        assert event.source.user_name == "Hermes Active Wake Smoke"
         assert "SMOKE_ACK AW-TEST" in event.text
 
     @pytest.mark.asyncio
@@ -601,6 +606,7 @@ class TestActiveWakeSmoke:
         assert data == {
             "success": False,
             "receipt_correlation": "corr-nowire",
+            "scheduled_agent": False,
             "triggered_agent": False,
             "trigger_error": "NOT_WIRED",
         }

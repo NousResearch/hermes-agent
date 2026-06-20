@@ -38,7 +38,7 @@ from gateway.platforms.base import (
 # ---------------------------------------------------------------------------
 
 def _make_event(text="hello", chat_id="123", user_id="user1", user_name="TestUser",
-                platform_val="slack", thread_id="thread-abc"):
+                platform_val="slack", thread_id="thread-abc", internal=False):
     """Build a MessageEvent for a shared thread."""
     source = SessionSource(
         platform=MagicMock(value=platform_val),
@@ -53,6 +53,7 @@ def _make_event(text="hello", chat_id="123", user_id="user1", user_name="TestUse
         message_type=MessageType.TEXT,
         source=source,
         message_id="msg1",
+        internal=internal,
     )
     return evt
 
@@ -218,3 +219,73 @@ class TestBusySessionAuthBypass:
         running_agent.steer.assert_not_called()
         # Nothing queued
         assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_internal_synthetic_event_bypasses_busy_auth_drop(self):
+        """Internal active-wake events are gateway-owned and bypass human allowlist checks."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner(authorized_users={"operator"})
+        runner._busy_input_mode = "queue"
+        runner._busy_text_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(
+            text="wake operator",
+            user_id="hermes-active-wake",
+            user_name="Hermes Active Wake",
+            internal=True,
+        )
+        sk = build_session_key(event.source)
+
+        running_agent = MagicMock()
+        running_agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = running_agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_active_session_busy_message(
+            runner, event, sk
+        )
+
+        # Upstream #49738 intentionally routes internal completion/wake events
+        # through the adapter fallthrough path while preserving the auth bypass:
+        # no unauthorized drop, no interrupt/steer, and no direct busy-path queue.
+        assert result is False
+        assert sk not in adapter._pending_messages
+        running_agent.steer.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_internal_active_wake_records_acceptance_and_started_status(self):
+        """Live gateway marks internal wake acceptance only after resolving/starting target session."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner(authorized_users={"operator"})
+        runner._startup_restore_in_progress = False
+        runner._update_prompt_pending = {}
+        runner._running_agents = {}
+        runner._running_agents_ts = {}
+        runner._draining = False
+        runner._busy_input_mode = "queue"
+        runner._is_telegram_topic_root_lobby = lambda source: False
+        runner._claim_active_session_slot = lambda session_key, source: (None, None)
+        runner._begin_session_run_generation = lambda session_key: 7
+        runner._release_running_agent_state = MagicMock()
+        runner._handle_message_with_agent = AsyncMock(return_value="ok")
+        target_key = "agent:main:slack:channel:123:thread-abc"
+        runner._session_key_for_source = lambda source: target_key
+
+        acceptance = {}
+        event = _make_event(text="wake operator", user_id="", user_name="Hermes Active Wake", internal=True)
+        event.source.user_id = None
+        setattr(event, "_hermes_active_wake_acceptance", acceptance)
+        setattr(event, "_hermes_active_wake_target_session_key", target_key)
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result == "ok"
+        assert acceptance["target_session_key"] == target_key
+        assert acceptance["accepted_by_session"] is True
+        assert acceptance["started_by_session"] is True
+        assert acceptance["active_wake_status"] == "started"
+        runner._handle_message_with_agent.assert_awaited_once()

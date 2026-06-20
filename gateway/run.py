@@ -4125,7 +4125,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # creating a session.  The busy path must enforce the same check;
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
-        if not self._is_user_authorized(event.source):
+        if not event.internal and not self._is_user_authorized(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s",
@@ -7236,6 +7236,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        _active_wake_acceptance = getattr(event, "_hermes_active_wake_acceptance", None)
+        if isinstance(_active_wake_acceptance, dict) and is_internal:
+            # This internal wake has already been routed through the session-key
+            # builder with no synthetic participant id. Mark acceptance only
+            # after the live gateway resolves the concrete operator/channel key.
+            _target_key = getattr(event, "_hermes_active_wake_target_session_key", None)
+            if isinstance(_target_key, str) and _target_key and _target_key != _quick_key:
+                logger.warning(
+                    "active_wake target key mismatch: requested=%s resolved=%s",
+                    _target_key,
+                    _quick_key,
+                )
+            _active_wake_acceptance["target_session_key"] = _quick_key
+            _active_wake_acceptance["accepted_by_session"] = True
+            _active_wake_acceptance["active_wake_status"] = "accepted"
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -8309,6 +8324,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._active_session_leases[_quick_key] = _active_session_lease
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
+        if isinstance(_active_wake_acceptance, dict) and is_internal:
+            _active_wake_acceptance["started_by_session"] = True
+            _active_wake_acceptance["active_wake_status"] = "started"
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:

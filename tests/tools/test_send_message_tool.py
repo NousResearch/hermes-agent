@@ -3161,13 +3161,17 @@ class TestActiveWakeReceipt:
             )
 
         assert result["success"] is True
-        assert result["triggered_agent"] is True
+        assert result["scheduled_agent"] is True
+        assert result["triggered_agent"] is True  # legacy scheduling alias
+        assert "accepted_by_session" not in result
+        assert "operator_receipt" not in result
+        assert "_acceptance" not in result
         mirror_mock.assert_not_called()
         assert len(handled) == 1
         return handled[0].text
 
     def test_sent_and_triggered(self):
-        """Visible send succeeds + live adapter present => triggered_agent true."""
+        """Visible send succeeds + live adapter present => scheduled wake only."""
         config, telegram_cfg = self._make_config()
         handled = []
         scheduled = []
@@ -3201,7 +3205,11 @@ class TestActiveWakeReceipt:
 
         assert result["success"] is True
         assert result["message_id"] == "msg-123"
-        assert result["triggered_agent"] is True
+        assert result["scheduled_agent"] is True
+        assert result["triggered_agent"] is True  # legacy scheduling alias only
+        assert "accepted_by_session" not in result
+        assert "operator_receipt" not in result
+        assert "_acceptance" not in result
         assert result["receipt_correlation"] == "corr-abc"
         assert "trigger_error" not in result
         assert "mirrored" not in result
@@ -3214,7 +3222,44 @@ class TestActiveWakeReceipt:
         assert event.source.chat_id == "12345"
         assert event.source.platform == Platform.TELEGRAM
         assert event.internal is True
-        assert event.source.user_id == "hermes-active-wake"
+        assert event.source.user_id is None
+        assert event.source.user_name == "Hermes Active Wake"
+
+    def test_active_wake_targets_channel_session_key_not_synthetic_user(self):
+        """Internal active wake targets the operator/channel key, not a hermes-active-wake ghost."""
+        from tools.send_message_tool import _trigger_adapter_active_wake
+
+        handled = []
+        scheduled = []
+        loop = object()
+
+        class FakeAdapter:
+            async def handle_message(self, event):
+                handled.append(event)
+
+        def _session_key_for_source(source):
+            assert source.user_id is None
+            return f"agent:main:{source.platform.value}:group:{source.chat_id}"
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=self._completed_schedule(scheduled)):
+            result = _trigger_adapter_active_wake(
+                platform=Platform.DISCORD,
+                adapter=FakeAdapter(),
+                loop=loop,
+                platform_name="discord",
+                chat_id="1497895797579190357",
+                thread_id=None,
+                message="wake up",
+                runner=SimpleNamespace(_session_key_for_source=_session_key_for_source),
+            )
+
+        assert result["scheduled_agent"] is True
+        assert result["triggered_agent"] is True
+        assert result["target_session_key"] == "agent:main:discord:group:1497895797579190357"
+        assert "hermes-active-wake" not in result["target_session_key"]
+        assert result["_acceptance"]["target_session_key"] == result["target_session_key"]
+        assert handled[0].internal is True
+        assert handled[0].source.user_id is None
 
     def test_synthetic_wake_event_uses_sanitized_text(self):
         """Active wake must never inject raw MEDIA/path directives into event text."""
@@ -3250,6 +3295,7 @@ class TestActiveWakeReceipt:
             )
 
         assert result["success"] is True
+        assert result["scheduled_agent"] is True
         assert result["triggered_agent"] is True
         mirror_mock.assert_not_called()
         assert len(handled) == 1
@@ -3330,6 +3376,7 @@ class TestActiveWakeReceipt:
 
         assert result["success"] is True
         assert result["message_id"] == "msg-456"
+        assert result["scheduled_agent"] is False
         assert result["triggered_agent"] is False
         assert result["trigger_error"] == "NOT_WIRED"
         assert result["receipt_correlation"].startswith("wake_")
@@ -3367,6 +3414,7 @@ class TestActiveWakeReceipt:
 
         assert result["success"] is False
         assert "error" in result
+        assert result["scheduled_agent"] is False
         assert result["triggered_agent"] is False
         assert result["trigger_error"] == "SEND_FAILED"
         assert result["receipt_correlation"].startswith("wake_")
@@ -3377,8 +3425,8 @@ class TestActiveWakeReceipt:
         """Without trigger_agent, the result must not contain triggered_agent.
 
         This is the classification contract: a visible send alone does not mark
-        an active wake as complete, so AgentFlow should not close origin_return
-        unless it sees triggered_agent=true.
+        an active wake as scheduled, so AgentFlow should not close origin_return
+        unless it sees scheduled_agent=true (or legacy triggered_agent=true).
         """
         config, _telegram_cfg = self._make_config()
 
@@ -3443,6 +3491,7 @@ class TestActiveWakeReceipt:
             )
 
         assert result["success"] is True
+        assert result["scheduled_agent"] is False
         assert result["triggered_agent"] is False
         assert leaked not in result["trigger_error"]
         assert "access_token=***" in result["trigger_error"]

@@ -1208,6 +1208,10 @@ CREATE TABLE IF NOT EXISTS ack_active_wake (
     triggered_agent INTEGER NOT NULL DEFAULT 0,
     trigger_error   TEXT,
     correlation_id  TEXT,
+    status          TEXT,
+    accepted_by_session INTEGER NOT NULL DEFAULT 0,
+    started_by_session  INTEGER NOT NULL DEFAULT 0,
+    target_session_key  TEXT,
     created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ack_active_wake_task ON ack_active_wake(task_id);
@@ -1836,6 +1840,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+
+    active_wake_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ack_active_wake'"
+    ).fetchone() is not None
+    if active_wake_table_exists:
+        wake_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(ack_active_wake)")
+        }
+        for col, ddl in (
+            ("status", "status TEXT"),
+            ("accepted_by_session", "accepted_by_session INTEGER NOT NULL DEFAULT 0"),
+            ("started_by_session", "started_by_session INTEGER NOT NULL DEFAULT 0"),
+            ("target_session_key", "target_session_key TEXT"),
+        ):
+            if col not in wake_cols:
+                _add_column_if_missing(conn, "ack_active_wake", col, ddl)
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.

@@ -1182,7 +1182,12 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             return web.json_response(
-                {"success": False, "triggered_agent": False, "trigger_error": f"IMPORT_FAILED:{type(exc).__name__}"},
+                {
+                    "success": False,
+                    "scheduled_agent": False,
+                    "triggered_agent": False,
+                    "trigger_error": f"IMPORT_FAILED:{type(exc).__name__}",
+                },
                 status=500,
             )
 
@@ -1221,6 +1226,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({
                 "success": False,
                 "receipt_correlation": correlation_id,
+                "scheduled_agent": False,
                 "triggered_agent": False,
                 "trigger_error": "NOT_WIRED",
             })
@@ -1232,6 +1238,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({
                 "success": False,
                 "receipt_correlation": correlation_id,
+                "scheduled_agent": False,
                 "triggered_agent": False,
                 "trigger_error": _sanitize_error_text(str(exc)) or "SEND_FAILED",
             })
@@ -1243,6 +1250,7 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if not receipt["success"]:
             receipt.update({
+                "scheduled_agent": False,
                 "triggered_agent": False,
                 "trigger_error": _sanitize_error_text(str(getattr(send_result, "error", ""))) or "SEND_FAILED",
             })
@@ -1258,7 +1266,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 chat_id=str(chat_id),
                 chat_type="group",
                 thread_id=str(thread_id) if thread_id else None,
-                user_id="hermes-active-wake-smoke",
+                # Match production active-wake routing: do not append a
+                # synthetic participant id that would create a ghost session.
+                user_id=None,
                 user_name="Hermes Active Wake Smoke",
                 is_bot=False,
                 message_id=None,
@@ -1272,10 +1282,13 @@ class APIServerAdapter(BasePlatformAdapter):
             task = asyncio.create_task(adapter.handle_message(wake_event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
+            # Scheduling-only receipt; not proof of operator-session acceptance.
+            receipt["scheduled_agent"] = True
             receipt["triggered_agent"] = True
             return web.json_response(receipt)
         except Exception as exc:
             receipt.update({
+                "scheduled_agent": False,
                 "triggered_agent": False,
                 "trigger_error": _sanitize_error_text(str(exc)) or "ACTIVE_WAKE_FAILED",
             })

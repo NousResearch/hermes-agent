@@ -1094,20 +1094,38 @@ async def test_notifier_trigger_agent_true_invokes_active_wake_and_records_recei
     assert wake.internal is True
     assert wake.source.platform == Platform.TELEGRAM
     assert wake.source.chat_id == "chat1"
-    assert wake.source.user_id == "hermes-active-wake"
+    assert wake.source.user_id is None
+    assert wake.source.user_name == "Hermes Active Wake"
 
     conn = kb.connect()
     try:
         events = kb.list_events(conn, tid)
+        from hermes_cli import kanban_db_ack_ledger as ack
+        wake_rows = ack.list_ack_active_wakes(conn, tid)
+        operator_rows = ack.list_ack_operator_receipts(conn, tid)
     finally:
         conn.close()
     receipt_events = [e for e in events if e.kind == "notify_active_wake_receipt"]
     assert len(receipt_events) == 1
     payload = receipt_events[0].payload
-    assert payload["triggered_agent"] is True
+    assert payload is not None
+    assert payload["scheduled_agent"] is True
+    assert payload["triggered_agent"] is True  # legacy scheduling alias only
+    assert payload["accepted_by_session"] is False
+    assert payload["started_by_session"] is False
+    assert payload["active_wake_status"] == "scheduled"
+    assert payload["target_session_key"] == "agent:main:telegram:group:chat1"
+    assert "hermes-active-wake" not in payload["target_session_key"]
+    assert "operator_receipt" not in payload
     assert payload["platform"] == "telegram"
     assert payload["chat_id"] == "chat1"
     assert "receipt_correlation" in payload
+    assert len(wake_rows) == 1
+    assert wake_rows[0]["status"] == "scheduled"
+    assert wake_rows[0]["accepted_by_session"] == 0
+    assert wake_rows[0]["started_by_session"] == 0
+    assert wake_rows[0]["target_session_key"] == "agent:main:telegram:group:chat1"
+    assert operator_rows == []
 
 
 @pytest.mark.asyncio
@@ -1162,6 +1180,8 @@ async def test_notifier_active_wake_not_wired_records_failure(kanban_home):
     receipt_events = [e for e in events if e.kind == "notify_active_wake_receipt"]
     assert len(receipt_events) == 1
     payload = receipt_events[0].payload
+    assert payload is not None
+    assert payload["scheduled_agent"] is False
     assert payload["triggered_agent"] is False
     assert payload["trigger_error"] == "NOT_WIRED"
 
@@ -1227,6 +1247,7 @@ async def test_notifier_send_result_failure_records_sanitized_receipt_no_wake(ka
     payload = receipt_events[0].payload
     assert payload is not None
     assert payload["success"] is False
+    assert payload["scheduled_agent"] is False
     assert payload["triggered_agent"] is False
     assert payload["trigger_error"] == "SEND_FAILED"
     assert "receipt_correlation" in payload

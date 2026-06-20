@@ -1,0 +1,13 @@
+/*
+ * Mobile CSS entry.
+ *
+ * Inlines the desktop design system (which carries `@import "tailwindcss"`, the
+ * theme tokens, fonts, and custom variants) and — crucially — adds an @source in
+ * the SAME Tailwind root so Tailwind scans the desktop renderer's classes. The
+ * desktop source lives in apps/desktop/src, outside this app, so Tailwind's
+ * auto-detection (rooted at apps/mobile) misses it. @source only takes effect in
+ * the file that owns `@import "tailwindcss"`, hence inlining here rather than
+ * adding it to theme-fallback.css. Paths are relative to this file.
+ */
+@import '../../desktop/src/styles.css';
+@source '../../desktop/src';

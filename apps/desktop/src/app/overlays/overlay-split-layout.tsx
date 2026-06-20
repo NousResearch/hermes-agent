@@ -36,6 +36,7 @@ interface OverlayNavItemProps {
 export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutProps) {
   return (
     <div
+      data-overlay-split
       className={cn(
         'grid h-full min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1',
         className
@@ -49,6 +50,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
 export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
   return (
     <aside
+      data-overlay-sidebar
       className={cn(
         // pt clears the floating titlebar/header; the bg itself fills from the
         // card's top edge so there's no surface-colored gap above the sidebar.
@@ -64,6 +66,7 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
 export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
     <main
+      data-overlay-main
       className={cn(
         'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
         PAGE_INSET_X,
@@ -103,6 +106,7 @@ export function OverlayNewButton({
 export function OverlayNavItem({ active, icon: Icon, label, nested, onClick, trailing }: OverlayNavItemProps) {
   return (
     <button
+      data-overlay-nav-item
       className={cn(
         'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested

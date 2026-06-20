@@ -1,0 +1,170 @@
+/*
+ * theme-fallback.css — structural + mobile-ergonomics CSS only.
+ *
+ * Colors/tokens are owned by the desktop ThemeProvider (themes/context), which
+ * paints the real desktop skin onto :root — so we DON'T pin --dt-* here.
+ * This file handles layout + device safe areas (status bar / nav bar / notch).
+ */
+
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--dt-background, #0d2f86);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * The Android/iOS WebView draws edge-to-edge (viewport-fit=cover), so the app
+ * would slide under the status bar and the gesture/nav bar. Inset the whole app
+ * by the device safe areas. The inset strips show the themed background so the
+ * status-bar and nav-bar regions blend with the app.
+ *
+ * The vendored AppShell root is `h-screen` (100vh) — full viewport, ignoring the
+ * padding. We pin #root to the visual viewport with safe-area padding and force
+ * its child (the shell, or a connect screen) to fill the PADDED box instead of
+ * 100vh, so nothing renders under the system bars.
+ */
+#root {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  /* Top is intentionally 0: the chat + bottom bar stay exactly where they were
+     (the approved layout). Only the titlebar is moved below the status bar — see
+     the [data-titlebar-cluster] rule below. Bottom/side insets keep the bottom
+     bar above the nav bar and clear of any notch. */
+  padding-top: 0;
+  /* Bottom = nav-bar inset. When the keyboard opens the WebView shrinks above
+     it natively (Chromium edge-to-edge), so no manual lift is needed here. */
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  /* The safe-area strips (notably under the nav bar) show this background. Use
+     the bottom status bar's surface color so the nav-bar area reads as the
+     bottom bar continuing to the screen edge, not a bare white strip. */
+  background: var(--ui-sidebar-surface-background, var(--dt-background, #0d2f86));
+  overflow: hidden;
+}
+
+#root > * {
+  height: 100% !important;
+  max-height: 100%;
+}
+
+/*
+ * Move ONLY the desktop titlebar (settings gear, sidebar toggles, swap, etc.)
+ * below the status bar. All three titlebar clusters are position:fixed and
+ * anchored by --titlebar-controls-top; we add the status-bar inset to that so
+ * the buttons clear the clock/battery and become tappable — without touching
+ * the chat or the bottom bar. (env(safe-area-inset-top) is real thanks to the
+ * SafeArea plugin; it's 0 in a plain browser, so this is a no-op in dev.)
+ */
+[data-titlebar-cluster] {
+  /* status-bar inset, nudged up 15px so the titlebar sits a touch higher. */
+  top: calc(var(--titlebar-controls-top, 0px) + env(safe-area-inset-top) - 15px) !important;
+}
+
+/* While a sidebar drawer is open, hide the titlebar — it's position:fixed at a
+   higher z-index than the drawer, so it would float over the drawer's content.
+   The drawer has its own header; SidebarBridge sets data-drawer-open on <html>. */
+[data-drawer-open] [data-titlebar-cluster] {
+  display: none !important;
+}
+
+/* Safe-area helpers usable from any screen. */
+.safe-t {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-b {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/*
+ * Mobile bottom status bar — slim it down. The desktop bar carries more than a
+ * phone needs; hide the redundant items by their data-statusbar-id (injected by
+ * the sync codemod). Kept: command-center, gateway health (icon only),
+ * context-usage (context window), backend version.
+ */
+[data-statusbar-id='agents'],
+[data-statusbar-id='version-client'],
+[data-statusbar-id='session-timer'],
+[data-statusbar-id='cron'],
+[data-statusbar-id='yolo'],
+[data-statusbar-id='terminal'] {
+  display: none !important;
+}
+
+/* Gateway: show ONLY the colored status icon — hide the "Gateway" label and the
+   "ready/checking" status text (both rendered as <span> inside the item). */
+[data-statusbar-id='gateway-health'] span {
+  display: none !important;
+}
+
+/*
+ * Overlay screens (Settings / Skills / Profiles …) — native mobile master-detail.
+ * The desktop two-pane split would cram both panes on a phone, so instead:
+ *   - default: the category list (sidebar) fills the screen; content is hidden.
+ *   - drilled in (MobileBehaviors sets data-detail on the split when a category
+ *     is tapped): the list hides and that page fills the screen, with the
+ *     .mobile-overlay-back button to return. The overlay's own X still closes it.
+ */
+@media (max-width: 47.5rem) {
+  [data-overlay-split] {
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  /* category list — full screen, cleared past the status bar AND the nav bar
+     (so the import/export/refresh footer doesn't sit under the nav buttons). */
+  [data-overlay-sidebar] {
+    flex: 1 1 auto !important;
+    max-height: none !important;
+    padding-top: calc(env(safe-area-inset-top) + 0.75rem) !important;
+    padding-bottom: calc(env(safe-area-inset-bottom) + 0.75rem) !important;
+  }
+
+  /* content hidden until a category is chosen */
+  [data-overlay-main] {
+    display: none !important;
+  }
+
+  /* drilled in: hide the list, show the page full screen (room for back btn) */
+  [data-overlay-split][data-detail] [data-overlay-sidebar] {
+    display: none !important;
+  }
+  [data-overlay-split][data-detail] [data-overlay-main] {
+    display: flex !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    padding-top: calc(env(safe-area-inset-top) + 3rem) !important;
+    padding-bottom: calc(env(safe-area-inset-bottom) + 1rem) !important;
+  }
+}
+
+/* Back affordance for the overlay master-detail. Rendered always (portal); shown
+   only while a detail page is open — and auto-hidden if the overlay is X-closed.
+   Left edge is aligned to the page content gutter (PAGE_INSET_X = clamp below) so
+   it reads as the page header instead of sticking out into the screen corner. */
+.mobile-overlay-back {
+  position: fixed;
+  z-index: 80;
+  top: calc(env(safe-area-inset-top) + 0.5rem);
+  left: calc(env(safe-area-inset-left) + clamp(1.25rem, 4vw, 4rem));
+  display: none;
+  height: 2rem;
+  width: 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  border: 1px solid var(--ui-stroke-tertiary, rgba(127, 127, 127, 0.3));
+  background: var(--ui-bg-tertiary, var(--ui-sidebar-surface-background, rgba(127, 127, 127, 0.12)));
+  color: var(--dt-foreground, currentColor);
+}
+body:has([data-overlay-split][data-detail]) .mobile-overlay-back {
+  display: flex;
+}

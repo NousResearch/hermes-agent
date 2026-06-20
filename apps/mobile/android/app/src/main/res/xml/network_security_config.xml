@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  R1 mitigation — allow cleartext (http:// + ws://) traffic.
+
+  The Hermes gateway is reached over cleartext on a LAN/Tailscale host (e.g.
+  http://100.x.y.z:9119). Android 9+ blocks cleartext by default. Because a
+  Tailscale/LAN host can be any IP and Android's network-security config can't
+  express CIDR ranges, we permit cleartext at the base config. This is a
+  personal client connecting to the user's own gateway, so the broad allowance
+  is acceptable.
+
+  If you put the gateway behind TLS later (https:// / wss://), flip
+  capacitor.config.ts `server.androidScheme` back to 'https', set
+  cleartextTrafficPermitted="false" here, and the app will refuse cleartext.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

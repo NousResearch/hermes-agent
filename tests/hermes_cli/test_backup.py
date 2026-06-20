@@ -153,6 +153,39 @@ class TestShouldExclude:
         assert not _should_exclude(Path("skills/autonomous-ai-agents/hermes-agent/SKILL.md"))
         assert not _should_exclude(Path("skills/autonomous-ai-agents/hermes-agent/sub/item.txt"))
 
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "plugins/my-plugin/.venv/lib/python3.12/site-packages/x/__init__.py",
+            "plugins/my-plugin/venv/bin/python",
+            "mcp/server/site-packages/pkg/mod.py",
+            ".cache/uv/wheels/abc.whl",
+            "plugins/p/.cache/pip/http/deadbeef",
+            ".tox/py312/log.txt",
+            ".nox/tests/bin/pytest",
+            "plugins/p/.pytest_cache/v/cache/lastfailed",
+            ".mypy_cache/3.12/agent.meta.json",
+            ".ruff_cache/0.4.0/abc",
+        ],
+    )
+    def test_excludes_regeneratable_dependency_and_cache_dirs(self, rel):
+        """Python dep trees and tool caches under HERMES_HOME must be skipped —
+        these are what balloon a backup to hundreds of thousands of files."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path(rel))
+
+    def test_does_not_exclude_curator_archive(self):
+        """skills/.archive/ holds restorable archived skills and MUST survive
+        a backup — it is intentionally NOT in the exclusion set."""
+        from hermes_cli.backup import _should_exclude
+        assert not _should_exclude(Path("skills/.archive/old-skill/SKILL.md"))
+
+    def test_does_not_exclude_legit_files_resembling_cache_names(self):
+        """Only directory-component matches are excluded; a normal file is kept."""
+        from hermes_cli.backup import _should_exclude
+        assert not _should_exclude(Path("skills/my-skill/venv-notes.md"))
+        assert not _should_exclude(Path("memories/cache.json"))
+
 # ---------------------------------------------------------------------------
 # Backup tests
 # ---------------------------------------------------------------------------
@@ -271,6 +304,37 @@ class TestBackup:
             names = zf.namelist()
             agent_files = [n for n in names if "hermes-agent" in n]
             assert agent_files == [], f"hermes-agent files leaked into backup: {agent_files}"
+
+    def test_excludes_dependency_and_cache_trees(self, tmp_path, monkeypatch):
+        """A plugin venv / site-packages / pip cache under HERMES_HOME must be
+        pruned by the walk, while real data (skills, config) is preserved.
+        This is the regression guard for the ballooning-backup bug."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        # Simulate the heavy regeneratable trees that ballooned the backup.
+        venv_pkg = hermes_home / "plugins" / "heavy" / ".venv" / "lib" / "site-packages" / "dep"
+        venv_pkg.mkdir(parents=True)
+        (venv_pkg / "__init__.py").write_text("# dep\n")
+        pip_cache = hermes_home / ".cache" / "uv" / "wheels"
+        pip_cache.mkdir(parents=True)
+        (pip_cache / "abc.whl").write_bytes(b"\x00")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        from hermes_cli.backup import run_backup
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+        leaked = [n for n in names if ".venv" in n or "site-packages" in n or ".cache" in n]
+        assert leaked == [], f"regeneratable trees leaked into backup: {leaked}"
+        # Real data still present.
+        assert "skills/my-skill/SKILL.md" in names
+        assert "config.yaml" in names
 
     def test_includes_nested_hermes_agent_in_skills(self, tmp_path, monkeypatch):
         """Backup includes skills/.../hermes-agent/ but NOT root hermes-agent/."""
@@ -1726,16 +1790,21 @@ class TestRunPreUpdateBackup:
         backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
         assert len(backups) == 1
 
-    def test_default_disabled_is_silent(self, hermes_home, capsys):
-        """With the default-off config and no --backup flag, the hook is silent
-        and creates no backup.  This is the common case for every update."""
+    def test_default_enabled_creates_backup(self, hermes_home, capsys):
+        """With the new safe default (``pre_update_backup: true``), every
+        ``hermes update`` creates a backup before any destructive step
+        runs — the cost is a few minutes of zip time vs. the alternative
+        of silent total data loss of ``~/.hermes/`` observed in #48200
+        when an update step computes a wrong path and the user had no
+        safety net.
+        """
         from hermes_cli.main import _run_pre_update_backup
         _run_pre_update_backup(Namespace(no_backup=False, backup=False))
         out = capsys.readouterr().out
-        assert out == ""
-        assert not (hermes_home / "backups").exists() or not list(
-            (hermes_home / "backups").glob("pre-update-*.zip")
-        )
+        assert "Creating pre-update backup" in out
+        assert "Saved:" in out
+        backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
+        assert len(backups) == 1
 
     def test_no_backup_flag_skips(self, hermes_home, capsys):
         from hermes_cli.main import _run_pre_update_backup

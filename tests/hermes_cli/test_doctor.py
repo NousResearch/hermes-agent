@@ -102,6 +102,60 @@ class TestDoctorEnvFileEncoding:
             doctor_mod.run_doctor(Namespace(fix=False))
 
 
+class TestDoctorSubprocessEncoding:
+    """Regression for #49499 (sibling of #18637, bug 3): `hermes doctor`
+    crashed on Windows Chinese locale (GBK) inside ``subprocess._readerthread``
+    because its text-mode ``subprocess.run(..., text=True)`` calls decoded child
+    output via the system locale instead of UTF-8. #18637 fixed the ``.env``
+    file-read path; it did NOT touch the subprocess-decode path covered here."""
+
+    def test_doctor_subprocess_decodes_utf8_on_gbk_locale(
+        self, monkeypatch, tmp_path
+    ):
+        # Simulate a GBK locale at the subprocess boundary: a text-mode
+        # ``subprocess.run`` that decodes child UTF-8 output raises
+        # UnicodeDecodeError unless the caller pins encoding="utf-8" with
+        # errors="replace" (exactly what the GBK _readerthread crash does).
+        # Bytes-mode calls (no text=True) never decode, so they are unaffected.
+        real_run = doctor_mod.subprocess.run
+
+        def gbk_run(cmd, *args, **kwargs):
+            if kwargs.get("text") and (
+                kwargs.get("encoding") != "utf-8"
+                or kwargs.get("errors") != "replace"
+            ):
+                raise UnicodeDecodeError(
+                    "gbk", b"\xaa", 0, 1, "illegal multibyte sequence"
+                )
+            # Return a benign result so the SSH probe site does not shell out.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", gbk_run)
+
+        # Drive the SSH connectivity probe (the first text-mode subprocess
+        # site in run_doctor) by selecting the ssh terminal backend.
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "example.invalid")
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+        # Short-circuit the expensive tool-availability probe so the run
+        # terminates predictably once it has passed the subprocess sites.
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # If the SSH probe still decodes via the system locale, gbk_run raises
+        # UnicodeDecodeError and this test fails. With UTF-8 pinned, doctor runs
+        # through to its normal SystemExit.
+        with pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+
 class TestDoctorToolAvailabilityOverrides:
     def test_marks_honcho_available_when_configured(self, monkeypatch):
         monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)

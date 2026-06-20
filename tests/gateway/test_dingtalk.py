@@ -581,6 +581,9 @@ class TestExtractMedia:
         msg.image_content = None
         msg.rich_text_content = None
         msg.rich_text = items
+        msg.extensions = {}
+        msg.message_type = ""
+        msg.robot_code = ""
         return msg
 
     def test_voice_rich_text_item_classified_as_voice(self):
@@ -599,28 +602,131 @@ class TestExtractMedia:
         assert urls == ["dl_voice_abc"]
         assert mtypes == ["audio"]
 
+    def test_voice_rich_text_item_stays_voice_when_message_type_is_rich_text(self):
+        """SDK-shaped richText voice payloads must not be overwritten to TEXT."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [{"type": "voice", "downloadCode": "dl_voice_rich"}]
+        )
+        msg.message_type = "richText"
+
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+
+        assert msg_type == MessageType.VOICE
+        assert urls == ["dl_voice_rich"]
+        assert mtypes == ["audio"]
+
+    def test_native_voice_from_extensions_content_classified_as_voice(self):
+        """Native DingTalk media can live in message.extensions['content']."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text([])
+        msg.extensions = {
+            "content": '[{"type": "voice", "downloadCode": "dl_voice_ext"}]'
+        }
+        msg.message_type = "richText"
+
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+
+        assert msg_type == MessageType.VOICE
+        assert urls == ["dl_voice_ext"]
+        assert mtypes == ["audio"]
+
+    def test_native_audio_from_extensions_content_stays_audio(self):
+        """Generic audio files in extensions content should not trigger STT."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text([])
+        msg.extensions = {"content": [{"type": "audio", "downloadCode": "dl_audio_ext"}]}
+        msg.message_type = "richText"
+
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+
+        assert msg_type == MessageType.AUDIO
+        assert urls == ["dl_audio_ext"]
+        assert mtypes == ["audio"]
+
+    def test_native_video_from_extensions_content_classified_as_video(self):
+        """Native DingTalk video files can live in extensions content."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text([])
+        msg.extensions = {"content": [{"type": "video", "downloadCode": "dl_video_ext"}]}
+        msg.message_type = "richText"
+
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+
+        assert msg_type == MessageType.VIDEO
+        assert urls == ["dl_video_ext"]
+        assert mtypes == ["video"]
+
+    def test_native_file_from_extensions_content_classified_as_document(self):
+        """Native DingTalk files can live in extensions content."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text([])
+        msg.extensions = {"content": [{"type": "file", "downloadCode": "dl_file_ext"}]}
+        msg.message_type = "richText"
+
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+
+        assert msg_type == MessageType.DOCUMENT
+        assert urls == ["dl_file_ext"]
+        assert mtypes == ["application/octet-stream"]
+
+    @pytest.mark.asyncio
+    async def test_extensions_content_download_codes_are_resolved(self):
+        """Extensions content media codes should be downloaded before extraction."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={"client_id": "robot-1"}))
+        adapter._get_access_token = AsyncMock(return_value="token-1")
+        adapter._fetch_download_url = AsyncMock()
+
+        msg = self._msg_with_rich_text([])
+        msg.extensions = {
+            "content": '[{"type": "voice", "downloadCode": "dl_voice_ext"}]'
+        }
+
+        await adapter._resolve_media_codes(msg)
+
+        adapter._fetch_download_url.assert_awaited_once()
+        args = adapter._fetch_download_url.await_args.args
+        assert args[0] == "dl_voice_ext"
+        assert args[1] == "robot-1"
+        assert args[2] == "token-1"
+
     def test_audio_rich_text_item_stays_audio(self):
         """Generic audio uploads (e.g. an mp3 the user attached) must NOT
         be auto-transcribed — they stay MessageType.AUDIO."""
-        from gateway.platforms.dingtalk import DingTalkAdapter, DINGTALK_TYPE_MAPPING
+        from gateway.platforms.dingtalk import DingTalkAdapter
         from gateway.platforms.base import MessageType
 
-        # Simulate a future/non-voice audio rich-text item by extending the
-        # mapping so item_type != "voice" but still routes through the
-        # ``mapped == "audio"`` branch.
-        DINGTALK_TYPE_MAPPING["audio"] = "audio"
-        try:
-            msg = self._msg_with_rich_text(
-                [{"type": "audio", "downloadCode": "dl_audio_xyz"}]
-            )
-            msg_type, urls, mtypes = DingTalkAdapter._extract_media(
-                DingTalkAdapter, msg
-            )
-            assert msg_type == MessageType.AUDIO
-            assert urls == ["dl_audio_xyz"]
-            assert mtypes == ["audio"]
-        finally:
-            del DINGTALK_TYPE_MAPPING["audio"]
+        msg = self._msg_with_rich_text(
+            [{"type": "audio", "downloadCode": "dl_audio_xyz"}]
+        )
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.AUDIO
+        assert urls == ["dl_audio_xyz"]
+        assert mtypes == ["audio"]
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +952,34 @@ class TestIncomingHandlerProcess:
         adapter._on_message.assert_called_once()
         chatbot_msg = adapter._on_message.call_args[0][0]
         assert chatbot_msg.session_webhook == "https://oapi.dingtalk.com/robot/sendBySession?session=def"
+
+    @pytest.mark.asyncio
+    async def test_process_preserves_extensions_from_raw_payload(self):
+        """Raw DingTalk extensions must survive SDK from_dict mismatches."""
+        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+        handler = _IncomingHandler(adapter, asyncio.get_running_loop())
+
+        callback = MagicMock()
+        callback.data = {
+            "msgtype": "richText",
+            "text": {"content": ""},
+            "senderId": "user3",
+            "conversationId": "conv3",
+            "msgId": "msg-003",
+            "extensions": {
+                "content": '[{"type": "voice", "downloadCode": "dl_voice_raw"}]'
+            },
+        }
+
+        await handler.process(callback)
+        await asyncio.sleep(0.05)
+
+        adapter._on_message.assert_called_once()
+        chatbot_msg = adapter._on_message.call_args[0][0]
+        assert chatbot_msg.extensions == callback.data["extensions"]
 
     @pytest.mark.asyncio
     async def test_process_returns_ack_immediately(self):

@@ -12,7 +12,8 @@ class TestResolveCdpOverride:
     def test_keeps_full_devtools_websocket_url(self):
         from tools.browser_tool import _resolve_cdp_override
 
-        assert _resolve_cdp_override(WS_URL) == WS_URL
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=True):
+            assert _resolve_cdp_override(WS_URL) == WS_URL
 
     def test_resolves_http_discovery_endpoint_to_websocket(self):
         from tools.browser_tool import _resolve_cdp_override
@@ -21,11 +22,12 @@ class TestResolveCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
-        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=True), \
+             patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
             resolved = _resolve_cdp_override(HTTP_URL)
 
         assert resolved == WS_URL
-        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10, allow_redirects=False)
 
     def test_resolves_bare_ws_hostport_to_discovery_websocket(self):
         from tools.browser_tool import _resolve_cdp_override
@@ -34,16 +36,18 @@ class TestResolveCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
-        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=True), \
+             patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
             resolved = _resolve_cdp_override(f"ws://{HOST}:{PORT}")
 
         assert resolved == WS_URL
-        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10, allow_redirects=False)
 
     def test_falls_back_to_raw_url_when_discovery_fails(self):
         from tools.browser_tool import _resolve_cdp_override
 
-        with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=True), \
+             patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
             assert _resolve_cdp_override(HTTP_URL) == HTTP_URL
 
     def test_normalizes_provider_returned_http_cdp_url_when_creating_session(self, monkeypatch):
@@ -68,7 +72,8 @@ class TestResolveCdpOverride:
         monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "")
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
 
-        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=True), \
+             patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
             session_info = browser_tool._get_session_info("task-browser-use")
 
         assert session_info["cdp_url"] == WS_URL
@@ -76,6 +81,7 @@ class TestResolveCdpOverride:
         mock_get.assert_called_once_with(
             "https://cdp.browser-use.example/session/json/version",
             timeout=10,
+            allow_redirects=False,
         )
 
 
@@ -95,11 +101,12 @@ class TestGetCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
-        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=True), \
+             patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
             resolved = browser_tool._get_cdp_override()
 
         assert resolved == WS_URL
-        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10, allow_redirects=False)
 
     def test_uses_config_browser_cdp_url_when_env_missing(self, monkeypatch):
         import tools.browser_tool as browser_tool
@@ -111,8 +118,45 @@ class TestGetCdpOverride:
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
         with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"cdp_url": HTTP_URL}}), \
+             patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=True), \
              patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
             resolved = browser_tool._get_cdp_override()
 
         assert resolved == WS_URL
-        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10, allow_redirects=False)
+
+    def test_blocks_unsafe_http_discovery_endpoint_without_request(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=False), \
+             patch("tools.browser_tool.requests.get") as mock_get:
+            assert _resolve_cdp_override("http://169.254.169.254:9222") == ""
+
+        mock_get.assert_not_called()
+
+    def test_blocks_unsafe_websocket_endpoint(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        unsafe_ws = "ws://169.254.169.254:9222/devtools/browser/secret"
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=False):
+            assert _resolve_cdp_override(unsafe_ws) == ""
+
+    def test_blocks_unsafe_non_devtools_websocket_endpoint(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        unsafe_ws = "ws://169.254.169.254:9222/custom/path"
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", return_value=False):
+            assert _resolve_cdp_override(unsafe_ws) == ""
+
+    def test_blocks_unsafe_returned_websocket(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "webSocketDebuggerUrl": "ws://169.254.169.254:9222/devtools/browser/secret"
+        }
+
+        with patch("tools.browser_tool._is_safe_cdp_endpoint", side_effect=[True, False]), \
+             patch("tools.browser_tool.requests.get", return_value=response):
+            assert _resolve_cdp_override(HTTP_URL) == ""

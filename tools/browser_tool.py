@@ -54,6 +54,7 @@ import functools
 import json
 import logging
 import os
+import ipaddress
 import re
 import subprocess
 import shutil
@@ -64,6 +65,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
+from urllib.parse import urlparse
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 from utils import env_int, is_truthy_value
@@ -232,6 +234,41 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
+def _is_loopback_host(hostname: str) -> bool:
+    """Return True for localhost / loopback CDP endpoints."""
+    host = (hostname or "").strip().lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_safe_cdp_endpoint(url: str) -> bool:
+    """Return whether Hermes may probe/connect to a CDP endpoint.
+
+    Local Chromium normally exposes CDP on loopback, so loopback endpoints are
+    allowed. Other targets must pass the ordinary URL SSRF guard. The
+    always-blocked metadata/link-local floor is enforced for every endpoint,
+    including when private URLs are globally allowed.
+    """
+    try:
+        parsed = urlparse(url)
+        if (parsed.scheme or "").lower() not in {"http", "https", "ws", "wss"}:
+            return False
+        if not parsed.hostname:
+            return False
+        if _is_always_blocked_url(url):
+            return False
+        if _is_loopback_host(parsed.hostname):
+            return True
+        return _is_safe_url(url)
+    except Exception as exc:
+        logger.warning("Blocked CDP endpoint due to safety-check error for %s: %s", url, exc)
+        return False
+
+
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete connectable URL.
 
@@ -250,6 +287,9 @@ def _resolve_cdp_override(cdp_url: str) -> str:
 
     lowered = raw.lower()
     if "/devtools/browser/" in lowered:
+        if not _is_safe_cdp_endpoint(raw):
+            logger.warning("Blocked unsafe CDP websocket endpoint: %s", raw)
+            return ""
         return raw
 
     discovery_url = raw
@@ -257,6 +297,9 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         if raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]:
             discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
         else:
+            if not _is_safe_cdp_endpoint(raw):
+                logger.warning("Blocked unsafe CDP websocket endpoint: %s", raw)
+                return ""
             return raw
 
     if discovery_url.lower().endswith("/json/version"):
@@ -264,8 +307,12 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     else:
         version_url = discovery_url.rstrip("/") + "/json/version"
 
+    if not _is_safe_cdp_endpoint(version_url):
+        logger.warning("Blocked unsafe CDP discovery endpoint: %s", version_url)
+        return ""
+
     try:
-        response = requests.get(version_url, timeout=10)
+        response = requests.get(version_url, timeout=10, allow_redirects=False)
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
@@ -274,6 +321,9 @@ def _resolve_cdp_override(cdp_url: str) -> str:
 
     ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
     if ws_url:
+        if not _is_safe_cdp_endpoint(ws_url):
+            logger.warning("Blocked unsafe CDP websocket returned by %s: %s", version_url, ws_url)
+            return ""
         logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
         return ws_url
 

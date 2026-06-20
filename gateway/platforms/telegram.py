@@ -3955,6 +3955,16 @@ class TelegramAdapter(BasePlatformAdapter):
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=chat_id,
+                    chat_type=query_chat_type,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to change models.")
+                    return
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 

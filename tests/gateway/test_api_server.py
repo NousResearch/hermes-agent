@@ -601,13 +601,31 @@ class TestHealthDetailedEndpoint:
                 assert data["platforms"] == {}
 
     @pytest.mark.asyncio
-    async def test_health_detailed_does_not_require_auth(self, auth_adapter):
-        """Health detailed endpoint should be accessible without auth, like /health."""
+    async def test_health_detailed_requires_auth_when_api_key_configured(self, auth_adapter):
+        """Detailed runtime diagnostics require auth when API auth is configured."""
         app = _create_app(auth_adapter)
-        with patch("gateway.status.read_runtime_status", return_value=None):
+        runtime_status = {
+            "gateway_state": "running",
+            "platforms": {
+                "telegram": {
+                    "state": "error",
+                    "error_message": "sensitive diagnostic text",
+                }
+            },
+            "active_agents": 1,
+        }
+        with patch("gateway.status.read_runtime_status", return_value=runtime_status):
             async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/health/detailed")
-                assert resp.status == 200
+                unauth = await cli.get("/health/detailed")
+                assert unauth.status == 401
+
+                auth = await cli.get(
+                    "/health/detailed",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert auth.status == 200
+                data = await auth.json()
+                assert data["platforms"]["telegram"]["error_message"] == "sensitive diagnostic text"
 
 
 # ---------------------------------------------------------------------------

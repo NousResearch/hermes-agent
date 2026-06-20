@@ -451,14 +451,17 @@ class TestTelegramApprovalCallback:
 
     @pytest.mark.asyncio
     async def test_model_picker_callback_not_affected(self):
-        """Ensure model picker callbacks still route correctly."""
+        """Ensure authorized model picker callbacks still route correctly."""
         adapter = _make_adapter()
 
         query = AsyncMock()
         query.data = "mp:some_provider"
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.chat.type = "private"
         query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Alice"
 
         update = MagicMock()
         update.callback_query = query
@@ -467,10 +470,72 @@ class TestTelegramApprovalCallback:
         # Model picker callback should be handled (not crash)
         # We just verify it doesn't try to resolve an approval
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
-            with patch.object(adapter, "_handle_model_picker_callback", new_callable=AsyncMock):
-                await adapter._handle_callback_query(update, context)
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                with patch.object(adapter, "_handle_model_picker_callback", new_callable=AsyncMock) as mock_picker:
+                    await adapter._handle_callback_query(update, context)
 
         mock_resolve.assert_not_called()
+        mock_picker.assert_awaited_once_with(query, "mp:some_provider", "12345")
+
+    @pytest.mark.asyncio
+    async def test_model_picker_callback_rejects_unauthorized_user(self):
+        """Model picker buttons should honor TELEGRAM_ALLOWED_USERS."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "mm:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "supergroup"
+        query.message.message_thread_id = 99
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+            with patch.object(adapter, "_handle_model_picker_callback", new_callable=AsyncMock) as mock_picker:
+                await adapter._handle_callback_query(update, context)
+
+        mock_picker.assert_not_called()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_model_picker_callback_rejects_user_blocked_by_global_allowlist(self):
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "mg:1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+            with patch.object(adapter, "_handle_model_picker_callback", new_callable=AsyncMock) as mock_picker:
+                await adapter._handle_callback_query(update, context)
+
+        mock_picker.assert_not_called()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert runner.last_source is not None
+        assert runner.last_source.platform == Platform.TELEGRAM
+        assert runner.last_source.user_id == "222"
+        assert runner.last_source.chat_id == "12345"
 
     @pytest.mark.asyncio
     async def test_update_prompt_callback_not_affected(self, tmp_path):

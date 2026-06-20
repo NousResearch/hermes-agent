@@ -13,7 +13,6 @@ import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
-from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
@@ -8973,17 +8972,9 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
-        with (
-            patch(
-                "hermes_cli.browser_connect.launch_chrome_debug",
-                return_value=ChromeDebugLaunch(),
-            ),
-            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
-            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
-            patch(
-                "hermes_cli.browser_connect.get_chrome_debug_candidates",
-                return_value=[],
-            ),
+        with patch(
+            "hermes_cli.browser_connect.manual_chrome_debug_command",
+            return_value=None,
         ):
             resp = server.handle_request(
                 {
@@ -8999,10 +8990,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
 
     assert resp["result"]["connected"] is False
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert (
-        resp["result"]["messages"][0]
-        == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
-    )
+    assert resp["result"]["messages"][0] == "Browser CDP is not reachable at http://127.0.0.1:9222."
     assert any(
         "No supported Chromium-family browser executable was found" in line
         for line in resp["result"]["messages"]
@@ -9032,16 +9020,9 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
-        with (
-            patch(
-                "hermes_cli.browser_connect.launch_chrome_debug",
-                return_value=ChromeDebugLaunch(),
-            ),
-            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
-            patch(
-                "hermes_cli.browser_connect.get_chrome_debug_candidates",
-                return_value=[],
-            ),
+        with patch(
+            "hermes_cli.browser_connect.manual_chrome_debug_command",
+            return_value=None,
         ):
             resp = server.handle_request(
                 {
@@ -9054,6 +9035,39 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
     assert resp["result"]["connected"] is False
     assert resp["result"]["messages"]  # bundled list still populated
     assert [evt for evt, _ in emitted if evt == "browser.progress"] == []
+
+
+def test_browser_manage_connect_missing_default_preserves_existing_override_and_sessions(
+    monkeypatch,
+):
+    existing = "http://existing-cdp:9333"
+    monkeypatch.setenv("BROWSER_CDP_URL", existing)
+    cleanup_calls: list[str] = []
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: cleanup_calls.append(
+            os.environ.get("BROWSER_CDP_URL", "")
+        ),
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with (
+            patch(
+                "hermes_cli.browser_connect.discover_local_cdp_url",
+                return_value=None,
+            ),
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
+            ),
+        ):
+            resp = server.handle_request(
+                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+            )
+
+    assert resp["result"]["connected"] is False
+    assert os.environ["BROWSER_CDP_URL"] == existing
+    assert cleanup_calls == []
 
 
 def test_browser_manage_connect_handles_null_url(monkeypatch):
@@ -9094,60 +9108,6 @@ def test_browser_manage_connect_rejects_non_string_url(monkeypatch):
     assert "BROWSER_CDP_URL" not in os.environ
 
 
-def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
-    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
-    fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
-        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
-    )
-
-    class _Resp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-    # IPv4 answers only from the 3rd probe onwards (browser still starting);
-    # the IPv6 loopback never answers.
-    attempts = {"n": 0}
-
-    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
-        if "[::1]" in url:
-            raise OSError("no IPv6 listener")
-        attempts["n"] += 1
-        if attempts["n"] < 3:
-            raise OSError("not ready")
-        return _Resp()
-
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
-    launched = ChromeDebugLaunch(launched=True)
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        with (
-            patch(
-                "hermes_cli.browser_connect.launch_chrome_debug",
-                return_value=launched,
-            ),
-            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
-        ):
-            resp = server.handle_request(
-                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
-            )
-
-    assert resp["result"]["connected"] is True
-    assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == [
-        "Chromium-family browser isn't running with remote debugging — attempting to launch...",
-        "Chromium-family browser launched and listening on port 9222",
-    ]
-    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
-
-
 def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
     """Regression: an IDE debugger squatting 127.0.0.1:9222 pushes the debug
     browser onto [::1]:9222. Connect must discover and adopt the IPv6
@@ -9183,57 +9143,6 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://[::1]:9222"
     assert os.environ["BROWSER_CDP_URL"] == "http://[::1]:9222"
-
-
-def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch):
-    """When neither loopback speaks CDP but the port is held by another
-    application, connect must pick an alternate port for the launch and
-    say so — never fight the squatter for 9222."""
-    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
-    fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
-        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
-    )
-
-    class _Resp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
-        if ":9223" in url and "127.0.0.1" in url:
-            return _Resp()  # relaunched browser comes up on the alternate port
-        raise OSError("9222 squatted / nothing else listening")
-
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
-    launch_ports: list[int] = []
-
-    def _launch(port, _system):
-        launch_ports.append(port)
-        return ChromeDebugLaunch(launched=True)
-
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        with (
-            patch("hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
-            patch("hermes_cli.browser_connect.local_port_in_use", return_value=True),
-            patch("hermes_cli.browser_connect.find_free_debug_port", return_value=9223),
-        ):
-            resp = server.handle_request(
-                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
-            )
-
-    assert launch_ports == [9223]
-    assert resp["result"]["connected"] is True
-    assert resp["result"]["url"] == "http://127.0.0.1:9223"
-    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9223"
-    assert any("occupied by another application" in m for m in resp["result"]["messages"])
 
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):

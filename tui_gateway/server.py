@@ -15775,65 +15775,21 @@ def _browser_connect(rid, params: dict) -> dict:
             except OSError as e:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
         elif _is_default_local_cdp(parsed):
-            from hermes_cli.browser_connect import (
-                discover_local_cdp_url,
-                find_free_debug_port,
-                launch_chrome_debug,
-                local_port_in_use,
-            )
+            from hermes_cli.browser_connect import discover_local_cdp_url
 
-            # Dual-stack discovery: when another app (an IDE debugger,
-            # a dev server) squats the IPv4 loopback on the debug port,
-            # a browser asked to bind that port comes up on [::1] only.
-            # An IPv4-only probe misses it AND hangs against squatters
-            # that accept TCP but never answer HTTP — the historic
-            # cause of `browser.manage` RPC timeouts.
+            # Keep dual-stack discovery so an existing IPv6-only browser can
+            # still be attached without opening a new debug listener.
             discovered = discover_local_cdp_url(port, timeout=2.0)
-            launch_port = port
-
             if discovered is None:
-                if local_port_in_use(port):
-                    launch_port = find_free_debug_port(port)
-                    announce(
-                        f"Port {port} is occupied by another application that "
-                        "isn't a CDP browser (an IDE debugger or dev server may "
-                        f"be using it) — launching a debug browser on port "
-                        f"{launch_port} instead..."
-                    )
-                else:
-                    announce(
-                        "Chromium-family browser isn't running with remote debugging — attempting to launch..."
-                    )
-
-                launch = launch_chrome_debug(launch_port, system)
-                if launch.launched:
-                    # Bounded wait: the whole connect must finish well
-                    # inside the client RPC timeout.
-                    deadline = time.monotonic() + 10.0
-                    while time.monotonic() < deadline:
-                        discovered = discover_local_cdp_url(launch_port, timeout=1.0)
-                        if discovered:
-                            break
-                        time.sleep(0.5)
-
-                if discovered:
-                    announce(
-                        f"Chromium-family browser launched and listening on port {launch_port}"
-                    )
-                else:
-                    hint = launch.hint
-                    if hint:
-                        announce(hint, level="error")
-                    for line in _failure_messages(url, launch_port, system)[1:]:
-                        announce(line, level="error")
-                    return _ok(
-                        rid, {"connected": False, "url": url, "messages": messages}
-                    )
+                for line in _failure_messages(url, port, system):
+                    announce(line, level="error")
+                return _ok(
+                    rid, {"connected": False, "url": url, "messages": messages}
+                )
             else:
                 announce(f"Chromium-family browser is already listening at {discovered}")
 
-            # Adopt whatever loopback/port actually answered (may be
-            # [::1] and/or an alternate port when 9222 was squatted).
+            # Adopt whichever loopback actually answered (possibly [::1]).
             url = discovered
             parsed = urlparse(url)
         else:

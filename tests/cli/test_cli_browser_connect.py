@@ -1,4 +1,4 @@
-"""Tests for CLI browser CDP auto-launch helpers."""
+"""Tests for CLI browser CDP connection helpers."""
 
 from contextlib import redirect_stdout
 from io import StringIO
@@ -18,7 +18,7 @@ from hermes_cli.browser_connect import (
 
 
 def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
-    """Verify the auto-launch command has all required flags."""
+    """Verify the manual launch command has all required flags."""
     assert cmd[0] == expected_chrome
     assert f"--remote-debugging-port={expected_port}" in cmd
     assert "--no-first-run" in cmd
@@ -330,6 +330,50 @@ class TestChromeDebugLaunch:
         with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
              patch("hermes_cli.browser_connect.os.path.isfile", return_value=False):
             assert manual_chrome_debug_command(9222, "Linux") is None
+
+    def test_browser_connect_reports_manual_launch_hint_when_default_cdp_missing(self, monkeypatch):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._pending_input = Queue()
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+        stdout = StringIO()
+        with patch("hermes_cli.cli_commands_mixin.discover_local_cdp_url", return_value=None), \
+             patch("hermes_cli.cli_commands_mixin.manual_chrome_debug_command", return_value="/usr/bin/chromium --remote-debugging-port=9222"), \
+             patch("tools.browser_tool.cleanup_all_browsers") as cleanup_all_browsers, \
+             redirect_stdout(stdout):
+            cli._handle_browser_command("/browser connect")
+
+        output = stdout.getvalue()
+        assert "Browser CDP is not reachable at http://127.0.0.1:9222" in output
+        assert "Start a Chromium-family browser with remote debugging, then retry /browser connect:" in output
+        assert "/usr/bin/chromium --remote-debugging-port=9222" in output
+        assert "attempting to launch" not in output
+        cleanup_all_browsers.assert_not_called()
+
+    def test_browser_connect_missing_default_preserves_existing_override_and_sessions(
+        self, monkeypatch
+    ):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._pending_input = Queue()
+        existing = "http://existing-cdp:9333"
+        monkeypatch.setenv("BROWSER_CDP_URL", existing)
+
+        with (
+            patch(
+                "hermes_cli.cli_commands_mixin.discover_local_cdp_url",
+                return_value=None,
+            ),
+            patch(
+                "hermes_cli.cli_commands_mixin.manual_chrome_debug_command",
+                return_value=None,
+            ),
+            patch("tools.browser_tool.cleanup_all_browsers") as cleanup_all_browsers,
+            redirect_stdout(StringIO()),
+        ):
+            cli._handle_browser_command("/browser connect")
+
+        assert os.environ["BROWSER_CDP_URL"] == existing
+        cleanup_all_browsers.assert_not_called()
 
     def test_connect_context_note_allows_expected_browser_use(self, monkeypatch):
         """`/browser connect` is an instruction to use the CDP browser.

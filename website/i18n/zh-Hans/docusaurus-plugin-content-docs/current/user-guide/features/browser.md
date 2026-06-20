@@ -281,13 +281,13 @@ CAMOFOX_ADOPT_EXISTING_TAB=true
 在 CLI 中使用：
 
 ```
-/browser connect                 # Auto-launch/connect to a local Chromium-family browser at http://127.0.0.1:9222
+/browser connect                 # 连接到已在 http://127.0.0.1:9222 暴露 CDP 的本地 Chromium 系浏览器
 /browser connect ws://host:port  # Connect to a specific CDP endpoint
 /browser status                  # Check current connection
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-若浏览器尚未以远程调试模式运行，Hermes 将尝试自动启动支持的 Chromium 系浏览器并使用 `--remote-debugging-port=9222`。检测范围包括 Brave、Google Chrome、Chromium 和 Microsoft Edge，以及常见 Linux 安装路径（如 `/opt/brave-bin/brave` 和 `/snap/bin/brave`）。
+若浏览器尚未以远程调试模式运行，`/browser connect` 会直接失败并显示手动启动命令，而不会代您开启新的本地 CDP 端口。
 
 :::tip
 要手动启动带 CDP 的 Chromium 系浏览器，请使用专用的 user-data-dir，确保即使浏览器已以普通 profile 运行，调试端口也能正常开启：

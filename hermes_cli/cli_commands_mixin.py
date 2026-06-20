@@ -32,10 +32,7 @@ from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     discover_local_cdp_url,
-    find_free_debug_port,
     is_browser_debug_ready,
-    launch_chrome_debug,
-    local_port_in_use,
     manual_chrome_debug_command,
 )
 
@@ -1847,7 +1844,6 @@ class CLICommandsMixin:
                 print(f"   ⚠ Missing host in browser url: {cdp_url}")
                 print()
                 return
-            _host = parsed_cdp.hostname
             if parsed_cdp.path.startswith("/devtools/browser/"):
                 cdp_url = parsed_cdp.geturl()
             else:
@@ -1857,13 +1853,6 @@ class CLICommandsMixin:
                     query="",
                     fragment="",
                 ).geturl()
-
-            # Clear any existing browser sessions so the next tool call uses the new backend
-            try:
-                from tools.browser_tool import cleanup_all_browsers
-                cleanup_all_browsers()
-            except Exception:
-                pass
 
             print()
 
@@ -1883,45 +1872,17 @@ class CLICommandsMixin:
             if _already_open:
                 print(f"   ✓ Chromium-family browser is already listening at {cdp_url}")
             elif _is_default:
-                _launch_port = _port
-                if local_port_in_use(_port):
-                    _launch_port = find_free_debug_port(_port)
-                    print(
-                        f"   ⚠ Port {_port} is occupied by another application that isn't a CDP browser"
-                    )
-                    print(
-                        f"     (an IDE debugger or dev server may be using it) — launching on port {_launch_port} instead..."
-                    )
+                print(f"   ⚠ Browser CDP is not reachable at {cdp_url}")
+                sys_name = _plat.system()
+                chrome_cmd = manual_chrome_debug_command(_port, sys_name)
+                if chrome_cmd:
+                    print("   Start a Chromium-family browser with remote debugging, then retry /browser connect:")
+                    print(f"   {chrome_cmd}")
                 else:
-                    # Try to auto-launch a Chromium-family browser with remote debugging
-                    print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
-                _launch = launch_chrome_debug(_launch_port, _plat.system())
-                if _launch.launched:
-                    # Wait for the DevTools discovery endpoint to come up
-                    for _wait in range(10):
-                        _found = discover_local_cdp_url(_launch_port, timeout=1.0)
-                        if _found:
-                            cdp_url = _found
-                            _already_open = True
-                            break
-                        time.sleep(0.5)
-                    if _already_open:
-                        print(f"   ✓ Chromium-family browser launched and listening on port {_launch_port}")
-                    else:
-                        print(f"   ⚠ Browser launched but port {_launch_port} isn't responding yet")
-                        print("     Try again in a few seconds — the debug instance may still be starting")
-                else:
-                    print("   ⚠ Could not auto-launch a Chromium-family browser")
-                    _hint = _launch.hint
-                    if _hint:
-                        print(f"     {_hint}")
-                    sys_name = _plat.system()
-                    chrome_cmd = manual_chrome_debug_command(_launch_port, sys_name)
-                    if chrome_cmd:
-                        print("     Launch a Chromium-family browser manually:")
-                        print(f"     {chrome_cmd}")
-                    else:
-                        print("     No supported Chromium-family browser executable found in this environment")
+                    print("   No supported Chromium-family browser executable was found in this environment")
+                    print(
+                        f"   Install one or start a Chromium-family browser with --remote-debugging-port={_port}, then retry /browser connect."
+                    )
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
@@ -1931,11 +1892,26 @@ class CLICommandsMixin:
                 print()
                 return
 
-            os.environ["BROWSER_CDP_URL"] = cdp_url
-            # Eagerly start the CDP supervisor so pending_dialogs + frame_tree
-            # show up in the next browser_snapshot.  No-op if already started.
+            # Reap any existing browser sessions only after we've proven the
+            # replacement endpoint is reachable.
             try:
-                from tools.browser_tool import _ensure_cdp_supervisor  # type: ignore[import-not-found]
+                from tools.browser_tool import cleanup_all_browsers
+
+                cleanup_all_browsers()
+            except Exception:
+                pass
+
+            os.environ["BROWSER_CDP_URL"] = cdp_url
+            # Mirror the gateway ordering: clean before and after publishing the
+            # new env so the next browser tool call cannot re-attach to a stale
+            # supervisor between steps.
+            try:
+                from tools.browser_tool import (  # type: ignore[import-not-found]
+                    _ensure_cdp_supervisor,
+                    cleanup_all_browsers,
+                )
+
+                cleanup_all_browsers()
                 _ensure_cdp_supervisor("default")
             except Exception:
                 pass

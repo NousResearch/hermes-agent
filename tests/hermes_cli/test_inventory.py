@@ -217,6 +217,19 @@ def test_build_models_payload_can_force_fresh_nous_tier():
     assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is True
 
 
+def test_build_models_payload_can_skip_custom_provider_probes():
+    ctx = _empty_ctx()
+    rows = []
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=rows,
+    ) as mock_list:
+        build_models_payload(ctx, probe_custom_providers=False)
+
+    mock_list.assert_called_once()
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
+
+
 def test_list_authenticated_providers_force_fresh_is_keyword_only():
     """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
 

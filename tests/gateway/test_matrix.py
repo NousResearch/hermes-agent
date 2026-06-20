@@ -1410,6 +1410,68 @@ class TestMatrixAccessTokenAuth:
 
         await adapter.disconnect()
 
+    @pytest.mark.asyncio
+    async def test_connect_does_not_wait_for_stuck_pending_invite(self):
+        """A stale pending invite must not keep the Matrix platform unready."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+        join_started = asyncio.Event()
+
+        async def _stuck_join_room(*args, **kwargs):
+            join_started.set()
+            await asyncio.Event().wait()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.sync_store.put_next_batch = AsyncMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123")
+        )
+        mock_client.sync = AsyncMock(
+            return_value={
+                "rooms": {
+                    "join": {},
+                    "invite": {"!dead:example.org": {}},
+                },
+                "next_batch": "s1234",
+            }
+        )
+        mock_client.join_room = AsyncMock(side_effect=_stuck_join_room)
+        mock_client.add_event_handler = MagicMock()
+        mock_client.add_dispatcher = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    assert await asyncio.wait_for(adapter.connect(), timeout=1) is True
+
+        await asyncio.wait_for(join_started.wait(), timeout=1)
+        assert "!dead:example.org" in adapter._invite_join_tasks
+
+        await adapter.disconnect()
+        assert adapter._invite_join_tasks == {}
+
 
 class TestDeviceKeyReVerification:
     @pytest.mark.asyncio
@@ -1827,6 +1889,10 @@ class TestMatrixSyncLoop:
         with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
             await adapter._sync_loop()
 
+        tasks = list(adapter._invite_join_tasks.values())
+        if tasks:
+            await asyncio.gather(*tasks)
+
         fake_client.join_room.assert_awaited_once()
         assert "!joined:example.org" in adapter._joined_rooms
         assert "!invited:example.org" in adapter._joined_rooms
@@ -2092,6 +2158,47 @@ class TestMatrixSyncLoop:
 
         assert len(captured) == 1
 
+    @pytest.mark.asyncio
+    async def test_pending_invite_join_does_not_block_sync_loop(self):
+        """Dead invite joins should not make sync look like a gateway failure."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        async def _sync_once(**kwargs):
+            adapter._closing = True
+            return {
+                "rooms": {
+                    "invite": {"!dead:example.org": {}},
+                },
+                "next_batch": "s1234",
+            }
+
+        join_started = asyncio.Event()
+
+        async def _stuck_join_room(*args, **kwargs):
+            join_started.set()
+            await asyncio.Event().wait()
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.join_room = AsyncMock(side_effect=_stuck_join_room)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        await adapter._sync_loop()
+        await asyncio.wait_for(join_started.wait(), timeout=1)
+
+        assert "!dead:example.org" not in adapter._joined_rooms
+        assert "!dead:example.org" in adapter._invite_join_tasks
+        fake_client.join_room.assert_awaited_once()
+
+        await adapter.disconnect()
+        assert adapter._invite_join_tasks == {}
 
 class TestMatrixUploadAndSend:
     @pytest.mark.asyncio
@@ -3239,6 +3346,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_oversized_content_length(self, monkeypatch):
         import aiohttp
+        import tools.url_safety as url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
@@ -3271,6 +3379,11 @@ class TestMatrixImageOnlyMediaNormalization:
 
         self.adapter._max_media_bytes = 10
         monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: _Session())
+        monkeypatch.setattr(
+            url_safety,
+            "is_safe_url",
+            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        )
 
         with pytest.raises(ValueError, match="exceeds Matrix limit"):
             await self.adapter._download_external_media_with_cap(
@@ -3280,6 +3393,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_oversized_stream(self, monkeypatch):
         import aiohttp
+        import tools.url_safety as url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
@@ -3314,6 +3428,11 @@ class TestMatrixImageOnlyMediaNormalization:
 
         self.adapter._max_media_bytes = 10
         monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: _Session())
+        monkeypatch.setattr(
+            url_safety,
+            "is_safe_url",
+            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        )
 
         with pytest.raises(ValueError, match="exceeds Matrix limit"):
             await self.adapter._download_external_media_with_cap(
@@ -3323,6 +3442,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_unsafe_redirect(self, monkeypatch):
         import aiohttp
+        import tools.url_safety as url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
@@ -3354,6 +3474,11 @@ class TestMatrixImageOnlyMediaNormalization:
                 return _Response()
 
         monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: _Session())
+        monkeypatch.setattr(
+            url_safety,
+            "is_safe_url",
+            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        )
 
         with pytest.raises(ValueError, match="unsafe redirect"):
             await self.adapter._download_external_media_with_cap(
@@ -3370,6 +3495,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_non_image_content_type(self, monkeypatch):
         import aiohttp
+        import tools.url_safety as url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
@@ -3401,6 +3527,7 @@ class TestMatrixImageOnlyMediaNormalization:
                 return _Response()
 
         monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: _Session())
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
 
         with pytest.raises(ValueError, match="not an image"):
             await self.adapter._download_external_media_with_cap(
@@ -3408,14 +3535,16 @@ class TestMatrixImageOnlyMediaNormalization:
             )
 
     @pytest.mark.asyncio
-    async def test_send_image_failure_log_redacts_signed_url(self, caplog):
+    async def test_send_image_failure_log_redacts_signed_url(self, caplog, monkeypatch):
         from gateway.platforms.base import SendResult
+        import tools.url_safety as url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#frag"
         self.adapter._download_external_media_with_cap = AsyncMock(
             side_effect=ValueError("download failed")
         )
         self.adapter.send = AsyncMock(return_value=SendResult(success=True))
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
 
         await self.adapter.send_image("!room:example.org", signed_url)
 
@@ -3424,14 +3553,16 @@ class TestMatrixImageOnlyMediaNormalization:
         assert "#frag" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_send_image_failure_response_does_not_expose_signed_url_query(self):
+    async def test_send_image_failure_response_does_not_expose_signed_url_query(self, monkeypatch):
         from gateway.platforms.base import SendResult
+        import tools.url_safety as url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token"
         self.adapter._download_external_media_with_cap = AsyncMock(
             side_effect=ValueError("download failed")
         )
         self.adapter.send = AsyncMock(return_value=SendResult(success=True))
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
 
         await self.adapter.send_image("!room:example.org", signed_url)
 
@@ -3442,14 +3573,16 @@ class TestMatrixImageOnlyMediaNormalization:
         assert "source URL was not shown" in sent_text
 
     @pytest.mark.asyncio
-    async def test_send_image_failure_response_does_not_expose_signed_url_fragment(self):
+    async def test_send_image_failure_response_does_not_expose_signed_url_fragment(self, monkeypatch):
         from gateway.platforms.base import SendResult
+        import tools.url_safety as url_safety
 
         signed_url = "https://example.com/image.png#fragment-secret"
         self.adapter._download_external_media_with_cap = AsyncMock(
             side_effect=ValueError("download failed")
         )
         self.adapter.send = AsyncMock(return_value=SendResult(success=True))
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
 
         await self.adapter.send_image("!room:example.org", signed_url)
 
@@ -3460,14 +3593,16 @@ class TestMatrixImageOnlyMediaNormalization:
         assert "source URL was not shown" in sent_text
 
     @pytest.mark.asyncio
-    async def test_send_image_failure_response_preserves_caption(self):
+    async def test_send_image_failure_response_preserves_caption(self, monkeypatch):
         from gateway.platforms.base import SendResult
+        import tools.url_safety as url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#fragment"
         self.adapter._download_external_media_with_cap = AsyncMock(
             side_effect=ValueError("download failed")
         )
         self.adapter.send = AsyncMock(return_value=SendResult(success=True))
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
 
         await self.adapter.send_image(
             "!room:example.org",
@@ -3483,14 +3618,16 @@ class TestMatrixImageOnlyMediaNormalization:
         assert signed_url not in sent_text
 
     @pytest.mark.asyncio
-    async def test_send_image_failure_log_still_redacts_signed_url(self, caplog):
+    async def test_send_image_failure_log_still_redacts_signed_url(self, caplog, monkeypatch):
         from gateway.platforms.base import SendResult
+        import tools.url_safety as url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#fragment"
         self.adapter._download_external_media_with_cap = AsyncMock(
             side_effect=ValueError("download failed")
         )
         self.adapter.send = AsyncMock(return_value=SendResult(success=True))
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
 
         await self.adapter.send_image("!room:example.org", signed_url)
 

@@ -436,3 +436,55 @@ def test_stream_upload_large_file_under_cap_succeeds(forced_files_client, monkey
     assert created.status_code == 200
     assert file_path.stat().st_size == len(payload)
     assert file_path.read_bytes() == payload
+
+
+def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
+    """A client disconnect mid-stream (asyncio.CancelledError) must not leak a temp file.
+
+    CancelledError is a BaseException, not an Exception, so it bypasses the
+    endpoint's ``except`` clauses entirely. The cleanup therefore lives in a
+    ``finally`` keyed on a success flag — without it, every aborted large
+    upload (the exact NS-501 scenario) would orphan a partial ``.upload`` temp
+    file in the target directory. We invoke the endpoint coroutine directly so
+    the BaseException propagates instead of being swallowed by the test client.
+    """
+    import asyncio
+
+    _client, root = forced_files_client
+    target = root / "out" / "aborted.bin"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    class _AbortingUpload:
+        """UploadFile stand-in that yields one chunk then aborts like a dropped client."""
+
+        filename = "aborted.bin"
+
+        def __init__(self):
+            self._calls = 0
+
+        async def read(self, _size):
+            self._calls += 1
+            if self._calls == 1:
+                return b"partial chunk before the client vanished"
+            raise asyncio.CancelledError()
+
+        async def close(self):
+            return None
+
+    request = SimpleNamespace()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            web_server.upload_managed_file_stream(
+                request=request,
+                file=_AbortingUpload(),
+                path=str(target),
+                overwrite=True,
+            )
+        )
+
+    # No partial data was promoted into place ...
+    assert not target.exists()
+    # ... and no .upload temp file was left behind.
+    leftovers = [p.name for p in target.parent.iterdir() if ".upload" in p.name]
+    assert leftovers == [], f"temp upload files leaked on cancellation: {leftovers}"

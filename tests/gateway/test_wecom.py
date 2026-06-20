@@ -260,6 +260,70 @@ class TestExtractText:
         assert text == "spoken text"
         assert reply_text == "quoted"
 
+    def test_extracts_miniprogram_title(self):
+        """WPS/金山文档卡片发送 miniprogram msgtype — title should be extracted."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        body = {
+            "msgtype": "miniprogram",
+            "miniprogram": {"title": "天津市青年创业就业基金会简介", "content": "..."},
+        }
+        text, reply_text = WeComAdapter._extract_text(body)
+        assert text == "天津市青年创业就业基金会简介"
+        assert reply_text is None
+
+    def test_extracts_link_title_and_description(self):
+        """link card messages carry title + description."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        body = {
+            "msgtype": "link",
+            "link": {
+                "title": "项目申报通知",
+                "description": "关于开展2026年度创新创业项目申报工作的通知",
+                "url": "https://example.com/notice",
+            },
+        }
+        text, reply_text = WeComAdapter._extract_text(body)
+        assert "项目申报通知" in text
+        assert "关于开展2026年度创新创业项目申报工作的通知" in text
+
+    def test_extracts_template_card_title(self):
+        """template_card (structured card) messages carry a title field."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        body = {
+            "msgtype": "template_card",
+            "template_card": {
+                "title": "会议纪要",
+                "card_type": "template_notice",
+            },
+        }
+        text, reply_text = WeComAdapter._extract_text(body)
+        assert text == "会议纪要"
+
+    def test_miniprogram_without_title_returns_empty(self):
+        """miniprogram payload with no title should not crash."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        body = {
+            "msgtype": "miniprogram",
+            "miniprogram": {"content": "no title field here"},
+        }
+        text, reply_text = WeComAdapter._extract_text(body)
+        assert text == ""
+
+    def test_link_without_title_or_desc_returns_empty(self):
+        """link payload with neither title nor description should not crash."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        body = {
+            "msgtype": "link",
+            "link": {"url": "https://example.com"},
+        }
+        text, reply_text = WeComAdapter._extract_text(body)
+        assert text == ""
+
 
 class TestCallbackDispatch:
     @pytest.mark.asyncio

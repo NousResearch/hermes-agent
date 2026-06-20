@@ -536,7 +536,13 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
+            msgtype = str(body.get("msgtype") or "").lower()
+            logger.info(
+                "[%s] Unhandled/empty WeCom message — msgtype=%s body_keys=%s",
+                self.name,
+                msgtype,
+                list(body.keys()) if isinstance(body, dict) else "N/A",
+            )
             return
 
         source = self.build_source(
@@ -685,6 +691,30 @@ class WeComAdapter(BasePlatformAdapter):
             if msgtype == "appmsg":
                 appmsg = body.get("appmsg") if isinstance(body.get("appmsg"), dict) else {}
                 title = str(appmsg.get("title") or "").strip()
+                if title:
+                    text_parts.append(title)
+
+            # Extract miniprogram title (WPS/金山文档 cards, etc.)
+            if msgtype == "miniprogram":
+                miniprogram = body.get("miniprogram") if isinstance(body.get("miniprogram"), dict) else {}
+                title = str(miniprogram.get("title") or "").strip()
+                if title:
+                    text_parts.append(title)
+
+            # Extract link card fields
+            if msgtype == "link":
+                link = body.get("link") if isinstance(body.get("link"), dict) else {}
+                title = str(link.get("title") or "").strip()
+                if title:
+                    text_parts.append(title)
+                desc = str(link.get("description") or "").strip()
+                if desc:
+                    text_parts.append(desc)
+
+            # Extract template_card (structured card messages)
+            if msgtype == "template_card":
+                card = body.get("template_card") if isinstance(body.get("template_card"), dict) else {}
+                title = str(card.get("title") or "").strip()
                 if title:
                     text_parts.append(title)
 

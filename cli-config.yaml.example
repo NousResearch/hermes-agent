@@ -590,6 +590,14 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Compact long skill_view responses into a manifest plus safety-critical
+  # sections. Disabled by default for rollback-safe rollout; agents can still
+  # request mode="brief" explicitly, and full=true/mode="full" always returns
+  # complete SKILL.md content.
+  targeted_view:
+    enabled: false
+    threshold_chars: 20000
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

@@ -72,6 +72,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SIDECAR_PORT = 8789
 _DEFAULT_SIDECAR_BIND = "127.0.0.1"
+_DEFAULT_SIDECAR_SEND_TIMEOUT = 120.0
 
 # Photon iMessage messages from the SDK side have no documented hard
 # limit, but the underlying iMessage protocol limits practical message
@@ -175,6 +176,11 @@ class PhotonAdapter(BasePlatformAdapter):
     Inbound: consume the sidecar's ``/inbound`` gRPC stream.
     Outbound: loopback POSTs to the sidecar's control channel.
     """
+
+    # iMessage has no edit API — streaming would emit a partial bubble then
+    # fall back to full sends for the final answer (duplicate messages).
+    # Match BlueBubbles: one delivery when the turn completes.
+    SUPPORTS_MESSAGE_EDITING = False
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
 
@@ -1245,19 +1251,45 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
                 return result
 
-        logger.warning(
-            "[photon] Send failed: %s - retrying plain-text message",
-            error_str,
+        # Do not send a second bubble. iMessage has no edit API and Photon
+        # markdown/plain payloads are the same text — the base adapter's
+        # plain-text fallback only creates duplicate replies. Timeouts and
+        # upstream/sidecar failures are especially dangerous: the first send
+        # may have been delivered while our HTTP client gave up waiting.
+        if self._is_ambiguous_photon_delivery_error(error_str):
+            logger.error(
+                "[photon] Send failed (not sending duplicate): %s",
+                error_str or "(empty error)",
+            )
+            return result
+
+        logger.error(
+            "[photon] Send failed (not retrying duplicate bubble): %s",
+            error_str or "(empty error)",
         )
-        fallback_result = await self.send(
-            chat_id=chat_id,
-            content=text[: self.MAX_MESSAGE_LENGTH],
-            reply_to=reply_to,
-            metadata=metadata,
+        return result
+
+    @staticmethod
+    def _is_ambiguous_photon_delivery_error(error: Optional[str]) -> bool:
+        """True when a retry would likely duplicate an already-delivered bubble."""
+        if not error:
+            # httpx.ReadTimeout often stringifies to '' — treat as ambiguous.
+            return True
+        lowered = error.lower()
+        return any(
+            pat in lowered
+            for pat in (
+                "timed out",
+                "timeout",
+                "readtimeout",
+                "writetimeout",
+                "internal sidecar",
+                "upstream",
+                "service temporarily unavailable",
+                "resource_exhausted",
+                "concurrency limit",
+            )
         )
-        if not fallback_result.success:
-            logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
-        return fallback_result
 
     async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
         if len(text) > self.MAX_MESSAGE_LENGTH:
@@ -1274,7 +1306,12 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send", body)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            err = str(e)
+            if not err and HTTPX_AVAILABLE and isinstance(e, httpx.TimeoutException):
+                err = "Photon sidecar /send timed out (read timeout)"
+            elif not err:
+                err = type(e).__name__
+            return SendResult(success=False, error=err, retryable=False)
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
@@ -1338,7 +1375,17 @@ class PhotonAdapter(BasePlatformAdapter):
         # _http_client directly — it always runs on the gateway's loop.
         url = f"http://{self._sidecar_bind}:{self._sidecar_port}{path}"
         headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Long markdown replies can sit in spectrum-ts/upstream longer than 30s;
+        # timing out client-side and re-sending created duplicate iMessage bubbles.
+        default_send_timeout = _DEFAULT_SIDECAR_SEND_TIMEOUT
+        try:
+            default_send_timeout = float(
+                os.getenv("PHOTON_SIDECAR_SEND_TIMEOUT", str(_DEFAULT_SIDECAR_SEND_TIMEOUT))
+            )
+        except (TypeError, ValueError):
+            default_send_timeout = _DEFAULT_SIDECAR_SEND_TIMEOUT
+        timeout = default_send_timeout if path in ("/send", "/send-attachment") else 30.0
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(

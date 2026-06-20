@@ -114,6 +114,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_PROJECT_ID`       | from .env / auth.json      | Spectrum project id (SDK `projectId`)|
 | `PHOTON_PROJECT_SECRET`   | from .env / auth.json      | Project secret                       |
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
+| `PHOTON_SIDECAR_SEND_TIMEOUT` | 120                    | Loopback HTTP timeout (seconds) for `/send` and `/send-attachment` |
 | `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
 | `PHOTON_SPECTRUM_HOST`    | https://spectrum.photon.codes | Spectrum API host                 |

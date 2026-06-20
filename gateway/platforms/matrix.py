@@ -209,7 +209,7 @@ class _MatrixHtmlSanitizer(HTMLParser):
     _ALLOWED_TAGS = {
         "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3",
         "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "strike",
-        "strong", "ul",
+        "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
     }
     _VOID_TAGS = {"br", "hr"}
 

@@ -19,7 +19,6 @@ import asyncio
 import logging
 import os
 import platform
-import shutil
 import signal
 import subprocess
 
@@ -27,7 +26,11 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import (
+    find_node_executable,
+    get_hermes_dir,
+    with_hermes_node_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,10 +215,9 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
-    # (node.exe vs node) and get a meaningful "not installed" signal
-    # instead of spawning a cmd flash on Windows.
-    _node = shutil.which("node")
+    # Prefer Hermes-managed Node/npm so Windows installs are not broken by a
+    # bad or elevation-triggering system Node on PATH.
+    _node = find_node_executable("node")
     if not _node:
         return False
     try:
@@ -404,10 +406,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     _deps_fresh = False
             if not _deps_fresh:
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-                # Resolve npm path so Windows can execute the .cmd shim.
-                # shutil.which honours PATHEXT; on POSIX it returns the
-                # plain executable path.
-                _npm_bin = shutil.which("npm") or "npm"
+                # Resolve npm path so Windows uses npm.cmd from the
+                # Hermes-managed portable Node before falling back to PATH.
+                _npm_bin = find_node_executable("npm") or "npm"
                 try:
                     # Read timeout from environment variable, default to 300 seconds (5 minutes)
                     # to accommodate slower systems like Unraid NAS
@@ -418,6 +419,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         capture_output=True,
                         text=True,
                         timeout=npm_install_timeout,
+                        env=with_hermes_node_path(),
                     )
                     if install_result.returncode != 0:
                         print(f"[{self.name}] npm install failed: {install_result.stderr}")
@@ -490,7 +492,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Build bridge subprocess environment.
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
-            bridge_env = os.environ.copy()
+            # with_hermes_node_path() copies os.environ when called with no arg.
+            bridge_env = with_hermes_node_path()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
             # Pass the profile-aware cache directories so the bridge writes
@@ -508,7 +511,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             self._bridge_process = subprocess.Popen(
                 [
-                    "node",
+                    find_node_executable("node") or "node",
                     str(bridge_path),
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),
@@ -846,13 +849,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Download image URL to cache, send natively via bridge."""
+        """Download image URL to cache, send natively via bridge.
+
+        ``metadata`` is accepted to honor the base-class contract — the
+        batch sender ``send_multiple_images`` passes it through to every
+        send path. The bridge media call doesn't use it, matching the
+        sibling overrides (send_video / send_voice / send_document).
+        """
         try:
             local_path = await cache_image_from_url(image_url)
             return await self._send_media_to_bridge(chat_id, local_path, "image", caption)
         except Exception:
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata)
 
     async def send_image_file(
         self,
@@ -1136,6 +1146,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
+
+            # If this is a reply, include the quoted message text so the agent
+            # knows exactly what the user is responding to (fixes "approve" context issue)
+            quoted_text = str(data.get("quotedText") or "").strip()
+            if quoted_text and data.get("hasQuotedMessage"):
+                # Truncate long quoted text to keep prompts reasonable
+                if len(quoted_text) > 300:
+                    quoted_text = quoted_text[:297] + "..."
+                body = f"[Replying to: \"{quoted_text}\"]\n{body}"
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:

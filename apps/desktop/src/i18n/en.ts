@@ -131,7 +131,25 @@ export const en: Translations = {
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable'
+    },
+    native: {
+      approvalTitle: 'Approval needed',
+      approveAction: 'Approve',
+      rejectAction: 'Reject',
+      inputTitle: 'Input needed',
+      inputBody: 'Hermes is waiting for your response.',
+      turnDoneTitle: 'Hermes finished',
+      turnDoneBody: 'The response is ready.',
+      turnErrorTitle: 'Turn failed',
+      backgroundDoneTitle: 'Background task finished',
+      backgroundFailedTitle: 'Background task failed'
     }
+  },
+
+  remoteDisplayBanner: {
+    message: reason =>
+      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`,
+    dismiss: 'Dismiss'
   },
 
   titlebar: {
@@ -177,6 +195,7 @@ export const en: Translations = {
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
+      'session.newWindow': 'New session in window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
       'session.slot.1': 'Switch to recent session 1',
@@ -263,7 +282,46 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
-      about: 'About'
+      about: 'About',
+      notifications: 'Notifications'
+    },
+    notifications: {
+      title: 'Notifications',
+      intro:
+        'Native desktop notifications, separate from in-app toasts. These are device-local — each computer keeps its own settings.',
+      enableAll: 'Enable notifications',
+      enableAllDesc: 'Master switch. Turn this off to silence every notification below.',
+      focusedHint: 'Completion alerts only fire while Hermes is in the background.',
+      kinds: {
+        approval: {
+          label: 'Approval needed',
+          description: 'A command is waiting for you to approve or reject it.'
+        },
+        input: {
+          label: 'Input needed',
+          description: 'Hermes asked a question or needs a password or secret.'
+        },
+        turnDone: {
+          label: 'Response ready',
+          description: 'A turn finished while Hermes was in the background.'
+        },
+        turnError: {
+          label: 'Turn failed',
+          description: 'A turn ended with an error.'
+        },
+        backgroundDone: {
+          label: 'Background task finished',
+          description: 'A backgrounded terminal command completed.'
+        }
+      },
+      test: 'Send test notification',
+      testTitle: 'Hermes',
+      testBody: 'Notifications are working.',
+      testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
+      testUnsupported: 'This system does not support native notifications.',
+      completionSoundTitle: 'Completion Sound',
+      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
+      completionSoundPreview: 'Preview'
     },
     sections: {
       model: 'Model',
@@ -486,6 +544,10 @@ export const en: Translations = {
       provider: 'Provider',
       model: 'Model',
       applying: 'Applying...',
+      defaultsLabel: 'Defaults',
+      reasoning: 'Reasoning',
+      reasoningOff: 'Off',
+      defaultsFailed: 'Failed to save model defaults',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
       auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
@@ -513,7 +575,20 @@ export const en: Translations = {
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
+      disconnect: 'Disconnect',
+      disconnectInTerminal: 'Disconnect (runs the removal command in the terminal)',
+      removeConfirm: provider => `Remove ${provider}?`,
+      removeExternalGeneric: provider => `${provider} is managed by its own CLI — remove it there.`,
+      removeKeyManaged: provider => `${provider} is configured from an API key. Remove it from API Keys.`,
+      removeTerminalConfirm: (provider, command) =>
+        `Disconnect ${provider}? This runs "${command}" in the terminal to clear the credential.`,
+      removeTerminalRunning: provider => `Running ${provider} disconnect in the terminal…`,
+      removedTitle: 'Account removed',
+      removedMessage: provider => `${provider} was removed.`,
+      failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
+      searchKeys: 'Search providers…',
+      noKeysMatch: 'No providers match your search.',
       loading: 'Loading providers...'
     },
     sessions: {
@@ -694,7 +769,8 @@ export const en: Translations = {
     gatewayRunning: 'Messaging gateway running',
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,
-    restartMessaging: 'Restart messaging',
+    restartGateway: 'Restart gateway',
+    gatewayRestartFailed: 'Gateway restart failed.',
     updateHermes: 'Update Hermes',
     actionRunning: 'running',
     actionDone: 'done',
@@ -763,9 +839,9 @@ export const en: Translations = {
     disableAria: name => `Disable ${name}`,
     platformEnabled: name => `${name} enabled`,
     platformDisabled: name => `${name} disabled`,
-    restartToApply: 'Restart the gateway for this change to take effect.',
+    restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
-    restartToReconnect: 'Restart the gateway to reconnect with the new credentials.',
+    restartToReconnect: 'New credentials take effect after a gateway restart.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,
@@ -903,6 +979,9 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
+    cloneFrom: 'Clone from',
+    cloneFromNone: 'None (blank)',
+    cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
     cloneFromDefault: 'Clone from default',
     cloneFromDefaultDesc: 'Copy config, skills, and SOUL.md from your default profile.',
     invalidName: hint => `Invalid name. ${hint}`,
@@ -1437,8 +1516,6 @@ export const en: Translations = {
     unknown: '(unknown)',
     search: 'Filter providers and models...',
     noModels: 'No models found.',
-    persistGlobalSession: 'Persist globally (otherwise this session only)',
-    persistGlobal: 'Persist globally',
     addProvider: 'Add provider',
     loadFailed: 'Could not load models',
     noAuthenticatedProviders: 'No authenticated providers.',
@@ -1464,6 +1541,7 @@ export const en: Translations = {
       search: 'Search models',
       noModels: 'No models found',
       editModels: 'Edit Models…',
+      refreshModels: 'Refresh Models',
       fast: 'Fast',
       medium: 'Med'
     },
@@ -1518,6 +1596,7 @@ export const en: Translations = {
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
+      gatewayRestarting: 'restarting…',
       gatewayTitle: 'Hermes inference gateway status',
       agents: 'Agents',
       closeAgents: 'Close agents',
@@ -1665,6 +1744,7 @@ export const en: Translations = {
       refresh: 'Refresh',
       moreActions: 'More actions',
       branchNewChat: 'Branch in new chat',
+      dismissError: 'Dismiss error',
       readAloudFailed: 'Read aloud failed',
       preparingAudio: 'Preparing audio...',
       stopReading: 'Stop reading',
@@ -1687,9 +1767,11 @@ export const en: Translations = {
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send approval response',
       run: 'Run',
+      command: 'Command',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
       alwaysAllowMenu: 'Always allow…',
+      jumpToApproval: 'Approval needed',
       reject: 'Reject',
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
@@ -1772,6 +1854,9 @@ export const en: Translations = {
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',
+    resumeStrandedTitle: "Couldn't load this session",
+    resumeStrandedBody: 'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',
     sessionBusy: 'Session busy',

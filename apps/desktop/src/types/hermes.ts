@@ -580,6 +580,7 @@ export interface ToolsetConfig {
 }
 
 export interface SessionSearchResult {
+  cwd?: null | string
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null

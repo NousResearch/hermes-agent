@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { sessionMatchesSearch } from './session-search'
+import { sessionFromSearchResult, sessionMatchesSearch } from './session-search'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -62,5 +62,24 @@ describe('sessionMatchesSearch', () => {
 
   it('does not match unrelated queries', () => {
     expect(sessionMatchesSearch(makeSession(), 'totally-unrelated')).toBe(false)
+  })
+})
+
+describe('sessionFromSearchResult', () => {
+  it('preserves the stored cwd from server-side session search hits', () => {
+    const session = sessionFromSearchResult({
+      cwd: '/home/user/projects/vox-type',
+      lineage_root: 'root-session',
+      model: 'claude',
+      role: 'user',
+      session_id: 'tip-session',
+      session_started: 1_234,
+      snippet: 'matching history',
+      source: 'cli'
+    })
+
+    expect(session.cwd).toBe('/home/user/projects/vox-type')
+    expect(session.id).toBe('tip-session')
+    expect(session._lineage_root_id).toBe('root-session')
   })
 })

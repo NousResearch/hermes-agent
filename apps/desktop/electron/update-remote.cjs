@@ -15,6 +15,10 @@
 const OFFICIAL_REPO_HTTPS_URL = 'https://github.com/NousResearch/hermes-agent.git'
 const OFFICIAL_REPO_CANONICAL = 'github.com/nousresearch/hermes-agent'
 
+// EasyHermes(品牌化 fork)的自更新源:跟踪我们自己的 fork,而不是上游 NousResearch。
+// 桌面端被动更新检查比对的是这个仓库的分支 tip,所以不会再因为落后上游 main 而一直提示。
+const UPDATE_REPO_HTTPS_URL = 'https://github.com/binsonzhang95-maker/hermes-agent.git'
+
 // Normalize common GitHub remote URL forms to `host/owner/repo` (lowercased,
 // no trailing slash, no .git suffix) so SSH and HTTPS forms of the same repo
 // compare equal.
@@ -50,6 +54,7 @@ function isOfficialSshRemote(url) {
 module.exports = {
   OFFICIAL_REPO_HTTPS_URL,
   OFFICIAL_REPO_CANONICAL,
+  UPDATE_REPO_HTTPS_URL,
   canonicalGitHubRemote,
   isSshRemote,
   isOfficialSshRemote

@@ -111,7 +111,8 @@ jobs:
           fi
 
           # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          # Match standalone Python exec/eval calls only; avoid identifier suffixes like self._exec(...).
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE '(^|[^[:alnum:]_.])(exec|eval)[[:space:]]*\(' | head -10 || true)
           if [ -n "$B64_EXEC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: base64 decode + exec/eval combo

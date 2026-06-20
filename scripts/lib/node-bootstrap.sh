@@ -2,7 +2,7 @@
 # ============================================================================
 # scripts/lib/node-bootstrap.sh
 # ----------------------------------------------------------------------------
-# Sourceable helper: ensure Node.js >= MIN_VERSION is available for the TUI
+# Sourceable helper: ensure Node.js satisfies ^20.19 || >=22.12 for the TUI
 # (React + Ink), browser tools, and the WhatsApp bridge.
 #
 # Strategy (first hit wins — respects the user's existing tooling):
@@ -18,12 +18,10 @@
 #   if [ "$HERMES_NODE_AVAILABLE" = true ]; then ...; fi
 #
 # Env inputs (set before sourcing to override defaults):
-#   HERMES_NODE_MIN_VERSION   (default: 20)   — accepted on PATH
 #   HERMES_NODE_TARGET_MAJOR  (default: 22)   — installed when we install
 #   HERMES_HOME               (default: $HOME/.hermes)
 # ============================================================================
 
-HERMES_NODE_MIN_VERSION="${HERMES_NODE_MIN_VERSION:-20}"
 HERMES_NODE_TARGET_MAJOR="${HERMES_NODE_TARGET_MAJOR:-22}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_NODE_AVAILABLE=false

@@ -180,6 +180,7 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
     real_home = tmp_path / "real-home"
     real_home.mkdir()
 
+    monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
     monkeypatch.setenv("HOME", str(real_home))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 

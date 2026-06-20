@@ -1,11 +1,14 @@
 import json
 from unittest.mock import AsyncMock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  channel_prompts=None):
     from gateway.platforms.whatsapp import WhatsAppAdapter
 
     extra = {}
@@ -23,6 +26,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_policy"] = group_policy
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if channel_prompts is not None:
+        extra["channel_prompts"] = channel_prompts
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -169,6 +174,21 @@ def test_mention_stripping_preserves_body_when_no_mention():
     data = _group_message("just a normal message")
     cleaned = adapter._clean_bot_mention_text(data["body"], data)
     assert cleaned == "just a normal message"
+
+
+@pytest.mark.asyncio
+async def test_build_message_event_sets_whatsapp_channel_prompt():
+    adapter = _make_adapter(
+        require_mention=False,
+        channel_prompts={
+            "120363001234567890@g.us": "Keep it warm and short.",
+        },
+    )
+
+    event = await adapter._build_message_event(_group_message("say hi"))
+
+    assert event is not None
+    assert event.channel_prompt == "Keep it warm and short."
 
 
 # --- New dm_policy tests ---

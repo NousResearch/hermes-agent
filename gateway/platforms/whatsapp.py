@@ -190,6 +190,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    resolve_channel_prompt,
 )
 
 
@@ -1088,6 +1089,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
             )
+            channel_prompt = resolve_channel_prompt(
+                self.config.extra,
+                str(data.get("chatId", "")),
+            )
             
             # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
@@ -1190,6 +1195,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                channel_prompt=channel_prompt,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

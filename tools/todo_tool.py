@@ -2,10 +2,14 @@
 """
 Todo Tool Module - Planning & Task Management
 
-Provides an in-memory task list the agent uses to decompose complex tasks,
-track progress, and maintain focus across long conversations. The state
-lives on the AIAgent instance (one per session) and is re-injected into
-the conversation after context compression events.
+Provides an in-memory execution plan the agent uses to decompose complex
+tasks, track progress, and maintain focus across long conversations. The
+state lives on the AIAgent instance (one per session) and is re-injected
+into the conversation after context compression events.
+
+This is intentionally not durable user task storage. User-facing tasks
+("add this to my task list", "remind me to call...", "what are my todos?")
+must be routed to the configured durable task system instead.
 
 Design:
 - Single `todo` tool: provide `todos` param to write, omit to read
@@ -223,6 +227,14 @@ def todo_tool(
             "completed": completed,
             "cancelled": cancelled,
         },
+        "scope": "session_execution_plan",
+        "durability": "session_only",
+        "routing_hint": (
+            "Do not use this tool for user-facing durable tasks or personal "
+            "todo lists. Route those through the user's durable task system "
+            "(for this install: GBrain ops/tasks.md via the daily-task-manager "
+            "skill/MCP tools)."
+        ),
     }, ensure_ascii=False)
 
 
@@ -240,9 +252,15 @@ def check_todo_requirements() -> bool:
 TODO_SCHEMA = {
     "name": "todo",
     "description": (
-        "Manage your task list for the current session. Use for complex tasks "
-        "with 3+ steps or when the user provides multiple tasks. "
+        "Manage your session-only execution plan. Use for complex tasks "
+        "with 3+ implementation steps or when you need to track your own "
+        "progress during the current conversation. "
         "Call with no parameters to read the current list.\n\n"
+        "Do NOT use this for the user's durable tasks, personal todo list, "
+        "follow-ups, reminders, or anything described as a Things replacement. "
+        "Those items will be forgotten because this tool is per-session only. "
+        "For durable user tasks on this install, use the GBrain daily-task-manager "
+        "workflow and write/read the brain page ops/tasks.md via MCP instead.\n\n"
         "Writing:\n"
         "- Provide 'todos' array to create/update items\n"
         "- merge=false (default): replace the entire list with a fresh plan\n"

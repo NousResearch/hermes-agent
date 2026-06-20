@@ -344,3 +344,43 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
     assert "Browser Automation (Browserbase)" not in output
     assert "Browser Automation" in output
     assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output
+
+
+def test_setup_summary_local_browser_unavailable_without_chromium(
+    tmp_path, monkeypatch, capsys
+):
+    """End-to-end: agent-browser present but no Chromium in local mode must
+    render as unavailable with an install hint — not a false 'available'.
+
+    Unlike the mocked-feature tests above, this drives the real
+    ``get_nous_subscription_features`` so the surface stays aligned with the
+    runtime gate in ``tools.browser_tool.check_browser_requirements``.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    browser_cfg = cfg.get("browser")
+    if not isinstance(browser_cfg, dict):
+        browser_cfg = {}
+        cfg["browser"] = browser_cfg
+    browser_cfg["cloud_provider"] = "local"
+    save_config(cfg)
+
+    # Only stub the readiness probes; the feature resolver itself is real.
+    monkeypatch.setattr("hermes_cli.nous_subscription._has_agent_browser", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
+    monkeypatch.setattr("tools.browser_tool._using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_available_vision_backends", lambda: []
+    )
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Local browser)" not in output
+    assert "agent-browser install --with-deps" in output

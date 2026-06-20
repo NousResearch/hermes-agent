@@ -25,7 +25,9 @@ function setProviders(providers: OAuthProvider[]) {
     providers,
     reason: null,
     requested: false,
-    manual: false
+    firstRunSkipped: false,
+    manual: false,
+    localEndpoint: false
   } satisfies DesktopOnboardingState)
 }
 
@@ -33,6 +35,13 @@ const ctx: OnboardingContext = { requestGateway: async () => undefined as never 
 
 afterEach(() => {
   cleanup()
+
+  try {
+    window.localStorage.clear()
+  } catch {
+    // jsdom localStorage should always be present; ignore if not.
+  }
+
   $desktopOnboarding.set({
     configured: null,
     flow: { status: 'idle' },
@@ -40,7 +49,9 @@ afterEach(() => {
     providers: null,
     reason: null,
     requested: false,
-    manual: false
+    firstRunSkipped: false,
+    manual: false,
+    localEndpoint: false
   })
 })
 
@@ -67,5 +78,25 @@ describe('onboarding Picker', () => {
     expect(screen.getByText('OpenAI OAuth (ChatGPT)')).toBeTruthy()
     expect(screen.queryByText('Other sign-in options')).toBeNull()
     expect(screen.queryByText('Recommended')).toBeNull()
+  })
+
+  it('offers "choose later" on first run and persists the skip', () => {
+    setProviders([provider('nous', 'Nous Portal')])
+    render(<Picker ctx={ctx} />)
+
+    const skip = screen.getByRole('button', { name: "I'll choose a provider later" })
+
+    fireEvent.click(skip)
+
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(true)
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBe('1')
+  })
+
+  it('hides "choose later" in manual (add-provider) mode', () => {
+    setProviders([provider('nous', 'Nous Portal')])
+    $desktopOnboarding.set({ ...$desktopOnboarding.get(), manual: true })
+    render(<Picker ctx={ctx} />)
+
+    expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
   })
 })

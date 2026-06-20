@@ -33,6 +33,9 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # Terminal + process management
     "terminal", "process",
+    # Read the desktop GUI's embedded terminal pane (gated on HERMES_DESKTOP
+    # via check_fn in tools/read_terminal_tool.py — hidden outside the GUI).
+    "read_terminal",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
@@ -56,8 +59,6 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
-    # Cross-platform messaging (gated on gateway running via check_fn)
-    "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -191,13 +192,7 @@ TOOLSETS = {
         "includes": []
     },
     
-    "messaging": {
-        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
-        "includes": []
-    },
 
-    
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
@@ -342,12 +337,41 @@ TOOLSETS = {
         "tools": [],
         "includes": ["web", "vision", "image_gen"]
     },
+
+    # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
+    # code workspace; see agent/coding_context.py. Keeps everything you reach
+    # for while pairing on code and drops the rest (messaging, tts, image_gen,
+    # spotify, home-assistant, cron, computer-use).
+    "coding": {
+        "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
+        "tools": [
+            "web_search", "web_extract",
+            "terminal", "process", "read_terminal",
+            "read_file", "write_file", "patch", "search_files",
+            "vision_analyze",
+            "skills_list", "skill_view", "skill_manage",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "todo", "memory",
+            "session_search", "clarify",
+            "execute_code", "delegate_task",
+        ],
+        "includes": [],
+        # Posture toolset: selected per-session by agent/coding_context.py,
+        # never auto-recovered into per-platform tool config (see the
+        # non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
+        "posture": True,
+    },
     
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools (including send_message,
-    # which is gated on gateway running via its check_fn).
+    # All platforms share the same core tools. Note: agents do NOT get an
+    # agent-callable send_message tool — outbound platform messaging is handled
+    # outside the agent loop (cron delivery, the gateway kanban notifier, and
+    # the `hermes send` CLI), not by the model deciding to send on its own.
     # ==========================================================================
 
     "hermes-acp": {

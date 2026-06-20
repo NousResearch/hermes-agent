@@ -69,6 +69,7 @@ class TestSignalConfigLoading:
 
     def test_signal_not_loaded_without_both_vars(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
         # No SIGNAL_ACCOUNT
 
         from gateway.config import GatewayConfig, _apply_env_overrides
@@ -162,6 +163,103 @@ class TestSignalHelpers:
     def test_guess_extension_mp4(self):
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 100) == ".mp4"
+
+    def test_guess_extension_aac_adts_unprotected(self):
+        """ADTS AAC, MPEG-4, no CRC (the canonical Android Signal voice note).
+
+        Byte 0 = 0xFF (sync high), byte 1 = 0xF1 (sync low + ID=0 + layer=00
+        + protection_absent=1). Must NOT be misclassified as MP3 — the old
+        code's ``(b[1] & 0xE0) == 0xE0`` test wrongly returned ``.mp3``.
+        """
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xf1" + b"\x00" * 200) == ".aac"
+
+    def test_guess_extension_aac_adts_protected(self):
+        """ADTS AAC, MPEG-4, CRC present (protection_absent=0)."""
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xf0" + b"\x00" * 200) == ".aac"
+
+    def test_guess_extension_mp3_mpeg1_layer3(self):
+        """Real MP3 frame, MPEG-1 Layer 3: byte1 = 0xFB (ID=1, layer=01, prot=1)."""
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xfb" + b"\x00" * 200) == ".mp3"
+
+    def test_guess_extension_mp3_mpeg2_layer3(self):
+        """Real MP3 frame, MPEG-2 Layer 3: byte1 = 0xF3 (ID=1, layer=01, prot=1)."""
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\xff\xf3" + b"\x00" * 200) == ".mp3"
+
+    def test_guess_extension_aac_routes_to_audio_cache(self):
+        """ADTS-detected files must be routed to the audio cache, not document.
+
+        ``_is_audio_ext(``.aac``)`` is True, so a Signal attachment that
+        begins with the ADTS sync word ends up in ``cache_audio_from_bytes``,
+        which the remux step then converts to MP4 container.
+        """
+        from gateway.platforms.signal import _is_audio_ext, _guess_extension
+        ext = _guess_extension(b"\xff\xf1" + b"\x00" * 200)
+        assert ext == ".aac"
+        assert _is_audio_ext(ext) is True
+
+    def test_remux_aac_to_m4a_round_trip(self):
+        """A real ADTS AAC stream remuxes to a valid MP4 (.m4a) container.
+
+        Generates a short ADTS AAC sample with ffmpeg at runtime so the
+        end-to-end remux path actually exercises in CI (skipped only when
+        ffmpeg is unavailable), rather than depending on a machine-specific
+        file.
+        """
+        import shutil
+        import subprocess
+        import tempfile
+        from gateway.platforms.signal import _remux_aac_to_m4a
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            import pytest
+            pytest.skip("ffmpeg not available in this env")
+
+        # Synthesize 0.5s of silence encoded as raw ADTS AAC.
+        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as tmp:
+            adts_path = tmp.name
+        try:
+            gen = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "anullsrc=r=44100:cl=mono", "-t", "0.5",
+                 "-c:a", "aac", "-f", "adts", adts_path],
+                capture_output=True, timeout=30,
+            )
+            if gen.returncode != 0:
+                import pytest
+                pytest.skip("ffmpeg could not produce an ADTS AAC sample")
+            with open(adts_path, "rb") as f:
+                aac_data = f.read()
+        finally:
+            try:
+                import os
+                os.unlink(adts_path)
+            except OSError:
+                pass
+
+        result = _remux_aac_to_m4a(aac_data)
+        assert result is not None
+        m4a_bytes, ext = result
+        assert ext == ".m4a"
+        # MP4 files start with a 4-byte size, then ``ftyp`` at offset 4.
+        assert m4a_bytes[4:8] == b"ftyp", \
+            f"expected MP4 ftyp box, got {m4a_bytes[:12]!r}"
+        # File must be at least as long as the input (MP4 has overhead).
+        assert len(m4a_bytes) >= len(aac_data) * 0.5
+
+    def test_remux_aac_to_m4a_handles_garbage(self):
+        """Garbage input should return None, not raise."""
+        from gateway.platforms.signal import _remux_aac_to_m4a
+        result = _remux_aac_to_m4a(b"\xff\xf1garbage_no_aac_frames")
+        # Either returns None (ffmpeg errored) or a real M4A. If it returned
+        # bytes, the bytes must look like an MP4. Otherwise it returns None.
+        if result is not None:
+            m4a_bytes, ext = result
+            assert ext == ".m4a"
 
     def test_guess_extension_unknown(self):
         from gateway.platforms.signal import _guess_extension
@@ -771,6 +869,153 @@ class TestSignalMediaExtraction:
 
 
 # ---------------------------------------------------------------------------
+# Inbound attachment message type classification
+# ---------------------------------------------------------------------------
+
+def _make_dm_envelope(sender: str, attachments: list, text: str = "") -> dict:
+    """Build a minimal signal-cli DM envelope with the given attachments."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Test User",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": text,
+                "expiresInSeconds": 0,
+                "viewOnce": False,
+                "attachments": attachments,
+            },
+        }
+    }
+
+
+class TestSignalInboundMessageTypeClassification:
+    """_handle_envelope must set MessageType.DOCUMENT for application/* and text/* attachments.
+
+    Before the fix, PDFs and other documents left msg_type as MessageType.TEXT,
+    so run.py's document-context injection (which gates on MessageType.DOCUMENT)
+    silently dropped the file and the agent never saw it.
+    """
+
+    async def _dispatch_single_attachment(self, monkeypatch, content_type: str,
+                                          att_id: str, fetch_path: str, fetch_ext: str):
+        """Helper: run _handle_envelope with one attachment and return the dispatched event."""
+        envelope = _make_dm_envelope(
+            sender="+15559876543",
+            attachments=[{
+                "contentType": content_type,
+                "id": att_id,
+                "size": 1024,
+                "filename": None,
+                "width": None,
+                "height": None,
+                "caption": None,
+                "uploadTimestamp": 1700000000000,
+            }],
+        )
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        adapter._fetch_attachment = AsyncMock(return_value=(fetch_path, fetch_ext))
+        await adapter._handle_envelope(envelope)
+        assert dispatched, "_handle_envelope did not dispatch any event"
+        return dispatched[0]
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_sets_document_type(self, monkeypatch):
+        """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="application/pdf",
+            att_id="6zLO3b-6Yf3zVWeLDctA.pdf",
+            fetch_path="/tmp/report.pdf",
+            fetch_ext=".pdf",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "PDFs must be classified as DOCUMENT so run.py injects file context."
+        )
+        assert "/tmp/report.pdf" in event.media_urls
+
+    @pytest.mark.asyncio
+    async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
+        """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/plain",
+            att_id="notes.txt",
+            fetch_path="/tmp/notes.txt",
+            fetch_ext=".txt",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/plain must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_text_html_attachment_sets_document_type(self, monkeypatch):
+        """A text/html attachment must produce MessageType.DOCUMENT (covers the text/* wildcard)."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/html",
+            att_id="page.html",
+            fetch_path="/tmp/page.html",
+            fetch_ext=".html",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/html must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_video_attachment_sets_video_type(self, monkeypatch):
+        """A video/mp4 attachment must produce MessageType.VIDEO."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="video/mp4",
+            att_id="clip.mp4",
+            fetch_path="/tmp/clip.mp4",
+            fetch_ext=".mp4",
+        )
+
+        assert event.message_type == MessageType.VIDEO
+
+    @pytest.mark.asyncio
+    async def test_unknown_mime_attachment_falls_back_to_document(self, monkeypatch):
+        """Unknown/exotic MIME types fall through to DOCUMENT (catch-all),
+        matching the WhatsApp/Slack/BlueBubbles classification pattern."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="chemical/x-pdb",
+            att_id="molecule.pdb",
+            fetch_path="/tmp/molecule.pdb",
+            fetch_ext=".pdb",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT
+
+
+# ---------------------------------------------------------------------------
 # send_document now routes through _send_attachment (#5105 bonus)
 # ---------------------------------------------------------------------------
 
@@ -860,6 +1105,97 @@ class TestSignalSendReturnsMessageId:
 
         assert result.success is True
         assert result.message_id is None
+
+
+class TestSignalSendResultValidation:
+    """Verify that send() validates recipient-level delivery results."""
+
+    @pytest.mark.asyncio
+    async def test_send_success_when_results_has_success(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "type": "SUCCESS"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_failure_when_results_has_failure_type(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "type": "UNREGISTERED_FAILURE"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is False
+        assert result.error == "UNREGISTERED_FAILURE"
+
+    @pytest.mark.asyncio
+    async def test_send_failure_when_results_has_success_false(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "success": False,
+                    "failure": "Some connection error"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is False
+        assert result.error == "Some connection error"
+
+    @pytest.mark.asyncio
+    async def test_rpc_raises_rate_limit_on_results_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "jsonrpc": "2.0",
+            "result": {
+                "timestamp": 1712345678000,
+                "results": [
+                    {
+                        "recipientAddress": {"number": "+155****4567"},
+                        "type": "RATE_LIMIT_FAILURE",
+                        "retryAfterSeconds": 15
+                    }
+                ]
+            },
+            "id": "1"
+        }
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter.client = mock_client
+
+        from gateway.platforms.signal_rate_limit import SignalRateLimitError
+        with pytest.raises(SignalRateLimitError) as exc_info:
+            await adapter._rpc("send", {"recipient": ["+155****4567"]}, raise_on_rate_limit=True)
+
+        assert "Rate limit exceeded for recipient" in str(exc_info.value)
+        assert exc_info.value.retry_after == 15
 
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1354,116 @@ class TestSignalTypingBackoff:
 
 
 # ---------------------------------------------------------------------------
+# _stop_typing_indicator sends explicit sendTyping(stop=True) RPC
+# ---------------------------------------------------------------------------
+
+class TestSignalStopTypingExplicitRPC:
+    """Cancelling the typing indicator must issue an explicit
+    sendTyping(stop=True) RPC so the recipient's device drops the indicator
+    immediately, instead of waiting for Signal's built-in ~5s timeout.
+
+    The stop RPC is best-effort: any failure must not prevent the per-chat
+    backoff state from being cleared.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_sends_stop_rpc_for_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter._stop_typing_indicator("+15555550000")
+
+        assert len(captured) == 1
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["stop"] is True
+        assert captured[0]["params"]["recipient"] == ["uuid-recipient"]
+        assert captured[0]["rpc_id"] == "typing-stop"
+        adapter._resolve_recipient.assert_awaited_once_with("+15555550000")
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_sends_stop_rpc_for_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter._stop_typing_indicator("group:group123")
+
+        assert len(captured) == 1
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["stop"] is True
+        assert captured[0]["params"]["groupId"] == "group123"
+        assert "recipient" not in captured[0]["params"]
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_best_effort_on_rpc_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+
+        # Drive the chat into backoff so we can confirm cleanup still happens
+        # even when the stop RPC itself fails.
+        async def _noop(method, params, rpc_id=None, **kwargs):
+            return None
+
+        adapter._rpc = _noop
+        for _ in range(3):
+            await adapter.send_typing("+155****0000")
+
+        assert adapter._typing_failures.get("+155****0000") == 3
+        assert "+155****0000" in adapter._typing_skip_until
+
+        # Now make the stop RPC raise — backoff state must still be cleared.
+        async def failing_rpc(method, params, rpc_id=None, **kwargs):
+            raise RuntimeError("signal-cli unreachable")
+
+        adapter._rpc = failing_rpc
+
+        await adapter._stop_typing_indicator("+155****0000")
+
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_best_effort_on_recipient_failure(self, monkeypatch):
+        # When _resolve_recipient() raises, the per-chat backoff state must
+        # still be cleared — otherwise a transient resolution failure would
+        # silently keep the chat in cooldown forever.
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(
+            side_effect=RuntimeError("recipient resolution failed")
+        )
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        adapter._typing_failures["+155****0000"] = 2
+        adapter._typing_skip_until["+155****0000"] = 9999999999.0
+
+        await adapter._stop_typing_indicator("+155****0000")
+
+        # No RPC must be issued when recipient resolution itself fails.
+        assert captured == []
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
+
+
+# ---------------------------------------------------------------------------
 # Reply quote extraction
 # ---------------------------------------------------------------------------
 
@@ -1045,7 +1491,7 @@ class TestSignalQuoteExtraction:
                     "quote": {
                         "id": 99,
                         "text": "want to grab lunch?",
-                        "author": "+15550002222",
+                        "author": "other-author",
                     },
                 },
             }
@@ -1055,6 +1501,82 @@ class TestSignalQuoteExtraction:
         assert event.text == "yes I agree"
         assert event.reply_to_message_id == "99"
         assert event.reply_to_text == "want to grab lunch?"
+        assert event.reply_to_author_id == "other-author"
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_quote_to_own_sent_timestamp(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_sent_message_timestamp(424242)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "this specific one",
+                    "quote": {
+                        "id": 424242,
+                        "text": "assistant answer",
+                        "author": "other-author",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.reply_to_message_id == "424242"
+        assert event.reply_to_text == "assistant answer"
+        assert event.reply_to_author_id == "other-author"
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_quote_to_own_account_author(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="bot-author")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "reply by author",
+                    "quote": {
+                        "id": 777,
+                        "text": "assistant answer",
+                        "author": "bot-author",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.reply_to_message_id == "777"
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_track_sent_timestamp_keeps_reply_detection_cache_after_echo_discard(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 111222333})
+        adapter._recent_sent_timestamps.discard(111222333)
+
+        assert "111222333" in adapter._sent_message_timestamps
+        assert adapter._quote_references_own_message("111222333", None) is True
 
     @pytest.mark.asyncio
     async def test_handle_envelope_without_quote_leaves_reply_fields_none(self, monkeypatch):

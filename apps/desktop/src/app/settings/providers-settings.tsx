@@ -1,51 +1,62 @@
 import { useStore } from '@nanostores/react'
-import { type ChangeEvent, type KeyboardEvent, useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { runInTerminal } from '@/app/right-sidebar/store'
 import {
   FEATURED_ID,
   FeaturedProviderRow,
   KeyProviderRow,
   ProviderRow,
+  providerTitle,
   sortProviders
 } from '@/components/desktop-onboarding-overlay'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { listOAuthProviders } from '@/hermes'
-import { ChevronDown, ExternalLink, KeyRound, Loader2, Save } from '@/lib/icons'
+import { SearchField } from '@/components/ui/search-field'
+import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { useI18n } from '@/i18n'
+import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
+import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
-import { providerGroup, providerMeta, providerPriority, withoutKey } from './helpers'
+import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
-import type { EnvRowProps } from './types'
+
+// The embedded terminal (and thus the "run disconnect command" path) only
+// exists in the Electron desktop shell, not the web dashboard.
+const canRunInTerminal = () => typeof window !== 'undefined' && Boolean(window.hermesDesktop?.terminal)
+
+// Parallel group headers ("Connected", "Other providers") so the expanded list
+// reads as its own section instead of bleeding into the connected group.
+function GroupLabel({ children }: { children: ReactNode }) {
+  return (
+    <p className="mt-3 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
+      {children}
+    </p>
+  )
+}
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
 export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
-const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
-
-const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
-  info.description?.trim() ||
-  key
-    .replace(/_/g, ' ')
-    .toLowerCase()
-    .replace(/\b\w/g, c => c.toUpperCase())
-
-// Advanced (non-primary) fields are mostly base-URL / endpoint overrides, not
-// keys — so don't reuse the "Paste key" placeholder that makes them read as a
-// duplicate key input. URL-ish vars get a URL hint; everything else stays optional.
-const advancedPlaceholder = (key: string, info: EnvVarInfo): string =>
-  isKeyVar(key, info) ? 'Paste key' : /URL$/i.test(key) ? 'https://…' : 'Optional'
-
-// Group the env catalog by provider so the keys view can render one collapsible
-// row per vendor: a primary key field inline, with any secondary / advanced vars
-// (base URL overrides, alt tokens) revealed when the row is focused/expanded.
-// Mirrors what Cursor's API-keys section does. Groups without a key field (e.g.
-// Nous Portal's lone base-URL override) and the "Other" bucket are skipped.
+// Group the env catalog by provider — one ListRow per vendor plus optional
+// advanced overrides (base URL, region, etc.). Groups without a key field are
+// skipped.
+//
+// Grouping key precedence:
+//   1. Backend `provider_label` / `provider` (from the unified provider catalog
+//      in hermes_cli/provider_catalog.py) — the SAME provider identity
+//      `hermes model` uses. This is authoritative: a provider tagged by the
+//      backend always renders a card, even with no PROVIDER_GROUPS row.
+//   2. Desktop prefix match (`providerGroup`) — legacy fallback for provider
+//      env vars that predate the backend tagging.
+// Only entries that resolve to neither (the "Other" bucket) are skipped.
 function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGroup[] {
   const buckets = new Map<string, [string, EnvVarInfo][]>()
 
@@ -54,7 +65,9 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
-    const name = providerGroup(key)
+    // Prefer the backend-supplied provider label/id so the Keys tab groups by
+    // the same identity the CLI picker uses; fall back to the prefix guess.
+    const name = info.provider_label?.trim() || info.provider?.trim() || providerGroup(key)
 
     if (name === 'Other') {
       continue
@@ -72,6 +85,9 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
+    // Presentation overlay (priority, blurb, docs) is keyed by the prefix-based
+    // group name; when the backend introduced this provider it may have no
+    // overlay entry, so fall back to the backend/env metadata for display.
     const meta = providerMeta(name)
 
     groups.push({
@@ -94,228 +110,6 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
   return groups.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
 }
 
-// A single credential field: a set key shows as a filled read-only input
-// (redacted value) that edits in place on click. Save appears once typed; a set
-// key also offers Remove, and Esc cancels without closing the overlay.
-function KeyField({
-  compact = false,
-  info,
-  label,
-  placeholder,
-  rowProps,
-  varKey
-}: {
-  compact?: boolean
-  info: EnvVarInfo
-  label?: string
-  placeholder?: string
-  rowProps: KeyRowProps
-  varKey: string
-}) {
-  const { edits, onClear, onSave, saving, setEdits } = rowProps
-  const editing = edits[varKey] !== undefined
-  const draft = edits[varKey] ?? ''
-  const dirty = draft.trim().length > 0
-  const busy = saving === varKey
-  const masked = info.redacted_value ?? '••••••••'
-  const startEdit = () => setEdits(c => ({ ...c, [varKey]: '' }))
-  const cancel = () => setEdits(c => withoutKey(c, varKey))
-  const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [varKey]: e.target.value }))
-
-  // Enter saves; Esc cancels in place without bubbling to the overlay's window
-  // Escape listener (which would otherwise close the whole settings panel).
-  const keydown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && dirty) {
-      void onSave(varKey)
-    } else if (e.key === 'Escape' && editing) {
-      e.preventDefault()
-      e.stopPropagation()
-      cancel()
-    }
-  }
-
-  // Advanced overrides render quieter (xs) than the primary key field so the key
-  // stays the visual anchor. Padding-driven sizing — no fixed heights.
-  const inputSize = compact ? 'xs' : 'sm'
-  const editType = info.is_password ? 'password' : 'text'
-
-  // A set value reads as a single filled, read-only field (showing the redacted
-  // value). Clicking it drops into edit mode in place — no Replace/Cancel chrome.
-  const control =
-    info.is_set && !editing ? (
-      <Input
-        className="cursor-pointer font-mono text-muted-foreground"
-        onFocus={startEdit}
-        readOnly
-        size={inputSize}
-        value={masked}
-      />
-    ) : (
-      <div className="grid gap-1">
-        <div className="flex items-center gap-2">
-          <Input
-            autoFocus={editing}
-            className="min-w-0 flex-1 font-mono"
-            onChange={update}
-            onKeyDown={keydown}
-            placeholder={placeholder ?? 'Paste key'}
-            size={inputSize}
-            type={editType}
-            value={draft}
-          />
-          {dirty && (
-            <Button disabled={busy} onClick={() => void onSave(varKey)} size="sm">
-              {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
-              {busy ? 'Saving' : 'Save'}
-            </Button>
-          )}
-        </div>
-        {editing && (
-          <div className="flex items-center gap-1 text-[0.6875rem]">
-            {info.is_set && (
-              <>
-                <Button
-                  className="h-auto px-0 py-0 text-[0.6875rem] text-destructive hover:text-destructive"
-                  disabled={busy}
-                  onClick={() => void onClear(varKey)}
-                  type="button"
-                  variant="text"
-                >
-                  Remove
-                </Button>
-                <span className="text-muted-foreground">or</span>
-              </>
-            )}
-            <span className="text-muted-foreground">esc to cancel</span>
-          </div>
-        )}
-      </div>
-    )
-
-  // Standard stacked form field: small muted label above, input below. Same shape
-  // for the primary key and every advanced override — just smaller when compact.
-  // Empty advanced inputs (not labels) fade back, brightening on hover/focus/set.
-  const dim = compact && !info.is_set
-
-  return (
-    <div className="grid gap-1.5">
-      {label && (
-        <label className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{label}</label>
-      )}
-      {dim ? (
-        <div className="opacity-55 transition-opacity focus-within:opacity-100 hover:opacity-100">{control}</div>
-      ) : (
-        control
-      )}
-    </div>
-  )
-}
-
-function ProviderKeyCard({
-  expanded,
-  group,
-  onExpand,
-  onToggle,
-  rowProps
-}: {
-  expanded: boolean
-  group: ProviderKeyGroup
-  onExpand: () => void
-  onToggle: () => void
-  rowProps: KeyRowProps
-}) {
-  // Expandable when there's anything to reveal — advanced overrides and/or a
-  // "Get a key" docs link (which lives at the bottom of the expanded panel).
-  const expandable = group.advanced.length > 0 || Boolean(group.docsUrl)
-
-  return (
-    <div
-      className={cn(
-        'group/card rounded-[6px] px-2 py-2 transition-colors',
-        expandable && 'cursor-pointer',
-        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
-        expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
-      )}
-      onClick={expandable ? onToggle : undefined}
-      onKeyDown={
-        expandable
-          ? e => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onToggle()
-              }
-            }
-          : undefined
-      }
-      role={expandable ? 'button' : undefined}
-      tabIndex={expandable ? 0 : undefined}
-    >
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-        <div className="flex min-w-44 flex-1 items-center gap-2 py-1">
-          <span
-            className={cn(
-              'size-2 shrink-0 rounded-full',
-              group.hasAnySet ? 'bg-primary' : 'bg-(--ui-stroke-secondary)'
-            )}
-          />
-          <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium">{group.name}</span>
-          {expandable && (
-            <ChevronDown
-              className={cn(
-                'size-3.5 shrink-0 text-muted-foreground transition',
-                expanded ? 'rotate-180 opacity-100' : 'opacity-0 group-hover/card:opacity-100'
-              )}
-            />
-          )}
-        </div>
-        <div
-          className="w-full sm:w-80 sm:shrink-0"
-          onClick={e => e.stopPropagation()}
-          onFocus={() => {
-            if (expandable && !expanded) {
-              onExpand()
-            }
-          }}
-        >
-          <KeyField
-            info={group.primary[1]}
-            placeholder={`Paste ${group.name} key`}
-            rowProps={rowProps}
-            varKey={group.primary[0]}
-          />
-        </div>
-      </div>
-      {expandable && expanded && (
-        <div className="mt-3 grid gap-2.5 pl-4" onClick={e => e.stopPropagation()}>
-          {group.advanced.map(([key, info]) => (
-            <KeyField
-              compact
-              info={info}
-              key={key}
-              label={isKeyVar(key, info) ? key : friendlyFieldLabel(key, info)}
-              placeholder={advancedPlaceholder(key, info)}
-              rowProps={rowProps}
-              varKey={key}
-            />
-          ))}
-          {group.docsUrl && (
-            <a
-              className="inline-flex w-fit items-center gap-1 justify-self-end text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
-              href={group.docsUrl}
-              onClick={e => e.stopPropagation()}
-              rel="noreferrer"
-              target="_blank"
-            >
-              Get a key
-              <ExternalLink className="size-3" />
-            </a>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // Deliberately a near-1:1 replica of the first-run onboarding picker
 // (`Picker` in desktop-onboarding-overlay): same recommended card, same
 // provider rows, same "Other providers" disclosure, same OpenRouter quick-key
@@ -324,7 +118,21 @@ function ProviderKeyCard({
 // Selecting a provider hands off to the shared onboarding overlay, which runs
 // that provider's real sign-in flow; the key affordances open the API-key
 // catalog below.
-function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; providers: OAuthProvider[] }) {
+function OAuthPicker({
+  disconnecting,
+  onDisconnect,
+  onTerminalDisconnect,
+  onWantApiKey,
+  providers
+}: {
+  disconnecting: null | string
+  onDisconnect: (provider: OAuthProvider) => void
+  onTerminalDisconnect: (provider: OAuthProvider) => void
+  onWantApiKey: () => void
+  providers: OAuthProvider[]
+}) {
+  const { t } = useI18n()
+  const p = t.settings.providers
   const [showAll, setShowAll] = useState(false)
   const ordered = useMemo(() => sortProviders(providers), [providers])
 
@@ -334,10 +142,11 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
 
   const select = (p: OAuthProvider) => startManualProviderOAuth(p.id)
 
-  const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
+  const featured = ordered.find(p => p.id === FEATURED_ID && !p.status?.logged_in) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
   // Keep connected accounts grouped and always visible; only the unconnected
   // providers hide behind the disclosure, so the page leads with what's set up.
+  // Both lists preserve `sortProviders` order (curated priority, then name).
   const connected = rest.filter(p => p.status?.logged_in)
   const others = rest.filter(p => !p.status?.logged_in)
   const collapsible = others.length > 0
@@ -346,33 +155,39 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
   return (
     <section className="mb-5 grid gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-        <SettingsCategoryHeading icon={KeyRound} title="Connect an account" />
+        <SettingsCategoryHeading icon={KeyRound} title={p.connectAccount} />
         <Button
-          className="h-auto px-0 py-0 text-[length:var(--conversation-caption-font-size)]"
+          className="text-[length:var(--conversation-caption-font-size)]"
           onClick={onWantApiKey}
+          size="inline"
           type="button"
           variant="textStrong"
         >
-          Have an API key instead?
+          {p.haveApiKey}
         </Button>
       </div>
       <p className="-mt-2 mb-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        Sign in with a subscription — no API key to copy. Hermes runs the browser sign-in for you, right here in the
-        app.
+        {p.intro}
       </p>
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {connected.length > 0 && (
         <>
-          <p className="mt-1 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
-            Connected
-          </p>
+          <GroupLabel>{p.connected}</GroupLabel>
           {connected.map(p => (
-            <ProviderRow key={p.id} onSelect={select} provider={p} />
+            <ConnectedProviderRow
+              disconnecting={disconnecting === p.id}
+              key={p.id}
+              onDisconnect={onDisconnect}
+              onSelect={select}
+              onTerminalDisconnect={onTerminalDisconnect}
+              provider={p}
+            />
           ))}
         </>
       )}
       {showOthers && (
         <>
+          {connected.length > 0 && <GroupLabel>{p.otherProviders}</GroupLabel>}
           {others.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
           ))}
@@ -381,12 +196,13 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
       )}
       {collapsible && (
         <Button
-          className="h-auto px-0 py-1 text-[length:var(--conversation-caption-font-size)]"
+          className="py-1 text-[length:var(--conversation-caption-font-size)]"
           onClick={() => setShowAll(v => !v)}
+          size="inline"
           type="button"
           variant="text"
         >
-          {showAll ? 'Collapse' : connected.length > 0 ? 'Connect another provider' : 'Other providers'}
+          {showAll ? p.collapse : connected.length > 0 ? p.connectAnother : p.otherProviders}
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
         </Button>
       )}
@@ -394,33 +210,117 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
   )
 }
 
-function NoProviderKeys() {
+function ConnectedProviderRow({
+  disconnecting,
+  onDisconnect,
+  onSelect,
+  onTerminalDisconnect,
+  provider
+}: {
+  disconnecting: boolean
+  onDisconnect: (provider: OAuthProvider) => void
+  onSelect: (provider: OAuthProvider) => void
+  onTerminalDisconnect: (provider: OAuthProvider) => void
+  provider: OAuthProvider
+}) {
+  const { t } = useI18n()
+  const copy = t.settings.providers
+  const title = providerTitle(provider)
+  const Trail = provider.flow === 'external' ? Terminal : ChevronRight
+  // Hermes can clear this provider's creds via the API.
+  const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
+  // External (CLI-managed) provider Hermes can't clear via the API, but ships a
+  // command we can run in the embedded terminal (Electron shell only).
+  const terminalDisconnect = !canDisconnect && Boolean(provider.disconnect_command) && canRunInTerminal()
+  // Only fall back to a static "remove it elsewhere" hint when we offer no button.
+  const showHint = !canDisconnect && !terminalDisconnect
+
   return (
-    <div className="grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-      No provider API keys available.
+    <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
+      <button className="min-w-0 px-3 py-2.5 text-left" onClick={() => onSelect(provider)} type="button">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
+          <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+            <Check className="size-3" />
+            {copy.connected}
+          </span>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
+        {showHint && (
+          <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
+            {provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title)}
+          </p>
+        )}
+      </button>
+      <div className="flex items-center gap-1 pr-2">
+        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        {canDisconnect && (
+          <Button
+            aria-label={`${t.common.remove} ${title}`}
+            disabled={disconnecting}
+            onClick={() => onDisconnect(provider)}
+            size="icon-xs"
+            title={`${t.common.remove} ${title}`}
+            type="button"
+            variant="ghost"
+          >
+            {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+          </Button>
+        )}
+        {terminalDisconnect && (
+          <Button
+            aria-label={`${copy.disconnect} ${title}`}
+            onClick={() => onTerminalDisconnect(provider)}
+            size="icon-xs"
+            title={copy.disconnectInTerminal}
+            type="button"
+            variant="ghost"
+          >
+            <Trash2 className="size-3" />
+          </Button>
+        )}
+      </div>
     </div>
   )
 }
 
-export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
+function NoProviderKeys() {
+  const { t } = useI18n()
+
+  return (
+    <div className="grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+      {t.settings.providers.noProviderKeys}
+    </div>
+  )
+}
+
+export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSettingsProps) {
+  const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
-  // Single-open accordion for the per-provider "advanced options" panels.
   const [openProvider, setOpenProvider] = useState<null | string>(null)
+  const [disconnecting, setDisconnecting] = useState<null | string>(null)
+  // Free-text filter for the API-keys view (provider name / env-var key / desc).
+  const [keyQuery, setKeyQuery] = useState('')
   // The onboarding overlay owns the OAuth flow. Watch its `manual` flag so we
   // re-read connection state when the user finishes (or dismisses) a sign-in
   // they launched from this page — otherwise the cards keep their stale status.
   const onboardingActive = useStore($desktopOnboarding).manual
 
-  useEffect(() => {
-    if (onboardingActive) {
-      return
-    }
+  const refreshOAuthProviders = useCallback(async () => {
+    // OAuth providers are best-effort — a failure here just hides the panel.
+    const { providers } = await listOAuthProviders()
+    setOauthProviders(providers)
+  }, [])
 
+  useEffect(() => {
     let cancelled = false
 
-    // OAuth providers are best-effort — a failure here just hides the panel.
     void (async () => {
+      if (onboardingActive) {
+        return
+      }
+
       try {
         const { providers } = await listOAuthProviders()
 
@@ -435,8 +335,51 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
     return () => void (cancelled = true)
   }, [onboardingActive])
 
+  // External (CLI-managed) providers can't be cleared via the API by design —
+  // Hermes never deletes creds another tool owns behind a silent API call.
+  // Instead we run the documented removal command in the embedded terminal so
+  // the user sees exactly what executes, then return them to chat to watch it.
+  function handleTerminalDisconnect(provider: OAuthProvider) {
+    const command = provider.disconnect_command
+
+    if (!command) {
+      return
+    }
+
+    const name = providerTitle(provider)
+
+    if (!window.confirm(t.settings.providers.removeTerminalConfirm(name, command))) {
+      return
+    }
+
+    // Leave the settings overlay so the terminal pane (chat-only) is visible.
+    onClose()
+    runInTerminal(command)
+    notify({ kind: 'info', title: t.settings.providers.removedTitle, message: t.settings.providers.removeTerminalRunning(name) })
+  }
+
+  async function handleDisconnect(provider: OAuthProvider) {
+    const name = providerTitle(provider)
+
+    if (!window.confirm(t.settings.providers.removeConfirm(name))) {
+      return
+    }
+
+    setDisconnecting(provider.id)
+
+    try {
+      await disconnectOAuthProvider(provider.id)
+      notify({ durationMs: 3_000, kind: 'success', title: t.settings.providers.removedTitle, message: t.settings.providers.removedMessage(name) })
+      await refreshOAuthProviders().catch(() => undefined)
+    } catch (err) {
+      notifyError(err, t.settings.providers.failedRemove(name))
+    } finally {
+      setDisconnecting(null)
+    }
+  }
+
   if (!vars) {
-    return <LoadingState label="Loading providers..." />
+    return <LoadingState label={t.settings.providers.loading} />
   }
 
   const hasOauth = oauthProviders.length > 0
@@ -447,20 +390,49 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   const keyGroups = buildProviderKeyGroups(vars)
 
   if (showApiKeys) {
+    const q = keyQuery.trim().toLowerCase()
+    const visibleGroups = q
+      ? keyGroups.filter(group => {
+          const haystack = [
+            group.name,
+            group.description ?? '',
+            group.primary[0],
+            ...group.advanced.map(([k]) => k)
+          ]
+
+          return haystack.some(s => s.toLowerCase().includes(q))
+        })
+      : keyGroups
+
     return (
       <SettingsContent>
         {keyGroups.length > 0 ? (
-          <div className="grid gap-2">
-            {keyGroups.map(group => (
-              <ProviderKeyCard
-                expanded={openProvider === group.name}
-                group={group}
-                key={group.name}
-                onExpand={() => setOpenProvider(group.name)}
-                onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                rowProps={rowProps}
-              />
-            ))}
+          <div className="grid gap-3">
+            <SearchField
+              aria-label={t.settings.providers.searchKeys}
+              containerClassName="w-full"
+              onChange={setKeyQuery}
+              placeholder={t.settings.providers.searchKeys}
+              value={keyQuery}
+            />
+            {visibleGroups.length > 0 ? (
+              <div className="grid gap-2">
+                {visibleGroups.map(group => (
+                  <ProviderKeyRows
+                    expanded={openProvider === group.name}
+                    group={group}
+                    key={group.name}
+                    onExpand={() => setOpenProvider(group.name)}
+                    onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                    rowProps={rowProps}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+                {t.settings.providers.noKeysMatch}
+              </div>
+            )}
           </div>
         ) : (
           <NoProviderKeys />
@@ -471,12 +443,16 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
 
   return (
     <SettingsContent>
-      <OAuthPicker onWantApiKey={() => onViewChange('keys')} providers={oauthProviders} />
+      <OAuthPicker
+        disconnecting={disconnecting}
+        onDisconnect={provider => void handleDisconnect(provider)}
+        onTerminalDisconnect={handleTerminalDisconnect}
+        onWantApiKey={() => onViewChange('keys')}
+        providers={oauthProviders}
+      />
     </SettingsContent>
   )
 }
-
-type KeyRowProps = Omit<EnvRowProps, 'info' | 'varKey'>
 
 interface ProviderKeyGroup {
   advanced: [string, EnvVarInfo][]
@@ -489,6 +465,7 @@ interface ProviderKeyGroup {
 }
 
 interface ProvidersSettingsProps {
+  onClose: () => void
   onViewChange: (view: ProviderView) => void
   view: ProviderView
 }

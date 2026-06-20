@@ -234,6 +234,11 @@ gateway:
 
   resume:
     db_unavailable:        "Session database not available."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.\nUse quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.\nUse `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.\nFuture messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "No named sessions found.\nUse `/title My Session` to name your current session, then `/resume My Session` to return to it later."
     list_header:           "📋 **Named Sessions**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -266,10 +271,20 @@ gateway:
 
   status:
     header:                "📊 **Hermes Gateway Status**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**Session ID:** `{session_id}`"
     title:                 "**Title:** {title}"
     created:               "**Created:** {timestamp}"
     last_activity:         "**Last Activity:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Cumulative API tokens (re-sent each call):** {tokens}"
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"
@@ -335,6 +350,9 @@ gateway:
     detailed_after_first:     "_(Detailed usage available after the first agent response)_"
     no_data:                  "No usage data available for this session."
 
+  credits:
+    not_logged_in:            "Not logged into Nous Portal. Log in to see your credit balance and top up."
+
   verbose:
     not_enabled:           "The `/verbose` command is not enabled for messaging platforms.\n\nEnable it in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Tool progress: **OFF** — no tool activity shown."
@@ -358,6 +376,8 @@ gateway:
     label_off:             "Off (text only)"
     label_voice_only:      "On (voice reply to voice messages)"
     label_all:             "TTS (voice reply to all messages)"
+    help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
+    help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
 
   yolo:
     disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."

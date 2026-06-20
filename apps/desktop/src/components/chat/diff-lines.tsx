@@ -38,7 +38,7 @@ export function DiffLines({ className, text, ...props }: DiffLinesProps) {
   return (
     <pre
       className={cn(
-        'mt-2 max-h-96 max-w-full min-w-0 overflow-auto rounded-md border border-border/60 bg-muted/35 px-2.5 py-1.5 font-mono text-[0.7rem] leading-relaxed text-muted-foreground',
+        'mt-1 mb-1.5 max-h-96 max-w-full min-w-0 overflow-auto rounded-md border border-border/60 bg-muted/35 px-2.5 py-1.5 font-mono text-[0.7rem] leading-relaxed text-muted-foreground',
         className
       )}
       data-slot="diff-lines"

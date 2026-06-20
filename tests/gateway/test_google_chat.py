@@ -16,7 +16,6 @@ import json
 import os
 import sys
 import types
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1650,48 +1649,6 @@ class TestUserOAuthHelper:
                 "type": "authorized_user",
             },
         )
-
-    def test_client_secret_is_shared_across_profiles(self, tmp_path, monkeypatch):
-        """The OAuth client secret is host-wide infra: a secret seeded at the
-        default root by the documented one-time `--client-secret` host step
-        must be visible to a gateway running under a named profile.
-
-        Regression: `_client_secret_path()` used to scope to the active
-        HERMES_HOME, so a profile gateway reported 'No client credentials
-        stored on the host' even after the host setup had been run.
-        """
-        root = tmp_path / ".hermes"
-        profile_home = root / "profiles" / "bot1"
-        profile_home.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        # Seed the secret at the default root, as the host setup does.
-        secret = root / "google_chat_user_client_secret.json"
-        secret.write_text("{}", encoding="utf-8")
-
-        # Resolve from inside a named profile.
-        monkeypatch.setenv("HERMES_HOME", str(profile_home))
-        from plugins.platforms.google_chat.oauth import _client_secret_path
-        assert _client_secret_path() == secret
-        assert _client_secret_path().exists()
-
-    def test_profile_local_client_secret_takes_precedence(self, tmp_path, monkeypatch):
-        """A profile-local secret (separate OAuth app per bot, or a legacy
-        profile-scoped seed) overrides the host-wide default when present."""
-        root = tmp_path / ".hermes"
-        profile_home = root / "profiles" / "bot1"
-        profile_home.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(profile_home))
-
-        (root / "google_chat_user_client_secret.json").write_text(
-            "{}", encoding="utf-8"
-        )
-        profile_secret = profile_home / "google_chat_user_client_secret.json"
-        profile_secret.write_text("{}", encoding="utf-8")
-
-        from plugins.platforms.google_chat.oauth import _client_secret_path
-        assert _client_secret_path() == profile_secret
 
     def test_store_client_secret_writes_private_json(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

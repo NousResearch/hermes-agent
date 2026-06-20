@@ -25,6 +25,7 @@ from hermes_cli.config import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
+from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool import _ENV_VAR_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -84,11 +85,23 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
-def _save_mcp_server(name: str, server_config: dict):
-    """Add or update a server entry in config.yaml."""
+def _save_mcp_server(name: str, server_config: dict) -> bool:
+    """Add or update a server entry in config.yaml.
+
+    Returns False when a high-signal exfiltration-shaped stdio command is
+    rejected. MCP stdio servers are user-chosen local commands, so this blocks
+    shell+egress payloads rather than whitelisting command families.
+    """
+    issues = validate_mcp_server_entry(name, server_config)
+    if issues:
+        for issue in issues:
+            _warning(issue)
+        _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
+        return False
     config = load_config()
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
+    return True
 
 
 def _remove_mcp_server(name: str) -> bool:
@@ -208,11 +221,15 @@ def _probe_single_server(
     Returns list of ``(tool_name, description)`` tuples.
     Raises on connection failure.
     """
+    issues = validate_mcp_server_entry(name, config)
+    if issues:
+        raise ValueError("; ".join(issues))
+
     from tools.mcp_tool import (
         _ensure_mcp_loop,
         _run_on_mcp_loop,
         _connect_server,
-        _stop_mcp_loop,
+        _stop_mcp_loop_if_idle,
     )
 
     config = _resolve_mcp_server_config(config)
@@ -225,20 +242,22 @@ def _probe_single_server(
         server = await asyncio.wait_for(
             _connect_server(name, config), timeout=connect_timeout
         )
-        for t in server._tools:
-            desc = getattr(t, "description", "") or ""
-            # Truncate long descriptions for display
-            if len(desc) > 80:
-                desc = desc[:77] + "..."
-            tools_found.append((t.name, desc))
-        await server.shutdown()
+        try:
+            for t in server._tools:
+                desc = getattr(t, "description", "") or ""
+                # Truncate long descriptions for display
+                if len(desc) > 80:
+                    desc = desc[:77] + "..."
+                tools_found.append((t.name, desc))
+        finally:
+            await server.shutdown()
 
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
         raise _unwrap_exception_group(exc) from None
     finally:
-        _stop_mcp_loop()
+        _stop_mcp_loop_if_idle()
 
     return tools_found
 
@@ -286,6 +305,8 @@ def cmd_mcp_add(args):
     # hermes_cli/main.py for why the dest is renamed.
     command = getattr(args, "mcp_command", None)
     cmd_args = getattr(args, "args", None) or []
+    if cmd_args and cmd_args[0] == "--":
+        cmd_args = cmd_args[1:]
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
@@ -335,6 +356,12 @@ def cmd_mcp_add(args):
         if explicit_env:
             server_config["env"] = explicit_env
 
+    issues = validate_mcp_server_entry(name, server_config)
+    if issues:
+        for issue in issues:
+            _warning(issue)
+        _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
+        return
 
     # ── Authentication ────────────────────────────────────────────────
 
@@ -399,16 +426,16 @@ def cmd_mcp_add(args):
         _error(f"Failed to connect: {exc}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
-            _save_mcp_server(name, server_config)
-            _success(f"Saved '{name}' to config (disabled)")
-            _info("Fix the issue, then: hermes mcp test " + name)
+            if _save_mcp_server(name, server_config):
+                _success(f"Saved '{name}' to config (disabled)")
+                _info("Fix the issue, then: hermes mcp test " + name)
         return
 
     if not tools:
         _warning("Server connected but reported no tools.")
         if _confirm("Save config anyway?", default=True):
-            _save_mcp_server(name, server_config)
-            _success(f"Saved '{name}' to config")
+            if _save_mcp_server(name, server_config):
+                _success(f"Saved '{name}' to config")
         return
 
     # ── Tool selection ────────────────────────────────────────────────
@@ -465,11 +492,10 @@ def cmd_mcp_add(args):
     # ── Save ──────────────────────────────────────────────────────────
 
     server_config["enabled"] = True
-    _save_mcp_server(name, server_config)
-
-    print()
-    _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
-    _info("Start a new session to use these tools.")
+    if _save_mcp_server(name, server_config):
+        print()
+        _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
+        _info("Start a new session to use these tools.")
 
 
 # ─── hermes mcp remove ───────────────────────────────────────────────────────

@@ -3,16 +3,44 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
-      getConnection: () => Promise<HermesConnection>
-      getGatewayWsUrl: () => Promise<string>
+      // Resolve a backend connection. Omit `profile` (or pass the primary) for
+      // the window's backend; pass a named profile to lazily spawn/reuse that
+      // profile's backend from the pool.
+      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
+      // and drop it if a remote one has gone unreachable, so the next
+      // getConnection() rebuilds a reachable descriptor instead of the renderer
+      // re-dialing a dead remote forever. No-op for local backends (they
+      // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
+      // remote cache was dropped.
+      revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
+      // Keepalive: mark a pool profile backend as recently used so the idle
+      // reaper spares it while its chat is active.
+      touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      getGatewayWsUrl: (profile?: null | string) => Promise<string>
+      // Open (or focus) a standalone OS window for a single chat session so
+      // the user can work with multiple chats side by side. Returns ok:false
+      // with an error code when the sessionId is empty/invalid. `watch` opens
+      // a spectator window (lazy resume — no agent build) for live-streaming
+      // a running subagent's session.
+      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
+      // Open (or focus) a compact secondary window on the new-session draft.
+      openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
       getBootProgress: () => Promise<DesktopBootProgress>
-      getConnectionConfig: () => Promise<DesktopConnectionConfig>
+      getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      profile: {
+        get: () => Promise<DesktopActiveProfile>
+        // Persists the desktop's profile choice and relaunches the local
+        // backend under the new HERMES_HOME (reloads the window). Pass null to
+        // clear the preference.
+        set: (name: string | null) => Promise<DesktopActiveProfile>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -28,11 +56,14 @@ declare global {
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
+      setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
+      setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
-        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
@@ -40,6 +71,10 @@ declare global {
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
+      // Resolve git-worktree identity for a batch of session cwds, reading git's
+      // on-disk metadata locally. Returns null per cwd that isn't inside a
+      // checkout (or can't be read — e.g. a remote backend's path).
+      worktrees?: (cwds: string[]) => Promise<Record<string, HermesWorktreeInfo | null>>
       terminal: {
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
@@ -50,7 +85,13 @@ declare global {
       }
       onClosePreviewRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
+      onDeepLink?: (
+        callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
+      ) => () => void
+      signalDeepLinkReady?: () => Promise<{ ok: boolean }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
+      onFocusSession?: (callback: (sessionId: string) => void) => () => void
+      onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
@@ -61,6 +102,7 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
@@ -68,8 +110,42 @@ declare global {
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
+      uninstall: {
+        summary: () => Promise<DesktopUninstallSummary>
+        run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
+      }
+      themes: {
+        // Download a VS Code Marketplace extension and return the raw color
+        // theme files it contributes. The renderer converts + persists them.
+        fetchMarketplace: (id: string) => Promise<DesktopMarketplaceThemeResult>
+        // Search the Marketplace for color-theme extensions. An empty query
+        // returns the most-installed themes.
+        searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
+      }
     }
   }
+}
+
+export interface DesktopMarketplaceSearchItem {
+  extensionId: string
+  displayName: string
+  publisher: string
+  description: string
+  installs: number
+}
+
+export interface DesktopMarketplaceThemeFile {
+  label: string
+  /** VS Code's `uiTheme` for this entry (vs-dark / vs / hc-black). */
+  uiTheme?: string
+  /** Raw theme JSON (JSONC) text, parsed + converted by the renderer. */
+  contents: string
+}
+
+export interface DesktopMarketplaceThemeResult {
+  extensionId: string
+  displayName: string
+  themes: DesktopMarketplaceThemeFile[]
 }
 
 export interface HermesTerminalSession {
@@ -89,6 +165,30 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+}
+
+export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
+
+export interface DesktopUninstallSummary {
+  hermes_home: string
+  agent_installed: boolean
+  gui_installed: boolean
+  source_built_artifacts: string[]
+  packaged_app_paths: string[]
+  userdata_dir: string
+  userdata_exists: boolean
+  platform: string
+  running_app_path?: null | string
+  probe?: string
+}
+
+export interface DesktopUninstallResult {
+  ok: boolean
+  mode?: DesktopUninstallMode
+  willRemoveAppBundle?: boolean
+  scriptPath?: string
+  error?: string
+  message?: string
 }
 
 export interface DesktopUpdateCommit {
@@ -151,6 +251,9 @@ export interface HermesConnection {
   token: string
   wsUrl: string
   logs: string[]
+  // Set for pool (non-primary) backends so the renderer knows which profile a
+  // connection belongs to.
+  profile?: string
   windowButtonPosition: { x: number; y: number } | null
 }
 
@@ -165,9 +268,18 @@ export interface HermesWindowState {
   windowButtonPosition: { x: number; y: number } | null
 }
 
+export interface DesktopActiveProfile {
+  // The desktop's stored profile preference, or null when unset (legacy launch
+  // that defers to the sticky active_profile / default).
+  profile: string | null
+}
+
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
+  // The profile this config describes, or null for the global/default
+  // connection. Per-profile entries let a profile point at its own backend.
+  profile: null | string
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -177,6 +289,9 @@ export interface DesktopConnectionConfig {
 
 export interface DesktopConnectionConfigInput {
   mode: 'local' | 'remote'
+  // When set, the save/apply/test targets this profile's per-profile remote
+  // override instead of the global connection.
+  profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string
@@ -293,12 +408,19 @@ export interface HermesApiRequest {
   method?: string
   body?: unknown
   timeoutMs?: number
+  // Route this REST call to a specific profile's backend. Omit for the primary
+  // (window) backend. Read-only cross-profile data is served by the primary, so
+  // this is only needed for profile-scoped live/settings calls.
+  profile?: string | null
 }
 
 export interface HermesNotification {
   title?: string
   body?: string
   silent?: boolean
+  kind?: string
+  sessionId?: string
+  actions?: { id: string; text: string }[]
 }
 
 export interface HermesPreviewTarget {
@@ -329,6 +451,18 @@ export interface HermesReadFileTextResult {
 export interface HermesPreviewWatch {
   id: string
   path: string
+}
+
+export interface HermesWorktreeInfo {
+  // Main repo root — the shared grouping key for a checkout and all its linked
+  // worktrees.
+  repoRoot: string
+  // This cwd's own worktree root.
+  worktreeRoot: string
+  // True when this is the repo's primary checkout (.git is a directory).
+  isMainWorktree: boolean
+  // Current branch (or short detached-HEAD sha), null when unreadable.
+  branch: null | string
 }
 
 export interface HermesReadDirEntry {

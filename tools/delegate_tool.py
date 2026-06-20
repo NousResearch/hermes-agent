@@ -2368,38 +2368,51 @@ def delegate_task(
             pending = set(futures.keys())
             while pending:
                 if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
-                    for f in pending:
+                    # Parent interrupted — give children a short grace period
+                    # to deliver already-computed results before fabricating
+                    # "interrupted" entries.  Without this, a child that
+                    # finished between the last _cf_wait return and the
+                    # interrupt check has its result discarded (race #45496).
+                    from concurrent.futures import wait as _cf_wait_drain, ALL_COMPLETED
+
+                    _drain_done, _drain_pending = _cf_wait_drain(
+                        pending, timeout=2.0, return_when=ALL_COMPLETED
+                    )
+                    # Collect results from futures that completed (including
+                    # those that finished during the grace window).
+                    for f in _drain_done:
                         idx = futures[f]
-                        if f.done():
-                            try:
-                                entry = f.result()
-                            except Exception as exc:
-                                entry = {
-                                    "task_index": idx,
-                                    "status": "error",
-                                    "summary": None,
-                                    "error": str(exc),
-                                    "api_calls": 0,
-                                    "duration_seconds": 0,
-                                    "_child_role": getattr(
-                                        _child_by_index.get(idx), "_delegate_role", None
-                                    ),
-                                }
-                        else:
+                        try:
+                            entry = f.result(timeout=0)
+                        except Exception as exc:
                             entry = {
                                 "task_index": idx,
-                                "status": "interrupted",
+                                "status": "error",
                                 "summary": None,
-                                "error": "Parent agent interrupted — child did not finish in time",
+                                "error": str(exc),
                                 "api_calls": 0,
                                 "duration_seconds": 0,
                                 "_child_role": getattr(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
                             }
+                        results.append(entry)
+                        completed_count += 1
+                    # Fabricate interrupted entries only for futures that are
+                    # genuinely still running after the grace window.
+                    for f in _drain_pending:
+                        idx = futures[f]
+                        entry = {
+                            "task_index": idx,
+                            "status": "interrupted",
+                            "summary": None,
+                            "error": "Parent agent interrupted — child did not finish in time",
+                            "api_calls": 0,
+                            "duration_seconds": 0,
+                            "_child_role": getattr(
+                                _child_by_index.get(idx), "_delegate_role", None
+                            ),
+                        }
                         results.append(entry)
                         completed_count += 1
                     break

@@ -570,6 +570,183 @@ class TestExtractText:
         msg.rich_text = None
         assert DingTalkAdapter._extract_text(msg) == ""
 
+    def test_quoted_text_from_dict_payload(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "follow-up question",
+            "isReplyMsg": True,
+            "repliedMsg": {
+                "msgType": "text",
+                "content": {"text": "original statement"},
+            },
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == (
+            "follow-up question\n[引用] original statement"
+        )
+
+    def test_quoted_text_from_textcontent_extensions(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        text_obj = SimpleNamespace(
+            content="follow-up",
+            extensions={
+                "isReplyMsg": True,
+                "repliedMsg": {
+                    "msgType": "text",
+                    "content": {"text": "earlier msg"},
+                },
+            },
+        )
+        msg = MagicMock()
+        msg.text = text_obj
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "follow-up\n[引用] earlier msg"
+
+    def test_quoted_picture_renders_placeholder(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "what is this?",
+            "isReplyMsg": True,
+            "repliedMsg": {"msgType": "picture", "content": {}},
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "what is this?\n[引用] [图片]"
+
+    def test_quoted_file_shows_name(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "read this",
+            "isReplyMsg": True,
+            "repliedMsg": {
+                "msgType": "file",
+                "content": {"fileName": "report.pdf"},
+            },
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "read this\n[引用] [文件: report.pdf]"
+
+    def test_quoted_content_as_json_string(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "hmm",
+            "isReplyMsg": True,
+            "repliedMsg": {
+                "msgType": "text",
+                "content": json.dumps({"text": "stringified body"}),
+            },
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "hmm\n[引用] stringified body"
+
+    def test_nested_quote_recurses(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "L0",
+            "isReplyMsg": True,
+            "repliedMsg": {
+                "msgType": "text",
+                "content": {
+                    "text": "L1",
+                    "isReplyMsg": True,
+                    "repliedMsg": {
+                        "msgType": "text",
+                        "content": {"text": "L2"},
+                    },
+                },
+            },
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "L0\n[引用] L1\n[引用] L2"
+
+    def test_no_quote_leaves_content_unchanged(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {"content": "plain", "isReplyMsg": False}
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "plain"
+
+    def test_interactive_card_forward_compat_text(self):
+        """When DingTalk IM team populates content.text server-side, hermes
+        surfaces it automatically without code change."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "总结一下",
+            "isReplyMsg": True,
+            "repliedMsg": {
+                "msgType": "interactiveCard",
+                "content": {"text": "今日销售额: 1.2万 · 订单数: 38"},
+            },
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert (
+            DingTalkAdapter._extract_text(msg)
+            == "总结一下\n[引用] 今日销售额: 1.2万 · 订单数: 38"
+        )
+
+    def test_interactive_card_forward_compat_markdown(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "继续",
+            "isReplyMsg": True,
+            "repliedMsg": {
+                "msgType": "interactiveCard",
+                "content": {"markdown": "## 卡片标题\n卡片正文"},
+            },
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        result = DingTalkAdapter._extract_text(msg)
+        assert result == "继续\n[引用] ## 卡片标题\n卡片正文"
+
+    def test_interactive_card_forward_compat_title_fallback(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "?",
+            "isReplyMsg": True,
+            "repliedMsg": {
+                "msgType": "interactiveCard",
+                "content": {"title": "审批通知"},
+            },
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "?\n[引用] 审批通知"
+
+    def test_interactive_card_no_content_falls_back_to_placeholder(self):
+        """Current DingTalk behavior: content is not populated → placeholder."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {
+            "content": "这个是啥",
+            "isReplyMsg": True,
+            "repliedMsg": {"msgType": "interactiveCard"},
+        }
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert (
+            DingTalkAdapter._extract_text(msg)
+            == "这个是啥\n[引用] [interactiveCard消息]"
+        )
+
+
+# ---------------------------------------------------------------------------
+
 
 class TestExtractMedia:
     """_extract_media must split native voice rich-text items (auto-STT)

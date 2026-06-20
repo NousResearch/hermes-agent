@@ -703,6 +703,100 @@ class DingTalkAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     @staticmethod
+    def _extract_quoted_msg_text(container: Any, max_depth: int = 3) -> Optional[str]:
+        """Extract a ``[引用] <body>`` string from a DingTalk reply container.
+
+        When a user long-presses → quotes → replies in the DingTalk client,
+        the inbound payload carries ``isReplyMsg=True`` + ``repliedMsg={...}``
+        alongside the user's new text. The DingTalk Robot OpenAPI does not
+        surface this through a typed SDK field, so the reference connector
+        (dingtalk-openclaw-connector, ``core/message-handler.ts:163-240``)
+        walks the raw dict. We mirror that logic here to preserve the
+        quoted-context signal for the agent.
+
+        ``max_depth`` bounds nested-quote recursion (matches openclaw's 3).
+        Returns ``None`` when no quote is present or the body is empty.
+        """
+        if max_depth <= 0 or not container:
+            return None
+        if not container.get("isReplyMsg"):
+            return None
+
+        replied = container.get("repliedMsg")
+        if not replied:
+            return None
+
+        msg_type = replied.get("msgType") or "text"
+
+        raw_content = replied.get("content")
+        if isinstance(raw_content, dict):
+            content_obj = raw_content
+        elif isinstance(raw_content, str):
+            try:
+                parsed = json.loads(raw_content)
+                content_obj = parsed if isinstance(parsed, dict) else {}
+            except (ValueError, TypeError):
+                content_obj = {}
+        else:
+            content_obj = {}
+
+        body_text = ""
+        if msg_type == "text":
+            body_text = (content_obj.get("text") or replied.get("text") or "").strip()
+            if content_obj.get("isReplyMsg"):
+                nested = DingTalkAdapter._extract_quoted_msg_text(content_obj, max_depth - 1)
+                if nested:
+                    body_text = f"{body_text}\n{nested}" if body_text else nested
+        elif msg_type == "richText":
+            rich_list = content_obj.get("richText") or []
+            parts = [
+                item.get("text", "")
+                for item in rich_list
+                if isinstance(item, dict)
+                and item.get("text")
+                and item.get("msgType") != "skill"
+                and not item.get("skillData")
+            ]
+            body_text = "".join(parts)
+        elif msg_type == "picture":
+            body_text = "[图片]"
+        elif msg_type == "video":
+            body_text = "[视频]"
+        elif msg_type == "audio":
+            body_text = content_obj.get("recognition") or "[语音消息]"
+        elif msg_type == "file":
+            file_name = content_obj.get("fileName") or "unknown"
+            body_text = f"[文件: {file_name}]"
+        elif msg_type == "markdown":
+            body_text = (content_obj.get("text") or "").strip() or "[markdown消息]"
+        elif msg_type == "interactiveCard":
+            card_text = ""
+            for key in ("text", "markdown", "title", "summary"):
+                candidate = content_obj.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    card_text = candidate.strip()
+                    break
+            if card_text:
+                body_text = card_text
+            else:
+                card_url = (
+                    content_obj.get("biz_custom_action_url")
+                    or replied.get("biz_custom_action_url")
+                    or ""
+                )
+                body_text = (
+                    f"收到交互式卡片链接：{card_url}"
+                    if card_url
+                    else "[interactiveCard消息]"
+                )
+        else:
+            body_text = f"[{msg_type}消息]"
+
+        if not body_text:
+            return None
+        return f"[引用] {body_text}"
+
+    @staticmethod
     def _extract_text(message: "ChatbotMessage") -> str:
         """Extract plain text from a DingTalk chatbot message.
 
@@ -713,16 +807,39 @@ class DingTalkAdapter(BasePlatformAdapter):
             back to ``str(text)`` without extracting ``.content`` first.
           * rich text moved from ``message.rich_text`` (list) to
             ``message.rich_text_content.rich_text_list`` (list of dicts).
+
+        When the user quoted an earlier message (``isReplyMsg=True``), the
+        quoted body is appended as ``[引用] <body>`` so the agent sees the
+        conversational context, matching dingtalk-openclaw-connector.
         """
         text = getattr(message, "text", None) or ""
 
-        # Handle TextContent object (SDK style)
+        # Handle TextContent object (SDK style). TextContent.from_dict routes
+        # unknown JSON fields (isReplyMsg, repliedMsg) into ``.extensions``.
+        quote_container: Optional[Dict[str, Any]] = None
         if hasattr(text, "content"):
             content = (text.content or "").strip()
+            extensions = getattr(text, "extensions", None)
+            if isinstance(extensions, dict) and extensions.get("isReplyMsg"):
+                quote_container = extensions
         elif isinstance(text, dict):
             content = text.get("content", "").strip()
+            if text.get("isReplyMsg"):
+                quote_container = text
         else:
             content = str(text).strip()
+
+        if quote_container:
+            try:
+                logger.info(
+                    "dingtalk quote payload: %s",
+                    json.dumps(quote_container, ensure_ascii=False, default=str),
+                )
+            except Exception:
+                logger.info("dingtalk quote payload (repr): %r", quote_container)
+            quoted = DingTalkAdapter._extract_quoted_msg_text(quote_container, max_depth=3)
+            if quoted:
+                content = f"{content}\n{quoted}" if content else quoted
 
         if not content:
             rich_text = getattr(message, "rich_text_content", None) or getattr(
@@ -747,6 +864,35 @@ class DingTalkAdapter(BasePlatformAdapter):
         # (alice@example.com), SSH URLs (git@github.com), and literal
         # references the user wrote ("what does @openai think").  Let the
         # LLM see the raw text — it handles "@bot hello" cleanly.
+
+        # -----------------------------------------------------------------
+        # For message types that the SDK does NOT parse into typed attrs
+        # (audio / video / file), extract a reasonable text placeholder from
+        # extensions['content'].  Matches connector's extractMessageContent.
+        # -----------------------------------------------------------------
+        if not content:
+            msg_type_str = getattr(message, "message_type", "") or ""
+            ext_content = (getattr(message, "extensions", {}) or {}).get("content", None)
+            if isinstance(ext_content, str):
+                try:
+                    ext_content = json.loads(ext_content)
+                except (ValueError, TypeError):
+                    ext_content = None
+            if isinstance(ext_content, dict):
+                if msg_type_str == "audio":
+                    content = (
+                        ext_content.get("recognition")
+                        or ext_content.get("recognition_text")
+                        or "[语音消息]"
+                    )
+                elif msg_type_str == "video":
+                    content = "[视频]"
+                elif msg_type_str == "file":
+                    fname = ext_content.get("fileName", "文件")
+                    content = f"[文件: {fname}]"
+                elif msg_type_str == "markdown":
+                    content = ext_content.get("text", "").strip() or "[markdown消息]"
+
         return content
 
     def _extract_media(self, message: "ChatbotMessage"):

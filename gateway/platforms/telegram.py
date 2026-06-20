@@ -5067,6 +5067,100 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
 
+    def _telegram_gate_cache_scope(self) -> Optional[Dict[str, str]]:
+        """Return configured Operator Multiview Telegram Gate cache scope.
+
+        The cache is opt-in: a chat id must be configured so the gateway does
+        not silently persist every Telegram chat it can see.  The pane reads the
+        same default path when ``TELEGRAM_GATE_EVENTS_JSONL`` is unset.
+        """
+        chat_id = (
+            self.config.extra.get("gate_chat_id")
+            or os.getenv("TELEGRAM_GATE_CHAT_ID")
+            or os.getenv("TELEGRAM_HOME_CHAT_ID")
+        )
+        if not chat_id:
+            return None
+        thread_id = (
+            self.config.extra.get("gate_thread_id")
+            or os.getenv("TELEGRAM_GATE_THREAD_ID")
+            or os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID")
+        )
+        events_path = self.config.extra.get("gate_events_jsonl") or os.getenv("TELEGRAM_GATE_EVENTS_JSONL")
+        if not events_path:
+            try:
+                from hermes_constants import get_hermes_home
+                hermes_home = str(get_hermes_home())
+            except Exception:
+                hermes_home = os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+            events_path = os.path.join(hermes_home, "operator-gates", "telegram-events.jsonl")
+        return {
+            "chat_id": str(chat_id),
+            "thread_id": str(thread_id) if thread_id is not None and str(thread_id) else "",
+            "events_path": str(events_path),
+        }
+
+    @staticmethod
+    def _jsonable_telegram_gate_timestamp(value: Any) -> str:
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.isoformat()
+        if value is None:
+            return datetime.now(timezone.utc).isoformat()
+        return str(value)
+
+    def _append_telegram_gate_event(self, event: MessageEvent, *, direction: str = "inbound") -> bool:
+        """Append one matching Telegram event to the Operator Multiview JSONL cache."""
+        scope = self._telegram_gate_cache_scope()
+        if not scope:
+            return False
+        source = getattr(event, "source", None)
+        if not source or str(getattr(source, "chat_id", "")) != scope["chat_id"]:
+            return False
+        event_thread_id = str(getattr(source, "thread_id", None) or "")
+        if scope["thread_id"] and event_thread_id != scope["thread_id"]:
+            return False
+
+        message_type = getattr(event, "message_type", None)
+        if hasattr(message_type, "value"):
+            message_type = message_type.value
+        elif message_type is not None:
+            message_type = str(message_type)
+
+        record = {
+            "platform": "telegram",
+            "direction": direction,
+            "chat_id": str(getattr(source, "chat_id", "")),
+            "thread_id": event_thread_id,
+            "chat_name": getattr(source, "chat_name", None),
+            "chat_type": getattr(source, "chat_type", None),
+            "user_id": getattr(source, "user_id", None),
+            "sender_name": getattr(source, "user_name", None) or getattr(source, "user_id", None),
+            "message_id": getattr(event, "message_id", None) or getattr(source, "message_id", None),
+            "update_id": getattr(event, "platform_update_id", None),
+            "text": getattr(event, "text", "") or "",
+            "message_type": message_type,
+            "media_types": list(getattr(event, "media_types", []) or []),
+            "media_count": len(getattr(event, "media_urls", []) or []),
+            "timestamp": self._jsonable_telegram_gate_timestamp(getattr(event, "timestamp", None)),
+        }
+
+        try:
+            events_path = scope["events_path"]
+            os.makedirs(os.path.dirname(events_path), exist_ok=True)
+            with open(events_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            return True
+        except Exception as exc:
+            logger.warning("[%s] Failed to append Telegram Gate event cache: %s", self.name, exc)
+            return False
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Process Telegram message and mirror matching events into the local gate cache."""
+        self._append_telegram_gate_event(event)
+        await super().handle_message(event)
+
     def format_message(self, content: str) -> str:
         """
         Convert standard markdown to Telegram MarkdownV2 format.

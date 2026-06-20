@@ -2103,18 +2103,19 @@ def delegate_task(
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
 
-    # Async (background) delegation is single-task only in v1. A batch carries
-    # fan-out semantics (N handles, partial completion) that double the state
-    # model — reject early with a clear message rather than silently running
-    # the batch synchronously.
+    # Async (background) delegation is single-task only. A batch carries
+    # fan-out semantics (N handles, partial completion) that the v1 async
+    # path does not model, so a batch always runs synchronously regardless of
+    # the background flag. The model-facing dispatch path (the registry
+    # handler) forces background=True for single-task calls so the model can't
+    # block its turn on a long-running subagent; direct Python callers and
+    # tests keep the historical synchronous default (background unset → sync).
     background = is_truthy_value(background, default=False) if background is not None else False
-    if background and tasks and isinstance(tasks, list) and len(tasks) > 1:
-        return tool_error(
-            "background=true is single-task only. Dispatch one background "
-            "subagent per delegate_task call (each returns its own handle and "
-            "re-enters the conversation independently), or run the batch "
-            "synchronously with background=false."
-        )
+    is_batch = bool(tasks and isinstance(tasks, list) and len(tasks) > 1)
+    if background and is_batch:
+        # A batch can't go async — silently downgrade to synchronous rather
+        # than erroring, since the model never sets this directly anymore.
+        background = False
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2269,27 +2270,6 @@ def delegate_task(
             # daemon worker won't carry the session contextvar.
             _session_key = get_current_session_key(default="")
 
-            # Detach the child from the parent's interrupt-propagation list.
-            # _build_child_agent registered it there (correct for sync
-            # children, which block the parent's turn), but a BACKGROUND
-            # child must survive parent-turn interrupts (Ctrl+C, mid-turn
-            # steering), cache evicts (release_clients), and session close
-            # (/new) — otherwise the detached subagent dies with whatever
-            # the parent was doing when it was dispatched. Its lifecycle is
-            # owned by the async-delegation registry (interrupt_fn below),
-            # and _run_single_child's finally block closes its resources
-            # when it finishes.
-            if hasattr(parent_agent, "_active_children"):
-                try:
-                    _ac_lock = getattr(parent_agent, "_active_children_lock", None)
-                    if _ac_lock:
-                        with _ac_lock:
-                            parent_agent._active_children.remove(child)
-                    else:
-                        parent_agent._active_children.remove(child)
-                except ValueError:
-                    pass
-
             def _async_runner(_child=child, _goal=_t["goal"]):
                 return _run_single_child(0, _goal, _child, parent_agent)
 
@@ -2315,6 +2295,29 @@ def delegate_task(
             )
 
             if dispatch.get("status") == "dispatched":
+                # Detach the child from the parent's interrupt-propagation list
+                # ONLY now that the background dispatch succeeded.
+                # _build_child_agent registered it there (correct for sync
+                # children, which block the parent's turn), but a BACKGROUND
+                # child must survive parent-turn interrupts (Ctrl+C, mid-turn
+                # steering), cache evicts (release_clients), and session close
+                # (/new) — otherwise the detached subagent dies with whatever
+                # the parent was doing when it was dispatched. Its lifecycle is
+                # owned by the async-delegation registry (interrupt_fn above),
+                # and _run_single_child's finally block closes its resources
+                # when it finishes. Detaching only on success means a rejected
+                # dispatch leaves the child attached so the synchronous
+                # fallback below still gets interrupt propagation.
+                if hasattr(parent_agent, "_active_children"):
+                    try:
+                        _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+                        if _ac_lock:
+                            with _ac_lock:
+                                parent_agent._active_children.remove(child)
+                        else:
+                            parent_agent._active_children.remove(child)
+                    except ValueError:
+                        pass
                 return json.dumps(
                     {
                         "status": "dispatched",
@@ -2331,10 +2334,17 @@ def delegate_task(
                     },
                     ensure_ascii=False,
                 )
-            # Rejected (at capacity or schedule failure) — surface as a tool
-            # error so the model can fall back to synchronous delegation.
-            return tool_error(
-                dispatch.get("error", "Async delegation could not be scheduled.")
+            # Rejected (at capacity or schedule failure). Since the model no
+            # longer chooses background vs sync, there's no caller to "fall
+            # back" — so we transparently run the task synchronously here. The
+            # child is still attached to _active_children (we only detach on a
+            # successful dispatch), so interrupt propagation works for the
+            # sync run. The parent turn blocks until the subagent finishes,
+            # which is the correct degradation when the async pool is full.
+            logger.info(
+                "delegate_task: async pool at capacity (%s); running this "
+                "single-task delegation synchronously instead.",
+                dispatch.get("error", "rejected"),
             )
 
         result = _run_single_child(0, _t["goal"], child, parent_agent)
@@ -2842,11 +2852,16 @@ def _build_top_level_description() -> str:
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
+        "1. Single task: provide 'goal' (+ optional context, toolsets). "
+        "ALWAYS runs in the BACKGROUND — delegate_task returns immediately, "
+        "you and the user keep working, and the subagent's full result "
+        "re-enters the conversation as a new message when it finishes. Do NOT "
+        "wait or poll; just continue.\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
         f"items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). "
-        f"All run in parallel and results are returned together. {nesting_clause}\n\n"
+        f"Runs SYNCHRONOUSLY — all tasks run in parallel and results are "
+        f"returned together when every one finishes. {nesting_clause}\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -2857,11 +2872,12 @@ def _build_top_level_description() -> str:
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
         "- Durable long-running work that must outlive the current turn -> "
         "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
-        "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
-        "in the background.\n\n"
+        "notify_on_complete=True) instead. A single-task delegation runs in "
+        "the background but is NOT durable: if the parent session is closed "
+        "(/new) or the process exits before the subagent finishes, its work "
+        "is discarded. A BATCH runs synchronously inside the parent turn and "
+        "is cancelled (status='interrupted') if the parent is interrupted "
+        "(user sends a new message, /stop, /new).\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
@@ -3059,19 +3075,13 @@ DELEGATE_TASK_SCHEMA = {
             "background": {
                 "type": "boolean",
                 "description": (
-                    "Run the subagent asynchronously in the BACKGROUND "
-                    "instead of blocking this turn. When true, delegate_task "
-                    "returns immediately with a delegation_id; you and the "
-                    "user keep working while the subagent runs, and its full "
-                    "result re-enters the conversation as a new message when "
-                    "it finishes (similar to terminal background=true + "
-                    "notify_on_complete). The re-injected message includes the "
-                    "original goal/context so you can act on it even after "
-                    "moving on. Single-task only — cannot be combined with the "
-                    "'tasks' batch array. Use for long-running independent work "
-                    "the user shouldn't have to wait on (research, builds, "
-                    "multi-step investigations). Do NOT poll or wait after "
-                    "dispatching — just continue; the result will come to you."
+                    "DEPRECATED / IGNORED. Single-task delegations always run "
+                    "in the background automatically — you do not need to (and "
+                    "cannot) opt in or out. The result re-enters the "
+                    "conversation as a new message when the subagent finishes; "
+                    "just continue working in the meantime. Setting this has no "
+                    "effect; the parameter remains only for backward "
+                    "compatibility."
                 ),
             },
             "acp_command": {
@@ -3105,6 +3115,24 @@ DELEGATE_TASK_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+
+def _model_background_value(args: dict, parent_agent=None) -> bool:
+    """Background flag for the MODEL-facing dispatch path (registry fallback).
+
+    Single-task delegations from the top-level agent always run in the
+    background — the model does not choose. A batch (``tasks`` with >1 item)
+    stays synchronous, and so does a delegation from an orchestrator subagent
+    (depth > 0), which needs its workers' results within its own turn. The
+    live path is ``run_agent._dispatch_delegate_task``; this lambda mirrors it
+    for the rare case the intercept is bypassed. Direct Python callers of
+    ``delegate_task`` keep the historical synchronous default.
+    """
+    tasks = args.get("tasks")
+    is_batch = bool(isinstance(tasks, list) and len(tasks) > 1)
+    is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
+    return not is_batch and not is_subagent
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -3118,7 +3146,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
-        background=args.get("background"),
+        background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

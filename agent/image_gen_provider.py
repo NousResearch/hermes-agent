@@ -187,6 +187,51 @@ class ImageGenProvider(abc.ABC):
         implementations MUST ignore unknown keys (no TypeError).
         """
 
+    # ------------------------------------------------------------------
+    # Optional edit / image-to-image capability
+    #
+    # Editing is opt-in: the base contract reports it unsupported so
+    # generate-only backends (FAL, OpenAI, Krea, ...) need not implement
+    # anything. The ``image_edit`` tool checks :meth:`supports_edit` before
+    # dispatching and falls back to a clear ``unsupported_capability`` result
+    # rather than crashing.
+    # ------------------------------------------------------------------
+
+    def supports_edit(self) -> bool:
+        """Return True when this provider implements :meth:`edit`.
+
+        Default False. Override together with :meth:`edit` to opt in.
+        """
+        return False
+
+    def edit(
+        self,
+        prompt: str,
+        image: str,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit / transform an existing image guided by a text prompt.
+
+        ``image`` is a local filesystem path, an ``http(s)`` URL, or a
+        ``data:`` URI. Implementations should return the dict from
+        :func:`success_response` or :func:`error_response`.
+
+        The default implementation reports the capability as unsupported so
+        the base contract never crashes for generate-only providers. Override
+        together with :meth:`supports_edit` to implement.
+        """
+        return error_response(
+            error=(
+                f"Provider '{self.name}' does not support image editing. "
+                f"Configure an edit-capable image_gen.provider (e.g. xai)."
+            ),
+            error_type="unsupported_capability",
+            provider=self.name,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -336,6 +381,108 @@ def save_url_image(
         raise ValueError(f"Image at {url} returned 0 bytes; refusing to cache.")
 
     return path
+
+
+# ---------------------------------------------------------------------------
+# Image-edit input handling
+#
+# Edit-capable providers accept an input image as a local path, an http(s)
+# URL, or a data URI. Local files must be inlined as a base64 ``data:`` URI
+# before being sent to a provider; the helpers below classify the reference
+# and perform that conversion *safely* — validating existence, type, size,
+# and magic bytes so we never base64-encode an arbitrary file masquerading
+# as an image.
+# ---------------------------------------------------------------------------
+
+# Cap on inlined local images. xAI/OpenAI image endpoints reject large
+# uploads anyway; the limit also bounds the base64 payload we build in memory.
+DEFAULT_EDIT_INPUT_MAX_BYTES = 20 * 1024 * 1024
+
+# Allowed input extensions -> MIME type. Extension is checked first (cheap,
+# rejects obvious non-images) but the data URI uses the *detected* MIME so a
+# mislabeled file can't dictate the content type we advertise.
+_EDIT_INPUT_MIME_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+# Leading-byte signatures. We refuse to encode a file whose content doesn't
+# match a known raster image format, regardless of its extension.
+_IMAGE_MAGIC_PREFIXES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def is_http_url(value: str) -> bool:
+    """Return True when *value* is an ``http://`` or ``https://`` URL."""
+    return isinstance(value, str) and (
+        value.startswith("http://") or value.startswith("https://")
+    )
+
+
+def is_data_uri(value: str) -> bool:
+    """Return True when *value* is a ``data:`` URI."""
+    return isinstance(value, str) and value.startswith("data:")
+
+
+def _detect_image_mime(raw: bytes) -> Optional[str]:
+    """Return the MIME type implied by *raw*'s leading bytes, or None."""
+    for prefix, mime in _IMAGE_MAGIC_PREFIXES:
+        if raw.startswith(prefix):
+            return mime
+    # WEBP: "RIFF" <4-byte size> "WEBP"
+    if len(raw) >= 12 and raw[0:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def local_image_to_data_uri(
+    path: str,
+    *,
+    max_bytes: int = DEFAULT_EDIT_INPUT_MAX_BYTES,
+) -> str:
+    """Read a local image file and return a ``data:<mime>;base64,...`` URI.
+
+    Validates that the path exists, is a regular file, carries a supported
+    image extension, is non-empty, within ``max_bytes``, and whose content
+    matches a known image signature. Raises :class:`ValueError` on any
+    violation so callers can surface a clear ``invalid_input`` error instead
+    of shipping arbitrary file bytes to a remote provider.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise ValueError(f"Image path does not exist: {path}")
+    if not p.is_file():
+        raise ValueError(f"Image path is not a regular file: {path}")
+
+    ext = p.suffix.lower()
+    if ext not in _EDIT_INPUT_MIME_BY_EXT:
+        raise ValueError(
+            f"Unsupported image type '{ext or '(none)'}'. "
+            f"Supported: {', '.join(sorted(_EDIT_INPUT_MIME_BY_EXT))}"
+        )
+
+    size = p.stat().st_size
+    if size == 0:
+        raise ValueError(f"Image file is empty: {path}")
+    if size > max_bytes:
+        raise ValueError(
+            f"Image file exceeds {max_bytes // (1024 * 1024)}MB cap: {path}"
+        )
+
+    raw = p.read_bytes()
+    mime = _detect_image_mime(raw)
+    if mime is None:
+        raise ValueError(f"File content is not a recognized image: {path}")
+
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
 
 
 def success_response(

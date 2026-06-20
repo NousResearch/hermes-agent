@@ -253,3 +253,43 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+
+class TestImageEditExposure:
+    """``image_edit`` ships in the shared core alongside ``image_generate``.
+
+    The edit tool is gated at schema-build time by its ``check_fn`` (only an
+    edit-capable, available backend like xAI surfaces it), but it must be part
+    of the resolved toolset so platforms can expose it at all. Regression:
+    ``image_edit`` must live in ``_HERMES_CORE_TOOLS`` (otherwise the default
+    CLI / platform toolsets could never resolve it) and in the ``image_gen``
+    toolset (so a profile narrowly enabling only ``image_gen`` still exposes
+    it, independent of registry-discovery order).
+    """
+
+    def test_core_tools_include_image_edit_and_generate(self):
+        from toolsets import _HERMES_CORE_TOOLS
+
+        assert "image_generate" in _HERMES_CORE_TOOLS
+        assert "image_edit" in _HERMES_CORE_TOOLS
+
+    def test_image_gen_toolset_resolves_both_tools(self):
+        # A profile that narrowly enables only the ``image_gen`` toolset must
+        # expose both tools statically, independent of registry-discovery order.
+        assert TOOLSETS["image_gen"]["tools"] == ["image_generate", "image_edit"]
+        resolved = set(resolve_toolset("image_gen"))
+        assert "image_generate" in resolved
+        assert "image_edit" in resolved
+
+    def test_hermes_cli_resolves_image_edit(self):
+        resolved = set(resolve_toolset("hermes-cli"))
+        assert "image_edit" in resolved
+        # image_generate compatibility must be preserved.
+        assert "image_generate" in resolved
+
+    def test_default_messaging_platform_resolves_image_edit(self):
+        # Messaging platforms share ``_HERMES_CORE_TOOLS``; image_edit must
+        # reach them too, not just the interactive CLI.
+        resolved = set(resolve_toolset("hermes-telegram"))
+        assert "image_edit" in resolved
+        assert "image_generate" in resolved

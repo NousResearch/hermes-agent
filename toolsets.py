@@ -38,8 +38,11 @@ _HERMES_CORE_TOOLS = [
     "read_terminal",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image generation / editing.
+    # image_edit is gated at schema-build time by its check_fn (surfaces only
+    # when an edit-capable, available backend like xAI is configured); it must
+    # still live in the core list so platforms can resolve it at all.
+    "vision_analyze", "image_generate", "image_edit",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -124,8 +127,12 @@ TOOLSETS = {
     },
     
     "image_gen": {
-        "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "description": "Creative generation and editing tools (images)",
+        # Both tools ship statically so a profile that narrowly enables only
+        # ``image_gen`` exposes image_edit regardless of registry-discovery
+        # order. image_edit is still gated at schema-build time by its check_fn
+        # (surfaces only with an edit-capable backend).
+        "tools": ["image_generate", "image_edit"],
         "includes": []
     },
 

@@ -374,7 +374,8 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
 def _do_git_install(entry: CatalogEntry) -> Path:
     """Clone the entry's repo into ``~/.hermes/mcp-installs/<name>`` and run
     bootstrap commands. Returns the install directory."""
-    assert entry.install is not None and entry.install.type == "git"
+    if not entry.install or entry.install.type != "git":
+        raise RuntimeError("entry must have a git install configured")
     install = entry.install
     dest = _install_root() / entry.name
 

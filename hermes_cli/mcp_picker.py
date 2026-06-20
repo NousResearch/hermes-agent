@@ -219,7 +219,8 @@ def _handle_row(row: _Row) -> None:
                 print(color(f"  '{row.name}' was not installed", Colors.DIM))
     elif choice == 3:
         try:
-            assert row.entry is not None
+            if row.entry is None:
+                raise RuntimeError("row.entry must not be None for reinstall")
             install_entry(row.entry, enable=True)
         except CatalogError as exc:
             print(color(f"  ✗ reinstall failed: {exc}", Colors.RED))

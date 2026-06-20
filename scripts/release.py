@@ -45,9 +45,14 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "w31rdm4ch1n3z@protonmail.com": "w31rdm4ch1nZ",
+    "rratmansky@gmail.com": "rratmansky",
+    "lkz-de@users.noreply.github.com": "lkz-de",
     "charles@salesondemand.io": "salesondemandio",
+    "IamSanchoPanza@users.noreply.github.com": "IamSanchoPanza",
     "victor@rocketfueldev.com": "victor-kyriazakos",
     "87440198+JoaoMarcos44@users.noreply.github.com": "JoaoMarcos44",
+    "joaomarcosdias444@gmail.com": "JoaoMarcos44",
     "286497132+srojk34@users.noreply.github.com": "srojk34",
     "59806492+sitkarev@users.noreply.github.com": "sitkarev",
     "zheng@omegasys.eu": "omegazheng",
@@ -106,6 +111,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "275304381+hakanpak@users.noreply.github.com": "hakanpak",
     "ludo.galabru@solana.org": "lgalabru",
     "johnjacobkenny@users.noreply.github.com": "johnjacobkenny",
     "chanyoung.kim@nota.ai": "channkim",
@@ -173,6 +179,7 @@ AUTHOR_MAP = {
     "scubamount@users.noreply.github.com": "scubamount",
     "251514042+youngstar-eth@users.noreply.github.com": "youngstar-eth",
     "155192176+alelpoan@users.noreply.github.com": "alelpoan",
+    "alelpoan@proton.me": "alelpoan",
     "aman@abacus.ai": "Aman113114-IITD",
     "octavio.turra@gmail.com": "octavioturra",
     "524706+Twanislas@users.noreply.github.com": "Twanislas",

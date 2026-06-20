@@ -159,6 +159,11 @@ export interface Translations {
     }
   }
 
+  remoteDisplayBanner: {
+    message: (reason: string) => string
+    dismiss: string
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string

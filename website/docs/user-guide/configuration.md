@@ -1007,6 +1007,16 @@ auxiliary:
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
 
+  # Auto-generated session titles. Empty language follows the conversation;
+  # set e.g. "English" or "Japanese" to pin titles to one language.
+  title_generation:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+    language: ""
+
   # Skills hub — skill matching and search
   skills_hub:
     provider: "auto"

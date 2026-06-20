@@ -176,6 +176,7 @@ function FilesystemTab({
           disabled={!hasCwd || loading}
           onClick={onRefresh}
           size="icon-xs"
+          title={r.refreshTree}
           variant="ghost"
         >
           <Codicon name="refresh" size="0.8125rem" spinning={loading} />
@@ -185,6 +186,7 @@ function FilesystemTab({
           className={HEADER_ACTION_CLASS}
           onClick={() => void onChangeFolder()}
           size="icon-xs"
+          title={r.openFolder}
           variant="ghost"
         >
           <Codicon name="folder-opened" size="0.8125rem" />
@@ -195,6 +197,7 @@ function FilesystemTab({
           disabled={!hasCwd || !canCollapse}
           onClick={onCollapseAll}
           size="icon-xs"
+          title={r.collapseAll}
           variant="ghost"
         >
           <Codicon name="collapse-all" size="0.8125rem" />

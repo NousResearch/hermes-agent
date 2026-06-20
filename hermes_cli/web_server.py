@@ -48,6 +48,7 @@ from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
+    clear_model_endpoint_credentials,
     get_config_path,
     get_env_path,
     get_hermes_home,
@@ -901,8 +902,11 @@ def _apply_main_model_assignment(
     # same-provider re-pick so re-selecting a model doesn't wipe the key.
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
+        model_cfg.pop("api", None)
     elif model_cfg.get("api_key") and new_provider != prev_provider:
-        model_cfg["api_key"] = ""
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
+    if new_provider != prev_provider:
+        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
     model_cfg.pop("context_length", None)
     return model_cfg
 
@@ -3877,6 +3881,8 @@ def _apply_model_assignment_sync(
                 slot_cfg = {}
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
+            slot_cfg.pop("base_url", None)
+            clear_model_endpoint_credentials(slot_cfg)
             aux[slot] = slot_cfg
         cfg["auxiliary"] = aux
         save_config(cfg)
@@ -3892,8 +3898,13 @@ def _apply_model_assignment_sync(
         slot_cfg = aux.get(slot)
         if not isinstance(slot_cfg, dict):
             slot_cfg = {}
+        prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
+        new_provider = provider.strip().lower()
         slot_cfg["provider"] = provider
         slot_cfg["model"] = model
+        if new_provider != prev_provider and new_provider != "custom":
+            slot_cfg.pop("base_url", None)
+            clear_model_endpoint_credentials(slot_cfg)
         aux[slot] = slot_cfg
 
     cfg["auxiliary"] = aux

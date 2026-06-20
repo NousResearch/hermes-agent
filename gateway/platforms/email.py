@@ -309,10 +309,14 @@ class EmailAdapter(BasePlatformAdapter):
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
-        self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
-        self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
-        self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-        self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        try:
+            self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+            self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+            self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        except (TypeError, ValueError):
+            self._imap_port = 993
+            self._smtp_port = 587
+            self._poll_interval = 15
 
         # Skip attachments — configured via config.yaml:
         #   platforms:

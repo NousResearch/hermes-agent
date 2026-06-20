@@ -2350,6 +2350,18 @@ class TestWebServerEndpoints:
         assert "api_key" not in out
         assert "api_mode" not in out
 
+        # switching providers when the stale secret lives under the legacy
+        # ``api`` alias only (no api_key) → it must be cleared too. The resolver
+        # reads ``model.api`` as a key, so leaving it behind keeps a secret in
+        # config.yaml that contaminates the next custom resolution.
+        out = _apply_main_model_assignment(
+            {"provider": "custom", "api": "sk-legacy-stale", "base_url": "http://endpoint-a/v1"},
+            "openrouter",
+            "m",
+        )
+        assert "api" not in out
+        assert "api_key" not in out
+
     def test_parse_model_ids_handles_openai_and_bare_shapes(self):
         """Model discovery must tolerate the common /v1/models shapes and
         never raise (so a slightly non-standard local endpoint still works)."""

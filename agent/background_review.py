@@ -300,6 +300,7 @@ def summarize_background_review_actions(
                     "target": args.get("target", "memory"),
                     "content": args.get("content", ""),
                     "old_text": args.get("old_text", ""),
+                    "operations": args.get("operations") or [],
                     "name": args.get("name", ""),
                     "old_string": args.get("old_string", ""),
                     "new_string": args.get("new_string", ""),
@@ -353,6 +354,7 @@ def summarize_background_review_actions(
             content = detail.get("content", "")
             old_text = detail.get("old_text", "")
             skill_name = detail.get("name", "")
+            operations = detail.get("operations") or []
             max_preview = 120
             if is_skill:
                 change = data.get("_change", {})
@@ -376,6 +378,21 @@ def summarize_background_review_actions(
                     actions.append(f"📝 Skill '{skill_name}' rewritten: {description}")
                 else:
                     actions.append(f"📝 {message}" if message else f"Skill {action}")
+            elif operations:
+                for op in operations:
+                    op = op or {}
+                    op_act = op.get("action", "")
+                    op_content = (op.get("content") or "")
+                    op_old = (op.get("old_text") or "")
+                    if op_act == "add" and op_content:
+                        preview = op_content[:max_preview] + ("…" if len(op_content) > max_preview else "")
+                        actions.append(f"{label} ➕ {preview}")
+                    elif op_act == "replace" and op_content:
+                        preview = op_content[:max_preview] + ("…" if len(op_content) > max_preview else "")
+                        actions.append(f"{label} ✏️ {preview}")
+                    elif op_act == "remove" and op_old:
+                        preview = op_old[:60] + ("…" if len(op_old) > 60 else "")
+                        actions.append(f"{label} ➖ {preview}")
             elif action == "add" and content:
                 preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
                 actions.append(f"{label} ➕ {preview}")
@@ -391,6 +408,7 @@ def summarize_background_review_actions(
             "added" in message_lower
             or "replaced" in message_lower
             or "removed" in message_lower
+            or "applied" in message_lower
             or (target and "add" in message.lower())
             or "Entry added" in message
         ):
@@ -517,6 +535,13 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            # The review fork pins the parent's cached system prompt and keeps
+            # ``tools[]`` byte-identical to the parent so its outbound request
+            # hits the same provider cache prefix (see the toolset-parity note
+            # above). The between-turns MCP refresh in build_turn_context would
+            # add late-connecting MCP tools to this fork and break that parity,
+            # so opt the review fork out of it.
+            review_agent._skip_mcp_refresh = True
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled

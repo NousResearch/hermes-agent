@@ -5,7 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
-import { TERMUX_TUI_MODE } from './config/env.js'
+import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -76,7 +76,12 @@ setupGracefulExit({
     recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
     resetTerminalModes()
     process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
-  }
+  },
+  // The dashboard chat tab has no in-page restart path after the PTY child
+  // exits. Ignore SIGINT there so Ctrl+C cannot kill the embedded TUI if raw
+  // mode briefly drops and the terminal driver turns the keystroke into a
+  // signal instead of input bytes. SIGTERM/SIGHUP still cleanly shut down.
+  ignoredSignals: DASHBOARD_TUI_MODE ? ['SIGINT'] : []
 })
 
 const stopMemoryMonitor = startMemoryMonitor({

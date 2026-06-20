@@ -954,6 +954,67 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
+    """Resuming a rotated-out parent id must load the continuation's messages.
+
+    Regression for the desktop "I came back and the reply isn't there" report:
+    auto-compression ends the live session and forks a continuation child, so a
+    resume on the parent id (the desktop's routed id when the chat was opened
+    before it rotated) used to reload the pre-compression transcript and drop
+    the response generated after compression. session.resume must follow the
+    compression tip via resolve_resume_session_id.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    base = int(time.time()) - 10_000
+    db.create_session("parent_root", source="tui")
+    db.append_message("parent_root", role="user", content="pre-compression turn")
+    db.end_session("parent_root", "compression")
+    db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
+    db.append_message("cont_tip", role="assistant", content="post-compression reply")
+    conn = db._conn
+    assert conn is not None
+    conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'parent_root'",
+        (base, base + 50),
+    )
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,))
+    conn.commit()
+
+    captured = {}
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured["agent_session_id"] = session_id
+        return types.SimpleNamespace(model="test", provider="test")
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        server, "_session_info", lambda agent, *a: {"model": "test", "tools": {}, "skills": {}}
+    )
+    monkeypatch.setattr(
+        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": "parent_root"}}
+        )
+    finally:
+        db.close()
+
+    # The agent must bind to the continuation tip, and the returned transcript
+    # must include the post-compression reply (which lives only in the tip).
+    assert resp["result"]["session_key"] == "cont_tip"
+    assert captured["agent_session_id"] == "cont_tip"
+    texts = [m.get("text") for m in resp["result"]["messages"]]
+    assert "post-compression reply" in texts
+
+
 def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     captured = {}
 
@@ -1952,6 +2013,25 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
 
     assert created == [
         {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
+    ]
+
+
+def test_ensure_session_db_row_persists_session_source(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
+
+    assert created == [
+        {"key": "k1", "source": "tool", "model": "test-model", "model_config": None, "cwd": None}
     ]
 
 
@@ -7621,6 +7701,18 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
         )["result"]["session_id"]
         assert server._sessions[on]["close_on_disconnect"]
         assert not server._sessions[off]["close_on_disconnect"]
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_records_source(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        sid = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"source": "tool"}}
+        )["result"]["session_id"]
+        assert server._sessions[sid]["source"] == "tool"
     finally:
         server._sessions.clear()
 

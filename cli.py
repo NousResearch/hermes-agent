@@ -562,6 +562,18 @@ def load_cli_config() -> Dict[str, Any]:
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
 
+    # Managed scope: overlay administrator-pinned values LAST so they win over
+    # the user's config here too. cli.py builds its config independently of
+    # hermes_cli.config._load_config_impl (which has its own managed merge), so
+    # without this the entire interactive CLI/TUI surface — skin, display prefs,
+    # etc. read from CLI_CONFIG — would silently ignore managed scope while
+    # `hermes config`/`doctor`/guards (which use load_config) honor it. The
+    # shared helper mirrors _load_config_impl (env-only expansion, root-model
+    # normalization, leaf-merge) and is fail-open.
+    from hermes_cli import managed_scope
+
+    defaults = managed_scope.apply_managed_overlay(defaults)
+
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
     
@@ -1019,11 +1031,20 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             # partially-initialised agents where the attribute is missing.
             _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
             if isinstance(_session_msgs, list):
+                logger.info(
+                    "CLI cleanup calling memory shutdown for session %s with %d message(s)",
+                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                    len(_session_msgs),
+                )
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
+                logger.info(
+                    "CLI cleanup calling memory shutdown for session %s without session message list",
+                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                )
                 _active_agent_ref.shutdown_memory_provider()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
 
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
@@ -1340,6 +1361,17 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
         except Exception as e:
             logger.debug("Error copying .worktreeinclude entries: %s", e)
 
+    # Lock the worktree so other processes (and `git worktree remove`) can see
+    # it is actively in use.  Fail-soft: a lock failure never blocks the session.
+    try:
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", f"hermes pid={os.getpid()}", str(wt_path)],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        logger.debug("Worktree locked: %s (pid=%s)", wt_path, os.getpid())
+    except Exception as e:
+        logger.debug("git worktree lock failed (non-fatal): %s", e)
+
     info = {
         "path": str(wt_path),
         "branch": branch_name,
@@ -1415,6 +1447,16 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
     # Remove worktree (even if working tree is dirty — uncommitted
     # changes without unpushed commits are just artifacts)
+    # Unlock first so `git worktree remove` isn't blocked by the lock we
+    # placed at creation time.  Fail-soft — never block cleanup.
+    try:
+        subprocess.run(
+            ["git", "worktree", "unlock", wt_path],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+    except Exception as e:
+        logger.debug("git worktree unlock failed (non-fatal): %s", e)
+
     try:
         subprocess.run(
             ["git", "worktree", "remove", wt_path, "--force"],
@@ -3503,11 +3545,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
+        self._session_db_unavailable = False
         try:
             from hermes_state import SessionDB
             self._session_db = SessionDB()
         except Exception as e:
+            # #41386: a failed session store means the transcript is NOT
+            # persisted to state.db — the live chat looks healthy but resume
+            # later shows a truncated/empty session. A buried log line is not
+            # enough; surface it prominently so the user knows persistence is
+            # off for this run and can fix the store before relying on resume.
+            self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+            try:
+                # Console is imported at module scope; do NOT re-import it here.
+                # A function-local `import` would make `Console` a local name for
+                # the whole __init__ body and break the earlier `self.console =
+                # Console()` with UnboundLocalError.
+                Console(stderr=True).print(
+                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
+                    "this conversation will [bold]NOT be saved[/bold] to disk and "
+                    "cannot be resumed later. Searching past sessions is also disabled.\n"
+                    f"  Reason: {e}\n"
+                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
+                )
+            except Exception:
+                # Never let the warning path itself break startup.
+                print(
+                    "WARNING: Session store unavailable — this conversation will NOT be "
+                    f"saved to disk and cannot be resumed later. Reason: {e}"
+                )
 
         # Opportunistic state.db maintenance — runs at most once per
         # min_interval_hours, tracked via state_meta in state.db itself so
@@ -3618,6 +3685,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._resize_recovery_lock = threading.Lock()
         self._resize_recovery_timer = None
         self._resize_recovery_pending = False
+        # Debounced timer that clears the post-resize suppression once the
+        # terminal reflow settles, so the status bar returns during idle
+        # without waiting for the next submitted input.
+        self._status_bar_unsuppress_timer = None
+        # Last terminal width seen by the resize handler. Used to distinguish a
+        # width change (column reflow → possible ghost chrome, needs a viewport
+        # clear) from a rows-only change (no reflow). None until the first
+        # resize fires.
+        self._last_resize_width = None
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -3768,15 +3844,112 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         origin and can leave stale prompt glyphs after a narrow resize.
 
         We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
-        status bar and input separator rules stay hidden until the next user
-        input.  On column shrink the terminal reflows already-rendered status
-        bar rows into scrollback before prompt_toolkit can erase them; drawing
-        a fresh full-width bar immediately makes the old and new versions
-        look duplicated (#19280, #22976).  Clearing the suppression on the
-        next prompt restores the bar cleanly.
+        status bar and input separator rules stay hidden while the terminal
+        reflow settles.  On column shrink the terminal reflows already-rendered
+        status bar rows into scrollback before prompt_toolkit can erase them;
+        drawing a fresh full-width bar immediately makes the old and new
+        versions look duplicated (#19280, #22976).
+
+        Suppression alone is not enough on a WIDTH change.  prompt_toolkit's
+        ``renderer.erase()`` does ``cursor_up(_cursor_pos.y)`` + ``erase_down()``
+        using the ``_cursor_pos.y`` cached from the LAST render at the OLD
+        width (renderer.py).  When the column count shrinks, the terminal
+        reflows each already-painted full-width chrome row into 2+ physical
+        rows, so the cached ``y`` undershoots: ``cursor_up`` does not climb
+        past the reflowed rows and ``erase_down`` leaves the stale bar stranded
+        ABOVE the live origin.  The next paint then stacks a fresh bar below it
+        — the duplicated-status-bar report (two bars, two elapsed readings).
+        Suppression hides the *new* bar but never erases the already-reflowed
+        *old* one, so the ghost survives the whole suppression window.
+
+        Fix: on a width change, wipe the visible viewport with ``erase_screen``
+        (CSI 2J) BEFORE delegating to prompt_toolkit's resize, then let its
+        repaint redraw from a clean origin.  This is banner-safe: 2J clears
+        only the visible screen, NOT scrollback history (that is CSI 3J, which
+        we do not send here — ``rebuild_scrollback=False``), so the startup
+        banner that scrolled into history is preserved and
+        ``_replay_output_history`` is not needed.  Row-count-only changes skip
+        the clear (no reflow, so no ghost) to avoid an unnecessary repaint.
+
+        The suppression is transient: a short follow-up timer clears it and
+        repaints once the reflow has settled, so the bar returns on its own
+        during idle.  Previously the flag was only cleared on the next
+        *submitted* user input, so a resize/reflow (tmux pane change, SSH
+        window restore, font zoom) followed by idle left the status bar hidden
+        indefinitely even while the refresh clock kept ticking (the dynamic
+        chrome rendered at height 0 on every repaint).  The next-submit clear
+        at the input loop remains as a fast path.
         """
         self._status_bar_suppressed_after_resize = True
+        # On a WIDTH change the terminal has already reflowed the old full-width
+        # chrome into extra physical rows that prompt_toolkit's stale-cursor
+        # erase (cursor_up(_cursor_pos.y) cached at the OLD width) will not
+        # reach, leaving a duplicated status bar stranded above the live origin.
+        # Ctrl+L / /redraw clears it cleanly, so route the resize path through
+        # the SAME recovery: wipe the visible viewport (banner-safe — CSI 2J
+        # only, never CSI 3J) and replay the transcript so nothing is lost.
+        # Row-count-only changes skip this (no reflow → no ghost) to avoid an
+        # unnecessary full repaint.
+        try:
+            new_width = self._get_tui_terminal_width()
+        except Exception:
+            new_width = None
+        prev_width = getattr(self, "_last_resize_width", None)
+        # First resize of the session has no prior width to compare against;
+        # treat it as a change so an initial maximize/restore is covered too.
+        width_changed = new_width is not None and new_width != prev_width
+        if width_changed:
+            try:
+                self._clear_prompt_toolkit_screen(app, rebuild_scrollback=False)
+                _replay_output_history()
+            except Exception:
+                pass
+        if new_width is not None:
+            self._last_resize_width = new_width
         original_on_resize()
+        self._schedule_status_bar_unsuppress(app)
+
+    def _schedule_status_bar_unsuppress(self, app, delay: float = 0.35) -> None:
+        """Clear the post-resize status-bar suppression after the reflow settles.
+
+        Debounced: a fresh resize cancels the pending unsuppress and restarts
+        the timer, so a resize storm only repaints the bar once it stops.
+        """
+        try:
+            old_timer = getattr(self, "_status_bar_unsuppress_timer", None)
+            if old_timer is not None:
+                try:
+                    old_timer.cancel()
+                except Exception:
+                    pass
+
+            def _clear():
+                self._status_bar_suppressed_after_resize = False
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+
+            def _fire():
+                try:
+                    loop = getattr(app, "loop", None)
+                except Exception:
+                    loop = None
+                if loop is not None:
+                    try:
+                        loop.call_soon_threadsafe(_clear)
+                        return
+                    except Exception:
+                        pass
+                _clear()
+
+            timer = threading.Timer(delay, _fire)
+            timer.daemon = True
+            self._status_bar_unsuppress_timer = timer
+            timer.start()
+        except Exception:
+            # Fail open: never leave the bar stuck hidden.
+            self._status_bar_suppressed_after_resize = False
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
         """Debounce resize redraws so footer chrome is not stamped into scrollback."""
@@ -5975,6 +6148,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
+            # Flush any un-persisted messages from the current turn to the
+            # old session *before* rotating.  /new can be called mid-turn
+            # when _flush_messages_to_session_db() has not yet run — without
+            # this, messages generated during the current turn are silently
+            # lost on session rotation (#47202).
+            if self.agent:
+                try:
+                    self.agent._flush_messages_to_session_db(
+                        self.conversation_history
+                    )
+                except Exception:
+                    pass  # best-effort
             try:
                 self._session_db.end_session(old_session_id, "new_session")
             except Exception:
@@ -6901,24 +7086,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._close_model_picker()
 
     def _handle_model_switch(self, cmd_original: str):
-        """Handle /model command — switch model for this session.
+        """Handle /model command — switch model.
 
         Supports:
           /model                              — show current model + usage hints
-          /model <name>                       — switch for this session only
-          /model <name> --global              — switch and persist to config.yaml
+          /model <name>                       — switch model (persists by default)
+          /model <name> --session             — switch for this session only
+          /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+
+        Persistence defaults to on (``model.persist_switch_by_default`` in
+        config.yaml, default True). Use ``--session`` for a one-off switch.
         """
-        from hermes_cli.model_switch import switch_model, parse_model_flags
+        from hermes_cli.model_switch import (
+            switch_model,
+            parse_model_flags,
+            resolve_persist_behavior,
+        )
         from hermes_cli.providers import get_label
 
         # Parse args from the original command
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
-        # Parse --provider, --global, and --refresh flags
-        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+        # Parse --provider, --global, --session, and --refresh flags
+        (
+            model_input,
+            explicit_provider,
+            is_global_flag,
+            force_refresh,
+            is_session,
+        ) = parse_model_flags(raw_args)
+        # Resolve the effective persistence once: --session overrides the
+        # config-gated default, --global forces persist, otherwise defer to
+        # model.persist_switch_by_default (defaults to True so /model survives
+        # across sessions).
+        persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: wipe the on-disk picker cache before building the
         # provider list. Forces a live re-fetch of every authed provider's
@@ -6959,14 +7163,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 if ctx is None:
                     raise RuntimeError("inventory context unavailable")
-                providers = build_models_payload(ctx, max_models=50)["providers"]
+                providers = build_models_payload(ctx)["providers"]
             except Exception:
                 providers = []
 
             if not providers:
                 _cprint("  No authenticated providers found.")
                 _cprint("")
-                _cprint("  /model <name>                        switch model")
+                _cprint("  /model <name>                        switch model (persists)")
+                _cprint("  /model <name> --session              switch for this session only")
                 _cprint("  /model --provider <slug>             switch provider")
                 _cprint("  /model --refresh                     re-fetch live model lists")
                 return
@@ -7086,7 +7291,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
-            _cprint("    Saved to config.yaml (--global)")
+            _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")
 
@@ -9465,16 +9670,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 print(f"  🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
 
-            # Refresh the agent's tool list so the model can call new tools
+            # Refresh the agent's tool list so the model can call new tools.
+            # Route through the shared helper so this CLI /reload-mcp path stays
+            # in lockstep with the TUI RPC / gateway reload / late-binding paths
+            # (name-diff, thread-safe, and — critically — additive-preserving so
+            # memory-provider and context-engine tools survive the rebuild).
             if self.agent is not None:
-                self.agent.tools = get_tool_definitions(
-                    enabled_toolsets=self.agent.enabled_toolsets
-                    if hasattr(self.agent, "enabled_toolsets") else None,
+                from tools.mcp_tool import refresh_agent_mcp_tools
+                # Explicit reload: pick up MCP servers the user ENABLED in config
+                # this session. self.enabled_toolsets was resolved once at
+                # startup; merge in any now-connected server names (unless the
+                # user pinned `all`/`*`, which already includes everything) so a
+                # freshly-added server isn't filtered out. Mirrors startup, where
+                # MCP server names are part of enabled_toolsets (see __init__).
+                enabled_override = None
+                et = self.enabled_toolsets
+                if et and "all" not in et and "*" not in et:
+                    merged = list(et)
+                    for _name in sorted(connected_servers):
+                        if _name not in merged:
+                            merged.append(_name)
+                    enabled_override = merged
+                refresh_agent_mcp_tools(
+                    self.agent,
+                    enabled_override=enabled_override,
                     quiet_mode=True,
                 )
-                self.agent.valid_tool_names = {
-                    tool["function"]["name"] for tool in self.agent.tools
-                } if self.agent.tools else set()
+                # Keep the CLI's own list in sync with what the agent now uses.
+                if enabled_override is not None:
+                    self.enabled_toolsets = enabled_override
 
             # Inject a message at the END of conversation history so the
             # model knows tools changed.  Appended after all existing
@@ -11859,7 +12083,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # --- /model picker modal ---
             if self._model_picker_state:
                 try:
-                    self._handle_model_picker_selection()
+                    # Picker selections persist by default (same default as
+                    # /model <name>); honour model.persist_switch_by_default.
+                    from hermes_cli.model_switch import resolve_persist_behavior
+
+                    self._handle_model_picker_selection(
+                        persist_global=resolve_persist_behavior(False, False)
+                    )
                 except Exception as _exc:
                     _cprint(f"  ✗ Model selection failed: {_exc}")
                     self._close_model_picker()
@@ -13469,13 +13699,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             style=style,
             full_screen=False,
             mouse_support=False,
-            # The status bar contains wall-clock read-outs (live prompt elapsed
-            # and idle-since-last-turn). Once a turn finishes there may be no
-            # further events to invalidate the app, so prompt_toolkit would keep
-            # rendering the first post-turn value (usually ``✓ 0s``) forever.
-            # A low-rate refresh keeps the clock honest without reintroducing a
-            # custom repaint thread or touching conversation state.
-            refresh_interval=1.0,
+            # Read from display.cli_refresh_interval (default 0 = disabled).
+            # When non-zero, prompt_toolkit redraws the UI on this cadence
+            # during idle, keeping wall-clock status-bar read-outs ticking.
+            # Set to 0 to suppress background redraws entirely — avoids
+            # fighting terminal auto-scroll in non-fullscreen mode (Xshell,
+            # iTerm2, Windows Terminal). See #48309.
+            refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)),
             # Erase the live bottom chrome (status bar, input box, separator
             # rules) on exit instead of freezing a final copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints

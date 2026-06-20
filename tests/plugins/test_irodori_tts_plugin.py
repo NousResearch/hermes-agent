@@ -32,6 +32,7 @@ def test_irodori_plugin_registers_provider_tools_and_cli() -> None:
     plugin.register(ctx)
 
     assert "irodori" in ctx.tts_providers
+    assert ctx.tts_providers["irodori"].get_setup_schema()["name"] == "Irodori TTS"
     assert "irodori_tts_status" in ctx.tools
     assert "irodori_tts_synthesize" in ctx.tools
     assert "irodori-tts" in ctx.cli_commands

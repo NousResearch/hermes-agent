@@ -282,24 +282,11 @@ class IrodoriScriptTTSProvider(TTSProvider):
         return bool(payload["available"])
 
     def get_setup_schema(self) -> dict[str, Any]:
-        cfg = settings()
         return {
-            "type": "object",
-            "properties": {
-                "base_url": {
-                    "type": "string",
-                    "default": cfg.base_url,
-                },
-                "repo_dir": {
-                    "type": "string",
-                    "default": str(cfg.repo_dir),
-                },
-                "invoke_script": {
-                    "type": "string",
-                    "default": str(cfg.invoke_script),
-                },
-            },
-            "required": [],
+            "name": "Irodori TTS",
+            "badge": "local · free",
+            "tag": "Local Japanese TTS through the Irodori script harness",
+            "env_vars": [],
         }
 
     def list_voices(self) -> list[dict[str, str]]:

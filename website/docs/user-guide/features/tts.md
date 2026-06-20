@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with built-in providers and local plugin providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -28,6 +28,8 @@ Convert text to speech with ten providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **Irodori TTS** | Good | Free (local) | None needed |
+| **VOICEVOX** | Good | Free (local) | None needed |
 
 ### Platform Delivery
 
@@ -43,7 +45,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "irodori" | "voicevox"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -95,6 +97,13 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  irodori:
+    model: irodori-tts
+    voice: none
+  voicevox:
+    base_url: http://127.0.0.1:50021
+    speaker: 8
+    speed: 1.0
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
@@ -144,6 +153,8 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
 | Piper | 5000 |
+| Irodori TTS | Plugin-defined |
+| VOICEVOX | Plugin-defined |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
 
@@ -177,6 +188,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Irodori TTS and VOICEVOX** output local audio and need **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -189,7 +201,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, Piper, Irodori TTS, and VOICEVOX audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -236,6 +248,38 @@ tts:
 ```
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
+
+### Irodori TTS and VOICEVOX (local Japanese TTS)
+
+Irodori TTS and VOICEVOX are bundled as plugin-backed TTS providers. Enable the provider plugin first, then select it in `tts.provider`.
+
+```bash
+hermes plugins enable irodori-tts
+hermes plugins enable voicevox-tts
+```
+
+Irodori expects the local Irodori server and Windows script harness:
+
+```yaml
+tts:
+  provider: irodori
+  irodori:
+    model: irodori-tts
+    voice: none
+```
+
+VOICEVOX expects VOICEVOX Engine to be reachable:
+
+```yaml
+tts:
+  provider: voicevox
+  voicevox:
+    base_url: http://127.0.0.1:50021
+    speaker: 8
+    speed: 1.0
+```
+
+VOICEVOX speaker IDs are the VOICEVOX style IDs shown in the VOICEVOX app or returned by the local `/speakers` endpoint.
 
 ### Custom command providers
 

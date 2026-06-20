@@ -1,0 +1,12 @@
+name: voicevox-tts
+version: 0.1.0
+description: Local VOICEVOX TTS provider backed by a running VOICEVOX Engine.
+author: HermesAgent
+kind: backend
+platforms:
+  - windows
+  - linux
+  - darwin
+entrypoint: plugins.voicevox_tts
+provides_tts_providers:
+  - voicevox

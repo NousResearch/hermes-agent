@@ -867,6 +867,16 @@ platform_toolsets:
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#   # Local Japanese TTS plugins:
+#   # provider: "irodori"   # requires: hermes plugins enable irodori-tts
+#   # provider: "voicevox"  # requires: hermes plugins enable voicevox-tts
+#   irodori:
+#     model: "irodori-tts"
+#     voice: "none"
+#   voicevox:
+#     base_url: "http://127.0.0.1:50021"
+#     speaker: 8
+#     speed: 1.0
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

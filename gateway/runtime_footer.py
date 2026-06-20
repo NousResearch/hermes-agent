@@ -69,10 +69,17 @@ def _split_provider_model(
     Mirrors the blackbox-inspect ``/context`` logic: when ``provider`` is unset
     but ``model`` carries a ``provider/model`` prefix, split it so the footer
     reads cleanly (``provider/model``, not ``unset/a/b``).
+
+    When the ``model`` ALREADY carries a ``provider/`` prefix, that embedded
+    prefix wins and any separately-supplied ``provider`` is ignored — this
+    avoids an ugly triple like ``openai-codex/claude-app/claude-opus-4-8`` when
+    a caller passes both a provider and a prefixed model. The model's own
+    prefix is the more specific source.
     """
     prov = (provider or "").strip()
     mdl = (model or "").strip()
-    if not prov and "/" in mdl:
+    if "/" in mdl:
+        # The model carries its own provider prefix — it's authoritative.
         prov, _, mdl = mdl.partition("/")
     return prov, mdl
 

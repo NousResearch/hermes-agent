@@ -163,6 +163,9 @@ def test_format_footer_unknown_field_silently_ignored():
         # bare model, no provider anywhere
         ("", "gpt-5.4", ("", "gpt-5.4")),
         (None, None, ("", "")),
+        # BOTH provider given AND model carries a prefix -> model's prefix wins
+        # (no ugly triple openai-codex/claude-app/claude-opus-4-8)
+        ("openai-codex", "claude-app/claude-opus-4-8", ("claude-app", "claude-opus-4-8")),
     ],
 )
 def test_split_provider_model(provider, model, expected):

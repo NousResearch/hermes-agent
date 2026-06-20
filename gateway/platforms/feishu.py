@@ -395,6 +395,8 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    thread_follow_enabled: bool = False
+    thread_follow_ttl_seconds: int = 1800
 
 
 @dataclass
@@ -1575,6 +1577,20 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            thread_follow_enabled=_to_boolean(
+                extra.get(
+                    "thread_follow_enabled",
+                    os.getenv("HERMES_FEISHU_THREAD_FOLLOW_ENABLED", "false"),
+                )
+            ),
+            thread_follow_ttl_seconds=_coerce_required_int(
+                extra.get(
+                    "thread_follow_ttl_seconds",
+                    os.getenv("HERMES_FEISHU_THREAD_FOLLOW_TTL_SECONDS", "1800"),
+                ),
+                default=1800,
+                min_value=1,
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1607,6 +1623,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._thread_follow_enabled = settings.thread_follow_enabled
+        self._thread_follow_ttl_seconds = settings.thread_follow_ttl_seconds
+        self._thread_follow_expiry: Dict[tuple[str, str], float] = {}
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -4104,6 +4123,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if self_ids and sender_ids & self_ids:
             return "self_echo"
 
+        mentioned = False
+        if require_mention or (is_bot and self._allow_bots == "mentions"):
+            mentioned = self._mentions_self(message)
+
         if is_bot:
             mode = self._allow_bots
             if mode != "mentions" and mode != "all":
@@ -4113,7 +4136,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "self_ids_unknown"
             # Step 4 covers mention enforcement for groups when require_mention
             # is on; check here only on paths step 4 won't reach.
-            if mode == "mentions" and not require_mention and not self._mentions_self(message):
+            if mode == "mentions" and not require_mention and not mentioned:
                 return "bot_not_mentioned"
 
         if not is_group:
@@ -4123,8 +4146,14 @@ class FeishuAdapter(BasePlatformAdapter):
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
         ):
             return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        follow_key = self._thread_follow_key(message)
+        followed = bool(require_mention and follow_key and self._is_thread_follow_active(follow_key))
+        if require_mention and not mentioned and not followed:
             return "group_policy_rejected"
+        if mentioned:
+            self._refresh_thread_follow(follow_key)
+        elif followed and not is_bot:
+            self._refresh_thread_follow(follow_key)
         return None
 
     def _require_mention_for(self, chat_id: str) -> bool:
@@ -4132,6 +4161,34 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _thread_follow_key(self, message: Any) -> Optional[tuple[str, str]]:
+        """Return the chat-scoped Feishu topic key for active-thread follow."""
+        if not self._thread_follow_enabled:
+            return None
+        chat_id = getattr(message, "chat_id", "") or ""
+        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or ""
+        if not chat_id or not thread_id:
+            return None
+        return (str(chat_id), str(thread_id))
+
+    def _prune_thread_follows(self, now: Optional[float] = None) -> None:
+        now = time.time() if now is None else now
+        expired = [key for key, expiry in self._thread_follow_expiry.items() if expiry <= now]
+        for key in expired:
+            self._thread_follow_expiry.pop(key, None)
+
+    def _is_thread_follow_active(self, key: tuple[str, str]) -> bool:
+        if not self._thread_follow_enabled:
+            return False
+        now = time.time()
+        self._prune_thread_follows(now)
+        return self._thread_follow_expiry.get(key, 0.0) > now
+
+    def _refresh_thread_follow(self, key: Optional[tuple[str, str]]) -> None:
+        if not self._thread_follow_enabled or not key:
+            return
+        self._thread_follow_expiry[key] = time.time() + float(self._thread_follow_ttl_seconds)
 
     # --- Group policy ---------------------------------------------------------
 

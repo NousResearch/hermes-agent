@@ -16,12 +16,14 @@ def make_sender(sender_type: str = "user", open_id: str = "ou_human",
 
 
 def make_message(message_id: str = "om_xxx", chat_type: str = "p2p",
-                 chat_id: str = "oc_1", mentions: Optional[list] = None) -> Any:
+                 chat_id: str = "oc_1", mentions: Optional[list] = None,
+                 thread_id: Optional[str] = None) -> Any:
     return SimpleNamespace(
         message_id=message_id,
         chat_type=chat_type,
         chat_id=chat_id,
         mentions=mentions,
+        thread_id=thread_id,
         content="",
         message_type="text",
     )
@@ -34,6 +36,8 @@ def make_adapter_skeleton(
     allow_bots: str = "none",
     require_mention: bool = True,
     group_policy: str = "allowlist",
+    thread_follow_enabled: bool = False,
+    thread_follow_ttl_seconds: int = 1800,
 ) -> Any:
     from gateway.platforms.feishu import FeishuAdapter
 
@@ -49,6 +53,9 @@ def make_adapter_skeleton(
     adapter._allowed_group_users = frozenset()
     adapter._allow_bots = allow_bots
     adapter._require_mention = require_mention
+    adapter._thread_follow_enabled = thread_follow_enabled
+    adapter._thread_follow_ttl_seconds = thread_follow_ttl_seconds
+    adapter._thread_follow_expiry = {}
     return adapter
 
 

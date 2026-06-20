@@ -1293,6 +1293,14 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(feishu_cfg, dict):
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+                if "thread_follow_enabled" in feishu_cfg and not os.getenv("HERMES_FEISHU_THREAD_FOLLOW_ENABLED"):
+                    os.environ["HERMES_FEISHU_THREAD_FOLLOW_ENABLED"] = str(
+                        feishu_cfg["thread_follow_enabled"]
+                    ).lower()
+                if "thread_follow_ttl_seconds" in feishu_cfg and not os.getenv("HERMES_FEISHU_THREAD_FOLLOW_TTL_SECONDS"):
+                    os.environ["HERMES_FEISHU_THREAD_FOLLOW_TTL_SECONDS"] = str(
+                        feishu_cfg["thread_follow_ttl_seconds"]
+                    )
 
     except Exception as e:
         logger.warning(

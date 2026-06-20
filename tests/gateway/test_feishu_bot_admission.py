@@ -385,6 +385,141 @@ def test_admit_pipeline(case):
     assert adapter._admit(sender, message) == case["expected"]
 
 
+# --- Topic thread follow ----------------------------------------------------
+
+
+def test_feishu_load_settings_parses_thread_follow_from_extra(monkeypatch):
+    from gateway.platforms.feishu import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+
+    settings = FeishuAdapter._load_settings(extra={
+        "thread_follow_enabled": True,
+        "thread_follow_ttl_seconds": 42,
+    })
+
+    assert settings.thread_follow_enabled is True
+    assert settings.thread_follow_ttl_seconds == 42
+
+
+def test_feishu_load_settings_parses_thread_follow_from_env(monkeypatch):
+    from gateway.platforms.feishu import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    monkeypatch.setenv("HERMES_FEISHU_THREAD_FOLLOW_ENABLED", "true")
+    monkeypatch.setenv("HERMES_FEISHU_THREAD_FOLLOW_TTL_SECONDS", "77")
+
+    settings = FeishuAdapter._load_settings(extra={})
+
+    assert settings.thread_follow_enabled is True
+    assert settings.thread_follow_ttl_seconds == 77
+
+
+def test_admit_thread_follow_starts_on_mentioned_topic_and_allows_followup(monkeypatch):
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+        thread_follow_ttl_seconds=60,
+    )
+    now = [1_000.0]
+    monkeypatch.setattr("gateway.platforms.feishu.time.time", lambda: now[0])
+    sender = make_sender(sender_type="user", open_id="ou_human")
+
+    stub_mention(adapter, True)
+    mentioned = make_message(chat_id="oc_topic", chat_type="group", thread_id="omt_topic")
+    assert adapter._admit(sender, mentioned) is None
+
+    stub_mention(adapter, False)
+    followup = make_message(chat_id="oc_topic", chat_type="group", thread_id="omt_topic")
+    assert adapter._admit(sender, followup) is None
+
+
+def test_admit_thread_follow_is_scoped_to_chat_and_thread(monkeypatch):
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+        thread_follow_ttl_seconds=60,
+    )
+    monkeypatch.setattr("gateway.platforms.feishu.time.time", lambda: 1_000.0)
+    sender = make_sender(sender_type="user", open_id="ou_human")
+
+    stub_mention(adapter, True)
+    assert adapter._admit(
+        sender,
+        make_message(chat_id="oc_topic", chat_type="group", thread_id="omt_topic"),
+    ) is None
+
+    stub_mention(adapter, False)
+    assert adapter._admit(
+        sender,
+        make_message(chat_id="oc_topic", chat_type="group", thread_id="omt_other"),
+    ) == "group_policy_rejected"
+    assert adapter._admit(
+        sender,
+        make_message(chat_id="oc_other", chat_type="group", thread_id="omt_topic"),
+    ) == "group_policy_rejected"
+
+
+def test_admit_thread_follow_expires_and_refreshes_on_followup(monkeypatch):
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+        thread_follow_ttl_seconds=10,
+    )
+    now = [1_000.0]
+    monkeypatch.setattr("gateway.platforms.feishu.time.time", lambda: now[0])
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = make_message(chat_id="oc_topic", chat_type="group", thread_id="omt_topic")
+
+    stub_mention(adapter, True)
+    assert adapter._admit(sender, message) is None
+
+    now[0] = 1_009.0
+    stub_mention(adapter, False)
+    assert adapter._admit(sender, message) is None
+
+    # The accepted unmentioned human follow-up refreshed expiry to 1019.
+    now[0] = 1_018.0
+    assert adapter._admit(sender, message) is None
+
+    now[0] = 1_029.0
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
+def test_admit_thread_follow_does_not_refresh_for_bot_messages(monkeypatch):
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        allow_bots="all",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+        thread_follow_ttl_seconds=10,
+    )
+    now = [1_000.0]
+    monkeypatch.setattr("gateway.platforms.feishu.time.time", lambda: now[0])
+    human = make_sender(sender_type="user", open_id="ou_human")
+    bot = make_sender(sender_type="bot", open_id="ou_peer")
+    message = make_message(chat_id="oc_topic", chat_type="group", thread_id="omt_topic")
+
+    stub_mention(adapter, True)
+    assert adapter._admit(human, message) is None
+
+    now[0] = 1_009.0
+    stub_mention(adapter, False)
+    assert adapter._admit(bot, message) is None
+
+    # Bot admission did not refresh expiry; the original 1010 expiry passed.
+    now[0] = 1_011.0
+    assert adapter._admit(human, message) == "group_policy_rejected"
+
 # --- Mention call-count semantics ------------------------------------------
 
 

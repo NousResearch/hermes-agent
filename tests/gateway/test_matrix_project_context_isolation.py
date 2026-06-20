@@ -32,7 +32,7 @@ SENDER = "@alice:example.org"
 
 
 def _make_adapter():
-    from gateway.platforms.matrix import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(
         PlatformConfig(

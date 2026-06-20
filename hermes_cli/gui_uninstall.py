@@ -218,8 +218,8 @@ def _remove_path(path: Path) -> bool:
             path.unlink()
             return True
         if path.is_dir():
-            shutil.rmtree(path)
-            return True
+            shutil.rmtree(path, ignore_errors=True)
+            return not path.exists()
     except Exception as e:
         log_warn(f"Could not remove {path}: {e}")
     return False
@@ -244,10 +244,14 @@ def uninstall_gui(hermes_home: "Path | None" = None, *, remove_userdata: bool = 
     removed: list[Path] = []
 
     log_info("Removing built GUI artifacts (renderer, release, node_modules)...")
+    root_nm = _agent_root(home) / "node_modules"
     for path in source_built_gui_artifacts(home):
-        if path.exists() and _remove_path(path):
-            log_success(f"Removed {path}")
-            removed.append(path)
+        if path.exists():
+            if path == root_nm:
+                log_info("Note: hermes web will need npm install afterward.")
+            if _remove_path(path):
+                log_success(f"Removed {path}")
+                removed.append(path)
 
     log_info("Removing installed desktop app...")
     found_packaged = False

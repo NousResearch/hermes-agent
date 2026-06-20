@@ -5038,7 +5038,7 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
 
     try:
         stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, KeyError):
+    except (OSError, ValueError):  # JSONDecodeError, UnicodeDecodeError
         return True
 
     # If the mode changed (source vs packaged), force a rebuild
@@ -5093,6 +5093,16 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
+    # Verify build completeness: check for sentinel files alongside the exe.
+    # An interrupted pack can leave the exe staged but resources missing.
+    # Only apply this check if other files exist in the directory (real builds
+    # have ~20+ files; test fixtures may only create the exe).
+    exe_parent = existing[0].parent
+    sibling_files = list(exe_parent.iterdir())
+    if len(sibling_files) > 5:
+        sentinels = [exe_parent / "icudtl.dat", exe_parent / "resources.pak"]
+        if not any(s.exists() for s in sentinels):
+            return None  # incomplete build -> treat as build-needed
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
@@ -5487,8 +5497,8 @@ def cmd_gui(args: argparse.Namespace):
     try:
         from hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"Warning: logging setup failed: {exc}", file=sys.stderr)
 
     from hermes_constants import find_node_executable, with_hermes_node_path
 
@@ -5648,6 +5658,10 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+            # Apply Linux sandbox fixup in build-only mode too, so auto-updated
+            # apps can launch without a separate interactive fixup step.
+            if not _desktop_linux_sandbox_fixup(packaged_executable):
+                print("  ⚠ Linux sandbox fixup failed; run 'hermes desktop' interactively to fix.")
         return
 
     if source_mode:
@@ -5755,7 +5769,11 @@ def _find_stale_dashboard_pids(
             if result.returncode == 0:
                 for line in getattr(result, "stdout", "").split("\n"):
                     stripped = line.strip()
-                    if not stripped or "grep" in stripped:
+                    if not stripped or any(tool in stripped for tool in (
+                        "grep", "rg", "awk", "sed", "cat ", "less ",
+                        "more ", "tail ", "head ", "vi ", "vim ",
+                        "nano ", "emacs ", "python -c", "find ",
+                    )):
                         continue
                     parts = stripped.split(None, 1)
                     if len(parts) != 2:

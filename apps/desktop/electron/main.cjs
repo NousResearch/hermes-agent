@@ -28,11 +28,13 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
   buildSessionWindowUrl,
+  chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
@@ -44,6 +46,7 @@ const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
+const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -147,6 +150,8 @@ if (REMOTE_DISPLAY_REASON) {
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
 }
+
+ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
 // Keep the renderer running at full speed while the window is in the background
 // or occluded. The chat transcript streams to screen through a
@@ -266,6 +271,23 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+
+function hermesManagedNodePathEntries() {
+  // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
+  // hermes_constants.py — this Node main process cannot import the Python
+  // module, so the platform-ordering rule is mirrored here.
+  const root = path.join(HERMES_HOME, 'node')
+  const bin = path.join(root, 'bin')
+  const entries = IS_WINDOWS ? [root, bin] : [bin, root]
+  return entries.filter(directoryExists)
+}
+
+function pathWithHermesManagedNode(...entries) {
+  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH]
+    .filter(Boolean)
+    .join(path.delimiter)
+}
+
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
 // install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
 // up with identical layouts and can share one install.
@@ -1825,7 +1847,7 @@ async function applyUpdates(opts = {}) {
       env: {
         ...process.env,
         HERMES_HOME,
-        PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH].filter(Boolean).join(path.delimiter)
+        PATH: pathWithHermesManagedNode(venvBin)
       },
       detached: true,
       stdio: 'ignore',
@@ -1869,7 +1891,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     env: {
       ...process.env,
       HERMES_HOME,
-      PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH].filter(Boolean).join(path.delimiter)
+      PATH: pathWithHermesManagedNode(venvBin)
     },
     detached: true,
     stdio: 'ignore',
@@ -1950,13 +1972,11 @@ async function applyUpdatesPosixInApp() {
   }
 
   // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
-  // npm build can find them on a machine with no system Node.
-  const extraPath = [path.join(HERMES_HOME, 'node', 'bin'), path.join(updateRoot, 'venv', 'bin')]
-    .filter(Boolean)
-    .join(path.delimiter)
+  // npm build can find them on a machine with no system Node. Windows portable
+  // Node lives directly under %LOCALAPPDATA%\hermes\node, not node\bin.
   const env = {
     HERMES_HOME,
-    PATH: [extraPath, process.env.PATH].filter(Boolean).join(path.delimiter)
+    PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
 
   // `hermes update` reaps stale `hermes dashboard` backends (a code update
@@ -2008,10 +2028,14 @@ async function applyUpdatesPosixInApp() {
   }
 
   emitUpdateProgress({ stage: 'rebuild', message: 'Rebuilding the desktop app…', percent: 60 })
-  const rebuilt = await runStreamedUpdate(hermes, ['desktop', '--build-only'], {
-    cwd: updateRoot,
-    env,
-    stage: 'rebuild'
+  // Retry-once: a first rebuild can fail on a still-settling tree or a
+  // self-healed (network-blocked) Electron download; a second run builds clean
+  // off the healed dist so we reach the swap+relaunch below instead of bailing.
+  const rebuilt = await runRebuildWithRetry(attempt => {
+    if (attempt > 0) {
+      emitUpdateProgress({ stage: 'rebuild', message: 'Retrying the desktop rebuild…', percent: 60 })
+    }
+    return runStreamedUpdate(hermes, ['desktop', '--build-only'], { cwd: updateRoot, env, stage: 'rebuild' })
   })
   if (rebuilt.code !== 0) {
     emitUpdateProgress({
@@ -2957,20 +2981,7 @@ function runRenderTitleJob(rawUrl) {
     }
 
     try {
-      window = new BrowserWindow({
-        show: false,
-        width: 1280,
-        height: 800,
-        webPreferences: {
-          backgroundThrottling: false,
-          contextIsolation: true,
-          javascript: true,
-          nodeIntegration: false,
-          sandbox: true,
-          session: partitionSession,
-          webSecurity: true
-        }
-      })
+      window = createLinkTitleWindow(BrowserWindow, partitionSession)
     } catch {
       return finish('')
     }
@@ -5106,14 +5117,7 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
     // themes/context.tsx, so the window appears already themed.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      webviewTag: true,
-      sandbox: true,
-      nodeIntegration: false,
-      devTools: true
-    }
+    webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
   })
 
   if (IS_MAC) {
@@ -5180,23 +5184,11 @@ function createWindow() {
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      webviewTag: true,
-      sandbox: true,
-      nodeIntegration: false,
-      devTools: true,
-      // Keep timers + requestAnimationFrame running at full speed when the
-      // window is blurred/occluded. The chat transcript streams to the screen
-      // through a requestAnimationFrame-gated flush (useSessionStateCache),
-      // so with Chromium's default background throttling the live answer
-      // stalls whenever this window isn't focused (e.g. you switch to your
-      // editor mid-turn, or open detached devtools) and only appears once you
-      // refocus or refresh. A streaming chat app must render in the
-      // background, so opt out — matching the secondary windows above.
-      backgroundThrottling: false
-    }
+    // Shared with the secondary session windows (chatWindowWebPreferences) so
+    // both keep `backgroundThrottling: false` — the chat transcript streams via
+    // a requestAnimationFrame-gated flush that Chromium pauses for blurred
+    // windows, stalling the live answer until refocus. See session-windows.cjs.
+    webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
   })
 
   if (IS_MAC) {
@@ -6563,6 +6555,12 @@ app.on('before-quit', () => {
   }
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+
+  // Kill open PTYs before environment teardown to avoid the node-pty#904
+  // ThreadSafeFunction SIGABRT race.
+  for (const id of [...terminalSessions.keys()]) {
+    disposeTerminalSession(id)
+  }
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')

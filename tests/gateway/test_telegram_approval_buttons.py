@@ -588,3 +588,55 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+    @pytest.mark.asyncio
+    async def test_gmail_triage_callback_uses_active_hermes_home(self, tmp_path, monkeypatch):
+        """Gmail triage scripts must resolve under the active profile home."""
+        adapter = _make_adapter()
+        real_home = tmp_path / "real-home"
+        profile_home = tmp_path / "profile-home"
+        script_dir = profile_home / "scripts" / "gmail-triage"
+        script_dir.mkdir(parents=True)
+        script_path = script_dir / "archive.sh"
+        script_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        monkeypatch.setattr(Path, "home", lambda: real_home)
+
+        query = AsyncMock()
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Alice"
+        query.message = MagicMock()
+        query.message.text = "Email summary"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        calls = []
+
+        async def fake_create_subprocess_exec(*cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            proc = AsyncMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            return proc
+
+        with patch("hermes_constants.get_hermes_home", return_value=profile_home):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                with patch(
+                    "gateway.platforms.telegram.asyncio.create_subprocess_exec",
+                    side_effect=fake_create_subprocess_exec,
+                ):
+                    await adapter._handle_gmail_triage_callback(
+                        query,
+                        "gt:archive:msg-123",
+                        query_chat_id=12345,
+                        query_chat_type="private",
+                        query_thread_id=None,
+                        query_user_name="Alice",
+                    )
+
+        assert calls
+        assert calls[0][0][0] == str(script_path)
+        assert calls[0][0][1:] == ("msg-123",)
+        query.answer.assert_called_once_with(text=adapter._GT_VERB_DISPATCH["archive"][2])
+        query.edit_message_text.assert_called_once()

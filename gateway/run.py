@@ -4120,6 +4120,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._enqueue_fifo(session_key, event, adapter)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        busy_platform = event.source.platform.value if hasattr(event.source.platform, "value") else str(event.source.platform)
+        busy_text_lower = (event.text or "").lower()
+        if (
+            busy_platform == "telegram"
+            and (
+                ("location" in busy_text_lower and "pin" in busy_text_lower)
+                or (
+                    "latitude" in busy_text_lower
+                    and "longitude" in busy_text_lower
+                    and "map" in busy_text_lower
+                )
+            )
+        ):
+            logger.info("Dropping Telegram location-pin event while session is active: session=%s", session_key)
+            return True
+
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -7207,6 +7223,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        _early_platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        _early_text = event.text or ""
+        _early_text_lower = _early_text.lower()
+        # Hard ingress drop for Telegram live-location/location-pin floods. Do
+        # this before startup replay, plugins, authorization, interrupt logic,
+        # or session lookup so a mobile live-location stream cannot poison the
+        # conversation or keep restarting the active turn.
+        if (
+            _early_platform == "telegram"
+            and (
+                ("location" in _early_text_lower and "pin" in _early_text_lower)
+                or (
+                    "latitude" in _early_text_lower
+                    and "longitude" in _early_text_lower
+                    and "map" in _early_text_lower
+                )
+            )
+        ):
+            logger.info(
+                "dropping Telegram location pin at gateway ingress chat=%s user=%s",
+                source.chat_id or "unknown",
+                source.user_id or source.user_name or "unknown",
+            )
+            return None
 
         if (
             getattr(self, "_startup_restore_in_progress", False)

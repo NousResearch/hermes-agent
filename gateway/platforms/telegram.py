@@ -6646,6 +6646,77 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    @classmethod
+    def _flatten_rich_inline_text(cls, value: Any) -> str:
+        """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "".join(cls._flatten_rich_inline_text(item) for item in value)
+        if isinstance(value, dict):
+            text = value.get("text")
+            if text is not None:
+                return cls._flatten_rich_inline_text(text)
+            children = value.get("children")
+            if children is not None:
+                return cls._flatten_rich_inline_text(children)
+        return ""
+
+    @classmethod
+    def _flatten_rich_blocks(cls, blocks: Any) -> str:
+        """Best-effort plaintext flattener for Bot API rich-message blocks."""
+        if not isinstance(blocks, list):
+            return ""
+
+        lines: List[str] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+
+            block_type = block.get("type")
+            if block_type == "list":
+                for item in block.get("items", []):
+                    if not isinstance(item, dict):
+                        continue
+                    item_text = cls._flatten_rich_blocks(item.get("blocks"))
+                    if not item_text:
+                        continue
+                    label = item.get("label")
+                    item_lines = item_text.splitlines()
+                    if not item_lines:
+                        continue
+                    first_line = item_lines[0]
+                    if label:
+                        first_line = f"{label} {first_line}".strip()
+                    lines.append(first_line)
+                    lines.extend(item_lines[1:])
+                continue
+
+            text = cls._flatten_rich_inline_text(block.get("text"))
+            if text:
+                lines.extend(text.splitlines())
+
+        return "\n".join(line.rstrip() for line in lines if line)
+
+    @classmethod
+    def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
+        """Return plaintext echoed by Telegram's rich_message reply payload."""
+        try:
+            api_kwargs = getattr(reply_to_message, "api_kwargs", None)
+            getter = getattr(api_kwargs, "get", None)
+            if not callable(getter):
+                return None
+            rich_message = getter("rich_message")
+            rich_getter = getattr(rich_message, "get", None)
+            if not callable(rich_getter):
+                return None
+            text = cls._flatten_rich_blocks(rich_getter("blocks")).strip()
+            return text or None
+        except Exception:
+            return None
+
     def _build_message_event(
         self,
         message: Message,
@@ -6772,11 +6843,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     or None
                 )
                 if not reply_to_text:
-                    # Rich messages (sendRichMessage — the launchd briefings and
-                    # the gateway's own rich finals) are NOT echoed with their
-                    # content in reply_to_message; Telegram sends no text,
-                    # caption, or api_kwargs for them. Recover the text we sent
-                    # from our local send-time index, keyed by message id.
+                    # Prefer Telegram's native rich-message echo when present;
+                    # keep the local send-time index only as a fallback for
+                    # older/unrecoverable reply payloads.
+                    reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
+                if not reply_to_text:
                     try:
                         from gateway import rich_sent_store
                         reply_to_text = rich_sent_store.lookup(

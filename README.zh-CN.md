@@ -15,7 +15,7 @@
 
 **由 [Nous Research](https://nousresearch.com) 构建的自进化 AI 代理。** 它是唯一内置学习闭环的智能代理——从经验中创建技能，在使用中改进技能，主动持久化知识，搜索过往对话，并在跨会话中逐步构建对你的深度理解。可以在 $5 的 VPS 上运行，也可以在 GPU 集群上运行，或者使用几乎零成本的 Serverless 基础设施。它不绑定你的笔记本——你可以在 Telegram 上与它对话，而它在云端 VM 上工作。
 
-支持任意模型——[Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)（200+ 模型）、[NVIDIA NIM](https://build.nvidia.com)（Nemotron）、[小米 MiMo](https://platform.xiaomimimo.com)、[z.ai/GLM](https://z.ai)、[Kimi/Moonshot](https://platform.moonshot.ai)、[MiniMax](https://www.minimax.io)、[Hugging Face](https://huggingface.co)、OpenAI，或自定义端点。使用 `hermes model` 即可切换——无需改代码，无锁定。
+支持任意模型——[Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)（200+ 模型）、[NovitaAI](https://novita.ai)（AI 原生云，提供 Model API、Agent Sandbox 和 GPU Cloud）、[NVIDIA NIM](https://build.nvidia.com)（Nemotron）、[小米 MiMo](https://platform.xiaomimimo.com)、[z.ai/GLM](https://z.ai)、[Kimi/Moonshot](https://platform.moonshot.ai)、[MiniMax](https://www.minimax.io)、[Hugging Face](https://huggingface.co)、OpenAI，或自定义端点。使用 `hermes model` 即可切换——无需改代码，无锁定。
 
 <table>
 <tr><td><b>真正的终端界面</b></td><td>完整的 TUI，支持多行编辑、斜杠命令自动补全、对话历史、中断重定向和流式工具输出。</td></tr>
@@ -23,7 +23,7 @@
 <tr><td><b>闭环学习</b></td><td>代理管理记忆并定期自我提醒。复杂任务后自动创建技能。技能在使用中自我改进。FTS5 会话搜索配合 LLM 摘要实现跨会话回溯。<a href="https://github.com/plastic-labs/honcho">Honcho</a> 辩证式用户建模。兼容 <a href="https://agentskills.io">agentskills.io</a> 开放标准。</td></tr>
 <tr><td><b>定时自动化</b></td><td>内置 cron 调度器，支持向任何平台投递。日报、夜间备份、周审计——全部用自然语言描述，无人值守运行。</td></tr>
 <tr><td><b>委派与并行</b></td><td>生成隔离子代理处理并行工作流。编写 Python 脚本通过 RPC 调用工具，将多步管道压缩为零上下文开销的轮次。</td></tr>
-<tr><td><b>随处运行</b></td><td>六种终端后端——本地、Docker、SSH、Daytona、Singularity 和 Modal。Daytona 和 Modal 提供 Serverless 持久化——代理环境空闲时休眠、按需唤醒，空闲期间几乎零成本。$5 VPS 或 GPU 集群都能跑。</td></tr>
+<tr><td><b>随处运行，不止笔记本</b></td><td>六种终端后端——本地、Docker、SSH、Singularity、Modal 和 Daytona。Daytona 和 Modal 提供 Serverless 持久化——代理环境空闲时休眠、按需唤醒，空闲期间几乎零成本。$5 VPS 或 GPU 集群都能跑。</td></tr>
 <tr><td><b>研究就绪</b></td><td>批量轨迹生成、轨迹压缩——用于训练下一代工具调用模型。</td></tr>
 </table>
 
@@ -31,15 +31,29 @@
 
 ## 快速安装
 
+### Linux、macOS、WSL2、Termux
+
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-支持 Linux、macOS、WSL2 和 Android (Termux)。安装程序会自动处理平台特定的配置。
+### Windows（原生，PowerShell）
+
+> **注意：** 原生 Windows 可直接运行 Hermes，无需 WSL——CLI、网关、TUI 和工具全部原生运行。如果你更倾向 WSL2，上面的 Linux/macOS 命令同样适用。发现 bug？欢迎[提交 issue](https://github.com/NousResearch/hermes-agent/issues)。
+
+在 PowerShell 中运行：
+
+```powershell
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+```
+
+安装程序会处理一切：uv、Python 3.11、Node.js、ripgrep、ffmpeg，**以及一个便携版 Git Bash**（MinGit，解压至 `%LOCALAPPDATA%\hermes\git`——无需管理员权限，与系统中已有的 Git 安装完全隔离）。Hermes 使用这个内置 Git Bash 来运行 shell 命令。
+
+如果你已安装 Git，安装程序会检测并使用现有安装。否则只需下载约 45MB 的 MinGit——它不会接触或干扰系统中的任何 Git。
 
 > **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。在 Termux 上，Hermes 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
 >
-> **Windows：** 原生 Windows 不受支持。请安装 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install) 并运行上述命令。
+> **Windows：** 原生 Windows 已完整支持——上面的 PowerShell 命令即可安装全部组件。如果你更倾向 WSL2，Linux 命令同样可用。原生 Windows 安装目录为 `%LOCALAPPDATA%\hermes`；WSL2 安装目录为 `~/.hermes`，与 Linux 一致。目前唯一需要 WSL2 的 Hermes 功能是基于浏览器的仪表盘聊天面板（它使用 POSIX PTY——经典 CLI 和网关均可原生运行）。
 
 安装后：
 
@@ -99,7 +113,7 @@ Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Teleg
 | 设置人格 | `/personality [name]` | `/personality [name]` |
 | 重试或撤销上一轮 | `/retry`、`/undo` | `/retry`、`/undo` |
 | 压缩上下文 / 查看用量 | `/compress`、`/usage`、`/insights [--days N]` | `/compress`、`/usage`、`/insights [days]` |
-| 浏览技能 | `/skills` 或 `/<skill-name>` | `/skills` 或 `/<skill-name>` |
+| 浏览技能 | `/skills` 或 `/<skill-name>` | `/<skill-name>` |
 | 中断当前工作 | `Ctrl+C` 或发送新消息 | `/stop` 或发送新消息 |
 | 平台特定状态 | `/platforms` | `/status`、`/sethome` |
 
@@ -179,10 +193,10 @@ scripts/run_tests.sh
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv venv --python 3.11
-source venv/bin/activate
+uv venv .venv --python 3.11
+source .venv/bin/activate
 uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
+scripts/run_tests.sh
 ```
 
 ---
@@ -192,7 +206,7 @@ python -m pytest tests/ -q
 - 💬 [Discord](https://discord.gg/NousResearch)
 - 📚 [技能中心](https://agentskills.io)
 - 🐛 [问题反馈](https://github.com/NousResearch/hermes-agent/issues)
-- 💡 [讨论区](https://github.com/NousResearch/hermes-agent/discussions)
+- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux 桌面控制 MCP 服务器，支持 Hermes 及其他 MCP 宿主，提供 AT-SPI 无障碍树、Wayland/X11 输入、截图和合成器窗口定位。
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — 社区微信桥接：在同一微信账号上运行 Hermes Agent 和 OpenClaw。
 
 ---

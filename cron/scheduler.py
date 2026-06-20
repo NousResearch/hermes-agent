@@ -817,6 +817,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
+                send_result = None
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
                     future = safe_schedule_threadsafe(
@@ -873,7 +874,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
                 if adapter_ok:
-                    logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    # Treat missing message_id on non-empty text sends as suspicious.
+                    # Some adapter paths can report success=True while no actual send
+                    # hit the platform, leaving cron to mark delivery as fine when the
+                    # user received nothing. Cron deliveries must be verifiable.
+                    if text_to_send and (
+                        send_result is None
+                        or not getattr(send_result, "message_id", None)
+                    ):
+                        logger.warning(
+                            "Job '%s': live adapter send to %s:%s returned success without message_id; falling back to standalone",
+                            job["id"], platform_name, chat_id,
+                        )
+                        adapter_ok = False
+
+                if adapter_ok:
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via live adapter (message_id=%s)",
+                        job["id"], platform_name, chat_id, getattr(send_result, "message_id", None),
+                    )
                     delivered = True
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"

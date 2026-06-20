@@ -472,6 +472,102 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
+class TestOllamaCloudProfile:
+    """Ollama Cloud only accepts user/assistant alternation."""
+
+    def test_prepare_messages_strips_tool_calls_from_assistant(self):
+        p = get_provider_profile("ollama-cloud")
+        msgs = [
+            {"role": "user", "content": "search for X"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "web_search", "arguments": "{}"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "tc1",
+                "name": "web_search",
+                "content": "Search results here",
+            },
+            {"role": "assistant", "content": "Here are the results"},
+        ]
+        result = p.prepare_messages(msgs)
+
+        # tool_calls stripped from assistant
+        assert "tool_calls" not in result[1]
+        # tool message converted to user
+        assert result[2]["role"] == "user"
+        assert "web_search" in result[2]["content"]
+        assert "Search results here" in result[2]["content"]
+        # final assistant unchanged
+        assert result[3]["role"] == "assistant"
+
+    def test_prepare_messages_merges_consecutive_user_messages(self):
+        p = get_provider_profile("ollama-cloud")
+        msgs = [
+            {"role": "user", "content": "do two things"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "name": "tool_a", "content": "result A"},
+            {"role": "tool", "tool_call_id": "tc2", "name": "tool_b", "content": "result B"},
+            {"role": "assistant", "content": "Done"},
+        ]
+        result = p.prepare_messages(msgs)
+
+        # Two consecutive tool messages should be merged into one user message
+        user_msgs = [m for m in result if m.get("role") == "user"]
+        # Original user + merged tool results = 2 user messages
+        assert len(user_msgs) == 2
+        assert "result A" in user_msgs[1]["content"]
+        assert "result B" in user_msgs[1]["content"]
+
+    def test_prepare_messages_passes_through_clean_conversation(self):
+        p = get_provider_profile("ollama-cloud")
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "how are you?"},
+        ]
+        result = p.prepare_messages(msgs)
+        assert result == msgs
+
+    def test_prepare_messages_handles_multimodal_tool_result(self):
+        p = get_provider_profile("ollama-cloud")
+        msgs = [
+            {"role": "user", "content": "take a screenshot"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "browser_vision", "arguments": "{}"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "tc1",
+                "name": "browser_vision",
+                "content": [
+                    {"type": "text", "text": "Screenshot shows a login page"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+                ],
+            },
+        ]
+        result = p.prepare_messages(msgs)
+        # Image parts should be stripped, text preserved
+        assert result[2]["role"] == "user"
+        assert "Screenshot shows a login page" in result[2]["content"]
+        assert "image" not in result[2]["content"].lower() or "data:" not in result[2]["content"]
+
+
 class TestBaseProfile:
     def test_prepare_messages_passthrough(self):
         p = ProviderProfile(name="test")

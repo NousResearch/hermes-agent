@@ -2853,6 +2853,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
+        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )

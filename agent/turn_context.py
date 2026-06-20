@@ -36,6 +36,7 @@ from agent.conversation_compression import (
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     conversation_history_after_compression,
 )
+from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.model_metadata import (
@@ -771,12 +772,20 @@ def build_turn_context(
                 agent.model,
                 f"{_compressor.context_length:,}",
             )
-            agent._emit_status(
-                PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
+            _preflight_status = automatic_compaction_status_message(
+                _compressor,
+                phase="preflight",
+                default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
                     tokens=_preflight_tokens,
                     threshold=_compressor.threshold_tokens,
-                )
+                ),
+                approx_tokens=_preflight_tokens,
+                threshold_tokens=_compressor.threshold_tokens,
+                context_length=_compressor.context_length,
+                model=agent.model,
             )
+            if _preflight_status:
+                agent._emit_status(_preflight_status)
             # Preflight passes honor the same configured per-turn cap
             # (compression.max_attempts) as the loop's compression sites;
             # default 3 preserves the prior hardcoded behavior.

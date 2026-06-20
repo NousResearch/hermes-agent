@@ -2758,6 +2758,119 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert env.get("HERMES_PROFILE") == "some-profile"
 
 
+def test_default_spawn_resumes_parent_worker_session_when_available(
+    kanban_home, monkeypatch
+):
+    """Follow-up tasks should resume the newest completed parent worker session."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 100001
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent reverse", assignee="rev")
+        kb.claim_task(conn, parent)
+        kb.complete_task(
+            conn,
+            parent,
+            summary="done",
+            metadata={"worker_session_id": "sess-parent-123"},
+        )
+        child = kb.create_task(
+            conn,
+            title="child rework",
+            assignee="rev",
+            parents=[parent],
+        )
+        task = kb.get_task(conn, child)
+        workspace = kb.resolve_workspace(task)
+        pid = kb._default_spawn(task, str(workspace), conn=conn)
+        assert pid == 100001
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    assert "--resume" in cmd, f"spawn argv missing --resume: {cmd}"
+    idx = cmd.index("--resume")
+    assert cmd[idx + 1] == "sess-parent-123"
+
+
+def test_default_spawn_skips_resume_without_parent_worker_session(
+    kanban_home, monkeypatch
+):
+    """Fresh workers remain the fallback when no stamped parent session exists."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 100002
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent reverse", assignee="rev")
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, summary="done")
+        child = kb.create_task(
+            conn,
+            title="child rework",
+            assignee="rev",
+            parents=[parent],
+        )
+        task = kb.get_task(conn, child)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace), conn=conn)
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    assert "--resume" not in cmd, f"spawn argv unexpectedly resumed: {cmd}"
+
+
+def test_dispatch_once_passes_conn_to_spawn_fn_when_supported(
+    kanban_home, monkeypatch
+):
+    """dispatch_once should pass the live DB handle to modern spawn fns."""
+    conn = kb.connect()
+    captured = {}
+    try:
+        tid = kb.create_task(conn, title="needs conn", assignee="rev")
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profile_exists",
+            lambda _name: True,
+        )
+
+        def _spawn(task, workspace, *, conn=None, board=None):
+            captured["task_id"] = task.id
+            captured["workspace"] = workspace
+            captured["conn_is_present"] = conn is not None
+            return 424242
+
+        kb.dispatch_once(conn, spawn_fn=_spawn)
+        assert captured["task_id"] == tid
+        assert captured["conn_is_present"] is True
+    finally:
+        conn.close()
+
+
 def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monkeypatch):
     """A task runtime cap should raise the worker's terminal default.
 

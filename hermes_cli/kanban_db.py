@@ -6134,7 +6134,7 @@ def dispatch_once(
       3. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
       4. For each ready task with an assignee, atomically claim and call
-         ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
+         ``spawn_fn(task, workspace_path, board, conn) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
 
@@ -6389,14 +6389,17 @@ def dispatch_once(
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
-            # Introspect the callable and pass `board` only when supported.
+            # Introspect the callable and pass `board` / `conn` only when
+            # supported.
             import inspect
             try:
                 sig = inspect.signature(_spawn)
+                kwargs = {}
                 if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
+                    kwargs["board"] = board
+                if "conn" in sig.parameters:
+                    kwargs["conn"] = conn
+                pid = _spawn(claimed, str(workspace), **kwargs)
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
@@ -6482,10 +6485,12 @@ def dispatch_once(
             import inspect
             try:
                 sig = inspect.signature(_spawn)
+                kwargs = {}
                 if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
+                    kwargs["board"] = board
+                if "conn" in sig.parameters:
+                    kwargs["conn"] = conn
+                pid = _spawn(claimed, str(workspace), **kwargs)
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
@@ -6804,6 +6809,7 @@ def _default_spawn(
     workspace: str,
     *,
     board: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -6903,6 +6909,11 @@ def _default_spawn(
         # profile-local worker sessions still register configured hooks.
         "--accept-hooks",
     ]
+    resume_session_id: Optional[str] = None
+    if conn is not None:
+        resume_session_id = _resume_session_id_for_task(conn, task.id)
+    if resume_session_id:
+        cmd.extend(["--resume", resume_session_id])
     # Auto-load the kanban-worker skill so every dispatched worker
     # has the pattern library (good summary/metadata shapes, retry
     # diagnostics, block-reason examples) in its context, even if
@@ -7802,6 +7813,48 @@ def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
         (task_id,),
     ).fetchone()
     return row["summary"] if row else None
+
+
+def _resume_session_id_for_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Return a worker session id from the parent chain suitable for resume.
+
+    Reverse rework tasks benefit disproportionately from resuming the prior
+    reverse worker's session: the workspace and task artifacts capture the
+    explicit outputs, but detailed local reasoning context often lives only in
+    the worker's chat transcript. We therefore mine the task ancestry for the
+    newest completed run that stamped ``metadata.worker_session_id``.
+    """
+    try:
+        seen: set[str] = set()
+        queue: list[str] = list(parent_ids(conn, task_id))
+        while queue:
+            parent_tid = queue.pop(0)
+            if not parent_tid or parent_tid in seen:
+                continue
+            seen.add(parent_tid)
+
+            runs = list_runs(
+                conn,
+                parent_tid,
+                include_active=False,
+                state_type="outcome",
+                state_name="completed",
+            )
+            for run in reversed(runs):
+                metadata = run.metadata or {}
+                if not isinstance(metadata, dict):
+                    continue
+                session_id = metadata.get("worker_session_id")
+                if isinstance(session_id, str) and session_id.strip():
+                    return session_id.strip()
+
+            queue.extend(parent_ids(conn, parent_tid))
+    except Exception:
+        return None
+    return None
 
 
 def latest_summaries(

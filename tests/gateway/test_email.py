@@ -1392,5 +1392,68 @@ class TestConnectSmtp(unittest.TestCase):
         self.assertIs(_socket.getaddrinfo, original_getaddrinfo)
 
 
+class TestConnectionConfigResolution(unittest.TestCase):
+    """Host/address resolution and pre-connect validation (#49736)."""
+
+    def test_host_and_address_whitespace_stripped(self):
+        """A stray space/newline must not reach IMAP4_SSL as part of the host.
+
+        Whitespace in the host produced the misleading
+        ``[Errno 8] nodename nor servname`` (unresolvable name) instead of a
+        successful connection.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "  hermes@test.com\n",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": " imap.test.com ",
+            "EMAIL_SMTP_HOST": "smtp.test.com\n",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        self.assertEqual(adapter._imap_host, "imap.test.com")
+        self.assertEqual(adapter._smtp_host, "smtp.test.com")
+        self.assertEqual(adapter._address, "hermes@test.com")
+
+    def test_falls_back_to_platform_config_extra(self):
+        """When env vars are absent, settings come from PlatformConfig.extra —
+        the same dict gateway.config populates and `hermes config show` reads."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update({
+            "address": "hermes@test.com",
+            "imap_host": "imap.test.com",
+            "smtp_host": "smtp.test.com",
+        })
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "", "EMAIL_IMAP_HOST": "", "EMAIL_SMTP_HOST": "",
+            "EMAIL_PASSWORD": "secret",
+        }, clear=False):
+            adapter = EmailAdapter(cfg)
+        self.assertEqual(adapter._imap_host, "imap.test.com")
+        self.assertEqual(adapter._smtp_host, "smtp.test.com")
+        self.assertEqual(adapter._address, "hermes@test.com")
+
+    def test_connect_aborts_without_attempting_imap_when_host_missing(self):
+        """A missing host returns False without the cryptic DNS error."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap:
+            result = asyncio.run(adapter.connect())
+
+        self.assertFalse(result)
+        mock_imap.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

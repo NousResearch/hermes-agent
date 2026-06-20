@@ -5309,3 +5309,37 @@ class TestMatrixDispatchSyncIsolation:
 
         assert ran["ok"] is True  # the sibling handler still ran
         assert "event handler failed" in caplog.text  # failure surfaced, not swallowed
+class TestMatrixTextBatchEnvParsing:
+    """A malformed HERMES_MATRIX_TEXT_BATCH_* value must not crash adapter init.
+
+    The env-cast sweep (a7dd98c86) routed these casts through utils.env_float for
+    Feishu/WeCom/Discord/Telegram but missed Matrix. A non-numeric value (e.g. a
+    ``0.6s`` unit-suffix typo) previously raised ValueError out of __init__,
+    which propagates through the gateway platform-init loop and aborts boot.
+    """
+
+    def _build(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        return MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+
+    def test_malformed_delay_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6s")
+        adapter = self._build()  # must not raise ValueError
+        assert adapter._text_batch_delay_seconds == 0.6
+
+    def test_malformed_split_delay_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "abc")
+        adapter = self._build()  # must not raise ValueError
+        assert adapter._text_batch_split_delay_seconds == 2.0
+
+    def test_valid_delay_is_honored(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "1.5")
+        adapter = self._build()
+        assert adapter._text_batch_delay_seconds == 1.5

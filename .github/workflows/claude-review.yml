@@ -21,6 +21,10 @@ jobs:
       github.actor != 'github-actions[bot]' &&
       github.actor != 'claude[bot]'
     runs-on: ubuntu-latest
+    # Best-effort advisory review: it posts a comment but must never block a
+    # PR. The GitHub App token step can fail (e.g. missing app install on
+    # bot-authored PRs), and that is not a reason to red-X the PR.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:

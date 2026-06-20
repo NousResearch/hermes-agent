@@ -72,8 +72,12 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
     "Goal: {goal}\n\n"
     "Continue working toward this goal. Take the next concrete step. "
-    "If you believe the goal is complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly and stop."
+    "If you believe the goal is complete, verify your work — check for "
+    "errors, edge cases, and missing steps — then state so explicitly "
+    "with evidence (file paths, command output, specific changes). "
+    "If you are blocked and need input from the user, say so clearly and stop.\n\n"
+    "NOTE: The goal judge will evaluate quality, not just completion. "
+    "Incomplete work, vague claims, or obvious errors will be rejected."
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
@@ -86,9 +90,13 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "{subgoals_block}\n\n"
     "Continue working toward the goal AND all additional criteria. Take "
     "the next concrete step. If you believe the goal and every "
-    "additional criterion are complete, state so explicitly and stop. "
+    "additional criterion are complete, verify your work — check for "
+    "errors, edge cases, and missing steps — then state so explicitly "
+    "with evidence (file paths, command output, specific changes). "
     "If you are blocked and need input from the user, say so clearly "
-    "and stop."
+    "and stop.\n\n"
+    "NOTE: The goal judge will evaluate quality, not just completion. "
+    "Incomplete work, vague claims, or obvious errors will be rejected."
 )
 
 
@@ -97,12 +105,23 @@ JUDGE_SYSTEM_PROMPT = (
     "achieved a user's stated goal. You receive the goal text and the "
     "agent's most recent response. Your only job is to decide whether "
     "the goal is fully satisfied based on that response.\n\n"
-    "A goal is DONE only when:\n"
+    "A goal is DONE only when ALL of these are true:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
     "- The response clearly shows the final deliverable was produced, OR\n"
     "- The response explains the goal is unachievable / blocked / needs "
     "user input (treat this as DONE with reason describing the block).\n\n"
-    "Otherwise the goal is NOT done — CONTINUE.\n\n"
+    "QUALITY GATE — even if the goal appears completed, reject it as NOT DONE "
+    "if any of these apply:\n"
+    "- The deliverable is clearly incomplete or partial\n"
+    "- The response lacks concrete evidence (file paths, command output, "
+    "specific changes) and relies on vague claims like 'it's done' or 'all "
+    "requirements met'\n"
+    "- The work introduces obvious errors (syntax, logic, security) that "
+    "a reasonable reviewer would catch\n"
+    "- The response skips verification steps that the goal implicitly requires\n"
+    "- The deliverable is a plan or draft when the goal asked for something shipped\n\n"
+    "Be strict but fair — the bar is 'would a competent reviewer accept this' "
+    "not 'is it perfect'. When in doubt, CONTINUE rather than accept weak work.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
     '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
 )
@@ -130,6 +149,9 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "file contents excerpt, an output line, a command result). If "
     "ANY criterion lacks specific evidence in the response, the goal "
     "is NOT done — return CONTINUE.\n\n"
+    "QUALITY CHECK: Even if all criteria appear met, reject as NOT DONE "
+    "if the work is clearly incomplete, contains obvious errors, or skips "
+    "verification that the goal implicitly requires.\n\n"
     "Is the goal AND every additional criterion satisfied?"
 )
 

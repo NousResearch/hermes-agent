@@ -277,7 +277,8 @@ class WebSocketRelayTransport:
         await self._ws.send(json.dumps(frame) + "\n")
 
     async def _read_loop(self) -> None:
-        assert self._ws is not None
+        if self._ws is None:
+            raise RuntimeError("relay transport not connected")
         buf = ""
         try:
             async for chunk in self._ws:

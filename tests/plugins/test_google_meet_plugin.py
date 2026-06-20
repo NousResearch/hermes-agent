@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -787,6 +788,52 @@ def test_cmd_install_runs_pip_and_playwright(capsys):
     pw_cmds = [c for c in calls if len(c) > 2 and c[1:4] == ["-m", "playwright", "install"]]
     assert pw_cmds, f"no playwright install run: {calls}"
     assert "chromium" in pw_cmds[0]
+
+
+def test_cmd_install_falls_back_to_uv_when_pip_is_missing(capsys):
+    """Hermes uv-managed venvs may not have pip; install into the same python."""
+    from plugins.google_meet.cli import _cmd_install
+
+    calls = []
+
+    class _FakeRes:
+        def __init__(self, rc=0):
+            self.returncode = rc
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1:4] == ["-m", "pip", "install"]:
+            return _FakeRes(1)
+        return _FakeRes(0)
+
+    def _fake_which(name):
+        if name == "uv":
+            return "/usr/bin/uv"
+        return None
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("subprocess.run", side_effect=_fake_run), \
+         patch("shutil.which", side_effect=_fake_which):
+        rc = _cmd_install(realtime=False, assume_yes=True)
+    assert rc == 0
+
+    uv_cmds = [
+        c
+        for c in calls
+        if c[:6] == [
+            "/usr/bin/uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--upgrade",
+        ]
+    ]
+    assert uv_cmds, f"no uv pip fallback run: {calls}"
+    assert "playwright" in uv_cmds[0]
+    assert "websockets" in uv_cmds[0]
+    out = capsys.readouterr().out
+    assert "retrying with uv" in out
 
 
 def test_cmd_install_realtime_skips_when_deps_present(capsys):

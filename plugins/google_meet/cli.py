@@ -249,17 +249,44 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     # 1) pip deps — always safe, venv-scoped.
     pip_pkgs = ["playwright", "websockets"]
     print(f"\n[1/3] pip install: {' '.join(pip_pkgs)}")
+    pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", *pip_pkgs]
     try:
-        res = _sp.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", *pip_pkgs],
-            check=False,
-        )
-        if res.returncode != 0:
-            print("  pip install failed")
-            return 1
+        res = _sp.run(pip_cmd, check=False)
+        pip_failed = res.returncode != 0
     except Exception as e:
         print(f"  pip install failed: {e}")
-        return 1
+        pip_failed = True
+
+    if pip_failed:
+        uv = _shutil.which("uv")
+        if not uv:
+            print("  pip install failed")
+            print(
+                "  no uv fallback found; manually run:\n"
+                f"    {sys.executable} -m pip install --upgrade {' '.join(pip_pkgs)}"
+            )
+            return 1
+
+        print("  pip install failed; retrying with uv")
+        uv_cmd = [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--upgrade",
+            *pip_pkgs,
+        ]
+        try:
+            res = _sp.run(uv_cmd, check=False)
+            if res.returncode != 0:
+                print("  uv pip install failed")
+                print(f"  manually run: {' '.join(uv_cmd)}")
+                return 1
+        except Exception as e:
+            print(f"  uv pip install failed: {e}")
+            print(f"  manually run: {' '.join(uv_cmd)}")
+            return 1
 
     # 2) Playwright browsers — pulls chromium (~300MB first run).
     print("\n[2/3] python -m playwright install chromium")

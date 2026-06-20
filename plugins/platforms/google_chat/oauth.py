@@ -62,6 +62,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -386,10 +387,28 @@ def install_deps() -> bool:
         print("Dependencies installed.")
         return True
     except subprocess.CalledProcessError as exc:
-        print(f"ERROR: Failed to install dependencies: {exc}")
-        print("Or install via the optional extra:")
-        print("  pip install 'hermes-agent[google_chat]'")
-        return False
+        pip_error = exc
+
+    uv = shutil.which("uv")
+    if uv:
+        try:
+            subprocess.check_call(
+                [uv, "pip", "install", "--python", sys.executable, "--quiet"]
+                + _REQUIRED_PACKAGES,
+                stdout=subprocess.DEVNULL,
+            )
+            print("Dependencies installed.")
+            return True
+        except subprocess.CalledProcessError as exc:
+            print(f"ERROR: Failed to install dependencies via uv: {exc}")
+            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(_REQUIRED_PACKAGES)}")
+            return False
+
+    print(f"ERROR: Failed to install dependencies: {pip_error}")
+    print("Or install via the optional extra:")
+    print("  pip install 'hermes-agent[google_chat]'")
+    print(f"Or manually: {sys.executable} -m pip install {' '.join(_REQUIRED_PACKAGES)}")
+    return False
 
 
 def check_auth(email: Optional[str] = None) -> bool:

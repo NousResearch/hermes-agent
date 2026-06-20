@@ -77,6 +77,7 @@ class HermesChatProvider {
         if (message.type === 'ask') await this.ask(message.text || '', message.options || {});
         if (message.type === 'previewPatch') await this.previewLastPatch();
         if (message.type === 'applyPatch') await this.applyLastPatch();
+        if (message.type === 'applyInlinePatch') await this.applyInlinePatch(message.value || '');
         if (message.type === 'copyPatch') await this.copyLastPatch();
         if (message.type === 'discardPatch') await this.discardLastPatch();
         if (message.type === 'revertPatch') await this.revertLastPatch();
@@ -399,6 +400,20 @@ class HermesChatProvider {
       vscode.window.showInformationMessage('Hermes patch applied.');
       this.post('postApply', 'Patch applied. You can run tests or revert the patch from the review panel.');
     }
+  }
+
+  async applyInlinePatch(diffText) {
+    const workspace = getWorkspaceFolder();
+    if (!workspace) return vscode.window.showWarningMessage('Open a workspace before applying a patch.');
+    const patch = extractUnifiedDiff(diffText) || String(diffText || '').trim();
+    const summary = summarizePatch(patch);
+    if (!patch || !summary.files.length) return vscode.window.showWarningMessage('No unified diff found in this code block.');
+    await fsp.mkdir(this.context.globalStorageUri.fsPath, { recursive: true });
+    await fsp.writeFile(this.lastPatchPath, patch.endsWith('\n') ? patch : `${patch}\n`, 'utf8');
+    this.post('patchState', `Patch available (${summary.files.length} file${summary.files.length === 1 ? '' : 's'}, +${summary.additions}/-${summary.deletions})`);
+    this.post('patchDetails', summary);
+    this.post('tool', `Loaded inline patch with ${summary.files.length} file(s), +${summary.additions}/-${summary.deletions}.`);
+    await this.applyLastPatch();
   }
 
   async discardLastPatch() {

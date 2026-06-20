@@ -27,6 +27,7 @@ This extension intentionally keeps the Hermes brain outside VS Code. It launches
 - **Patch metadata** showing changed files, hunk counts, and additions/deletions inside the review panel.
 - **Captured test feedback loop** via `Run + analyze`, which runs the detected test command, captures stdout/stderr, and sends the result back to Hermes with debug/test context.
 - **Maintainable webview assets** split into dedicated `media/main.css` and `media/main.js` files instead of a monolithic inline template.
+- **Readable diff blocks** with inline Apply/Copy controls and colored add/delete/hunk metadata in assistant responses.
 - **Suggested starter prompts** in the empty state for diff review, file explanation, and test discovery.
 
 ## Requirements

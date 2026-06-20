@@ -186,6 +186,11 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
 
 
+def _redact_compaction_text(text: Any) -> str:
+    """Redact text that may cross the compaction summary boundary."""
+    return redact_sensitive_text(text or "", force=True, redact_urls=True)
+
+
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
     value = value.strip()
     if value and value not in items and len(items) < limit:
@@ -1044,7 +1049,7 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            content = _redact_compaction_text(msg.get("content") or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
 
             # Tool results: keep enough content for the summarizer
@@ -1066,7 +1071,7 @@ class ContextCompressor(ContextEngine):
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
-                            args = redact_sensitive_text(fn.get("arguments", ""))
+                            args = _redact_compaction_text(fn.get("arguments", ""))
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."
@@ -1109,7 +1114,7 @@ class ContextCompressor(ContextEngine):
         last_dropped_turns: list[str] = []
 
         def _compact_fallback_turn(value: Any) -> str:
-            text = redact_sensitive_text(_content_text_for_contains(value))
+            text = _redact_compaction_text(_content_text_for_contains(value))
             text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
             text = re.sub(r"\s+", " ", text).strip()
             if len(text) > _FALLBACK_TURN_MAX_CHARS:
@@ -1141,7 +1146,7 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg.get("tool_calls") or []:
                     name, raw_args = _extract_tool_call_name_and_args(tc)
-                    args = redact_sensitive_text(raw_args)
+                    args = _redact_compaction_text(raw_args)
                     call_id = _extract_tool_call_id(tc)
                     if call_id:
                         call_id_to_tool[call_id] = (name, args)
@@ -1270,7 +1275,7 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
-        summary = self._with_summary_prefix(redact_sensitive_text(body.strip()))
+        summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
         return summary
@@ -1331,6 +1336,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 self._summary_failure_cooldown_until - now,
             )
             return None
+
+        if focus_topic:
+            focus_topic = _redact_compaction_text(focus_topic)
+        if self._previous_summary:
+            self._previous_summary = _redact_compaction_text(self._previous_summary)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
@@ -1518,7 +1528,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 content = str(content) if content else ""
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
-            summary = redact_sensitive_text(content.strip())
+            summary = _redact_compaction_text(content.strip())
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
@@ -1695,7 +1705,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             content = msg.get("content")
             if cls._is_context_summary_content(content):
                 continue
-            text = redact_sensitive_text(_content_text_for_contains(content).strip())
+            text = _redact_compaction_text(_content_text_for_contains(content).strip())
             if not text:
                 continue
             text = " ".join(text.split())

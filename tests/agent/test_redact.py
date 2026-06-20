@@ -415,6 +415,27 @@ class TestWebUrlsNotRedacted:
         )
         assert redact_sensitive_text(text) == text
 
+    def test_redact_urls_option_masks_opaque_url_tokens(self):
+        text = (
+            "GET https://api.example.com/oauth/cb?code=abc123xyz789&state=csrf_ok "
+            "and wss://api.example.com/ws?token=opaqueWsToken123 "
+            "and /webhook?password=webhookSecret123&event=new-message "
+            "and https://opaqueUserinfoToken123@example.com/path"
+        )
+
+        result = redact_sensitive_text(text, redact_urls=True)
+
+        assert "code=abc123xyz789" not in result
+        assert "token=opaqueWsToken123" not in result
+        assert "password=webhookSecret123" not in result
+        assert "opaqueUserinfoToken123" not in result
+        assert "code=***" in result
+        assert "token=***" in result
+        assert "password=***" in result
+        assert "https://***@example.com/path" in result
+        assert "state=csrf_ok" in result
+        assert "event=new-message" in result
+
     def test_known_prefix_inside_url_still_redacted(self):
         """sk-/ghp_/JWT-shaped values inside a URL are still caught by
         _PREFIX_RE / _JWT_RE — the carve-out is for opaque tokens only."""

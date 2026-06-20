@@ -166,11 +166,12 @@ _URL_WITH_QUERY_RE = re.compile(
     r"(#\S*)?",                       # optional fragment
 )
 
-# URLs containing userinfo — `scheme://user:password@host` for ANY scheme
+# URLs containing userinfo — `scheme://user[:password]@host` for ANY scheme
 # (not just DB protocols already covered by _DB_CONNSTR_RE above).
-# Catches things like `https://user:token@api.example.com/v1/foo`.
+# Catches things like `https://token@api.example.com/v1/foo` and
+# `https://user:token@api.example.com/v1/foo`.
 _URL_USERINFO_RE = re.compile(
-    r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
+    r"(https?|wss?|ftp)://([^/\s:@]+)(?::([^/\s@]+))?@",
 )
 
 # HTTP access logs often use a relative request target rather than a full URL:
@@ -180,6 +181,10 @@ _HTTP_REQUEST_TARGET_QUERY_RE = re.compile(
     r"\b((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\s+[^ \t\r\n\"']*?)"
     r"\?([^ \t\r\n\"']+)",
     re.IGNORECASE,
+)
+
+_RELATIVE_REQUEST_TARGET_QUERY_RE = re.compile(
+    r"(?<!\S)(/[^ \t\r\n\"']*?)\?([^ \t\r\n\"']+)",
 )
 
 # Form-urlencoded body detection: conservative — only applies when the entire
@@ -288,13 +293,13 @@ def _redact_url_query_params(text: str) -> str:
 
 
 def _redact_url_userinfo(text: str) -> str:
-    """Strip `user:password@` from HTTP/WS/FTP URLs.
+    """Strip userinfo credentials from HTTP/WS/FTP URLs.
 
     DB protocols (postgres, mysql, mongodb, redis, amqp) are handled
     separately by `_DB_CONNSTR_RE`.
     """
     return _URL_USERINFO_RE.sub(
-        lambda m: f"{m.group(1)}://{m.group(2)}:***@",
+        lambda m: f"{m.group(1)}://{m.group(2)}:***@" if m.group(3) else f"{m.group(1)}://***@",
         text,
     )
 
@@ -306,6 +311,15 @@ def _redact_http_request_target_query_params(text: str) -> str:
         query = _redact_query_string(m.group(2))
         return f"{prefix}?{query}"
     return _HTTP_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
+
+
+def _redact_relative_request_target_query_params(text: str) -> str:
+    """Redact sensitive query params in bare relative request targets."""
+    def _sub(m: re.Match) -> str:
+        prefix = m.group(1)
+        query = _redact_query_string(m.group(2))
+        return f"{prefix}?{query}"
+    return _RELATIVE_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
 
 
 def _redact_form_body(text: str) -> str:
@@ -324,7 +338,13 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
+def redact_sensitive_text(
+    text: str,
+    *,
+    force: bool = False,
+    code_file: bool = False,
+    redact_urls: bool = False,
+) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
@@ -336,6 +356,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
     constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
     private keys, DB connstrings, JWTs, and URL secrets are still redacted.
+
+    Set redact_urls=True for safety boundaries where opaque URL query tokens
+    must be removed even if that would make the URL unusable afterwards.
 
     Performance: each regex pattern is gated behind a cheap substring
     pre-check (e.g. ``"=" in text`` for ENV assignments, ``"://" in text``
@@ -411,6 +434,14 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
     # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
     # are still caught by _DB_CONNSTR_RE.
+    if redact_urls:
+        if "://" in text and "?" in text:
+            text = _redact_url_query_params(text)
+        if "://" in text and "@" in text:
+            text = _redact_url_userinfo(text)
+        if "?" in text:
+            text = _redact_http_request_target_query_params(text)
+            text = _redact_relative_request_target_query_params(text)
 
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:

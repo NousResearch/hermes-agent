@@ -314,6 +314,94 @@ class TestNonStringContent:
         assert "Treat the conversation turns below as source material" in prompt
         assert "structured checkpoint summary" in prompt
 
+    def test_summary_input_redaction_is_forced_and_redacts_url_tokens(self, monkeypatch):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        secret = "sk-proj-" + ("a" * 40)
+        oauth_url = (
+            "https://localhost/callback?code=opaque-code-123"
+            "&access_token=opaque-token-456&state=keep"
+        )
+        messages = [
+            {"role": "user", "content": f"token {secret} url {oauth_url}"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": f'{{"command":"curl {oauth_url}", "api_key":"{secret}"}}',
+                    },
+                }],
+            },
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert secret not in prompt
+        assert "sk-proj-" not in prompt
+        assert "code=opaque-code-123" not in prompt
+        assert "access_token=opaque-token-456" not in prompt
+        assert "code=***" in prompt
+        assert "access_token=***" in prompt
+        assert "state=keep" in prompt
+
+    def test_summary_output_redaction_is_forced_and_redacts_url_tokens(self, monkeypatch):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "Leaked OPENAI_API_KEY=sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
+            "and https://localhost/callback?code=opaque-code-123&access_token=opaque-token-456"
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary([{"role": "user", "content": "summarize"}])
+
+        assert "sk-proj-" not in summary
+        assert "code=opaque-code-123" not in summary
+        assert "access_token=opaque-token-456" not in summary
+        assert "OPENAI_API_KEY=***" in summary
+        assert "code=***" in summary
+        assert "access_token=***" in summary
+
+    def test_auto_focus_redaction_is_forced_and_redacts_url_tokens(self, monkeypatch):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        secret = "sk-proj-" + ("a" * 40)
+        focus_url = (
+            "https://localhost/callback?code=focus-code-123"
+            "&access_token=focus-token-456&state=keep"
+        )
+
+        focus = c._derive_auto_focus_topic([
+            {"role": "assistant", "content": "older assistant turn"},
+            {"role": "user", "content": f"recent focus has {secret} and {focus_url}"},
+        ])
+
+        assert secret not in focus
+        assert "sk-proj-" not in focus
+        assert "code=focus-code-123" not in focus
+        assert "access_token=focus-token-456" not in focus
+        assert "code=***" in focus
+        assert "access_token=***" in focus
+        assert "state=keep" in focus
+
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

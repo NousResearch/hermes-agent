@@ -60,6 +60,43 @@ def test_focus_topic_injected_into_summary_prompt():
     assert "60-70%" in prompt_text
 
 
+def test_focus_topic_redacts_secrets_before_summary_prompt(monkeypatch):
+    """Manual /compress <focus> text crosses the summarizer boundary too."""
+    compressor = _make_compressor()
+    turns = [
+        {"role": "user", "content": "Summarize safely"},
+        {"role": "assistant", "content": "OK"},
+    ]
+    secret = "sk-proj-" + ("a" * 40)
+    focus_url = (
+        "https://localhost/callback?code=manual-code-123"
+        "&access_token=manual-token-456&state=keep"
+    )
+    captured_prompt = {}
+
+    def mock_call_llm(**kwargs):
+        captured_prompt["messages"] = kwargs["messages"]
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = "## Goal\nSafe summary."
+        return resp
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    with patch("agent.context_compressor.call_llm", mock_call_llm):
+        result = compressor._generate_summary(turns, focus_topic=f"manual focus {secret} {focus_url}")
+
+    assert result is not None
+    prompt_text = captured_prompt["messages"][0]["content"]
+    assert secret not in prompt_text
+    assert "sk-proj-" not in prompt_text
+    assert "code=manual-code-123" not in prompt_text
+    assert "access_token=manual-token-456" not in prompt_text
+    assert "code=***" in prompt_text
+    assert "access_token=***" in prompt_text
+    assert "state=keep" in prompt_text
+
+
 def test_no_focus_topic_no_injection():
     """Without focus_topic, the prompt doesn't contain focus guidance."""
     compressor = _make_compressor()

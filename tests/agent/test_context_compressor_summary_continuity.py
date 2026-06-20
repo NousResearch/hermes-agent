@@ -69,6 +69,60 @@ def test_resume_rehydrates_previous_summary_from_handoff_message():
     assert f"[USER]: {SUMMARY_PREFIX}" not in prompt
 
 
+def test_previous_summary_is_redacted_before_iterative_summary_prompt(monkeypatch):
+    """Legacy persisted summaries may predate compaction redaction."""
+    compressor = _compressor()
+    secret = "sk-proj-" + ("a" * 40)
+    old_url = (
+        "https://localhost/callback?code=old-code-123"
+        "&access_token=old-token-456&state=keep"
+    )
+    compressor._previous_summary = f"Old summary leaked {secret} and {old_url}"
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("updated summary")) as mock_call:
+        compressor.compress(_messages_with_handoff("safe resumed facts"))
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "PREVIOUS SUMMARY:" in prompt
+    assert secret not in prompt
+    assert "sk-proj-" not in prompt
+    assert "code=old-code-123" not in prompt
+    assert "access_token=old-token-456" not in prompt
+    assert "code=***" in prompt
+    assert "access_token=***" in prompt
+    assert "state=keep" in prompt
+    assert secret not in compressor._previous_summary
+    assert "access_token=old-token-456" not in compressor._previous_summary
+
+
+def test_resumed_handoff_summary_is_redacted_before_iterative_prompt(monkeypatch):
+    """Persisted handoff messages may contain pre-fix secrets after resume."""
+    compressor = _compressor()
+    secret = "sk-proj-" + ("a" * 40)
+    old_url = (
+        "https://localhost/callback?code=resumed-code-123"
+        "&access_token=resumed-token-456&state=keep"
+    )
+    old_summary = f"RESUMED-SUMMARY leaked {secret} and {old_url}"
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("updated summary")) as mock_call:
+        compressor.compress(_messages_with_handoff(old_summary))
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "PREVIOUS SUMMARY:" in prompt
+    assert secret not in prompt
+    assert "sk-proj-" not in prompt
+    assert "code=resumed-code-123" not in prompt
+    assert "access_token=resumed-token-456" not in prompt
+    assert "code=***" in prompt
+    assert "access_token=***" in prompt
+    assert "state=keep" in prompt
+
+
 def test_handoff_in_protected_head_populates_previous_summary_before_update():
     """A resumed protected-head handoff should restore iterative-summary state."""
     compressor = _compressor()

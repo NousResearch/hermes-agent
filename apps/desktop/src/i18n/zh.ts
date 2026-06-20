@@ -142,6 +142,11 @@ export const zh: Translations = {
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`,
+    dismiss: '关闭'
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -774,6 +779,8 @@ export const zh: Translations = {
       removedMessage: provider => `${provider} 已移除。`,
       failedRemove: provider => `无法移除 ${provider}`,
       noProviderKeys: '没有可用的提供方 API 密钥。',
+      searchKeys: '搜索提供方…',
+      noKeysMatch: '没有匹配的提供方。',
       loading: '正在加载提供方...'
     },
     sessions: {
@@ -951,7 +958,8 @@ export const zh: Translations = {
     gatewayRunning: '消息网关运行中',
     gatewayStopped: '消息网关已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活跃会话 ${count}`,
-    restartMessaging: '重启消息服务',
+    restartGateway: '重启网关',
+    gatewayRestartFailed: '网关重启失败。',
     updateHermes: '更新 Hermes',
     actionRunning: '运行中',
     actionDone: '完成',
@@ -1020,9 +1028,9 @@ export const zh: Translations = {
     disableAria: name => `禁用 ${name}`,
     platformEnabled: name => `${name} 已启用`,
     platformDisabled: name => `${name} 已禁用`,
-    restartToApply: '重启网关后此更改才会生效。',
+    restartToApply: '此更改将在网关重启后生效。',
     setupSaved: name => `${name} 设置已保存`,
-    restartToReconnect: '重启网关以使用新凭据重新连接。',
+    restartToReconnect: '新凭据将在网关重启后生效。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 设置已更新。`,
     failedUpdate: name => `更新 ${name} 失败`,
@@ -1712,6 +1720,7 @@ export const zh: Translations = {
       search: '搜索模型',
       noModels: '未找到模型',
       editModels: '编辑模型…',
+      refreshModels: '刷新模型',
       fast: '快速',
       medium: '中'
     },
@@ -1766,6 +1775,7 @@ export const zh: Translations = {
       gatewayChecking: '检查中',
       gatewayConnecting: '连接中',
       gatewayOffline: '离线',
+      gatewayRestarting: '重启中…',
       gatewayTitle: 'Hermes 推理网关状态',
       agents: '代理',
       closeAgents: '关闭代理',
@@ -1912,6 +1922,7 @@ export const zh: Translations = {
       refresh: '刷新',
       moreActions: '更多操作',
       branchNewChat: '在新对话中分支',
+      dismissError: '关闭错误',
       readAloudFailed: '朗读失败',
       preparingAudio: '正在准备音频...',
       stopReading: '停止朗读',
@@ -2020,6 +2031,9 @@ export const zh: Translations = {
     regenerateFailed: '重新生成失败',
     editFailed: '编辑失败',
     resumeFailed: '恢复失败',
+    resumeStrandedTitle: '无法加载此会话',
+    resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
+    resumeRetry: '重试',
     nothingToBranch: '没有可分支的内容',
     branchNeedsChat: '分支前请先开始或恢复一个对话。',
     sessionBusy: '会话忙碌中',

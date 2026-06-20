@@ -153,7 +153,7 @@ class _patch_slack_standalone_sender:
         self._entry = None
         self._original = None
 
-    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, **_kw):
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, team_id="", **_kw):
         from plugins.platforms.slack.adapter import SlackAdapter
         formatted = message
         if message:
@@ -162,7 +162,7 @@ class _patch_slack_standalone_sender:
             except Exception:
                 pass
         token = getattr(pconfig, "token", None)
-        return await self._mock(token, chat_id, formatted, thread_ts=thread_id)
+        return await self._mock(token, chat_id, formatted, thread_ts=thread_id, team_id=team_id)
 
     def __enter__(self):
         self._entry = _slack_entry()
@@ -329,6 +329,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            team_id="",
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -368,6 +369,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            team_id="",
         )
 
     def test_resolved_slack_thread_name_preserves_thread_id(self):
@@ -699,6 +701,7 @@ class TestSendToPlatformChunking:
             "C123",
             "*hello* from <https://example.com|Hermes>",
             thread_ts=None,
+            team_id="",
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
@@ -1640,6 +1643,302 @@ class TestEmailHomeChannelErrorHint:
                 )
             )
         assert "TELEGRAM_HOME_CHANNEL" in result["error"]
+
+
+class TestSendSlackCrossWorkspaceMisroute:
+    """Regression tests for cross-channel Slack misroute.
+
+    The send_message tool must NOT post to the wrong workspace when the
+    channel name resolves to a channel in workspace B but the bot's
+    primary token authorizes workspace A. The fix routes through
+    ``slack_tokens.json`` so the workspace-specific bot token is used.
+    """
+
+    @staticmethod
+    def _build_mock(response_status, response_data=None, response_text="error body"):
+        mock_resp = MagicMock()
+        mock_resp.status = response_status
+        mock_resp.json = AsyncMock(return_value=response_data or {"ok": True, "ts": "1781462111.465060"})
+        mock_resp.text = AsyncMock(return_value=response_text)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+
+        return mock_session, mock_resp
+
+    def _run(self, token, chat_id, message, *, thread_id=None, team_id=""):
+        return asyncio.run(
+            _send_slack(token, chat_id, message, thread_id=thread_id, team_id=team_id)
+        )
+
+    def _write_tokens_file(self, tmp_path, tokens):
+        import json
+        tokens_file = tmp_path / "slack_tokens.json"
+        tokens_file.write_text(json.dumps(tokens))
+        return tokens_file
+
+    def test_no_team_id_uses_provided_token(self, tmp_path):
+        """When no team_id is provided, the original token is used (legacy path)."""
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            mock_session, _ = self._build_mock(200)
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                self._run("primary-token", "C0AH3RY3DK6", "hi")
+        headers = mock_session.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer primary-token"
+
+    def test_team_id_uses_workspace_specific_token(self, tmp_path):
+        """When team_id resolves in slack_tokens.json, that token is used.
+
+        Without this, the bot would post via the primary token even when
+        the channel lives in a different workspace — a cross-channel
+        misroute.
+        """
+        self._write_tokens_file(tmp_path, {
+            "T_WORKSPACE_A": {"token": "token-A", "team_name": "acme"},
+            "T_WORKSPACE_B": {"token": "token-B", "team_name": "globex"},
+        })
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            mock_session, _ = self._build_mock(200)
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                self._run(
+                    "primary-token", "C0WORKSPACEB1", "hi",
+                    team_id="T_WORKSPACE_B",
+                )
+        headers = mock_session.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer token-B"
+        # Confirm we did NOT silently fall back to the primary token.
+        assert headers["Authorization"] != "Bearer primary-token"
+
+    def test_team_id_missing_from_tokens_file_fails_loud(self, tmp_path):
+        """If team_id is supplied but no token exists for that workspace, refuse."""
+        self._write_tokens_file(tmp_path, {
+            "T_WORKSPACE_A": {"token": "token-A", "team_name": "acme"},
+        })
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            mock_session, _ = self._build_mock(200)
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                result = self._run(
+                    "primary-token", "C0WORKSPACEB1", "hi",
+                    team_id="T_WORKSPACE_B",
+                )
+        # Must NOT silently post to the wrong workspace
+        mock_session.post.assert_not_called()
+        assert "error" in result
+        assert "T_WORKSPACE_B" in result["error"]
+        assert "Cross-channel" in result["error"]
+
+    def test_team_id_with_missing_tokens_file_fails_loud(self, tmp_path):
+        """If slack_tokens.json doesn't exist but team_id was supplied, refuse."""
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            mock_session, _ = self._build_mock(200)
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                result = self._run(
+                    "primary-token", "C0ANY", "hi",
+                    team_id="T_UNKNOWN",
+                )
+        mock_session.post.assert_not_called()
+        assert "error" in result
+        assert "T_UNKNOWN" in result["error"]
+
+    def test_team_id_with_malformed_tokens_file_fails_loud(self, tmp_path):
+        """A malformed slack_tokens.json does NOT silently degrade to primary token."""
+        tokens_file = tmp_path / "slack_tokens.json"
+        tokens_file.write_text("{ this is not json")
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            mock_session, _ = self._build_mock(200)
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                result = self._run(
+                    "primary-token", "C0ANY", "hi",
+                    team_id="T_UNKNOWN",
+                )
+        mock_session.post.assert_not_called()
+        assert "error" in result
+
+    def test_channel_not_found_for_workspace_fails_loud_with_team_id(self, tmp_path):
+        """If Slack returns ``channel_not_found`` while a team_id was requested,
+        fail loud with the workspace context — that's the exact misroute shape."""
+        self._write_tokens_file(tmp_path, {
+            "T_WORKSPACE_B": {"token": "token-B", "team_name": "globex"},
+        })
+        mock_session, _ = self._build_mock(
+            200,
+            response_data={"ok": False, "error": "channel_not_found"},
+        )
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                result = self._run(
+                    "primary-token", "C0WORKSPACEA1", "hi",
+                    team_id="T_WORKSPACE_B",
+                )
+        assert "error" in result
+        assert "Cross-channel" in result["error"]
+        assert "T_WORKSPACE_B" in result["error"]
+        assert "C0WORKSPACEA1" in result["error"]
+
+    def test_channel_not_found_without_team_id_returns_legacy_error(self, tmp_path):
+        """Without team_id, ``channel_not_found`` keeps the legacy error shape."""
+        mock_session, _ = self._build_mock(
+            200,
+            response_data={"ok": False, "error": "channel_not_found"},
+        )
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("primary-token", "C0ANY", "hi")
+        assert "error" in result
+        assert "Cross-channel" not in result["error"]
+
+
+class TestHandleSendCrossWorkspaceResolution:
+    """Integration: _handle_send uses strict resolver and forwards team_id.
+
+    End-to-end test for the cross-channel Slack misroute fix at the
+    tool-call layer. When two Slack workspaces both have an
+    ``#engineering`` channel, sending to ``#engineering`` MUST refuse
+    rather than silently picking the first workspace.
+    """
+
+    def _write_directory(self, tmp_path, platforms):
+        import json
+        cache_file = tmp_path / "channel_directory.json"
+        cache_file.write_text(json.dumps({
+            "updated_at": "2026-01-01T00:00:00",
+            "platforms": platforms,
+        }))
+        return cache_file
+
+    def test_cross_workspace_ambiguous_name_returns_error(self, tmp_path, monkeypatch):
+        """send_message refuses when the channel name is ambiguous across workspaces."""
+        cache_file = self._write_directory(tmp_path, {
+            "slack": [
+                {"id": "C0WORKSPACEA1", "name": "engineering", "type": "channel", "team_id": "T_WORKSPACE_A"},
+                {"id": "C0WORKSPACEB1", "name": "engineering", "type": "channel", "team_id": "T_WORKSPACE_B"},
+            ]
+        })
+        monkeypatch.setattr(
+            "gateway.channel_directory.DIRECTORY_PATH", cache_file,
+        )
+
+        result_str = send_message_tool({
+            "target": "slack:engineering",
+            "message": "hello",
+        })
+        result = json.loads(result_str)
+        assert "error" in result
+        assert "Ambiguous" in result["error"]
+        assert "engineering" in result["error"]
+
+    def test_unique_workspace_name_resolves_and_passes_team_id(self, tmp_path, monkeypatch):
+        """When only one workspace has the channel, the strict resolver
+        returns (chat_id, team_id) and _send_slack uses the workspace
+        token from slack_tokens.json."""
+        import json
+
+        cache_file = self._write_directory(tmp_path, {
+            "slack": [
+                {"id": "C0WORKSPACEB1", "name": "engineering", "type": "channel",
+                 "team_id": "T_WORKSPACE_B", "team_name": "globex"},
+                # Different channel name in workspace A — no conflict
+                {"id": "C0WORKSPACEA1", "name": "general", "type": "channel",
+                 "team_id": "T_WORKSPACE_A"},
+            ]
+        })
+        monkeypatch.setattr(
+            "gateway.channel_directory.DIRECTORY_PATH", cache_file,
+        )
+
+        tokens_file = tmp_path / "slack_tokens.json"
+        tokens_file.write_text(json.dumps({
+            "T_WORKSPACE_B": {"token": "token-B", "team_name": "globex"},
+        }))
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: tmp_path,
+        )
+
+        # Stub _send_to_platform to capture the team_id passed in.
+        captured = {}
+        import tools.send_message_tool as smt
+
+        async def fake_send_to_platform(*args, **kwargs):
+            captured["team_id"] = kwargs.get("team_id", "")
+            captured["chat_id"] = args[2]  # positional: chat_id is 3rd arg
+            return {"success": True, "message_id": "1234.5"}
+
+        monkeypatch.setattr(smt, "_send_to_platform", fake_send_to_platform)
+
+        # Patch the platform config so the tool thinks slack is configured
+        # without requiring real env vars. ``config.platforms.get(platform)``
+        # looks up by Platform enum member, so the key MUST be the enum.
+        class _FakeConfig:
+            platforms = {Platform.SLACK: SimpleNamespace(enabled=True, token="primary", extra={})}
+            def get_home_channel(self, platform):
+                return None
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: _FakeConfig())
+
+        result_str = send_message_tool({
+            "target": "slack:engineering",
+            "message": "hello",
+        })
+        result = json.loads(result_str)
+        assert result.get("success") is True
+        # The strict resolver captured the team_id from the channel
+        # directory and forwarded it all the way to _send_to_platform.
+        assert captured["chat_id"] == "C0WORKSPACEB1"
+        assert captured["team_id"] == "T_WORKSPACE_B"
+
+    def test_explicit_channel_id_with_team_id_forwarded(self, tmp_path, monkeypatch):
+        """When the caller uses an explicit channel ID (e.g. slack:C0X),
+        the directory still supplies team_id so the workspace token is
+        selected."""
+        import json
+
+        cache_file = self._write_directory(tmp_path, {
+            "slack": [
+                {"id": "C0WORKSPACEB1", "name": "engineering", "type": "channel",
+                 "team_id": "T_WORKSPACE_B"},
+            ]
+        })
+        monkeypatch.setattr(
+            "gateway.channel_directory.DIRECTORY_PATH", cache_file,
+        )
+
+        tokens_file = tmp_path / "slack_tokens.json"
+        tokens_file.write_text(json.dumps({
+            "T_WORKSPACE_B": {"token": "token-B", "team_name": "globex"},
+        }))
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: tmp_path,
+        )
+
+        captured = {}
+        import tools.send_message_tool as smt
+
+        async def fake_send_to_platform(*args, **kwargs):
+            captured["team_id"] = kwargs.get("team_id", "")
+            captured["chat_id"] = args[2]
+            return {"success": True, "message_id": "1234.5"}
+
+        monkeypatch.setattr(smt, "_send_to_platform", fake_send_to_platform)
+
+        class _FakeConfig:
+            platforms = {Platform.SLACK: SimpleNamespace(enabled=True, token="primary", extra={})}
+            def get_home_channel(self, platform):
+                return None
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: _FakeConfig())
+
+        result_str = send_message_tool({
+            "target": "slack:C0WORKSPACEB1",
+            "message": "hello",
+        })
+        result = json.loads(result_str)
+        assert result.get("success") is True
+        assert captured["chat_id"] == "C0WORKSPACEB1"
+        # Even with explicit ID, team_id is pulled from the directory.
+        assert captured["team_id"] == "T_WORKSPACE_B"
 
 
 class TestSendDiscordThreadId:

@@ -9,7 +9,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
@@ -238,10 +238,22 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                     if not cid or not name or cid in seen_ids:
                         continue
                     seen_ids.add(cid)
+                    # Track the workspace (team_id) and the human-friendly
+                    # workspace name on every entry. Without this, the channel
+                    # name → ID resolver can't tell two workspaces apart, so
+                    # "send to #engineering" silently picks whichever
+                    # workspace's engineering channel the loop happened to
+                    # visit first — a cross-channel Slack misroute. The
+                    # workspace name is best-effort: users.conversations
+                    # doesn't return it, so we fall back to the team_id and
+                    # let callers (display, resolve_channel_name_strict)
+                    # surface it.
                     channels.append({
                         "id": cid,
                         "name": name,
                         "type": "private" if ch.get("is_private") else "channel",
+                        "team_id": team_id,
+                        "team_name": ch.get("team_name") or team_id,
                     })
                 cursor = (response.get("response_metadata") or {}).get("next_cursor")
                 if not cursor:
@@ -330,14 +342,45 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     return None
 
 
+def lookup_channel_team(platform_name: str, chat_id: str) -> Optional[str]:
+    """Return the workspace ``team_id`` (Slack) for *chat_id*, or *None* if unknown.
+
+    Used by ``send_message`` to select the right bot token when the caller
+    passes an explicit channel ID like ``slack:C0X``. Without this, an
+    explicit ID would still post via the primary token, even when the
+    channel lives in a different workspace — a cross-channel misroute on
+    the explicit-ID path.
+    """
+    directory = load_directory()
+    for ch in directory.get("platforms", {}).get(platform_name, []):
+        if ch.get("id") == chat_id:
+            team_id = ch.get("team_id")
+            return team_id if team_id else None
+    return None
+
+
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """
     Resolve a human-friendly channel name to a numeric ID.
 
-    Matching strategy (case-insensitive, first match wins):
+    Matching strategy (case-insensitive, first match wins UNLESS the same
+    name exists in multiple workspaces, in which case the resolver refuses
+    with ``None`` rather than silently misrouting):
+
     - Discord: "bot-home", "#bot-home", "GuildName/bot-home"
     - Telegram: display name or group name
     - Slack: "engineering", "#engineering"
+
+    Multi-workspace ambiguity check
+    -------------------------------
+    For Slack, channels from different workspaces often share the same
+    human-friendly name. Picking the first match would silently send the
+    message to whichever workspace happened to be enumerated first — a
+    cross-channel Slack misroute. The fix is to refuse the resolution and
+    return ``None`` so the caller surfaces a disambiguation error. The
+    strict sibling :func:`resolve_channel_name_strict` returns the
+    ``(chat_id, team_id)`` pair so the caller can route to the correct
+    workspace client.
     """
     directory = load_directory()
     channels = directory.get("platforms", {}).get(platform_name, [])
@@ -346,7 +389,9 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
     # 0. Exact ID match — case-sensitive, no normalization. Lets callers pass
     # raw platform IDs (e.g. Slack "C0B0QV5434G") even when the format guard
-    # in _parse_target_ref hasn't recognized them as explicit.
+    # in _parse_target_ref hasn't recognized them as explicit. An exact ID
+    # is unambiguous by construction (Slack CIDs are globally unique across
+    # workspaces), so no workspace-disambiguation check is needed here.
     raw = name.strip()
     for ch in channels:
         if ch.get("id") == raw:
@@ -355,11 +400,18 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     query = _normalize_channel_query(name)
 
     # 1. Exact name match, including the display labels shown by send_message(action="list")
-    for ch in channels:
-        if _normalize_channel_query(ch["name"]) == query:
-            return ch["id"]
-        if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
-            return ch["id"]
+    exact_matches = [
+        ch for ch in channels
+        if _normalize_channel_query(ch["name"]) == query
+        or _normalize_channel_query(_channel_target_name(platform_name, ch)) == query
+    ]
+    if exact_matches:
+        # Reject cross-workspace ambiguity for Slack: two workspaces with
+        # the same channel name = no way to pick safely. Callers fall back
+        # to the strict resolver or surface a disambiguation error.
+        if _is_cross_workspace_ambiguous(exact_matches, platform_name):
+            return None
+        return exact_matches[0]["id"]
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
@@ -373,8 +425,101 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
     if len(matches) == 1:
         return matches[0]["id"]
+    if len(matches) > 1 and _is_cross_workspace_ambiguous(matches, platform_name):
+        # Multiple workspaces match by prefix — refuse to pick.
+        return None
 
     return None
+
+
+def resolve_channel_name_strict(
+    platform_name: str, name: str,
+) -> Optional[Tuple[str, str]]:
+    """
+    Resolve a channel name to ``(chat_id, team_id)`` — workspace-aware.
+
+    Same matching strategy as :func:`resolve_channel_name` but returns the
+    workspace identifier alongside the channel ID. The ``team_id`` is
+    forwarded to :class:`SlackAdapter` so its :meth:`_get_client` selects
+    the correct workspace's WebClient instead of falling back to the
+    primary bot token (which can silently post to the wrong workspace).
+
+    Returns ``None`` for both unknown names and cross-workspace ambiguities.
+    For an exact ID match, ``team_id`` is the empty string — callers
+    resolve the workspace via the channel ID or via a session-origin
+    lookup as a fallback.
+    """
+    directory = load_directory()
+    channels = directory.get("platforms", {}).get(platform_name, [])
+    if not channels:
+        return None
+
+    # 0. Exact ID match. The ID uniquely identifies the channel; the
+    # ``team_id`` is whatever we recorded (empty string for legacy entries
+    # that pre-date the workspace-tracking fix). Callers can resolve the
+    # workspace through the adapter's ``_channel_team`` map.
+    raw = name.strip()
+    for ch in channels:
+        if ch.get("id") == raw:
+            return ch["id"], ch.get("team_id", "") or ""
+
+    query = _normalize_channel_query(name)
+
+    # 1. Exact name match.
+    exact_matches = [
+        ch for ch in channels
+        if _normalize_channel_query(ch["name"]) == query
+        or _normalize_channel_query(_channel_target_name(platform_name, ch)) == query
+    ]
+    if exact_matches:
+        if _is_cross_workspace_ambiguous(exact_matches, platform_name):
+            return None
+        match = exact_matches[0]
+        return match["id"], match.get("team_id", "") or ""
+
+    # 2. Guild-qualified match for Discord ("GuildName/channel")
+    if "/" in query:
+        guild_part, ch_part = query.rsplit("/", 1)
+        for ch in channels:
+            guild = ch.get("guild", "").strip().lower()
+            if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
+                return ch["id"], ch.get("team_id", "") or ""
+
+    # 3. Partial prefix match (only if unambiguous)
+    matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
+    if len(matches) == 1:
+        return matches[0]["id"], matches[0].get("team_id", "") or ""
+    if len(matches) > 1 and _is_cross_workspace_ambiguous(matches, platform_name):
+        return None
+
+    return None
+
+
+def _is_cross_workspace_ambiguous(
+    matches: List[Dict[str, Any]], platform_name: str,
+) -> bool:
+    """Return True if ``matches`` span more than one workspace.
+
+    Used by the channel-name resolvers to refuse silent misroutes when the
+    same human-friendly name exists in multiple Slack workspaces (or,
+    defensively, across multiple Discord guilds if entries ever carry a
+    team_id). The cross-workspace case is platform-specific:
+
+    - Slack: a bot in two workspaces with the same channel name (e.g. two
+      orgs both with ``#engineering``) — first-match-wins would silently
+      send to the wrong workspace.
+    - Other platforms: ``team_id`` is not populated, so a single match is
+      never cross-workspace ambiguous regardless of how many entries
+      exist.
+    """
+    if platform_name != "slack":
+        return False
+    team_ids = {ch.get("team_id", "") for ch in matches}
+    # Filter out empty strings so legacy entries (no team_id) don't falsely
+    # signal ambiguity. If every match is untagged, the original
+    # first-match-wins behavior is preserved.
+    tagged = {tid for tid in team_ids if tid}
+    return len(tagged) > 1
 
 
 def format_directory_for_display() -> str:
@@ -410,6 +555,35 @@ def format_directory_for_display() -> str:
                 lines.append("Discord (DMs):")
                 for ch in dms:
                     lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
+            lines.append("")
+        elif plat_name == "slack":
+            # Group Slack channels by workspace (team). A bot may be installed
+            # in multiple workspaces and several can share the same channel
+            # name (e.g. two orgs each with ``#engineering``); without the
+            # workspace label the LLM has no way to pick the right one and
+            # the message silently lands in the wrong workspace.
+            #
+            # Channels without a team_id (legacy single-workspace cache or
+            # session-derived DMs) fall into a separate "Untagged" bucket so
+            # they are still visible rather than hidden.
+            workspaces: Dict[str, List] = {}
+            untagged: List = []
+            for ch in channels:
+                team_id = ch.get("team_id", "")
+                if team_id:
+                    workspaces.setdefault(team_id, []).append(ch)
+                else:
+                    untagged.append(ch)
+
+            for team_id, ws_channels in sorted(workspaces.items()):
+                team_label = ws_channels[0].get("team_name") or team_id
+                lines.append(f"Slack ({team_label}):")
+                for ch in sorted(ws_channels, key=lambda c: c["name"]):
+                    lines.append(f"  slack:{_channel_target_name(plat_name, ch)}")
+            if untagged:
+                lines.append("Slack (Untagged — legacy entries):")
+                for ch in sorted(untagged, key=lambda c: c["name"]):
+                    lines.append(f"  slack:{_channel_target_name(plat_name, ch)}")
             lines.append("")
         else:
             lines.append(f"{plat_name.title()}:")

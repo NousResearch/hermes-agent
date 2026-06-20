@@ -19,7 +19,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -32,7 +31,6 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
-import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -154,15 +152,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setBanner(null);
     setReconnectNonce((n) => n + 1);
   }, []);
-  const startFreshDashboardChat = useCallback(() => {
-    const next = new URLSearchParams(searchParams);
-
-    next.delete("resume");
-    setSearchParams(next, { replace: true });
-    setSessionEnded(false);
-    setBanner(null);
-    setReconnectNonce((n) => n + 1);
-  }, [searchParams, setSearchParams]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -481,25 +470,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
-    }
-
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
     //
@@ -549,7 +519,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       } catch {
         return;
       }
-      if (fontChanged && term.rows > 0) {
+      if (term.rows > 0) {
         try {
           term.refresh(0, term.rows - 1);
         } catch {
@@ -801,6 +771,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [isActive]);
 
+  // When the user switches back to the browser tab (not just SPA tab),
+  // the canvas renderer may have stale content. Force a refresh.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        syncMetricsRef.current?.();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
   // Keep the live xterm theme in sync when the active theme's terminal
   // background changes (e.g. user switches to a custom YAML theme mid-session).
   useEffect(() => {
@@ -891,20 +873,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <div className="border-b border-current/10 px-1 py-2">
-              <ChatSidebar
-                channel={channel}
-                profile={scopedProfile}
-                onDashboardNewSessionRequest={startFreshDashboardChat}
-                showTools={false}
-              />
-            </div>
-            <ChatSessionList
-              activeSessionId={resumeParam}
-              profile={scopedProfile}
-              onPicked={closeMobilePanel}
-              onNewChat={startFreshDashboardChat}
-            />
+            <ChatSidebar channel={channel} profile={scopedProfile} />
           </div>
         </div>
       </>,
@@ -987,25 +956,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
+            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
-            {/* Model picker (tools card hidden — keeps the rail thin). */}
-            <div className="shrink-0">
-              <ChatSidebar
-                channel={channel}
-                profile={scopedProfile}
-                onDashboardNewSessionRequest={startFreshDashboardChat}
-                showTools={false}
-              />
-            </div>
-
-            {/* Session switcher fills the remaining height below the model box. */}
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSessionList
-                activeSessionId={resumeParam}
-                profile={scopedProfile}
-                onNewChat={startFreshDashboardChat}
-              />
+              <ChatSidebar channel={channel} profile={scopedProfile} />
             </div>
           </div>
         )}

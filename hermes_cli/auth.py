@@ -5430,9 +5430,15 @@ def refresh_nous_oauth_pure(
             state["refresh_token"] = refreshed.get("refresh_token") or refresh_token_value
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
+            # Heal a poisoned stored value: when the Portal-returned URL is
+            # rejected by the allowlist (returns None), reset to the production
+            # default instead of leaving a previously-persisted bad host (e.g. a
+            # stale staging URL) in place. Without this reset, an auth.json that
+            # was poisoned before the allowlist existed keeps re-validating to
+            # None on every refresh and silently re-uses the dead endpoint —
+            # the "falling back to default" warning never actually takes effect.
             refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-            if refreshed_url:
-                state["inference_base_url"] = refreshed_url
+            state["inference_base_url"] = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
             state["obtained_at"] = now.isoformat()
             state["expires_in"] = access_ttl
             state["expires_at"] = datetime.fromtimestamp(
@@ -5705,9 +5711,13 @@ def resolve_nous_runtime_credentials(
                         state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
                         state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                         state["scope"] = refreshed.get("scope") or state.get("scope")
+                        # Heal a poisoned stored value (see refresh_nous_oauth_pure):
+                        # reject → reset to production default, don't keep a stale
+                        # staging host that re-validates to None every refresh.
+                        # The local inference_base_url is persisted to state below
+                        # (and used for the client), so healing it here suffices.
                         refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-                        if refreshed_url:
-                            inference_base_url = refreshed_url
+                        inference_base_url = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(

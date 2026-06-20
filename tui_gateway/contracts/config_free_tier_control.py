@@ -539,6 +539,7 @@ class ModelOptionProvider(OpenModel):
     is_user_defined: bool | None = None
     source: str | None = None
     aliases: list[str] | None = None
+    model_aliases: dict[str, str] | None = None
     api_url: str | None = None
     auth_type: str | None = None
     authenticated: bool | None = None

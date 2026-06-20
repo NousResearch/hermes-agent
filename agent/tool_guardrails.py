@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -186,45 +187,57 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
-# Patterns that indicate task-level failure even when the tool itself
-# exited successfully (exit code 0 / status "success").  Checked against
-# the output text of terminal and execute_code results.
-_TASK_FAILURE_PATTERNS = (
-    # Explicit error markers
-    "❌ error",
-    "error:",
-    "error ",
-    "failed",
-    "failure",
-    "traceback",
-    # HTTP-level errors in output
-    " 400 ",
-    " 401 ",
-    " 403 ",
-    " 404 ",
-    " 500 ",
-    # Common CLI error phrases
-    "command not found",
-    "no such file",
-    "permission denied",
-    "connection refused",
-    "connection reset",
-    "timed out",
-    "timeout expired",
-    "fatal error",
-    "fatal:",
+# Execution tools (terminal, execute_code) that can produce "fake success"
+# — exit code 0 / status "success" while the actual task failed.  These are
+# the only tools where we apply semantic output failure detection and
+# no-progress tracking on mutating tools.
+NO_PROGRESS_MUTATING_TOOL_NAMES = frozenset({"terminal", "execute_code"})
+
+
+# Precise regexes for task-level failure detection.  Prefer structured signals
+# (stack traces, HTTP status lines, CLI error phrases) over bare keywords so
+# we don't false-positive on "0 failed", "expected error", "404 page test", etc.
+_TASK_FAILURE_REGEXES = (
+    # Python / JS / runtime stack traces
+    re.compile(r"(?im)^traceback \(most recent call last\):"),
+    re.compile(r"(?im)^\s*(?:error|fatal):\s+\S+"),
+    re.compile(r"(?im)^\s*❌\s*error:"),
+
+    # HTTP failures. Require HTTP wording, not bare "400" / "404".
+    re.compile(r"(?i)\bhttp(?:/\d(?:\.\d)?)?\s+(?:4\d\d|5\d\d)\b"),
+    re.compile(r"(?i)\b(?:status|status_code|code)\s*[:=]\s*(?:4\d\d|5\d\d)\b"),
+    re.compile(r"(?i)\b(?:bad request|unauthorized|forbidden|not found|internal server error)\b"),
+
+    # Common command/runtime failures.
+    re.compile(r"(?i)\bcommand not found\b"),
+    re.compile(r"(?i)\bno such file or directory\b"),
+    re.compile(r"(?i)\bpermission denied\b"),
+    re.compile(r"(?i)\bconnection (?:refused|reset|timed out)\b"),
+    re.compile(r"(?i)\btimeout expired\b"),
 )
 
 
 def _output_indicates_task_failure(output_text: str) -> bool:
     """Check if output text contains signs of task-level failure.
 
-    This catches cases where the tool process succeeded (exit code 0)
-    but the actual task failed (e.g. HTTP 400 in curl output, Error in
-    Python script stdout).
+    Checks both the beginning and end of the output — long logs often put
+    the traceback or HTTP failure at the bottom.
     """
-    lower = output_text[:1000].lower()
-    return any(p in lower for p in _TASK_FAILURE_PATTERNS)
+    if len(output_text) > 4000:
+        sample = output_text[:2000] + "\n" + output_text[-2000:]
+    else:
+        sample = output_text
+    return any(pattern.search(sample) for pattern in _TASK_FAILURE_REGEXES)
+
+
+def _tracks_no_progress(tool_name: str, config: ToolCallGuardrailConfig) -> bool:
+    """Track repeated identical success only for read-only tools plus the two
+    execution tools that commonly produce fake-success loops.
+
+    Do not apply this to every mutating tool: repeated write_file/browser
+    actions can be intentional and should not be blocked as "no progress".
+    """
+    return tool_name in config.idempotent_tools or tool_name in NO_PROGRESS_MUTATING_TOOL_NAMES
 
 
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
@@ -322,14 +335,13 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        # No-progress block: apply to ALL tools, not just idempotent ones.
-        record = self._no_progress.get(signature)
+        record = self._no_progress.get(signature) if _tracks_no_progress(tool_name, self.config) else None
         if record is not None:
             _result_hash, repeat_count = record
             if repeat_count >= self.config.no_progress_block_after:
                 decision = ToolGuardrailDecision(
                     action="block",
-                    code="idempotent_no_progress_block",
+                    code="no_progress_block",
                     message=(
                         f"Blocked {tool_name}: this call returned the same "
                         f"result {repeat_count} times. Stop repeating it unchanged; "
@@ -409,9 +421,10 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        # No-progress detection: track repeated identical results for ALL tools,
-        # not just idempotent ones. Mutating tools (terminal, execute_code) can
-        # also loop with "successful" but unchanging output.
+        if not _tracks_no_progress(tool_name, self.config):
+            self._no_progress.pop(signature, None)
+            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
         repeat_count = 1
@@ -422,7 +435,7 @@ class ToolCallGuardrailController:
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(
                 action="warn",
-                code="idempotent_no_progress_warning",
+                code="no_progress_warning",
                 message=(
                     f"{tool_name} returned the same result {repeat_count} times. "
                     "Use the result already provided or change the query instead of "

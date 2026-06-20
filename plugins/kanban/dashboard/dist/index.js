@@ -87,25 +87,29 @@
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
     triage: "Triage",
     todo: "Todo",
+    scheduled: "Scheduled",
     ready: "Ready",
     running: "In Progress",
     blocked: "Blocked",
+    review: "Review",
     done: "Done",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
     triage: "Raw ideas — a specifier will flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
+    scheduled: "Waiting for a scheduled follow-up time",
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
+    review: "Needs human review before completion",
     done: "Completed",
     archived: "Archived",
   };
@@ -154,9 +158,11 @@
   const COLUMN_DOT = {
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
+    scheduled: "hermes-kanban-dot-scheduled",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
     blocked: "hermes-kanban-dot-blocked",
+    review: "hermes-kanban-dot-review",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
@@ -2064,6 +2070,11 @@
         title: "Move selected tasks to Todo.",
       }, "→ todo"),
       h(Button, {
+        onClick: function () { props.onApply({ status: "scheduled" }); },
+        size: "sm",
+        title: "Move selected tasks to Scheduled.",
+      }, "→ scheduled"),
+      h(Button, {
         onClick: function () { props.onApply({ status: "ready" }); },
         size: "sm",
         title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
@@ -2074,6 +2085,11 @@
         size: "sm",
         title: "Block selected tasks. Releases any active claims.",
       }, "Block"),
+      h(Button, {
+        onClick: function () { props.onApply({ status: "review" }); },
+        size: "sm",
+        title: "Move selected tasks to Review.",
+      }, "→ review"),
       h(Button, {
         onClick: function () { props.onApply({ status: "ready" },
           `Unblock ${props.count} task(s)?`); },
@@ -3798,7 +3814,9 @@
         specifyButton,
         decomposeButton,
         b("→ triage",  { status: "triage" },   task.status !== "triage"),
+        b("→ scheduled",  { status: "scheduled" }, task.status !== "scheduled"),
         b("→ ready",   { status: "ready" },    task.status !== "ready"),
+        b("→ review",  { status: "review" },   task.status !== "review"),
         // No direct → running button: /tasks/:id PATCH rejects status=running
         // with 400 (issue #19535). Tasks enter running only through the
         // dispatcher's claim_task path, which atomically creates the run row,

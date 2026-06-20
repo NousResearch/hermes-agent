@@ -7,8 +7,10 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -245,6 +247,311 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert "if (!storedBoard && !board && data && data.current)" in js
     assert "setBoard(data.current);" in js
     assert 'readSelectedBoard() || "default"' not in js
+
+
+def test_dashboard_bundle_columns_match_backend_board_columns():
+    """Frontend visible columns and status styling must track the backend list.
+
+    Regression for #37108: the backend added first-class ``scheduled`` and
+    ``review`` columns, but the bundled dashboard constants stayed on the old
+    six-column order and omitted fallback text/dot styling.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    css_file = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    js = bundle.read_text()
+    css = css_file.read_text()
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_columns_test", plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    plugin = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = plugin
+    spec.loader.exec_module(plugin)
+
+    order_match = re.search(r"const COLUMN_ORDER = (\[[^;]+\]);", js)
+    assert order_match, "COLUMN_ORDER constant missing from dashboard bundle"
+    assert ast.literal_eval(order_match.group(1)) == plugin.BOARD_COLUMNS
+
+    for object_name in (
+        "FALLBACK_COLUMN_LABEL",
+        "FALLBACK_COLUMN_HELP",
+        "COLUMN_DOT",
+    ):
+        object_match = re.search(rf"const {object_name} = \{{(?P<body>.*?)\n  \}};", js, re.S)
+        assert object_match, f"{object_name} missing from dashboard bundle"
+        missing = [
+            status
+            for status in plugin.BOARD_COLUMNS
+            if not re.search(rf"\b{re.escape(status)}\s*:", object_match.group("body"))
+        ]
+        assert missing == [], f"{object_name} missing statuses: {missing}"
+
+    missing_dot_classes = [
+        status
+        for status in plugin.BOARD_COLUMNS
+        if f".hermes-kanban-dot-{status}" not in css
+    ]
+    assert missing_dot_classes == []
+
+
+def test_dashboard_status_actions_include_scheduled_and_review():
+    """Status menus must expose both new visible board statuses (#37108)."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    for status in ("scheduled", "review"):
+        assert f'props.onApply({{ status: "{status}" }});' in js
+        assert f'b("→ {status}",  {{ status: "{status}" }}' in js
+
+
+def test_task_status_patch_accepts_scheduled_and_review(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "status target"},
+    ).json()["task"]
+
+    for status in ("scheduled", "review", "scheduled", "todo"):
+        r = client.patch(
+            f"/api/plugins/kanban/tasks/{task['id']}", json={"status": status},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["task"]["status"] == status
+
+
+def test_bulk_status_patch_accepts_scheduled_and_review(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "bulk status target"},
+    ).json()["task"]
+
+    for status in ("scheduled", "review", "scheduled", "todo"):
+        r = client.post(
+            "/api/plugins/kanban/tasks/bulk",
+            json={"ids": [task["id"]], "status": status},
+        )
+        assert r.status_code == 200, r.text
+        result = r.json()["results"][0]
+        assert result["ok"] is True, result
+        detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]
+        assert detail["status"] == status
+
+
+def test_review_status_requires_done_parents(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "unfinished parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "blocked child", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "review"},
+    )
+    assert r.status_code == 409
+    assert "Cannot move to 'review'" in r.text
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [child["id"]], "status": "review"},
+    )
+    assert r.status_code == 200, r.text
+    result = r.json()["results"][0]
+    assert result["ok"] is False
+    assert "transition to 'review' refused" in result["error"]
+
+
+def test_reopening_parent_demotes_review_children(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done", "summary": "parent complete"},
+    )
+    assert r.status_code == 200, r.text
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "review"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "review"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "todo"},
+    )
+    assert r.status_code == 200, r.text
+    detail = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+    assert detail["status"] == "todo"
+
+
+def test_archived_parent_satisfies_review_gate_until_reopened(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "archived"},
+    )
+    assert r.status_code == 200, r.text
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "review"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "review"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "todo"},
+    )
+    assert r.status_code == 200, r.text
+    detail = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+    assert detail["status"] == "todo"
+
+
+def test_unblock_with_archived_parent_promotes_to_ready(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "archived"},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "scheduled"},
+    )
+    assert r.status_code == 200, r.text
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "ready"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "ready"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "blocked"},
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [child["id"]], "status": "ready"},
+    )
+    assert r.status_code == 200, r.text
+    result = r.json()["results"][0]
+    assert result["ok"] is True, result
+    detail = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+    assert detail["status"] == "ready"
+
+
+def test_create_task_with_archived_parent_starts_ready(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "archived parent"},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "archived"},
+    )
+    assert r.status_code == 200, r.text
+
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+
+    assert child["status"] == "ready"
+
+
+def test_linking_archived_parent_preserves_ready_and_review_children(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "archived parent"},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}", json={"status": "archived"},
+    )
+    assert r.status_code == 200, r.text
+
+    ready_child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "ready child"},
+    ).json()["task"]
+    review_child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "review child"},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{review_child['id']}", json={"status": "review"},
+    )
+    assert r.status_code == 200, r.text
+
+    for child, expected_status in ((ready_child, "ready"), (review_child, "review")):
+        r = client.post(
+            "/api/plugins/kanban/links",
+            json={"parent_id": parent["id"], "child_id": child["id"]},
+        )
+        assert r.status_code == 200, r.text
+        detail = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+        assert detail["status"] == expected_status
+
+
+def test_linking_unfinished_parent_demotes_review_child(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "unfinished parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "review child"},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "review"},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/plugins/kanban/links",
+        json={"parent_id": parent["id"], "child_id": child["id"]},
+    )
+    assert r.status_code == 200, r.text
+    detail = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+    assert detail["status"] == "todo"
+
+
+def test_claim_review_task_rejects_unsatisfied_parents(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "unfinished parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "review child"},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}", json={"status": "review"},
+    )
+    assert r.status_code == 200, r.text
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (parent["id"], child["id"]),
+            )
+        assert kb.claim_review_task(conn, child["id"], claimer="test") is None
+        stored_child = kb.get_task(conn, child["id"])
+        assert stored_child is not None
+        assert stored_child.status == "todo"
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

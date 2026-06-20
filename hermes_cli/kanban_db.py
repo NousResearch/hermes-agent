@@ -2086,7 +2086,8 @@ def create_task(
     """Create a new task and optionally link it under parent tasks.
 
     Returns the new task id.  Status is ``ready`` when there are no
-    parents (or all parents already ``done``), otherwise ``todo``.
+    parents (or all parents are already ``done`` or ``archived``),
+    otherwise ``todo``.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
@@ -2225,13 +2226,16 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
+                        # If any parent is not yet terminal, we're todo.
+                        # Archived parents satisfy dependency gates everywhere
+                        # else (recompute/claim/unblock), so creation must use
+                        # the same contract.
                         rows = conn.execute(
                             "SELECT status FROM tasks WHERE id IN "
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if any(r["status"] not in ("done", "archived") for r in rows):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -2435,13 +2439,16 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
+        # If child was dispatchable/reviewable but parent is not yet terminal,
+        # demote child to todo. Archived parents satisfy dependency gates, and
+        # review must be gated the same way as ready.
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
-        if parent_status != "done":
+        if parent_status not in ("done", "archived"):
             conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status IN ('ready', 'review')",
                 (child_id,),
             )
         _append_event(
@@ -3105,9 +3112,9 @@ def claim_review_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``review`` status).
 
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
+    Mirrors ``claim_task``'s parent-dependency gate defensively: if any
+    parent is not ``done`` or ``archived``, demote the task back to
+    ``todo`` and refuse the claim.
 
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
@@ -3116,6 +3123,23 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        undone = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if undone:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'review'",
+                (task_id,),
+            )
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "parents_not_done", "source_status": "review"},
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4285,12 +4309,14 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # 'ready'. Unconditionally setting status='ready' here bypasses the
         # parent-completion invariant (the dispatcher trusts that column);
         # if parents are still in progress the task must wait in 'todo'
-        # until recompute_ready picks it up. RCA: Bug 2 at
+        # until recompute_ready picks it up. Archived parents satisfy the
+        # dependency gate, matching recompute_ready()/claim_task(). RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
         undone_parents = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? "
+            "AND p.status NOT IN ('done', 'archived') LIMIT 1",
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
@@ -4799,7 +4825,7 @@ def schedule_task(
                    claim_expires= NULL,
                    worker_pid   = NULL
              WHERE id = ?
-               AND status IN ('todo', 'ready', 'running', 'blocked')
+               AND status IN ('todo', 'ready', 'running', 'blocked', 'review')
         """
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"

@@ -55,6 +55,7 @@ def _make_mock_parent(depth=0):
     parent._print_fn = None
     parent.tool_progress_callback = None
     parent.thinking_callback = None
+    parent._fallback_chain = None
     return parent
 
 

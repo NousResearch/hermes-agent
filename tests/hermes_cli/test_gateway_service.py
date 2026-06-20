@@ -494,6 +494,67 @@ class TestGeneratedSystemdUnits:
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
 
+    # ------------------------------------------------------------------
+    # systemd-oomd opt-out — #26997
+    #
+    # Ubuntu 24.04+ ships ``systemd-oomd`` enabled by default with a
+    # ``DefaultMemoryPressureLimit=60%`` policy for both system- and
+    # user-services slices.  When a unit's cgroup crosses the pressure
+    # threshold, oomd sends SIGKILL to the largest single process in
+    # the cgroup — for Hermes that's typically the WhatsApp Node bridge
+    # (and its headless Chromium), which gets ``code -9`` while the
+    # Python gateway survives.  See the issue for the full trace.
+    #
+    # Both unit templates must declare ``ManagedOOMPreference=omit`` so the
+    # cgroup is removed from systemd-oomd's candidate selection entirely —
+    # even when an ancestor slice (e.g. Ubuntu 24.04's
+    # ``user-services-policy.conf``) sets ``ManagedOOMMemoryPressure=kill``.
+    # ``ManagedOOMMemoryPressure=auto`` is NOT enough: it's already the
+    # default and leaves the unit eligible for an inherited kill policy.
+    # These tests pin ``omit`` so a future refactor can't silently weaken it.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _directive_values(unit: str, key: str) -> list:
+        """Return values of every non-commented ``Key=Value`` line."""
+        out = []
+        for line in unit.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+                continue
+            if stripped.startswith(f"{key}="):
+                out.append(stripped[len(key) + 1 :].strip())
+        return out
+
+    def test_user_unit_opts_out_of_systemd_oomd_pressure_kills(self, monkeypatch):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        preference = self._directive_values(unit, "ManagedOOMPreference")
+        assert preference == ["omit"], (
+            "User unit must opt out of systemd-oomd candidate selection "
+            "(see #26997 — without this the WhatsApp Node bridge gets "
+            f"SIGKILL'd while the Python gateway survives). got={preference!r}"
+        )
+        # The weaker ``auto`` directive must not be relied on as the opt-out.
+        assert self._directive_values(unit, "ManagedOOMMemoryPressure") == []
+
+    def test_system_unit_opts_out_of_systemd_oomd_pressure_kills(self, monkeypatch):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+        preference = self._directive_values(unit, "ManagedOOMPreference")
+        assert preference == ["omit"], (
+            "System unit must opt out of systemd-oomd candidate selection "
+            f"(see #26997). got={preference!r}"
+        )
+        assert self._directive_values(unit, "ManagedOOMMemoryPressure") == []
+
+    def test_oomd_overrides_live_in_service_section(self, monkeypatch):
+        """systemd parses ``ManagedOOM*`` only inside the ``[Service]``
+        section; a misplaced override is silently ignored.  Catch that."""
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        service_start = unit.index("[Service]")
+        install_start = unit.index("[Install]")
+        service_section = unit[service_start:install_start]
+        assert "ManagedOOMPreference=omit" in service_section
+
 
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):

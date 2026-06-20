@@ -285,7 +285,7 @@ class TestBridgeRuntimeFailure:
         assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("returncode", [0, -2, -15])
+    @pytest.mark.parametrize("returncode", [0, -2, -9, -15])
     async def test_shutdown_suppresses_fatal_on_planned_bridge_exit(self, returncode):
         """During graceful disconnect(), SIGTERM/SIGINT/clean-exit are NOT fatal.
 
@@ -295,6 +295,13 @@ class TestBridgeRuntimeFailure:
         "✓ whatsapp disconnected" — because _check_managed_bridge_exit()
         saw the bridge's returncode of -15 (our own SIGTERM) and classified
         it as an unexpected crash.
+
+        ``-9`` is in the set because ``disconnect()`` escalates SIGTERM to
+        SIGKILL after a 1s grace period when the bridge ignores SIGTERM
+        (a real-world case for Node bridges in tight Chromium loops).
+        Before #26997, this escalation surfaced as a spurious "exited
+        unexpectedly (code -9)" tail right after "Disconnected" in the
+        log even when the gateway was shutting down on purpose.
         """
         adapter = _make_adapter()
         fatal_handler = AsyncMock()
@@ -318,12 +325,43 @@ class TestBridgeRuntimeFailure:
         fatal_handler.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_shutdown_still_surfaces_nonzero_crash(self):
-        """Even during shutdown, a truly crashed bridge (e.g. returncode 9) is fatal.
+    async def test_external_sigkill_during_runtime_still_fatal(self):
+        """When the bridge gets SIGKILL'd while the gateway is running
+        normally (``_shutting_down=False``) — e.g. by ``systemd-oomd``
+        on a memory-pressured host — that MUST surface as fatal.  The
+        ``-9`` suppression is gated on ``_shutting_down`` precisely so
+        external SIGKILLs still reach the operator.  See #26997.
+        """
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        adapter._bridge_log_fh = MagicMock()
+        # Critically: NOT shutting down.
+        adapter._shutting_down = False
 
-        The suppression list is deliberately narrow (0, -2, -15) so that
-        OOM-kill (137), assertion failures, or custom error exits still
-        reach the fatal-error handler and user notification path.
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = -9  # external SIGKILL
+        adapter._bridge_process = mock_proc
+
+        result = await adapter._check_managed_bridge_exit()
+
+        assert result is not None
+        assert "exited unexpectedly" in result
+        assert "code -9" in result
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        fatal_handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_still_surfaces_nonzero_crash(self):
+        """Even during shutdown, a truly crashed bridge (e.g. returncode 137) is fatal.
+
+        The suppression list is deliberately narrow (``0, -2, -9, -15``)
+        — those are exit codes our own ``disconnect()`` produces — so
+        application crashes (``process.exit(137)``, assertion failures,
+        custom error exits) still reach the fatal-error handler and
+        user notification path.
         """
         adapter = _make_adapter()
         fatal_handler = AsyncMock()

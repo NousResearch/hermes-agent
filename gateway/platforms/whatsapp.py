@@ -629,12 +629,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         # Planned shutdown: disconnect() sets _shutting_down before it sends
         # SIGTERM to the bridge, so a returncode of -15 (SIGTERM), -2 (SIGINT),
-        # or 0 (clean exit) at that point is expected, not a crash. Treat it
-        # as informational and skip the fatal-error path.
+        # 0 (clean exit), or -9 (SIGKILL — when disconnect() escalates after
+        # the 1s SIGTERM grace period) at that point is expected, not a crash.
+        # Treat it as informational and skip the fatal-error path.  Without
+        # ``-9`` in this set, ``disconnect()``'s own escalation triggered the
+        # spurious "exited unexpectedly (code -9)" tail of the trace in
+        # #26997 even when the gateway was shutting down on purpose.
         # getattr-with-default keeps tests that construct the adapter via
         # ``WhatsAppAdapter.__new__`` (bypassing __init__) working without
         # every _make_adapter() helper having to seed the attribute.
-        if getattr(self, "_shutting_down", False) and returncode in {0, -2, -15}:
+        if getattr(self, "_shutting_down", False) and returncode in {0, -2, -9, -15}:
             logger.info(
                 "[%s] Bridge exited during shutdown (code %d).",
                 self.name,

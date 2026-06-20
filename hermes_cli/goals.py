@@ -68,12 +68,35 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
+# Agent self-attestation sentinels.  Emitted by the model on its own
+# line at the END of a response to break the goal loop deterministically
+# — without consulting the judge.  Closes #29090: a gibberish or
+# otherwise unverifiable goal (``/goal lsdjflasjdf;ljasdlfja;sldjfalsdjf``)
+# used to spam continuations until the turn budget ran out because the
+# judge model couldn't decide "done" on a goal it didn't understand.
+# Now the agent itself signals "I'm done / blocked" and the loop stops
+# immediately.
+GOAL_DONE_SENTINEL = "<<HERMES_GOAL_DONE>>"
+GOAL_BLOCKED_SENTINEL = "<<HERMES_GOAL_BLOCKED>>"
+
+_STOP_INSTRUCTION_LINE = (
+    "When you have nothing more to do for this goal, end your final "
+    "message with a line that is EXACTLY one of:\n"
+    "  <<HERMES_GOAL_DONE: one-sentence reason>>\n"
+    "  <<HERMES_GOAL_BLOCKED: one-sentence reason>>\n"
+    "The sentinel must be the LAST non-blank line in your response. "
+    "Emitting one stops the loop without waiting for the judge — use "
+    "DONE when the goal is complete or trivially unachievable (typos, "
+    "gibberish, contradictions), BLOCKED when you genuinely need user "
+    "input to make progress."
+)
+
+
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
     "Goal: {goal}\n\n"
-    "Continue working toward this goal. Take the next concrete step. "
-    "If you believe the goal is complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly and stop."
+    "Continue working toward this goal. Take the next concrete step.\n\n"
+    f"{_STOP_INSTRUCTION_LINE}"
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
@@ -85,10 +108,8 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Additional criteria the user added mid-loop:\n"
     "{subgoals_block}\n\n"
     "Continue working toward the goal AND all additional criteria. Take "
-    "the next concrete step. If you believe the goal and every "
-    "additional criterion are complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly "
-    "and stop."
+    "the next concrete step.\n\n"
+    f"{_STOP_INSTRUCTION_LINE}"
 )
 
 
@@ -317,6 +338,57 @@ def _goal_judge_max_tokens() -> int:
     except Exception:
         pass
     return DEFAULT_JUDGE_MAX_TOKENS
+
+
+# Regex anchored on the sentinel.  Reason group is optional so a bare
+# ``<<HERMES_GOAL_DONE>>`` still trips, with a default reason supplied
+# by the caller.  Case-insensitive so weak models that lowercase
+# everything still match.
+_STOP_SENTINEL_RE = re.compile(
+    r"<<\s*HERMES_GOAL_(DONE|BLOCKED)\s*(?::\s*([^>]+?))?\s*>>",
+    re.IGNORECASE,
+)
+
+
+def _detect_goal_stop_sentinel(response: str) -> Optional[Tuple[str, str]]:
+    """Return ``(kind, reason)`` if the agent self-attested completion.
+
+    The sentinel must be the **entire** final non-blank line of the
+    response (only the sentinel itself + optional surrounding
+    whitespace allowed on that line).  The continuation prompt
+    contains the sentinel as an instruction, and models routinely
+    echo their instructions mid-reasoning — including inline, on the
+    same line as their normal prose.  Requiring the final line to be
+    the sentinel and nothing else keeps those echoes from false-
+    positive-stopping the loop and matches the prompt contract
+    "the sentinel must be the LAST non-blank line in your response".
+
+    ``kind`` is ``"done"`` or ``"blocked"``.  Both halt the loop;
+    ``"blocked"`` exists so the surfaced message tells the user the
+    agent wants their input rather than reporting success.
+    """
+    if not response:
+        return None
+    last_line = ""
+    for line in reversed(response.splitlines()):
+        if line.strip():
+            last_line = line
+            break
+    if not last_line:
+        return None
+    stripped = last_line.strip()
+    match = _STOP_SENTINEL_RE.fullmatch(stripped)
+    if not match:
+        return None
+    kind = match.group(1).lower()
+    reason = (match.group(2) or "").strip()
+    if not reason:
+        reason = (
+            "agent attested goal completion"
+            if kind == "done"
+            else "agent reported blocked — needs user input"
+        )
+    return kind, reason
 
 
 def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
@@ -651,6 +723,35 @@ class GoalManager:
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
+
+        # Honor explicit agent self-attestation BEFORE the judge.  Weak
+        # judge models can't reliably mark a gibberish/unverifiable goal
+        # as "done" — they hedge with "continue" and spam the budget
+        # (#29090, #27585).  The continuation prompt now teaches the
+        # agent two terminal sentinels (``<<HERMES_GOAL_DONE: …>>`` /
+        # ``<<HERMES_GOAL_BLOCKED: …>>``); if the agent emits one as the
+        # last non-blank line of its reply, trust it and stop without
+        # an extra judge round-trip.
+        sentinel = _detect_goal_stop_sentinel(last_response)
+        if sentinel is not None:
+            kind, sentinel_reason = sentinel
+            state.status = "done"
+            state.last_verdict = "done"
+            state.last_reason = sentinel_reason
+            # Sentinel emission means we got a real reply; reset the
+            # consecutive-parse-failures counter so a future judge call
+            # doesn't auto-pause on stale state.
+            state.consecutive_parse_failures = 0
+            save_goal(self.session_id, state)
+            label = "achieved" if kind == "done" else "stopped (agent blocked)"
+            return {
+                "status": "done",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "done",
+                "reason": sentinel_reason,
+                "message": f"✓ Goal {label}: {sentinel_reason}",
+            }
 
         verdict, reason, parse_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None

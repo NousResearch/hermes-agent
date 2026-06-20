@@ -78,6 +78,19 @@ The judge is deliberately conservative: it marks a goal `done` only when the res
 
 If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
 
+### Agent self-attestation (stop sentinels)
+
+Some goals are unverifiable from the outside — the user typed gibberish (`/goal lsdjflasjdf;ljasdlfja;sldjfalsdjf`), the goal is internally contradictory, or it genuinely needs more user input. Weak judge models can't always recognise these cases and will hedge with `continue` until the turn budget runs out (issue [#29090](https://github.com/NousResearch/hermes-agent/issues/29090)). To make the stop deterministic, the continuation prompt teaches the agent two terminal sentinels:
+
+```
+<<HERMES_GOAL_DONE: one-sentence reason>>
+<<HERMES_GOAL_BLOCKED: one-sentence reason>>
+```
+
+If the agent ends its reply with one of these as the **entire** final non-blank line, Hermes halts the loop immediately without consulting the judge. `DONE` surfaces as `✓ Goal achieved: <reason>`; `BLOCKED` surfaces as `✓ Goal stopped (agent blocked): <reason>` so you know the agent wants your input rather than reporting success.
+
+The detector is anchored on the final line (and requires it to be _only_ the sentinel after stripping whitespace), so models that quote the instruction back to themselves mid-reasoning don't false-positive-stop the loop.
+
 ### Turn budget
 
 Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
@@ -169,7 +182,7 @@ Four turns, one `/goal` invocation, zero "keep going" prompts from you.
 
 No judge is perfect. Two failure modes to watch for:
 
-**False negative — judge says continue when the goal is actually done.** The turn budget catches this. You'll see `⏸ Goal paused` and can `/goal clear` or just send a new message.
+**False negative — judge says continue when the goal is actually done.** The agent self-attestation sentinel ([above](#agent-self-attestation-stop-sentinels)) catches most of these — the agent emits `<<HERMES_GOAL_DONE: …>>` on its final line and the loop stops without the judge. Anything that slips past that is caught by the turn budget: you'll see `⏸ Goal paused` and can `/goal clear` or just send a new message.
 
 **False positive — judge says done when work remains.** You'll see `✓ Goal achieved` but you know better. Send a follow-up message to continue, or re-set the goal more precisely: `/goal <more specific text>`. The judge's system prompt is deliberately conservative to make false positives rarer than false negatives.
 

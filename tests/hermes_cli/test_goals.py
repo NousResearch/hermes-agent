@@ -737,3 +737,283 @@ class TestStatusLineSubgoalCount:
         mgr.add_subgoal("b")
         line = mgr.status_line()
         assert "2 subgoals" in line
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Agent self-attestation stop sentinels (#29090)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestStopSentinelDetection:
+    """Unit-level coverage for ``_detect_goal_stop_sentinel``.
+
+    The sentinel only fires when it's the LAST non-blank line of the
+    response — anything else would false-positive on agents that echo
+    the continuation prompt's instruction text back in their reasoning.
+    """
+
+    @pytest.mark.parametrize("response,kind,reason_fragment", [
+        ("Work done.\n<<HERMES_GOAL_DONE: shipped feature X>>",
+         "done", "shipped feature x"),
+        ("Final reply.\n<<HERMES_GOAL_BLOCKED: need API key from user>>",
+         "blocked", "need api key"),
+        # Bare sentinel without reason — fallback reason supplied.
+        ("All good.\n<<HERMES_GOAL_DONE>>", "done", "agent"),
+        ("Cannot proceed.\n<<HERMES_GOAL_BLOCKED>>", "blocked", "blocked"),
+        # Mixed casing — regex is case-insensitive.
+        ("ok.\n<<hermes_goal_done: lowercase ok>>", "done", "lowercase"),
+        # Extra whitespace around the reason gets stripped.
+        ("ok.\n<<HERMES_GOAL_DONE:    spaced reason   >>",
+         "done", "spaced reason"),
+        # Whitespace after sentinel still treated as last line.
+        ("ok.\n<<HERMES_GOAL_DONE: trailing newlines>>\n\n   \n",
+         "done", "trailing newlines"),
+    ])
+    def test_detection_happy_paths(self, response, kind, reason_fragment):
+        from hermes_cli.goals import _detect_goal_stop_sentinel
+
+        result = _detect_goal_stop_sentinel(response)
+        assert result is not None
+        out_kind, out_reason = result
+        assert out_kind == kind
+        assert reason_fragment.lower() in out_reason.lower()
+
+    @pytest.mark.parametrize("response", [
+        "",
+        None,
+        "Just a normal response with no sentinel.",
+        # Bare prose mentioning the sentinel string but not as a marker.
+        "Per the instructions, I would emit HERMES_GOAL_DONE here.",
+        # Sentinel in the MIDDLE of the response — agent kept talking,
+        # so they didn't actually want to stop.  This is the prompt-echo
+        # false-positive guard.
+        ("I see the instructions: <<HERMES_GOAL_DONE: example>>\n\n"
+         "Now, here is my actual work for this turn: step 1, step 2, "
+         "step 3.\nI will continue next turn."),
+        # Same shape with BLOCKED.
+        ("<<HERMES_GOAL_BLOCKED: example>>\n\n"
+         "Actually I'm not blocked — pushing on."),
+    ])
+    def test_detection_rejects_non_terminal_or_absent(self, response):
+        from hermes_cli.goals import _detect_goal_stop_sentinel
+        assert _detect_goal_stop_sentinel(response) is None
+
+    def test_continuation_prompt_teaches_both_sentinels(self, hermes_home):
+        """The continuation prompt the agent receives every loop turn
+        must teach the sentinel contract — otherwise the agent can't
+        emit it and the fix is dead on arrival."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sentinel-teach")
+        mgr.set("some long goal")
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "<<HERMES_GOAL_DONE" in prompt
+        assert "<<HERMES_GOAL_BLOCKED" in prompt
+        assert "LAST non-blank line" in prompt
+
+    def test_continuation_prompt_with_subgoals_teaches_sentinels(self, hermes_home):
+        """Subgoals path must keep the sentinel instruction in lockstep."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sentinel-teach-sub")
+        mgr.set("some long goal")
+        mgr.add_subgoal("criterion A")
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "<<HERMES_GOAL_DONE" in prompt
+        assert "<<HERMES_GOAL_BLOCKED" in prompt
+        assert "criterion A" in prompt
+
+
+class TestEvaluateAfterTurnSentinel:
+    """End-to-end behaviour: when the agent emits a stop sentinel,
+    ``evaluate_after_turn`` must short-circuit BEFORE the judge call
+    and persist ``status="done"``.  Reproduces the #29090 fix path."""
+
+    def test_done_sentinel_short_circuits_judge(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sent-done")
+        mgr.set("gibberish goal")
+
+        with patch.object(goals, "judge_goal") as judge_mock:
+            decision = mgr.evaluate_after_turn(
+                "I'm finished with the task.\n"
+                "<<HERMES_GOAL_DONE: gibberish goal is unverifiable, "
+                "treating as completed>>"
+            )
+        judge_mock.assert_not_called(), (
+            "judge must NOT run when the agent emits a terminal sentinel "
+            "— that's the whole point of #29090"
+        )
+        assert decision["verdict"] == "done"
+        assert decision["should_continue"] is False
+        assert decision["continuation_prompt"] is None
+        assert "unverifiable" in decision["reason"]
+        assert mgr.state.status == "done"
+
+    def test_blocked_sentinel_short_circuits_judge(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sent-blocked")
+        mgr.set("need-user-input goal")
+
+        with patch.object(goals, "judge_goal") as judge_mock:
+            decision = mgr.evaluate_after_turn(
+                "I need credentials to proceed.\n"
+                "<<HERMES_GOAL_BLOCKED: missing AWS_PROFILE — please set it>>"
+            )
+        judge_mock.assert_not_called()
+        assert decision["verdict"] == "done"
+        assert decision["should_continue"] is False
+        assert "blocked" in decision["message"].lower()
+        assert "AWS_PROFILE" in decision["reason"]
+        assert mgr.state.status == "done"
+
+    def test_sentinel_resets_parse_failure_counter(self, hermes_home):
+        """If a flaky judge had built up consecutive parse failures, the
+        sentinel landing must clear the counter so the *next* goal
+        (after /goal resume + a real prompt) doesn't immediately
+        auto-pause on stale state."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sent-reset")
+        mgr.set("g")
+        mgr.state.consecutive_parse_failures = 2  # one short of the cap
+        mgr.evaluate_after_turn("ok\n<<HERMES_GOAL_DONE: yes>>")
+        assert mgr.state.consecutive_parse_failures == 0
+
+    def test_non_sentinel_response_still_calls_judge(self, hermes_home):
+        """Regression guard for the existing judge path — make sure the
+        new sentinel branch only triggers when the sentinel is present."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sent-passthrough")
+        mgr.set("a goal")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "more", False)
+        ) as judge_mock:
+            decision = mgr.evaluate_after_turn("Plain prose with no sentinel.")
+        judge_mock.assert_called_once()
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+
+    def test_sentinel_inside_response_but_not_last_line_calls_judge(
+        self, hermes_home
+    ):
+        """The prompt-echo guard, end-to-end: an agent that quotes the
+        sentinel mid-response but keeps talking afterward must NOT
+        short-circuit — the judge still has the final say."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sent-echo")
+        mgr.set("a goal")
+
+        echo_response = (
+            "Per the instructions, I should emit "
+            "<<HERMES_GOAL_DONE: example>> when I finish.  "
+            "Right now I'm still working — running tests next."
+        )
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "more", False)
+        ) as judge_mock:
+            decision = mgr.evaluate_after_turn(echo_response)
+        judge_mock.assert_called_once()
+        assert decision["verdict"] == "continue"
+
+    def test_sentinel_with_subgoals_active_still_short_circuits(
+        self, hermes_home
+    ):
+        """If the user added /subgoal criteria mid-loop, the sentinel
+        path still honors the agent's stop — the agent has full
+        context including subgoals in the continuation prompt and is
+        in the best position to attest completion."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sent-sub")
+        mgr.set("base goal")
+        mgr.add_subgoal("extra criterion")
+
+        with patch.object(goals, "judge_goal") as judge_mock:
+            decision = mgr.evaluate_after_turn(
+                "Wrapping up.\n<<HERMES_GOAL_DONE: both criteria satisfied>>"
+            )
+        judge_mock.assert_not_called()
+        assert decision["verdict"] == "done"
+        assert mgr.state.status == "done"
+
+    def test_sentinel_on_inactive_goal_is_inert(self, hermes_home):
+        """If no goal is active, sentinel detection must not invent one
+        — the early return on ``state.status != 'active'`` runs first."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sent-inactive")
+        # No goal set — state is None.
+        decision = mgr.evaluate_after_turn(
+            "<<HERMES_GOAL_DONE: spurious>>"
+        )
+        assert decision["verdict"] == "inactive"
+        assert mgr.state is None
+
+
+class TestRepro29090GibberishGoal:
+    """End-to-end reproduction of the exact reporter scenario:
+    ``/goal lsdjflasjdf;ljasdlfja;sldjfalsdjf`` (gibberish).
+
+    Pre-fix: weak judges return ``continue`` for every turn and the
+    loop spam-fires continuation prompts until the 20-turn budget
+    runs out.  Post-fix: turn 2's continuation prompt teaches the
+    sentinel, the agent emits ``<<HERMES_GOAL_BLOCKED: …>>`` on its
+    next reply, and the loop halts in one extra turn instead of
+    nineteen.  This test models that two-turn shape with a fake
+    weak judge and a sentinel-emitting agent."""
+
+    def test_full_loop_halts_within_two_turns_post_fix(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(
+            session_id="repro-29090",
+            default_max_turns=20,  # the reporter's "maximum limit"
+        )
+        mgr.set("lsdjflasjdf;ljasdlfja;sldjfalsdjf")
+
+        # Turn 1: agent replies in normal prose, weak judge keeps
+        # hedging on "continue" — pre-fix this is where the spam
+        # started.  Post-fix the judge still runs (no sentinel yet) and
+        # queues turn 2.
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "unclear", False)
+        ):
+            d1 = mgr.evaluate_after_turn(
+                "I don't understand the goal text. Could you clarify?"
+            )
+        assert d1["should_continue"] is True
+        assert mgr.state.turns_used == 1
+        # The continuation prompt MUST teach the sentinel so turn 2 can
+        # actually emit it.
+        assert "<<HERMES_GOAL_DONE" in d1["continuation_prompt"]
+
+        # Turn 2: the agent, now taught by the continuation prompt,
+        # emits the sentinel and the loop halts BEFORE the 20-turn
+        # budget runs out.  Crucially, the judge is NOT consulted.
+        with patch.object(goals, "judge_goal") as judge_mock:
+            d2 = mgr.evaluate_after_turn(
+                "The goal text is gibberish — no work to do.\n"
+                "<<HERMES_GOAL_BLOCKED: goal text is unintelligible, "
+                "please re-send>>"
+            )
+        judge_mock.assert_not_called()
+        assert d2["should_continue"] is False
+        assert d2["verdict"] == "done"
+        assert mgr.state.status == "done"
+        assert mgr.state.turns_used == 2
+        # Burned 2 of 20 turns, not all 20 — the regression is sealed.
+        assert mgr.state.turns_used < mgr.state.max_turns

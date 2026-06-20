@@ -6,6 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
@@ -25,9 +26,28 @@ import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
+import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
+
+// Petdex mascot — sits just above the composer, right-aligned. Renders
+// nothing unless a pet is installed + enabled (`hermes pets select <slug>`),
+// so it's a no-op for everyone else.
+const PetPane = memo(function PetPane() {
+  const { enabled, grid, kitty } = usePet()
+
+  if (!enabled || (!grid && !kitty)) {
+    return null
+  }
+
+  return (
+    <NoSelect flexShrink={0} justifyContent="flex-end" paddingX={1} width="100%">
+      {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
+      {!kitty && grid ? <PetSprite grid={grid} /> : null}
+    </NoSelect>
+  )
+})
 
 const PromptPrefix = memo(function PromptPrefix({
   bold = false,
@@ -420,6 +440,8 @@ export const AppLayout = memo(function AppLayout({
 
         {!overlay.agents && (
           <>
+            <PetPane />
+
             <PerfPane id="prompt">
               <PromptZone
                 cols={composer.cols}

@@ -658,7 +658,7 @@ export function startUpdatePoller(): void {
   void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
-  bridge.onProgress(ingestProgress)
+  progressUnsub = bridge.onProgress(ingestProgress)
 
   // The poller starts at mount, before the gateway connects — so the first
   // backend check above sees mode≠remote and no-ops. Re-check once the
@@ -685,12 +685,16 @@ export function startUpdatePoller(): void {
   )
 }
 
+let progressUnsub: (() => void) | null = null
+
 export function stopUpdatePoller(): void {
   if (backgroundTimer !== null) {
     clearInterval(backgroundTimer)
     backgroundTimer = null
   }
 
+  progressUnsub?.()
+  progressUnsub = null
   connectionUnsub?.()
   connectionUnsub = null
   lastConnectionMode = undefined

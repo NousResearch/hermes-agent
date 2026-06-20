@@ -335,15 +335,19 @@ export function DesktopController() {
         return
       }
 
+      const sanitizedName = (payload.name || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64)
+      if (!sanitizedName) return
+
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+          const cleanVal = String(v || "").replace(/[\r\n\x00-\x1f]/g, "")
+          const sval = /\s/.test(String(v || "") ? `"${v.replace(/"/g, '\\"')}"` : v
 
           return `${k}=${sval}`
         })
         .join(' ')
 
-      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
+      const command = `/blueprint ${sanitizedName}${slots ? ' ' + slots : ''}`
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })

@@ -121,6 +121,12 @@ export function useSessionStateCache({
     }
 
     const created = createClientSessionState(storedSessionId ?? null)
+    // LRU eviction: cap cached sessions to prevent unbounded memory growth
+    const MAX_CACHED = 12
+    if (sessionStateByRuntimeIdRef.current.size >= MAX_CACHED) {
+      const oldestKey = sessionStateByRuntimeIdRef.current.keys().next().value
+      if (oldestKey) sessionStateByRuntimeIdRef.current.delete(oldestKey)
+    }
     sessionStateByRuntimeIdRef.current.set(sessionId, created)
 
     if (storedSessionId) {

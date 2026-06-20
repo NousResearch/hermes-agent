@@ -390,6 +390,7 @@ export interface SessionResumeResponse {
   messages: SessionMessage[]
   resumed: string
   session_id: string
+  running?: boolean
 }
 
 export interface SessionRuntimeInfo {

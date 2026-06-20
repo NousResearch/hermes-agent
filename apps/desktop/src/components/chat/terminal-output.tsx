@@ -42,7 +42,7 @@ export function TerminalOutput({ className, text }: TerminalOutputProps) {
 
   return (
     <div className={cn('max-h-16 overflow-auto overscroll-contain', className)} data-selectable-text="true" ref={ref}>
-      <pre className="w-max min-w-full font-mono text-[0.5625rem] leading-[0.85rem] whitespace-pre text-muted-foreground/70">
+      <pre role="log" aria-live="polite" aria-label="Terminal output" className="w-max min-w-full font-mono text-[0.5625rem] leading-[0.85rem] whitespace-pre text-muted-foreground/70">
         {text}
       </pre>
     </div>

@@ -515,7 +515,7 @@ export default function CronPage() {
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
           { value: "jobs", label: "Jobs" },
-          { value: "blueprints", label: "Blueprints" },
+          { value: "blueprints", label: t.blueprints.tabLabel },
         ]}
       />
 

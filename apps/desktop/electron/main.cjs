@@ -2998,7 +2998,20 @@ function runRenderTitleJob(rawUrl) {
       return finish('')
     }
 
-    const readTitle = () => window?.webContents?.getTitle?.() || ''
+    const readTitle = () => {
+      try {
+        if (!window || window.isDestroyed()) return ''
+        const webContents = window.webContents
+        if (!webContents || webContents.isDestroyed()) return ''
+        return webContents.getTitle?.() || ''
+      } catch {
+        // The hidden title-renderer window can be destroyed by app shutdown or
+        // renderer teardown while a title timeout is still queued. Treat that
+        // race as "no title" instead of letting Electron's destroyed-object
+        // TypeError crash the main process.
+        return ''
+      }
+    }
     const scheduleGrace = () => {
       if (graceTimer) clearTimeout(graceTimer)
       graceTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_GRACE_MS)

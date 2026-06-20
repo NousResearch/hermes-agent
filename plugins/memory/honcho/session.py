@@ -143,6 +143,10 @@ class HonchoSessionManager:
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
+        # Tracked fire-and-forget context-prefetch threads, joined in shutdown()
+        # so none is left blocked in HTTP recv at interpreter teardown (which
+        # aborts CPython — see HonchoMemoryProvider.shutdown).
+        self._context_prefetch_threads: list[threading.Thread] = []
         if write_frequency == "async":
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
@@ -543,11 +547,20 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread."""
+        """Gracefully shut down background worker threads.
+
+        Joins the async writer and any in-flight context-prefetch threads so
+        none is left blocked in HTTP recv at interpreter teardown (which would
+        abort CPython via PyThread_exit_thread → __pthread_unwind → abort()).
+        """
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)
             self._async_thread.join(timeout=10)
+        for t in self._context_prefetch_threads:
+            if t.is_alive():
+                t.join(timeout=5.0)
+        self._context_prefetch_threads.clear()
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -673,6 +686,8 @@ class HonchoSessionManager:
                 self.set_context_result(session_key, result)
 
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
+        # Track so shutdown() can join it before interpreter teardown.
+        self._context_prefetch_threads.append(t)
         t.start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:

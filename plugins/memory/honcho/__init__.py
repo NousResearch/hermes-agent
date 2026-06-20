@@ -1399,15 +1399,72 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        # CPython aborts (SIGABRT, exit 134) when daemon threads are still
+        # blocked in C-level I/O (httpx socket recv) at Py_FinalizeEx — the
+        # finalizer forcibly kills them via PyThread_exit_thread →
+        # __pthread_unwind → abort(). The Honcho SDK's HTTP calls run on
+        # daemon worker threads, so we must join EVERY outstanding one here
+        # before the interpreter begins teardown. See CPython gh-97940 /
+        # bpo-20526.
+        #
+        # Closing the Honcho SDK's underlying httpx.Client is the key step:
+        # it interrupts any worker thread blocked in sock_recv (httpx raises
+        # a connection-closed error that the worker's try/except absorbs),
+        # so the subsequent joins actually complete instead of timing out
+        # against a 30s read poll.
+        if self._init_thread and self._init_thread.is_alive():
+            self._init_thread.join(timeout=2.0)
+
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
-        # Flush any remaining messages
-        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+                t.join(timeout=2.0)
+
+        if self._manager:
+            if not (self._init_thread and self._init_thread.is_alive()):
+                try:
+                    self._manager.flush_all()
+                except Exception:
+                    pass
+            # Stop the manager's async writer + tracked prefetch threads.
             try:
-                self._manager.flush_all()
+                self._manager.shutdown()
             except Exception:
                 pass
+
+        # Close the Honcho httpx.Client to unblock any worker still in recv,
+        # then join the tracked threads once more so they exit cleanly.
+        self._close_honcho_http_client()
+        for t in (self._init_thread, self._prefetch_thread, self._sync_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
+        if self._manager:
+            try:
+                self._manager.shutdown()
+            except Exception:
+                pass
+
+    def _close_honcho_http_client(self) -> None:
+        """Close the Honcho SDK's httpx.Client to interrupt in-flight recvs.
+
+        The honcho-ai SDK stores its sync HTTP client on ``Honcho._http``
+        (a ``HonchoHTTPClient`` wrapping ``httpx.Client``). Closing it
+        forces any worker thread blocked in a socket recv to error out,
+        which is required for a clean interpreter shutdown.
+        """
+        client = getattr(self, "_manager", None)
+        client = getattr(client, "_honcho", None) if client else None
+        if client is None:
+            return
+        for attr in ("_http", "_async_http"):
+            http_client = getattr(client, attr, None)
+            if http_client is None:
+                continue
+            closer = getattr(http_client, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------

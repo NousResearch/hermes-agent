@@ -39,6 +39,9 @@ from utils import base_url_host_matches, base_url_hostname, env_int
 logger = logging.getLogger(__name__)
 
 
+_PROVIDER_STATUS_PLATFORMS = {"desktop", "tui"}
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -120,6 +123,45 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _should_emit_provider_status(agent) -> bool:
+    """Return True when provider wait/retry status should reach a live UI.
+
+    Desktop/TUI have a persistent status rail and a stall watchdog driven by
+    gateway events, so they need periodic model-wait activity while the agent is
+    blocked inside a provider HTTP request. Messaging gateways route
+    ``status_callback`` to chat messages, so suppress these high-frequency
+    heartbeats there to avoid spamming users.
+    """
+    if not callable(getattr(agent, "status_callback", None)):
+        return False
+    platform = str(getattr(agent, "platform", "") or "").lower()
+    return platform in _PROVIDER_STATUS_PLATFORMS
+
+
+def _emit_provider_status(agent, kind: str, message: str) -> None:
+    if not _should_emit_provider_status(agent):
+        return
+    try:
+        agent.status_callback(kind, message)
+    except Exception:
+        logger.debug("provider status callback failed", exc_info=True)
+
+
+def _format_elapsed_seconds(seconds: float) -> str:
+    whole = max(0, int(seconds))
+    if whole < 60:
+        return f"{whole} 秒"
+    minutes, sec = divmod(whole, 60)
+    if sec == 0:
+        return f"{minutes} 分钟"
+    return f"{minutes} 分 {sec} 秒"
+
+
+def _provider_wait_message(elapsed_s: float, model: Any) -> str:
+    model_text = str(model or "当前模型")
+    return f"仍在等待 {model_text} 响应（已 {_format_elapsed_seconds(elapsed_s)}）…"
 
 
 def interruptible_api_call(agent, api_kwargs: dict):
@@ -354,6 +396,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
     _call_start = time.time()
     agent._touch_activity("waiting for non-streaming API response")
+    _wait_status_interval = _env_float(
+        "HERMES_PROVIDER_WAIT_STATUS_INTERVAL_SECONDS",
+        30.0,
+    )
+    _next_wait_status_at = (
+        _wait_status_interval if _wait_status_interval > 0 else float("inf")
+    )
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()
@@ -371,6 +420,15 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
 
         _elapsed = time.time() - _call_start
+        if _elapsed >= _next_wait_status_at:
+            _emit_provider_status(
+                agent,
+                "provider_wait",
+                _provider_wait_message(_elapsed, api_kwargs.get("model")),
+            )
+            # If the event loop wakes late, advance in intervals instead of
+            # emitting a burst of catch-up heartbeats.
+            _next_wait_status_at = _elapsed + _wait_status_interval
 
         # TTFB detector: the Codex stream has produced no event at all and
         # we're past the first-byte cutoff → the backend opened the
@@ -408,6 +466,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting."
                 )
+            _emit_provider_status(
+                agent,
+                "provider_retry",
+                f"模型连接 {_format_elapsed_seconds(_elapsed)} 未返回首字节，正在自动重连…",
+            )
             try:
                 _close_request_client_once("codex_ttfb_kill")
             except Exception:
@@ -454,6 +517,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
                 f"Reconnecting."
             )
+            _emit_provider_status(
+                agent,
+                "provider_retry",
+                f"模型流 {_format_elapsed_seconds(_event_stale_elapsed)} 没有新事件，正在自动重连…",
+            )
             try:
                 _close_request_client_once("codex_stream_idle_kill")
             except Exception:
@@ -498,6 +566,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Aborting call."
                 )
+            _emit_provider_status(
+                agent,
+                "provider_retry",
+                f"模型服务 {_format_elapsed_seconds(_elapsed)} 无响应，正在中止本次请求并重试…",
+            )
             try:
                 if agent.api_mode == "anthropic_messages":
                     agent._anthropic_client.close()

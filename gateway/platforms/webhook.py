@@ -262,18 +262,26 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        # Parse platform:chat_id format (e.g. "telegram:-1003774178835")
+        # so webhook subscriptions can target a specific channel/chat.
+        target_platform = deliver_type
+        target_chat_id = None
+        if ":" in deliver_type:
+            parts = deliver_type.split(":", 2)
+            target_platform = parts[0].lower()
+            target_chat_id = parts[1] if len(parts) > 1 else None
+
         # Cross-platform delivery — any platform with a gateway adapter.
-        # Check both built-in names and plugin-registered platforms.
-        _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
+        _is_known_platform = target_platform in _BUILTIN_DELIVER_PLATFORMS
         if not _is_known_platform:
             try:
                 from gateway.platform_registry import platform_registry
-                _is_known_platform = platform_registry.is_registered(deliver_type)
+                _is_known_platform = platform_registry.is_registered(target_platform)
             except Exception:
                 pass
         if self.gateway_runner and _is_known_platform:
             return await self._deliver_cross_platform(
-                deliver_type, content, delivery
+                target_platform, content, delivery, target_chat_id
             )
 
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
@@ -977,9 +985,16 @@ class WebhookAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def _deliver_cross_platform(
-        self, platform_name: str, content: str, delivery: dict
+        self, platform_name: str, content: str, delivery: dict,
+        target_chat_id: Optional[str] = None,
     ) -> SendResult:
-        """Route response to another platform (telegram, discord, etc.)."""
+        """Route response to another platform (telegram, discord, etc.).
+
+        Priority for chat_id:
+        1. target_chat_id (from platform:chat_id format in deliver config)
+        2. deliver_extra.chat_id
+        3. Home channel for the platform
+        """
         if not self.gateway_runner:
             return SendResult(
                 success=False,
@@ -1000,9 +1015,11 @@ class WebhookAdapter(BasePlatformAdapter):
                 error=f"Platform {platform_name} not connected",
             )
 
-        # Use home channel if no specific chat_id in deliver_extra
-        extra = delivery.get("deliver_extra", {})
-        chat_id = extra.get("chat_id", "")
+        # Priority: target_chat_id > deliver_extra > home channel
+        chat_id = target_chat_id or ""
+        if not chat_id:
+            extra = delivery.get("deliver_extra", {})
+            chat_id = extra.get("chat_id", "")
         if not chat_id:
             home = self.gateway_runner.config.get_home_channel(target_platform)
             if home:
@@ -1015,6 +1032,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Pass thread_id from deliver_extra so Telegram forum topics work
         metadata = None
+        extra = delivery.get("deliver_extra", {})
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
             metadata = {"thread_id": thread_id}

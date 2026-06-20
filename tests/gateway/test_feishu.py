@@ -4596,6 +4596,64 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         )
         adapter._dispatch_inbound_event.assert_not_called()
 
+    def test_regular_reply_root_id_does_not_become_thread_id(self):
+        adapter = self._build_adapter()
+        adapter._fetch_message_text = AsyncMock(return_value="parent text")
+        message = SimpleNamespace(
+            content=json.dumps({"text": "regular reply"}),
+            message_type="text",
+            message_id="m6",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id="om_root",
+            thread_id=None,
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m6",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertIsNone(adapter.build_source.call_args.kwargs["thread_id"])
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_root")
+        self.assertEqual(event.reply_to_text, "parent text")
+
+    def test_explicit_thread_id_is_preserved(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "thread reply"}),
+            message_type="text",
+            message_id="m7",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id="om_root",
+            thread_id="omt_thread",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m7",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertEqual(adapter.build_source.call_args.kwargs["thread_id"], "omt_thread")
+
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):

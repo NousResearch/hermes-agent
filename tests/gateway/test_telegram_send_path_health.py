@@ -27,7 +27,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -78,12 +78,12 @@ async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
     adapter._app.bot.get_me = AsyncMock(return_value=MagicMock())
     adapter._polling_error_callback_ref = AsyncMock()
     monkeypatch.setattr(
-        "gateway.platforms.telegram.Update", MagicMock(ALL_TYPES=[])
+        "plugins.platforms.telegram.adapter.Update", MagicMock(ALL_TYPES=[])
     )
 
     await adapter._handle_polling_network_error(OSError("Bad Gateway"))
     assert adapter._send_path_degraded is True
 
-    with patch("gateway.platforms.telegram.asyncio.sleep", new_callable=AsyncMock):
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
     assert adapter._send_path_degraded is False

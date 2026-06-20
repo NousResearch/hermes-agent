@@ -1164,7 +1164,7 @@ async def handle_drive_comment_event(
     )
 
     # Access control
-    from gateway.platforms.feishu_comment_rules import load_config, resolve_rule, is_user_allowed, has_wiki_keys
+    from plugins.platforms.feishu.feishu_comment_rules import load_config, resolve_rule, is_user_allowed, has_wiki_keys
 
     comments_cfg = load_config()
     rule = resolve_rule(comments_cfg, file_type, file_token)

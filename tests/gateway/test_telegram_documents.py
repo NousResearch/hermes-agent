@@ -51,7 +51,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 # Now we can safely import
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +442,7 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", photo=[first_photo])
         msg2 = _make_message(photo=[second_photo])
 
-        with patch("gateway.platforms.telegram.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
             await adapter._handle_media_message(_make_update(msg2), MagicMock())
             assert adapter.handle_message.await_count == 0
@@ -462,7 +462,7 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", media_group_id="album-1", photo=[first_photo])
         msg2 = _make_message(media_group_id="album-1", photo=[second_photo])
 
-        with patch("gateway.platforms.telegram.cache_image_from_bytes", side_effect=["/tmp/one.jpg", "/tmp/two.jpg"]):
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/one.jpg", "/tmp/two.jpg"]):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
             await adapter._handle_media_message(_make_update(msg2), MagicMock())
             assert adapter.handle_message.await_count == 0
@@ -479,7 +479,7 @@ class TestMediaGroups:
         first_photo = _make_photo(_make_file_obj(b"first"))
         msg = _make_message(caption="two images", media_group_id="album-2", photo=[first_photo])
 
-        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/one.jpg"):
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", return_value="/tmp/one.jpg"):
             await adapter._handle_media_message(_make_update(msg), MagicMock())
 
         assert "album-2" in adapter._media_group_events
@@ -782,8 +782,8 @@ class TestTelegramPhotoBatching:
         )
 
         with (
-            patch("gateway.platforms.telegram.asyncio.current_task", return_value=old_task),
-            patch("gateway.platforms.telegram.asyncio.sleep", new=AsyncMock()),
+            patch("plugins.platforms.telegram.adapter.asyncio.current_task", return_value=old_task),
+            patch("plugins.platforms.telegram.adapter.asyncio.sleep", new=AsyncMock()),
         ):
             await adapter._flush_photo_batch(batch_key)
 

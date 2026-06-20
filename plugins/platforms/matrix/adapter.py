@@ -4106,3 +4106,268 @@ class MatrixAdapter(BasePlatformAdapter):
             result = result.replace(f"\x00PROTECTED{idx}\x00", original)
 
         return result
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the Matrix adapter moved from gateway/platforms/matrix.py into
+# this bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a
+# register(ctx) entry point plus hook implementations that replace the
+# per-platform core touchpoints (the Platform.MATRIX elif in gateway/run.py,
+# the matrix_cfg YAML→env block in gateway/config.py, the _setup_matrix wizard
+# + _PLATFORMS["matrix"] static dict in hermes_cli/{setup,gateway}.py, and the
+# _send_matrix dispatch in tools/send_message_tool.py).  Matrix uses the
+# generic token/api_key connected check, so no is_connected override is needed.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process Matrix delivery via the Client-Server API.
+
+    Implements the standalone_sender_fn contract so deliver=matrix cron jobs
+    succeed when cron runs separately from the gateway. Converts markdown to
+    HTML for rich rendering, falling back to plain text when the markdown
+    library is absent. Replaces the legacy _send_matrix helper.
+    """
+    extra = getattr(pconfig, "extra", {}) or {}
+    token = getattr(pconfig, "token", None)
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
+        token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        if not homeserver or not token:
+            return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
+        txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+        from urllib.parse import quote
+        encoded_room = quote(chat_id, safe="")
+        url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        payload = {"msgtype": "m.text", "body": message}
+        try:
+            import markdown as _md
+            html = _md.markdown(message, extensions=["fenced_code", "tables"])
+            html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
+            payload["format"] = "org.matrix.custom.html"
+            payload["formatted_body"] = html
+        except ImportError:
+            pass
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.put(url, headers=headers, json=payload) as resp:
+                if resp.status not in {200, 201}:
+                    body = await resp.text()
+                    return {"error": f"Matrix API error ({resp.status}): {body}"}
+                data = await resp.json()
+        return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
+    except Exception as e:
+        return {"error": f"Matrix send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Configure Matrix credentials. Replaces hermes_cli/setup.py::_setup_matrix
+    and the static _PLATFORMS["matrix"] dict. CLI helpers are lazy-imported."""
+    import shutil
+    import sys as _sys
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+    )
+
+    print_header("Matrix")
+    existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
+    if existing:
+        print_info("Matrix: already configured")
+        if not prompt_yes_no("Reconfigure Matrix?", False):
+            return
+
+    print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
+    print_info("   1. Create a bot user on your homeserver, or use your own account")
+    print_info("   2. Get an access token from Element, or provide user ID + password")
+    homeserver = prompt("Homeserver URL (e.g. https://matrix.example.org)")
+    if homeserver:
+        save_env_value("MATRIX_HOMESERVER", homeserver.rstrip("/"))
+
+    print_info("Auth: provide an access token (recommended), or user ID + password.")
+    token = prompt("Access token (leave empty for password login)", password=True)
+    if token:
+        save_env_value("MATRIX_ACCESS_TOKEN", token)
+        user_id = prompt("User ID (@bot:server — optional, will be auto-detected)")
+        if user_id:
+            save_env_value("MATRIX_USER_ID", user_id)
+        print_success("Matrix access token saved")
+    else:
+        user_id = prompt("User ID (@bot:server)")
+        if user_id:
+            save_env_value("MATRIX_USER_ID", user_id)
+        password = prompt("Password", password=True)
+        if password:
+            save_env_value("MATRIX_PASSWORD", password)
+            print_success("Matrix credentials saved")
+
+    if token or get_env_value("MATRIX_PASSWORD"):
+        want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
+        if want_e2ee:
+            save_env_value("MATRIX_ENCRYPTION", "true")
+            print_success("E2EE enabled")
+
+        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
+            _missing_before = feature_missing("platform.matrix")
+            if _missing_before:
+                print_info(f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)...")
+                try:
+                    _lazy_ensure("platform.matrix", prompt=False)
+                    print_success(f"{matrix_pkg} installed")
+                except Exception as exc:
+                    print_warning(
+                        "Install failed — run manually: pip install "
+                        "'mautrix[encryption]' asyncpg aiosqlite Markdown aiohttp-socks"
+                    )
+                    print_info(f"  Error: {exc}")
+        except ImportError:
+            try:
+                __import__("mautrix")
+            except ImportError:
+                print_info(f"Installing {matrix_pkg}...")
+                import subprocess
+                uv_bin = shutil.which("uv")
+                if uv_bin:
+                    result = subprocess.run(
+                        [uv_bin, "pip", "install", "--python", _sys.executable, matrix_pkg],
+                        capture_output=True, text=True,
+                    )
+                else:
+                    result = subprocess.run(
+                        [_sys.executable, "-m", "pip", "install", matrix_pkg],
+                        capture_output=True, text=True,
+                    )
+                if result.returncode == 0:
+                    print_success(f"{matrix_pkg} installed")
+                else:
+                    print_warning(
+                        f"Install failed — run manually: pip install "
+                        f"'{matrix_pkg}' asyncpg aiosqlite Markdown aiohttp-socks"
+                    )
+
+        print_info("🔒 Security: Restrict who can use your bot")
+        print_info("   Matrix user IDs look like @username:server")
+        allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+        if allowed_users:
+            save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
+            print_success("Matrix allowlist configured")
+        else:
+            print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+
+        print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
+        print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
+        print_info("   You can also set this later by typing /set-home in a Matrix room.")
+        home_room = prompt("Home room ID (leave empty to set later with /set-home)")
+        if home_room:
+            save_env_value("MATRIX_HOME_ROOM", home_room)
+
+
+def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
+    """Translate config.yaml matrix: keys into MATRIX_* env vars.
+
+    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
+    matrix_cfg block from gateway/config.py::load_gateway_config(). Env vars
+    take precedence over YAML. Returns None — everything flows through env.
+    """
+    if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
+        os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+    au = matrix_cfg.get("allowed_users")
+    if au is not None and not os.getenv("MATRIX_ALLOWED_USERS"):
+        if isinstance(au, list):
+            au = ",".join(str(v) for v in au)
+        os.environ["MATRIX_ALLOWED_USERS"] = str(au)
+    frc = matrix_cfg.get("free_response_rooms")
+    if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
+        if isinstance(frc, list):
+            frc = ",".join(str(v) for v in frc)
+        os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
+    ar = matrix_cfg.get("allowed_rooms")
+    if ar is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
+        if isinstance(ar, list):
+            ar = ",".join(str(v) for v in ar)
+        os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
+    ignore_patterns = matrix_cfg.get("ignore_user_patterns")
+    if ignore_patterns is not None and not os.getenv("MATRIX_IGNORE_USER_PATTERNS"):
+        if isinstance(ignore_patterns, list):
+            ignore_patterns = ",".join(str(v) for v in ignore_patterns)
+        os.environ["MATRIX_IGNORE_USER_PATTERNS"] = str(ignore_patterns)
+    if "process_notices" in matrix_cfg and not os.getenv("MATRIX_PROCESS_NOTICES"):
+        os.environ["MATRIX_PROCESS_NOTICES"] = str(matrix_cfg["process_notices"]).lower()
+    if "session_scope" in matrix_cfg and not os.getenv("MATRIX_SESSION_SCOPE"):
+        os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
+    if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
+        os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+    if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
+        os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+    return None
+
+
+def _is_connected(config) -> bool:
+    """Matrix is connected when a homeserver + access token (or password) are
+    configured. Read via hermes_cli.gateway.get_env_value so setup-status
+    callers that patch get_env_value observe the same value, and PlatformConfig
+    extras (homeserver) are honored too. As a built-in, Matrix used the generic
+    token check; as a plugin it needs an explicit is_connected so
+    _platform_status / get_connected_platforms reflect real configuration
+    rather than mere SDK presence. #41112.
+    """
+    extra = getattr(config, "extra", {}) or {}
+    import hermes_cli.gateway as gateway_mod
+    homeserver = extra.get("homeserver") or gateway_mod.get_env_value("MATRIX_HOMESERVER") or ""
+    token = (
+        getattr(config, "token", None)
+        or gateway_mod.get_env_value("MATRIX_ACCESS_TOKEN")
+        or gateway_mod.get_env_value("MATRIX_PASSWORD")
+        or ""
+    )
+    return bool(str(homeserver).strip() and str(token).strip())
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs MatrixAdapter from a PlatformConfig."""
+    return MatrixAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="matrix",
+        label="Matrix",
+        adapter_factory=_build_adapter,
+        check_fn=check_matrix_requirements,
+        is_connected=_is_connected,
+        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
+        install_hint="pip install 'mautrix[encryption]'",
+        setup_fn=interactive_setup,
+        apply_yaml_config_fn=_apply_yaml_config,
+        allowed_users_env="MATRIX_ALLOWED_USERS",
+        allow_all_env="MATRIX_ALLOW_ALL_USERS",
+        cron_deliver_env_var="MATRIX_HOME_ROOM",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=4000,
+        emoji="🔐",
+        allow_update_command=True,
+    )

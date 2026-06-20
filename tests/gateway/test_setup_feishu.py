@@ -39,20 +39,20 @@ def _run_setup_feishu(
     def mock_get(name):
         return existing_env.get(name, "")
 
-    with patch("hermes_cli.gateway.save_env_value", side_effect=mock_save), \
-         patch("hermes_cli.gateway.get_env_value", side_effect=mock_get), \
-         patch("hermes_cli.gateway.prompt_yes_no", side_effect=prompt_yes_no_responses), \
-         patch("hermes_cli.gateway.prompt_choice", side_effect=prompt_choice_responses), \
-         patch("hermes_cli.gateway.prompt", side_effect=prompt_responses), \
-         patch("hermes_cli.gateway.print_info"), \
-         patch("hermes_cli.gateway.print_success"), \
-         patch("hermes_cli.gateway.print_warning"), \
-         patch("hermes_cli.gateway.print_error"), \
-         patch("hermes_cli.gateway.color", side_effect=lambda t, c: t), \
-         patch("gateway.platforms.feishu.qr_register", return_value=qr_result):
+    with patch("hermes_cli.config.save_env_value", side_effect=mock_save), \
+         patch("hermes_cli.config.get_env_value", side_effect=mock_get), \
+         patch("hermes_cli.cli_output.prompt_yes_no", side_effect=prompt_yes_no_responses), \
+         patch("hermes_cli.setup.prompt_choice", side_effect=prompt_choice_responses), \
+         patch("hermes_cli.cli_output.prompt", side_effect=prompt_responses), \
+         patch("hermes_cli.cli_output.print_header"), \
+         patch("hermes_cli.cli_output.print_info"), \
+         patch("hermes_cli.cli_output.print_success"), \
+         patch("hermes_cli.cli_output.print_warning"), \
+         patch("hermes_cli.cli_output.print_error"), \
+         patch("plugins.platforms.feishu.adapter.qr_register", return_value=qr_result):
 
-        from hermes_cli.gateway import _setup_feishu
-        _setup_feishu()
+        from plugins.platforms.feishu.adapter import interactive_setup
+        interactive_setup()
 
     return saved_env
 
@@ -120,7 +120,7 @@ class TestSetupFeishuConnectionMode:
         )
         assert env["FEISHU_CONNECTION_MODE"] == "websocket"
 
-    @patch("gateway.platforms.feishu.probe_bot", return_value=None)
+    @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
     def test_manual_path_websocket(self, _mock_probe):
         env = _run_setup_feishu(
             qr_result=None,
@@ -129,7 +129,7 @@ class TestSetupFeishuConnectionMode:
         )
         assert env["FEISHU_CONNECTION_MODE"] == "websocket"
 
-    @patch("gateway.platforms.feishu.probe_bot", return_value=None)
+    @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
     def test_manual_path_webhook(self, _mock_probe):
         env = _run_setup_feishu(
             qr_result=None,
@@ -248,7 +248,7 @@ class TestSetupFeishuAdapterIntegration:
 
         with patch.dict(os.environ, env, clear=True):
             from gateway.config import PlatformConfig
-            from gateway.platforms.feishu import FeishuAdapter
+            from plugins.platforms.feishu.adapter import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())
             assert adapter._app_id == "cli_test_app"
             assert adapter._app_secret == "test_secret_value"
@@ -261,7 +261,7 @@ class TestSetupFeishuAdapterIntegration:
         env = self._make_env_from_setup(dm_idx=1)
 
         with patch.dict(os.environ, env, clear=True):
-            from gateway.platforms.feishu import FeishuAdapter
+            from plugins.platforms.feishu.adapter import FeishuAdapter
             from gateway.config import PlatformConfig
             # Verify adapter initializes without error and env var is correct.
             FeishuAdapter(PlatformConfig())
@@ -274,6 +274,6 @@ class TestSetupFeishuAdapterIntegration:
 
         with patch.dict(os.environ, env, clear=True):
             from gateway.config import PlatformConfig
-            from gateway.platforms.feishu import FeishuAdapter
+            from plugins.platforms.feishu.adapter import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())
             assert adapter._group_policy == "open"

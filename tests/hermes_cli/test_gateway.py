@@ -821,9 +821,132 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     assert gateway.find_gateway_pids() == [321]
 
 
+def _install_fake_psutil(monkeypatch, processes=None, process_iter_error=None):
+    module = ModuleType("psutil")
+
+    class NoSuchProcess(Exception):
+        pass
+
+    class AccessDenied(Exception):
+        pass
+
+    class ZombieProcess(Exception):
+        pass
+
+    def process_iter(attrs):
+        assert attrs == ["pid", "cmdline"]
+        if process_iter_error is not None:
+            raise process_iter_error
+        return processes or []
+
+    module.NoSuchProcess = NoSuchProcess
+    module.AccessDenied = AccessDenied
+    module.ZombieProcess = ZombieProcess
+    module.process_iter = process_iter
+    monkeypatch.setitem(sys.modules, "psutil", module)
+    return module
+
+
+def test_scan_gateway_pids_windows_prefers_psutil_without_subprocess(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    _install_fake_psutil(
+        monkeypatch,
+        [
+            SimpleNamespace(info={"pid": 1111, "cmdline": ["python", "-m", "unrelated"]}),
+            SimpleNamespace(
+                info={
+                    "pid": 2468,
+                    "cmdline": ["Hermes.EXE", "gateway", "run", "--replace"],
+                }
+            ),
+        ],
+    )
+
+    def fake_run(cmd, **kwargs):
+        raise AssertionError(f"Unexpected subprocess scan on Windows: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
+
+
+def test_scan_gateway_pids_windows_psutil_no_match_does_not_spawn_wmic(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    _install_fake_psutil(
+        monkeypatch,
+        [SimpleNamespace(info={"pid": 1111, "cmdline": ["python", "-m", "unrelated"]})],
+    )
+
+    def fake_run(cmd, **kwargs):
+        raise AssertionError(f"Unexpected subprocess fallback with working psutil: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == []
+
+
+def test_scan_gateway_pids_windows_wmic_fallback_hides_console(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    _install_fake_psutil(monkeypatch, process_iter_error=RuntimeError("psutil failed"))
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic.exe" if name == "wmic" else None)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[:4] == ["wmic.exe", "process", "get", "ProcessId,CommandLine"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "CommandLine=C:\\Program Files\\Hermes\\Hermes.EXE gateway run --replace\n"
+                    "ProcessId=2468\n\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
+    assert calls[0][1]["creationflags"] & 0x08000000
+
+
+def test_scan_gateway_pids_windows_powershell_fallback_hides_console(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    _install_fake_psutil(monkeypatch, process_iter_error=RuntimeError("psutil failed"))
+    monkeypatch.setattr(
+        gateway.shutil,
+        "which",
+        lambda name: "powershell.exe" if name == "powershell" else None,
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[:3] == ["powershell.exe", "-NoProfile", "-Command"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "CommandLine=C:\\Program Files\\Hermes\\Hermes.EXE gateway run --replace\n"
+                    "ProcessId=2468\n\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
+    assert calls[0][1]["creationflags"] & 0x08000000
+
+
 def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
     monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    _install_fake_psutil(monkeypatch, process_iter_error=RuntimeError("psutil failed"))
     monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic.exe" if name == "wmic" else None)
 
     def fake_run(cmd, **kwargs):

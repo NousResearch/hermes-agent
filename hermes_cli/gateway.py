@@ -358,75 +358,114 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
     try:
         if is_windows():
-            # Prefer wmic when present (fast, stable output format).  On
-            # modern Windows 11 / Win 10 late builds, wmic has been
-            # removed as part of the WMIC deprecation — fall back to
-            # PowerShell's Get-CimInstance.  Any OSError here (FileNotFoundError
-            # on missing wmic) trips the fallback.
-            wmic_path = shutil.which("wmic")
-            used_fallback = False
-            result = None
-            if wmic_path is not None:
-                try:
-                    result = subprocess.run(
-                        [
-                            wmic_path,
-                            "process",
-                            "get",
-                            "ProcessId,CommandLine",
-                            "/FORMAT:LIST",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                        timeout=10,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    result = None
-            if result is None or result.returncode != 0 or not (result.stdout or ""):
-                # Fallback: PowerShell Get-CimInstance, emit LIST-style output
-                # so the downstream parser below doesn't need to branch.
-                powershell = shutil.which("powershell") or shutil.which("pwsh")
-                if powershell is None:
-                    return []
-                ps_cmd = (
-                    "Get-CimInstance Win32_Process | "
-                    "ForEach-Object { "
-                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
-                    "  'ProcessId=' + $_.ProcessId; "
-                    "  '' "
-                    "}"
-                )
-                try:
-                    result = subprocess.run(
-                        [powershell, "-NoProfile", "-Command", ps_cmd],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                        timeout=15,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    return []
-                used_fallback = True
-            if result.returncode != 0 or result.stdout is None:
-                return []
-            current_cmd = ""
-            for line in result.stdout.split("\n"):
-                line = line.strip()
-                if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine=") :]
-                elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId=") :]
-                    if looks_like_gateway_command_line(current_cmd) and (
-                        all_profiles or _matches_current_profile(current_cmd)
+            psutil_scan_succeeded = False
+            try:
+                import psutil  # type: ignore
+
+                for proc in psutil.process_iter(["pid", "cmdline"]):
+                    try:
+                        info = proc.info
+                        pid = int(info.get("pid") or 0)
+                        cmdline = info.get("cmdline")
+                        if isinstance(cmdline, (list, tuple)):
+                            command = " ".join(str(part) for part in cmdline if part)
+                        elif isinstance(cmdline, str):
+                            command = cmdline
+                        else:
+                            command = ""
+                        if looks_like_gateway_command_line(command) and (
+                            all_profiles or _matches_current_profile(command)
+                        ):
+                            _append_unique_pid(pids, pid, exclude_pids)
+                    except (
+                        psutil.NoSuchProcess,
+                        psutil.AccessDenied,
+                        psutil.ZombieProcess,
+                        OSError,
+                        ValueError,
                     ):
-                        try:
-                            _append_unique_pid(pids, int(pid_str), exclude_pids)
-                        except ValueError:
-                            pass
-                    current_cmd = ""
+                        continue
+                psutil_scan_succeeded = True
+            except ImportError:
+                psutil_scan_succeeded = False
+            except Exception:
+                # If psutil itself fails unexpectedly, keep the legacy
+                # subprocess scanners as a best-effort fallback.  A successful
+                # psutil scan with zero matches is authoritative and must not
+                # spawn wmic/PowerShell, because that is the visible-flash path
+                # on hidden Windows gateway watchdog starts (#49602).
+                psutil_scan_succeeded = False
+
+            if not psutil_scan_succeeded:
+                # Last-resort scanners for unusual installs without a working
+                # psutil.  Hide the console for both helpers so the fallback
+                # does not recreate the Windows Terminal flash reported in
+                # #49602.
+                windows_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                wmic_path = shutil.which("wmic")
+                result = None
+                if wmic_path is not None:
+                    try:
+                        result = subprocess.run(
+                            [
+                                wmic_path,
+                                "process",
+                                "get",
+                                "ProcessId,CommandLine",
+                                "/FORMAT:LIST",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="ignore",
+                            timeout=10,
+                            creationflags=windows_no_window,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        result = None
+                if result is None or result.returncode != 0 or not (result.stdout or ""):
+                    # Fallback: PowerShell Get-CimInstance, emit LIST-style output
+                    # so the downstream parser below doesn't need to branch.
+                    powershell = shutil.which("powershell") or shutil.which("pwsh")
+                    if powershell is None:
+                        return []
+                    ps_cmd = (
+                        "Get-CimInstance Win32_Process | "
+                        "ForEach-Object { "
+                        "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                        "  'ProcessId=' + $_.ProcessId; "
+                        "  '' "
+                        "}"
+                    )
+                    try:
+                        result = subprocess.run(
+                            [powershell, "-NoProfile", "-Command", ps_cmd],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="ignore",
+                            timeout=15,
+                            creationflags=windows_no_window,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        return []
+                if result.returncode != 0 or result.stdout is None:
+                    return []
+                current_cmd = ""
+                for line in result.stdout.split("\n"):
+                    line = line.strip()
+                    if line.startswith("CommandLine="):
+                        current_cmd = line[len("CommandLine=") :]
+                    elif line.startswith("ProcessId="):
+                        pid_str = line[len("ProcessId=") :]
+                        if looks_like_gateway_command_line(current_cmd) and (
+                            all_profiles or _matches_current_profile(current_cmd)
+                        ):
+                            try:
+                                _append_unique_pid(pids, int(pid_str), exclude_pids)
+                            except ValueError:
+                                pass
+                        current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
             # fall back to ps -A eww.

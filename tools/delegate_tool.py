@@ -608,6 +608,7 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 # optional hard cap for users who want one.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
+_BATCH_WAIT_PROGRESS_INTERVAL = 30.0  # seconds between parent-visible batch wait updates
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
@@ -792,6 +793,13 @@ def _build_child_progress_callback(
     pause) back by ``subagent_id``.  All are optional for backward compat —
     older callers that ignore them still produce a flat list on the TUI.
 
+    ``session_ref`` is an optional dict containing ``session_id`` (and optionally
+    ``title``/``source``).  When provided the child's session id is threaded
+    through every relayed event so the gateway can attribute events to the
+    correct child session.  Pass ``None`` when the child agent does not exist
+    yet at callback-build time — the session id can be injected later via
+    ``_inject_session_ref()`` on the returned callback object.
+
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
     """
@@ -809,6 +817,18 @@ def _build_child_progress_callback(
     _BATCH_SIZE = 5
     _batch: List[str] = []
     _tool_count = [0]  # per-subagent running counter (list for closure mutation)
+
+    # Shared mutable slot for child session_id — allows injection after
+    # the child AIAgent is constructed (when session_ref is absent at build time).
+    _child_session_id_state: List[Optional[str]] = [
+        session_ref.get("session_id") if session_ref else None
+    ]
+
+    def _inject_session_ref(child_agent) -> None:
+        """Inject child session id into an already-returned callback (for the
+        _build_child_agent call-site where the child doesn't exist at build time)."""
+        if child_agent is not None:
+            _child_session_id_state[0] = getattr(child_agent, "session_id", None)
 
     def _identity_kwargs() -> Dict[str, Any]:
         kw: Dict[str, Any] = {
@@ -832,6 +852,9 @@ def _build_child_progress_callback(
         if session_ref and session_ref.get("session_id"):
             kw["child_session_id"] = str(session_ref["session_id"])
         kw["tool_count"] = _tool_count[0]
+        child_sid = _child_session_id_state[0]
+        if child_sid is not None:
+            kw["child_session_id"] = child_sid
         return kw
 
     def _relay(
@@ -865,6 +888,17 @@ def _build_child_progress_callback(
 
         if event_type == "subagent.complete":
             _relay("subagent.complete", preview=preview, **kwargs)
+            return
+
+        if event_type == "subagent.progress":
+            text = preview or tool_name or ""
+            if spinner and text:
+                short = (text[:85] + "...") if len(text) > 85 else text
+                try:
+                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                except Exception as e:
+                    logger.debug("Spinner print_above failed: %s", e)
+            _relay("subagent.progress", preview=text, **kwargs)
             return
 
         if event_type == "subagent.text":
@@ -966,6 +1000,7 @@ def _build_child_progress_callback(
             _batch.clear()
 
     _callback._flush = _flush
+    _callback._inject_session_ref = _inject_session_ref
     return _callback
 
 
@@ -1261,6 +1296,12 @@ def _build_child_agent(
     parent_sid = getattr(parent_agent, "session_id", None)
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
+
+    # Inject child's session_id into the progress callback now that the child
+    # agent exists.  This is safe to call even when child_progress_cb is None
+    # (progress callback not needed) — the attribute lookup is conditional.
+    if child_progress_cb is not None:
+        child_progress_cb._inject_session_ref(child)
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1566,6 +1607,14 @@ def _run_single_child(
                 touch(desc)
             except Exception:
                 pass
+            if child_progress_cb:
+                try:
+                    child_progress_cb(
+                        "subagent.progress",
+                        preview=desc.replace("delegate_task: ", "", 1),
+                    )
+                except Exception as e:
+                    logger.debug("Progress callback heartbeat failed: %s", e)
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 
@@ -2343,6 +2392,36 @@ def delegate_task(
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+        parent_progress_cb = getattr(parent_agent, "tool_progress_callback", None)
+
+        def _emit_batch_wait_update(pending_indices: List[int]) -> None:
+            if not pending_indices:
+                return
+            shown = pending_indices[:3]
+            labels = [
+                task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                for idx in shown
+            ]
+            more = len(pending_indices) - len(shown)
+            label_text = ", ".join(labels)
+            if more > 0:
+                label_text += f" (+{more} more)"
+            message = (
+                f"waiting for {len(pending_indices)} subagent"
+                f"{'s' if len(pending_indices) != 1 else ''}: {label_text}"
+            )
+            if spinner_ref:
+                try:
+                    spinner_ref.print_above(f"  … {message}")
+                except Exception:
+                    print(f"  … {message}")
+            else:
+                print(f"  … {message}")
+            if parent_progress_cb:
+                try:
+                    parent_progress_cb("subagent.progress", preview=f"🔀 {message}")
+                except Exception as e:
+                    logger.debug("Batch wait progress relay failed: %s", e)
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
@@ -2366,6 +2445,10 @@ def delegate_task(
             _child_by_index = {i: child for (i, _, child) in children}
 
             pending = set(futures.keys())
+            last_wait_update = 0.0
+            if pending:
+                _emit_batch_wait_update(sorted(futures[f] for f in pending))
+                last_wait_update = time.monotonic()
             while pending:
                 if getattr(parent_agent, "_interrupt_requested", False) is True:
                     # Parent interrupted — collect whatever finished and
@@ -2409,6 +2492,10 @@ def delegate_task(
                 done, pending = _cf_wait(
                     pending, timeout=0.5, return_when=FIRST_COMPLETED
                 )
+                now = time.monotonic()
+                if pending and now - last_wait_update >= _BATCH_WAIT_PROGRESS_INTERVAL:
+                    _emit_batch_wait_update(sorted(futures[f] for f in pending))
+                    last_wait_update = now
                 for future in done:
                     try:
                         entry = future.result()

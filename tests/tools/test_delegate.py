@@ -216,6 +216,57 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
 
+    @patch("tools.delegate_tool._load_config", return_value={"max_concurrent_children": 2, "max_iterations": 5})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_reports_pending_children_while_waiting(
+        self, mock_run, mock_build, mock_creds, mock_cfg
+    ):
+        """A quiet batch must still surface parent-visible waiting status."""
+        mock_creds.return_value = {
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "model": None,
+        }
+        mock_build.side_effect = [MagicMock(), MagicMock()]
+
+        def slow_child(task_index, goal, child, parent_agent):
+            time.sleep(0.65)
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": f"done {task_index}",
+                "api_calls": 1,
+                "duration_seconds": 0.65,
+            }
+
+        mock_run.side_effect = slow_child
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+        parent.tool_progress_callback = MagicMock()
+
+        result = json.loads(
+            delegate_task(
+                tasks=[{"goal": "slow terminal child"}, {"goal": "slow file child"}],
+                parent_agent=parent,
+            )
+        )
+
+        self.assertEqual(len(result["results"]), 2)
+        printed = "\n".join(
+            str(call.args[0]) for call in parent._delegate_spinner.print_above.call_args_list
+        )
+        self.assertIn("waiting", printed.lower())
+        self.assertIn("slow terminal child", printed)
+        progress_events = [
+            call for call in parent.tool_progress_callback.call_args_list
+            if call.args and call.args[0] == "subagent.progress"
+        ]
+        self.assertTrue(progress_events)
+
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
         mock_run.side_effect = [
@@ -1865,6 +1916,45 @@ class TestDelegateHeartbeat(unittest.TestCase):
             any("API call #5 completed" in desc for desc in touch_calls),
             f"Heartbeat should include last_activity_desc: {touch_calls}")
 
+    def test_heartbeat_relays_visible_progress_while_child_tool_is_still_running(self):
+        """Heartbeat updates must be visible, not only an internal activity touch."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        parent._touch_activity = MagicMock()
+        child = MagicMock()
+        child.tool_progress_callback = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": "terminal",
+            "api_call_count": 2,
+            "max_iterations": 50,
+            "last_activity_desc": "executing tool: terminal",
+        }
+
+        def slow_run(**kwargs):
+            time.sleep(0.18)
+            return {"final_response": "done", "completed": True, "api_calls": 2}
+
+        child.run_conversation.side_effect = slow_run
+
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test visible progress",
+                child=child,
+                parent_agent=parent,
+            )
+
+        progress_events = [
+            call for call in child.tool_progress_callback.call_args_list
+            if call.args and call.args[0] == "subagent.progress"
+        ]
+        self.assertTrue(progress_events)
+        self.assertTrue(
+            any("terminal" in str(call) for call in progress_events),
+            f"Progress updates should name the running tool: {progress_events}",
+        )
+
     def test_heartbeat_does_not_trip_idle_stale_while_inside_tool(self):
         """A long-running tool (no iteration advance, but current_tool set)
         must not be flagged stale at the idle threshold.
@@ -1883,6 +1973,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         parent._touch_activity = lambda desc: touch_calls.append(desc)
 
         child = MagicMock()
+        child.tool_progress_callback = None
         # Child is stuck inside a single terminal call for the whole run.
         # api_call_count never advances, current_tool is always set.
         child.get_activity_summary.return_value = {
@@ -1896,7 +1987,9 @@ class TestDelegateHeartbeat(unittest.TestCase):
             # Long enough to exceed the OLD idle threshold (5 cycles) at
             # the patched interval, but shorter than the new in-tool
             # threshold.
-            time.sleep(0.4)
+            deadline = time.monotonic() + 1.5
+            while len(touch_calls) <= 6 and time.monotonic() < deadline:
+                time.sleep(0.01)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -1905,7 +1998,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         # the in-tool branch takes effect: with a 0.05s interval and the
         # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
         # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
+        # continuing until the child has seen more than the old cap.
         with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
             _run_single_child(
                 task_index=0,
@@ -1915,12 +2008,12 @@ class TestDelegateHeartbeat(unittest.TestCase):
             )
 
         # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
+        # would cap at ~5. With the in-tool threshold (40 cycles = 2.0s),
+        # we should see substantially more heartbeats before the child returns.
         self.assertGreater(
             len(touch_calls), 6,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches at 0.05s interval",
         )
 
 
@@ -2157,6 +2250,35 @@ class TestDelegateEventEnum(unittest.TestCase):
         parent.tool_progress_callback.assert_called_once()
         # No '⚡' tool-start emoji should appear — that's the pre-fix bug.
         self.assertFalse(any("⚡" in str(c) for c in calls))
+
+    def test_progress_callback_relays_direct_subagent_progress_with_identity(self):
+        """Heartbeat-visible progress should relay through the child callback."""
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+        parent.tool_progress_callback = MagicMock()
+
+        child_session = {
+            "session_id": "child-session-123",
+            "title": "child task",
+            "source": "delegate",
+        }
+        cb = _build_child_progress_callback(
+            0,
+            "test goal",
+            parent,
+            task_count=1,
+            session_ref=child_session,
+        )
+        self.assertIsNotNone(cb)
+
+        cb("subagent.progress", preview="subagent 0 working: terminal")
+
+        parent.tool_progress_callback.assert_called_once()
+        args, kwargs = parent.tool_progress_callback.call_args
+        self.assertEqual(args[0], "subagent.progress")
+        self.assertEqual(kwargs["child_session_id"], "child-session-123")
+        self.assertEqual(kwargs["task_index"], 0)
+        self.assertIn("terminal", args[2])
 
 
 class TestConcurrencyDefaults(unittest.TestCase):

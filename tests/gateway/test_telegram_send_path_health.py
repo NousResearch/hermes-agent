@@ -87,3 +87,31 @@ async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
     with patch("gateway.platforms.telegram.asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
     assert adapter._send_path_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_secure_send_sets_protect_content():
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "123",
+        "secret hello",
+        metadata={"secure_message": {"protect_content": True}},
+    )
+
+    assert result.success is True
+    assert adapter._bot is not None
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert kwargs["protect_content"] is True
+
+
+@pytest.mark.asyncio
+async def test_normal_send_omits_protect_content():
+    adapter = _make_adapter()
+
+    result = await adapter.send("123", "hello")
+
+    assert result.success is True
+    assert adapter._bot is not None
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert "protect_content" not in kwargs

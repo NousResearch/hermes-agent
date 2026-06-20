@@ -507,3 +507,13 @@ class TestRichAwareOverflow:
         assert consumer._message_id == "final1"
         assert consumer._preview_message_ids == set()
         assert consumer.final_response_sent is True
+
+
+def test_stream_clean_for_display_redacts_secure_marker_payload():
+    cleaned = GatewayStreamConsumer._clean_for_display(
+        "prefix [[secure]]secret123[[/secure]] suffix"
+    )
+
+    assert "secret123" not in cleaned
+    assert "[redacted — secure message omitted from stream]" in cleaned
+    assert cleaned.endswith(" suffix")

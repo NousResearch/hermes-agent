@@ -100,6 +100,45 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+def _secure_marker_bounds() -> tuple[str, str]:
+    """Return configured secure marker bounds, falling back to defaults."""
+    start = "[[secure]]"
+    end = "[[/secure]]"
+    try:
+        from hermes_cli.config import load_config as _load_config
+        cfg = _load_config()
+        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+        secure = display.get("secure_messages", {}) if isinstance(display, dict) else {}
+        if isinstance(secure, dict):
+            start = str(secure.get("marker_start") or start)
+            end = str(secure.get("marker_end") or end)
+    except Exception:
+        pass
+    return start, end
+
+
+def _redact_secure_markers(text: Any) -> Any:
+    """Remove secure-marker payloads from durable agent records."""
+    if not isinstance(text, str):
+        return text
+    start, end = _secure_marker_bounds()
+    if start not in text:
+        return text
+    return re.sub(
+        rf"{re.escape(start)}.*?(?:{re.escape(end)}|$)",
+        "[redacted — secure message omitted from transcript]",
+        text,
+        flags=re.DOTALL,
+    )
+
+
+def _redact_secure_markers_in_messages(messages: list) -> None:
+    """In-place redaction for assistant transcript messages before persistence."""
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            msg["content"] = _redact_secure_markers(msg.get("content"))
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):

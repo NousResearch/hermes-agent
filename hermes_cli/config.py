@@ -1630,6 +1630,22 @@ DEFAULT_CONFIG = {
         # responses and content messages are never touched.  Default 0
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
+        # Sensitive final replies can opt into a best-effort secure delivery
+        # path by returning gateway.platforms.base.SecureReply or wrapping the
+        # visible text in [[secure]]...[[/secure]]. Gateway sends then apply
+        # platform capabilities where available: Telegram/Discord spoiler
+        # formatting, Telegram protect_content, and post-TTL redaction by edit
+        # or delete. Defaults keep automatic marker behavior off unless a
+        # handler explicitly returns SecureReply/marker text.
+        "secure_messages": {
+            "enabled": False,
+            "ttl_seconds": 300,
+            "spoiler": True,
+            "protect_content": True,
+            "redacted_text": "[redacted — secure message expired]",
+            "marker_start": "[[secure]]",
+            "marker_end": "[[/secure]]",
+        },
         # Per-platform display/streaming overrides. Each key is a gateway
         # platform ("telegram", "discord", "slack", …) mapping to a dict of
         # display settings that override the global value for that platform
@@ -1882,6 +1898,11 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Warm memory is durable and retrievable, but never injected into
+        # the system prompt. It absorbs useful overflow without prompt bloat.
+        "warm_memory_enabled": True,
+        "warm_memory_char_limit": 50000,
+        "warm_user_char_limit": 25000,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
@@ -2293,6 +2314,12 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Persistent memory policy for LLM-driven cron jobs:
+        #   off       — historical behaviour; no MEMORY.md / USER.md injection
+        #   read_only — inject memory snapshot, but keep memory writes disabled
+        #   full      — inject memory and allow memory tools subject to toolsets
+        # Per-job memory_mode can override this for continuity jobs.
+        "memory_mode": "off",
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).

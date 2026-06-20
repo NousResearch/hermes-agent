@@ -29,6 +29,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
+    SecureReply,
     MessageEvent,
     MessageType,
     SendResult,
@@ -365,3 +366,197 @@ async def test_process_message_plain_string_behaves_unchanged():
     adapter._send_with_retry.assert_called_once()
     assert adapter._send_with_retry.call_args.kwargs["content"] == "plain reply"
     assert adapter.deleted == []  # no auto-delete for plain replies
+
+
+class _EditCapableAdapter(_DeleteCapableAdapter):
+    """Adapter that can edit first, delete as fallback."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.edited: list[tuple[str, str, str]] = []
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+        self.edited.append((chat_id, message_id, content))
+        return SendResult(success=True, message_id=message_id)
+
+
+def _edit_adapter():
+    return _EditCapableAdapter(
+        PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM
+    )
+
+
+def test_unwrap_secure_reply_uses_explicit_metadata():
+    adapter = _delete_adapter()
+    text, meta = adapter._unwrap_secure(
+        SecureReply("pw=abc", ttl_seconds=45, redacted_text="pw=[expired]")
+    )
+    assert text == "pw=abc"
+    assert meta == {
+        "ttl_seconds": 45,
+        "redacted_text": "pw=[expired]",
+        "protect_content": True,
+        "spoiler": True,
+    }
+
+
+def test_unwrap_secure_marker_uses_config_defaults():
+    adapter = _delete_adapter()
+    with patch.object(
+        adapter,
+        "_get_secure_message_config",
+        return_value={
+            "ttl_seconds": 12,
+            "redacted_text": "[gone]",
+            "protect_content": False,
+            "spoiler": False,
+            "marker_start": "[[secure]]",
+            "marker_end": "[[/secure]]",
+        },
+    ):
+        text, meta = adapter._unwrap_secure("[[secure]]token=abc[[/secure]]")
+    assert text == "token=abc"
+    assert meta["ttl_seconds"] == 12
+    assert meta["redacted_text"] == "[gone]"
+    assert meta["protect_content"] is False
+    assert meta["spoiler"] is False
+
+
+def test_render_secure_content_spoiler_for_telegram_and_neutralizes_nested_delimiters():
+    adapter = _delete_adapter()
+    rendered = adapter._render_secure_content("alpha || beta", spoiler=True)
+    assert rendered.startswith("||") and rendered.endswith("||")
+    assert "|\u200b|" in rendered
+
+
+@pytest.mark.asyncio
+async def test_schedule_secure_redaction_prefers_edit_over_delete():
+    adapter = _edit_adapter()
+    import gateway.platforms.base as base_module
+
+    _real_sleep = base_module.asyncio.sleep
+
+    async def _fake_sleep(duration):
+        await _real_sleep(0)
+
+    with patch.object(base_module.asyncio, "sleep", _fake_sleep):
+        adapter._schedule_secure_redaction(
+            chat_id="42",
+            message_id="m-2",
+            ttl_seconds=5,
+            redacted_text="[expired]",
+        )
+        for _ in range(5):
+            await _real_sleep(0)
+
+    assert adapter.edited == [("42", "m-2", "[expired]")]
+    assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_process_message_secure_reply_wraps_and_schedules_redaction():
+    adapter = _edit_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-secure")
+    )
+
+    async def _handler(evt):
+        return SecureReply("Password: abc", ttl_seconds=5, redacted_text="Password: [expired]")
+
+    adapter.set_message_handler(_handler)
+    event = _make_event()
+    session_key = "agent:main:telegram:private:42"
+
+    import gateway.platforms.base as base_module
+    _real_sleep = base_module.asyncio.sleep
+
+    async def _fake_sleep(duration):
+        await _real_sleep(0)
+
+    with patch.object(base_module.asyncio, "sleep", _fake_sleep), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    adapter._send_with_retry.assert_called_once()
+    kwargs = adapter._send_with_retry.call_args.kwargs
+    assert kwargs["content"] == "||Password: abc||"
+    assert kwargs["metadata"]["secure_message"]["protect_content"] is True
+    assert ("42", "sent-secure", "Password: [expired]") in adapter.edited
+
+
+@pytest.mark.asyncio
+async def test_secure_reply_media_directive_is_not_uploaded_as_permanent_attachment():
+    adapter = _edit_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-secure")
+    )
+    adapter.send_multiple_images = AsyncMock()
+    adapter.send_document = AsyncMock()
+
+    async def _handler(evt):
+        return SecureReply("MEDIA:/tmp/secret.png", ttl_seconds=5)
+
+    adapter.set_message_handler(_handler)
+    event = _make_event()
+    session_key = "agent:main:telegram:private:42"
+
+    import gateway.platforms.base as base_module
+    _real_sleep = base_module.asyncio.sleep
+
+    async def _fake_sleep(duration):
+        await _real_sleep(0)
+
+    with patch.object(base_module.asyncio, "sleep", _fake_sleep), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    adapter._send_with_retry.assert_called_once()
+    sent = adapter._send_with_retry.call_args.kwargs["content"]
+    assert "MEDIA:" not in sent
+    assert "secure attachment omitted" in sent
+    adapter.send_multiple_images.assert_not_called()
+    adapter.send_document.assert_not_called()
+    assert any(edit[2] == "[redacted — secure message expired]" for edit in adapter.edited)
+
+
+@pytest.mark.asyncio
+async def test_secure_reply_bare_local_file_path_is_not_uploaded_as_permanent_attachment():
+    adapter = _edit_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-secure")
+    )
+    adapter.send_multiple_images = AsyncMock()
+    adapter.send_document = AsyncMock()
+
+    async def _handler(evt):
+        return SecureReply("/tmp/secret.png", ttl_seconds=5)
+
+    adapter.set_message_handler(_handler)
+    event = _make_event()
+    session_key = "agent:main:telegram:private:42"
+
+    import gateway.platforms.base as base_module
+    _real_sleep = base_module.asyncio.sleep
+
+    async def _fake_sleep(duration):
+        await _real_sleep(0)
+
+    with patch.object(base_module.asyncio, "sleep", _fake_sleep), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    adapter._send_with_retry.assert_called_once()
+    sent = adapter._send_with_retry.call_args.kwargs["content"]
+    assert "/tmp/secret.png" in sent
+    adapter.send_multiple_images.assert_not_called()
+    adapter.send_document.assert_not_called()
+    assert any(edit[2] == "[redacted — secure message expired]" for edit in adapter.edited)

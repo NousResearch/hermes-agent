@@ -48,7 +48,7 @@ def finalize_turn(
     Lifted verbatim from ``run_conversation`` (the region after the main agent
     loop). See module docstring.
     """
-    from agent.conversation_loop import logger
+    from agent.conversation_loop import logger, _redact_secure_markers, _redact_secure_markers_in_messages
 
     if final_response is None and (
         api_call_count >= agent.max_iterations
@@ -128,6 +128,12 @@ def finalize_turn(
         and not failed
     )
 
+    # Redact before every durable save path (trajectory samples, JSONL logs,
+    # SQLite, and external-memory sync). The visible gateway reply is produced
+    # from ``final_response`` elsewhere; this mutation affects only persisted
+    # agent records.
+    _redact_secure_markers_in_messages(messages)
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
     agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
@@ -140,6 +146,7 @@ def finalize_turn(
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
+    _redact_secure_markers_in_messages(messages)
     agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
@@ -297,7 +304,7 @@ def finalize_turn(
                 task_id=effective_task_id,
                 turn_id=turn_id,
                 user_message=original_user_message,
-                assistant_response=final_response,
+                assistant_response=_redact_secure_markers(final_response),
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
@@ -383,7 +390,7 @@ def finalize_turn(
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
-        final_response=final_response,
+        final_response=_redact_secure_markers(final_response),
         interrupted=interrupted,
         messages=messages,
     )

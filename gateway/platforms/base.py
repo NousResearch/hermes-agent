@@ -1614,6 +1614,43 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+class SecureReply(str):
+    """Sensitive reply that should expire/redact after a TTL.
+
+    This is the content-bearing counterpart to :class:`EphemeralReply`:
+    the message remains visible only long enough for the user to copy it,
+    then the adapter prefers editing the bot-owned message to a redacted
+    audit marker, falling back to delete where edit is unavailable.  Platforms
+    with no edit/delete support still get transcript metadata and visible
+    text that says expiry is best-effort rather than pretending magic exists.
+    """
+
+    ttl_seconds: Optional[int]
+    redacted_text: str
+    protect_content: bool
+    spoiler: bool
+
+    def __new__(
+        cls,
+        text: str,
+        ttl_seconds: Optional[int] = None,
+        *,
+        redacted_text: Optional[str] = None,
+        protect_content: bool = True,
+        spoiler: bool = True,
+    ):
+        instance = super().__new__(cls, text)
+        instance.ttl_seconds = ttl_seconds
+        instance.redacted_text = redacted_text or "[redacted — secure message expired]"
+        instance.protect_content = bool(protect_content)
+        instance.spoiler = bool(spoiler)
+        return instance
+
+    @property
+    def text(self) -> str:
+        return str.__str__(self)
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -1699,7 +1736,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 # Type for message handlers.  Handlers may return a plain string (normal
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply", "SecureReply"]]]]
 
 
 def resolve_channel_prompt(
@@ -2442,6 +2479,146 @@ class BasePlatformAdapter(ABC):
             return int(raw)
         except (TypeError, ValueError):
             return 0
+
+    def _get_secure_message_config(self) -> dict:
+        """Return merged global/per-platform secure-message config.
+
+        Config lives under ``display.secure_messages`` with optional per-platform
+        overrides under ``display.platforms.<platform>.secure_messages``.  The
+        feature is opt-in; marker-based ``SecureReply`` still works even when
+        global auto-detection is disabled.
+        """
+        base = {
+            "enabled": False,
+            "ttl_seconds": 300,
+            "spoiler": True,
+            "protect_content": True,
+            "redacted_text": "[redacted — secure message expired]",
+            "marker_start": "[[secure]]",
+            "marker_end": "[[/secure]]",
+        }
+        try:
+            from hermes_cli.config import load_config as _load_config
+            cfg = _load_config()
+        except Exception:
+            return base
+        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(display, dict):
+            return base
+        global_cfg = display.get("secure_messages")
+        if isinstance(global_cfg, dict):
+            base.update(global_cfg)
+        platforms = display.get("platforms", {})
+        platform_name = _platform_name(getattr(self, "platform", None) or getattr(self, "name", None))
+        if isinstance(platforms, dict):
+            per_platform = platforms.get(platform_name)
+            if isinstance(per_platform, dict):
+                platform_cfg = per_platform.get("secure_messages")
+                if isinstance(platform_cfg, dict):
+                    base.update(platform_cfg)
+        return base
+
+    def _supports_secure_edit(self) -> bool:
+        """Whether this adapter has a real edit-message implementation."""
+        return type(self).edit_message is not BasePlatformAdapter.edit_message
+
+    def _supports_secure_delete(self) -> bool:
+        """Whether this adapter has a real delete-message implementation."""
+        return type(self).delete_message is not BasePlatformAdapter.delete_message
+
+    def _render_secure_content(self, text: str, *, spoiler: bool = True) -> str:
+        """Apply best-effort platform hiding without claiming secrecy.
+
+        Telegram and Discord understand ``||spoiler||``. Other platforms leave
+        the content as-is and rely on expiry/redaction where available.
+        """
+        if not spoiler:
+            return text
+        platform_name = _platform_name(getattr(self, "platform", None) or getattr(self, "name", None))
+        if platform_name in {"telegram", "discord"}:
+            safe = str(text).replace("||", "|\u200b|")
+            return f"||{safe}||"
+        return text
+
+    def _extract_secure_marker(self, text: str) -> tuple[str, bool]:
+        """Strip ``[[secure]]...[[/secure]]`` marker if present."""
+        cfg = self._get_secure_message_config()
+        start = str(cfg.get("marker_start") or "[[secure]]")
+        end = str(cfg.get("marker_end") or "[[/secure]]")
+        if not text or start not in text:
+            return text, False
+        stripped = text.replace(start, "", 1)
+        if end in stripped:
+            stripped = stripped.replace(end, "", 1)
+        return stripped.strip(), True
+
+    def _unwrap_secure(self, response: Any) -> tuple[Optional[str], Optional[dict]]:
+        """Unwrap SecureReply/marker text into content + secure metadata."""
+        cfg = self._get_secure_message_config()
+        if isinstance(response, SecureReply):
+            ttl = response.ttl_seconds
+            if ttl is None:
+                ttl = int(cfg.get("ttl_seconds") or 300)
+            return response.text, {
+                "ttl_seconds": int(ttl or 0),
+                "redacted_text": response.redacted_text,
+                "protect_content": bool(response.protect_content),
+                "spoiler": bool(response.spoiler),
+            }
+        if isinstance(response, str):
+            stripped, marked = self._extract_secure_marker(response)
+            if marked:
+                return stripped, {
+                    "ttl_seconds": int(cfg.get("ttl_seconds") or 300),
+                    "redacted_text": str(cfg.get("redacted_text") or "[redacted — secure message expired]"),
+                    "protect_content": bool(cfg.get("protect_content", True)),
+                    "spoiler": bool(cfg.get("spoiler", True)),
+                }
+        return response, None
+
+    def _schedule_secure_redaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        ttl_seconds: int,
+        redacted_text: str,
+        *,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """After TTL, replace a sensitive message with a redacted marker.
+
+        Prefer edit to preserve conversational context.  If edit is not
+        available but delete is, delete.  If neither exists, the message stays
+        visible; the caller can inspect capabilities and warn if needed.
+        """
+
+        async def _run_redact() -> None:
+            try:
+                await asyncio.sleep(max(1, int(ttl_seconds)))
+                if self._supports_secure_edit():
+                    result = await self.edit_message(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        content=redacted_text,
+                        finalize=True,
+                    )
+                    if getattr(result, "success", False):
+                        return
+                if self._supports_secure_delete():
+                    await self.delete_message(chat_id=chat_id, message_id=message_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(
+                    "[%s] Secure redaction failed for %s/%s: %s",
+                    self.name, chat_id, message_id, e,
+                )
+
+        coro = _run_redact()
+        try:
+            asyncio.create_task(coro)
+        except RuntimeError:
+            coro.close()
 
     def _schedule_ephemeral_delete(
         self,
@@ -4197,11 +4374,11 @@ class BasePlatformAdapter(ABC):
             # Slash-command handlers may return an EphemeralReply sentinel to
             # request that their reply message auto-delete after a TTL (used
             # for system notices like "✨ New session started!" that the user
-            # doesn't need to keep in the thread).  Unwrap here so all the
-            # downstream extract_media / text-processing logic sees a plain
-            # string, and remember the TTL + platform capability so the
-            # post-send block can schedule the deletion.
+            # doesn't need to keep in the thread).  SecureReply and the
+            # [[secure]]...[[/secure]] marker request best-effort platform
+            # hiding plus post-TTL redaction/deletion.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            response, _secure_meta = self._unwrap_secure(response)
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
@@ -4235,22 +4412,35 @@ class BasePlatformAdapter(ABC):
                 # Pre-extract snapshot for the #29346 recovery/invariant below.
                 _response_pre_extract = response
 
-                # Extract MEDIA:<path> tags (from TTS tool) before other processing
-                media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                # Extract MEDIA:<path> tags (from TTS tool) before other processing.
+                # Secure replies are intentionally text-only for now: native
+                # attachments cannot be edited on every platform after TTL, so
+                # extracting MEDIA/image/local-file payloads would leave a
+                # supposedly secure artifact permanently visible.
+                if _secure_meta:
+                    media_files = []
+                else:
+                    media_files, response = self.extract_media(response)
+                    media_files = self.filter_media_delivery_paths(media_files)
 
                 # Extract image URLs and send them as native platform attachments
-                images, text_content = self.extract_images(response)
+                if _secure_meta:
+                    images = []
+                    text_content = response
+                else:
+                    images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561).
                 # _strip_media_directives shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag
                 # with an unknown extension is intentionally left in the body for
                 # extract_local_files below to pick up rather than silently dropped (#34517).
                 text_content = _strip_media_directives(text_content).strip()
+                if _secure_meta and not text_content:
+                    text_content = "[secure attachment omitted — native secure media expiry is not supported]"
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
                 local_files = []
-                if not is_ephemeral_response:
+                if not (is_ephemeral_response or _secure_meta):
                     # Auto-detect bare local file paths for native media delivery
                     # (helps small models that don't use MEDIA: syntax). Skip
                     # system/command notices so config paths stay visible text
@@ -4336,8 +4526,15 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
+                    if _secure_meta:
+                        text_content = self._render_secure_content(
+                            text_content,
+                            spoiler=bool(_secure_meta.get("spoiler", True)),
+                        )
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
+                    if _secure_meta:
+                        _final_thread_metadata["secure_message"] = dict(_secure_meta)  # type: ignore[index]
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
@@ -4359,6 +4556,19 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
+                        )
+                    if (
+                        _secure_meta
+                        and int(_secure_meta.get("ttl_seconds") or 0) > 0
+                        and result.success
+                        and result.message_id
+                    ):
+                        self._schedule_secure_redaction(
+                            chat_id=event.source.chat_id,
+                            message_id=result.message_id,
+                            ttl_seconds=int(_secure_meta.get("ttl_seconds") or 0),
+                            redacted_text=str(_secure_meta.get("redacted_text") or "[redacted — secure message expired]"),
+                            metadata=_thread_metadata,
                         )
 
                 # Human-like pacing delay between text and media

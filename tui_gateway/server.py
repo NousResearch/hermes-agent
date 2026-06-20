@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -4144,6 +4145,42 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
     }
 
 
+def _secure_marker_bounds_for_local() -> tuple[str, str]:
+    start = "[[secure]]"
+    end = "[[/secure]]"
+    try:
+        from hermes_cli.config import load_config as _load_config
+        cfg = _load_config()
+        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+        secure = display.get("secure_messages", {}) if isinstance(display, dict) else {}
+        if isinstance(secure, dict):
+            start = str(secure.get("marker_start") or start)
+            end = str(secure.get("marker_end") or end)
+    except Exception:
+        pass
+    return start, end
+
+
+def _redact_secure_markers_for_local(text: Any) -> Any:
+    """Redact secure marker blocks for local/TUI display/history.
+
+    Messaging adapters can use platform controls plus TTL redaction. The local
+    TUI has no remote message to edit later, so it never displays/persists the
+    marked secret body in the first place.
+    """
+    if not isinstance(text, str):
+        return text
+    start, end = _secure_marker_bounds_for_local()
+    if start not in text:
+        return text
+    return re.sub(
+        rf"{re.escape(start)}.*?(?:{re.escape(end)}|$)",
+        "[redacted — secure message omitted from local transcript]",
+        text,
+        flags=re.DOTALL,
+    )
+
+
 def _append_inflight_delta(session: dict, delta: Any) -> None:
     text = "" if delta is None else str(delta)
     if not text:
@@ -6488,11 +6525,26 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 else:
                     run_message = _enrich_with_attached_images(prompt, images)
 
+            _secure_stream = {"raw": "", "emitted": ""}
+
             def _stream(delta):
+                delta_text = "" if delta is None else str(delta)
+                _secure_stream["raw"] += delta_text
+                redacted_stream = _redact_secure_markers_for_local(_secure_stream["raw"])
+                emitted = _secure_stream["emitted"]
+                if isinstance(redacted_stream, str) and redacted_stream.startswith(emitted):
+                    safe_delta = redacted_stream[len(emitted):]
+                    _secure_stream["emitted"] = redacted_stream
+                else:
+                    safe_delta = _redact_secure_markers_for_local(delta_text)
+                    if isinstance(safe_delta, str):
+                        _secure_stream["emitted"] += safe_delta
+                if not safe_delta:
+                    return
                 with session["history_lock"]:
-                    _append_inflight_delta(session, delta)
-                payload = {"text": delta}
-                if streamer and (r := streamer.feed(delta)) is not None:
+                    _append_inflight_delta(session, safe_delta)
+                payload = {"text": safe_delta}
+                if streamer and (r := streamer.feed(safe_delta)) is not None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
@@ -6511,10 +6563,18 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
+                    redacted_messages = []
+                    for _msg in result["messages"]:
+                        if isinstance(_msg, dict) and _msg.get("role") == "assistant":
+                            _copy = dict(_msg)
+                            _copy["content"] = _redact_secure_markers_for_local(_copy.get("content"))
+                            redacted_messages.append(_copy)
+                        else:
+                            redacted_messages.append(_msg)
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
-                            session["history"] = result["messages"]
+                            session["history"] = redacted_messages
                             session["history_version"] = history_version + 1
                         else:
                             # History mutated externally during the turn
@@ -6546,7 +6606,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     sid, session, clear_pending_title=False, restart_slash_worker=True,
                 )
 
-                raw = result.get("final_response", "")
+                raw = _redact_secure_markers_for_local(result.get("final_response", ""))
                 status = (
                     "interrupted"
                     if result.get("interrupted")

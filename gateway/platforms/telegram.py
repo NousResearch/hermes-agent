@@ -546,6 +546,17 @@ class TelegramAdapter(BasePlatformAdapter):
             return {}
         return {"disable_notification": True}
 
+    def _telegram_secure_kwargs(self, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Return Telegram-specific secure-delivery kwargs.
+
+        ``protect_content`` prevents Telegram clients from forwarding/saving the
+        bot-owned message. It is not secrecy; it is a useful seatbelt.
+        """
+        secure = metadata.get("secure_message") if isinstance(metadata, dict) else None
+        if isinstance(secure, dict) and secure.get("protect_content"):
+            return {"protect_content": True}
+        return {}
+
     def _is_callback_user_authorized(
         self,
         user_id: str,
@@ -1203,6 +1214,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # which must not be sent as a stray field on the raw endpoint.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
+        payload.update(self._telegram_secure_kwargs(metadata))
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
         if reply_to_id is not None:
@@ -2507,6 +2519,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **self._telegram_secure_kwargs(metadata),
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -2521,6 +2534,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **self._telegram_secure_kwargs(metadata),
                                 )
                             else:
                                 raise
@@ -2998,6 +3012,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **self._telegram_secure_kwargs(metadata),
                             )
                             break
                         except Exception as _retry_err:

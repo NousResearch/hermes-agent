@@ -313,6 +313,16 @@ def test_write_json_drops_detached_ws_frames(monkeypatch):
         server._sessions.pop("detached-sid", None)
 
 
+def test_tui_secure_marker_redacts_local_display_and_history_text():
+    text = "Password: [[secure]]abc123[[/secure]] after"
+
+    redacted = server._redact_secure_markers_for_local(text)
+
+    assert "abc123" not in redacted
+    assert "[redacted — secure message omitted from local transcript]" in redacted
+    assert redacted.endswith(" after")
+
+
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     redact_module = types.ModuleType("agent.redact")
 

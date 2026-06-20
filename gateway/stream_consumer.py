@@ -758,8 +758,36 @@ class GatewayStreamConsumer:
     _MEDIA_RE = MEDIA_TAG_CLEANUP_RE
 
     @staticmethod
+    def _secure_marker_bounds() -> tuple[str, str]:
+        start = "[[secure]]"
+        end = "[[/secure]]"
+        try:
+            from hermes_cli.config import load_config as _load_config
+            cfg = _load_config()
+            display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+            secure = display.get("secure_messages", {}) if isinstance(display, dict) else {}
+            if isinstance(secure, dict):
+                start = str(secure.get("marker_start") or start)
+                end = str(secure.get("marker_end") or end)
+        except Exception:
+            pass
+        return start, end
+
+    @staticmethod
+    def _redact_secure_for_display(text: str) -> str:
+        start, end = GatewayStreamConsumer._secure_marker_bounds()
+        if start not in text:
+            return text
+        return re.sub(
+            rf"{re.escape(start)}.*?(?:{re.escape(end)}|$)",
+            "[redacted — secure message omitted from stream]",
+            text,
+            flags=re.DOTALL,
+        )
+
+    @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip MEDIA directives and internal markers from text before display.
 
         The streaming path delivers raw text chunks that may include
         ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
@@ -768,6 +796,7 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
+        text = GatewayStreamConsumer._redact_secure_for_display(text)
         if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")

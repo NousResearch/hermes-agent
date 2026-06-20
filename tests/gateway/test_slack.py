@@ -3530,6 +3530,61 @@ class TestSlackReplyToText:
         assert not msg_event.reply_to_message_id
 
 
+class TestSlackPermalinkThreadContext:
+    """Slack permalinks in a prompt should be expanded into thread context.
+
+    This lets users paste a Slack thread URL from another channel and ask the
+    bot to inspect it, instead of requiring them to manually paste the thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_slack_thread_permalink_is_fetched_and_injected(self, adapter):
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1777973339.367899",
+                    "user": "U_PM",
+                    "text": "Need leave calendar adoption on web and app",
+                },
+                {
+                    "ts": "1777979593.412619",
+                    "user": "U_PM",
+                    "text": "Please suggest metrics for web vs mobile adoption",
+                },
+            ]
+        })
+
+        event = {
+            "channel": "C_CURRENT",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": (
+                "<@U_BOT> please read "
+                "https://staffany.slack.com/archives/C01D9TLLLAJ/"
+                "p1777979593412619?thread_ts=1777973339.367899&amp;cid=C01D9TLLLAJ"
+            ),
+            "ts": "2000000000.000001",
+            "team": "T123",
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Kai Yi")
+        ):
+            await adapter._handle_slack_message(event)
+
+        adapter._app.client.conversations_replies.assert_awaited_once_with(
+            channel="C01D9TLLLAJ",
+            ts="1777973339.367899",
+            limit=31,
+            inclusive=True,
+        )
+        assert adapter.handle_message.call_args is not None
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Linked Slack thread context" in msg_event.text
+        assert "Need leave calendar adoption on web and app" in msg_event.text
+        assert "Please suggest metrics for web vs mobile adoption" in msg_event.text
+
+
 # ---------------------------------------------------------------------------
 # Slash-command ephemeral ack and routing (#18182)
 # ---------------------------------------------------------------------------

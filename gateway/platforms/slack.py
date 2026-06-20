@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import html
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
+from urllib.parse import parse_qs, urlsplit
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -199,6 +201,49 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
             _walk_elements(block.get("elements", []))
 
     return "\n".join(parts)
+
+
+_SLACK_PERMALINK_RE = re.compile(
+    r"https?://[^\s<>|)]+/archives/([A-Z0-9]+)/p(\d{16})(?:\?[^\s<>|)]*)?"
+)
+
+
+def _slack_permalink_message_ts(packed_ts: str) -> str:
+    """Convert Slack permalink ``p`` timestamps into API timestamps.
+
+    Slack permalinks encode ``1777979593.412619`` as
+    ``p1777979593412619``. The first 10 digits are Unix seconds; the
+    remaining 6 digits are microseconds.
+    """
+    return f"{packed_ts[:10]}.{packed_ts[10:]}"
+
+
+def _extract_slack_permalink_refs(text: str, max_links: int = 3) -> List[Tuple[str, str]]:
+    """Extract ``(channel_id, thread_ts)`` pairs from Slack permalinks.
+
+    If the permalink points to a reply, Slack includes ``thread_ts=...`` in
+    the query string. Use that parent timestamp so ``conversations.replies``
+    fetches the full thread; otherwise use the permalink message timestamp.
+    """
+    if not text:
+        return []
+
+    refs: List[Tuple[str, str]] = []
+    seen: set[Tuple[str, str]] = set()
+    for match in _SLACK_PERMALINK_RE.finditer(html.unescape(text)):
+        channel_id = match.group(1)
+        message_ts = _slack_permalink_message_ts(match.group(2))
+        url = match.group(0)
+        query = parse_qs(urlsplit(url).query)
+        thread_ts = (query.get("thread_ts") or [message_ts])[0] or message_ts
+        ref = (channel_id, thread_ts)
+        if ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+        if len(refs) >= max_links:
+            break
+    return refs
 
 
 def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
@@ -2538,6 +2583,13 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
+        linked_thread_context = await self._fetch_linked_slack_thread_contexts(
+            text,
+            team_id=team_id,
+        )
+        if linked_thread_context:
+            text = linked_thread_context + text
+
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
         if is_thread_reply and not self._has_active_session_for_thread(
@@ -3302,6 +3354,52 @@ class SlackAdapter(BasePlatformAdapter):
         # (approval state already consumed by atomic pop above)
 
     # ----- Thread context fetching -----
+
+    async def _fetch_linked_slack_thread_contexts(
+        self, text: str, team_id: str = "", max_links: int = 3,
+    ) -> str:
+        """Fetch context for Slack thread permalinks pasted into a message.
+
+        Gateway sessions only include the current Slack thread. When a user
+        pastes a permalink to another Slack thread, explicitly hydrate that
+        referenced thread through ``conversations.replies`` so the agent can
+        answer questions about it without requiring the user to copy/paste the
+        whole discussion.
+        """
+        refs = _extract_slack_permalink_refs(text, max_links=max_links)
+        if not refs:
+            return ""
+
+        parts: List[str] = []
+        for channel_id, thread_ts in refs:
+            try:
+                content = await self._fetch_thread_context(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    current_ts="",
+                    team_id=team_id,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[Slack] Failed to fetch linked thread %s/%s: %s",
+                    channel_id,
+                    thread_ts,
+                    exc,
+                )
+                continue
+
+            if not content:
+                continue
+            content = content.replace(
+                "[Thread context — prior messages in this thread (not yet in conversation history):]",
+                f"[Linked Slack thread context from {channel_id}/{thread_ts}:]",
+                1,
+            )
+            parts.append(content.rstrip())
+
+        if not parts:
+            return ""
+        return "\n".join(parts) + "\n\n"
 
     async def _fetch_thread_context(
         self,

@@ -239,3 +239,71 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+
+# ---------------------------------------------------------------------------
+# Token limit truncation retry
+# ---------------------------------------------------------------------------
+
+
+class _FakeClientTokenLimit:
+    """Fake client that raises INPUT_TOKEN_LIMIT_EXCEEDED on first add, succeeds on second."""
+
+    def __init__(self):
+        self.add_calls = []
+        self._fail_first = True
+
+    def add(self, messages, **kwargs):
+        self.add_calls.append({"messages": messages, **kwargs})
+        if self._fail_first:
+            self._fail_first = False
+            raise Exception(
+                "Error code: 400 - {'detail': {'message': \"Input text exceeds the model's "
+                "maximum of 8194 tokens. Use 'truncate: true' to automatically truncate, or "
+                "split into smaller chunks.\", 'code': 'INPUT_TOKEN_LIMIT_EXCEEDED'}}"
+            )
+
+
+class TestSyncTurnTokenLimitRetry:
+    """sync_turn must retry with truncated content on INPUT_TOKEN_LIMIT_EXCEEDED."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_retry_on_token_limit(self, monkeypatch):
+        """Truncates content and retries when embedding model rejects for token limit."""
+        client = _FakeClientTokenLimit()
+        provider = self._make_provider(monkeypatch, client)
+
+        long_content = "x" * 10000
+        provider.sync_turn("short user msg", long_content, session_id="s1")
+        provider._sync_thread.join(timeout=3)
+
+        # Should have been called twice: first fails, second succeeds with truncated content
+        assert len(client.add_calls) == 2
+        # Second call should have truncated assistant content
+        second_asst = client.add_calls[1]["messages"][1]["content"]
+        assert len(second_asst) <= 4000
+
+    def test_no_retry_when_no_token_limit(self, monkeypatch):
+        """Non-token-limit errors should NOT trigger retry."""
+        class _FailClient:
+            def __init__(self):
+                self.add_calls = []
+            def add(self, messages, **kwargs):
+                self.add_calls.append(True)
+                raise Exception("Network timeout")
+
+        client = _FailClient()
+        provider = self._make_provider(monkeypatch, client)
+
+        provider.sync_turn("user", "assistant", session_id="s1")
+        provider._sync_thread.join(timeout=3)
+
+        # Should only be called once (no retry)
+        assert len(client.add_calls) == 1

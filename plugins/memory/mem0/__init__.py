@@ -285,6 +285,25 @@ class Mem0MemoryProvider(MemoryProvider):
                 client.add(messages, **self._write_filters())
                 self._record_success()
             except Exception as e:
+                err_str = str(e)
+                if "INPUT_TOKEN_LIMIT_EXCEEDED" in err_str or "maximum" in err_str.lower():
+                    # Embedding model hit its token limit — truncate and retry
+                    logger.info("Mem0 sync: token limit exceeded, retrying with truncated content")
+                    try:
+                        # Truncate the longer message to ~4000 chars as a safe heuristic
+                        max_len = 4000
+                        trunc_user = user_content[:max_len] if len(user_content) > max_len else user_content
+                        trunc_asst = assistant_content[:max_len] if len(assistant_content) > max_len else assistant_content
+                        messages = [
+                            {"role": "user", "content": trunc_user},
+                            {"role": "assistant", "content": trunc_asst},
+                        ]
+                        client.add(messages, **self._write_filters())
+                        self._record_success()
+                        logger.info("Mem0 sync: retry with truncated content succeeded")
+                        return
+                    except Exception as e2:
+                        logger.warning("Mem0 sync retry after truncation also failed: %s", e2)
                 self._record_failure()
                 logger.warning("Mem0 sync failed: %s", e)
 

@@ -654,7 +654,7 @@ class TestThreadContext(unittest.TestCase):
             self.assertFalse(send_call["Subject"].startswith("Re: Re:"))
 
     def test_no_thread_context_uses_default_subject(self):
-        """Without thread context, subject should be 'Re: Hermes Agent'."""
+        """Without thread context, subject should be 'Hermes Agent' (no Re: prefix)."""
         adapter = self._make_adapter()
 
         with patch("smtplib.SMTP") as mock_smtp:
@@ -664,8 +664,55 @@ class TestThreadContext(unittest.TestCase):
             adapter._send_email("newuser@test.com", "Hello!", None)
 
             send_call = mock_server.send_message.call_args[0][0]
-            self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
+            self.assertEqual(send_call["Subject"], "Hermes Agent")
             self.assertIn("Date", send_call)
+
+    def test_explicit_subject_overrides_thread_context(self):
+        """Explicit subject should override thread context."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Old Thread"}
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Hello!", None, subject="Custom Subject")
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Custom Subject")
+
+    def test_thread_context_gets_re_prefix(self):
+        """Thread context subject should get 'Re:' prefix if not already present."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Original Thread"}
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Hello!", None)
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: Original Thread")
+
+    def test_resolve_subject_explicit(self):
+        """_resolve_subject should return explicit subject when provided."""
+        adapter = self._make_adapter()
+        result = adapter._resolve_subject("user@test.com", "My Subject")
+        self.assertEqual(result, "My Subject")
+
+    def test_resolve_subject_thread_context(self):
+        """_resolve_subject should use thread context when no explicit subject."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Thread Title"}
+        result = adapter._resolve_subject("user@test.com")
+        self.assertEqual(result, "Re: Thread Title")
+
+    def test_resolve_subject_fresh_outbound(self):
+        """_resolve_subject should return 'Hermes Agent' for fresh outbound."""
+        adapter = self._make_adapter()
+        result = adapter._resolve_subject("newuser@test.com")
+        self.assertEqual(result, "Hermes Agent")
 
 
 class TestSendMethods(unittest.TestCase):

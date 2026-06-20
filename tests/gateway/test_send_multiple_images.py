@@ -432,10 +432,11 @@ class TestEmailMultiImage:
             _run(adapter.send_multiple_images("user@example.com", images))
 
         mock_send.assert_called_once()
-        to_addr, body, file_paths = mock_send.call_args.args
+        to_addr, body, file_paths, subject = mock_send.call_args.args
         assert to_addr == "user@example.com"
         assert len(file_paths) == 3
         assert "alt 0" in body
+        assert subject is None  # no metadata.subject in this test
 
     def test_remote_urls_linked_in_body(self, adapter, tmp_path):
         """Remote URL images get their URL appended to the body, no attachment."""
@@ -449,7 +450,7 @@ class TestEmailMultiImage:
             _run(adapter.send_multiple_images("user@example.com", images))
 
         mock_send.assert_called_once()
-        to_addr, body, file_paths = mock_send.call_args.args
+        to_addr, body, file_paths, subject = mock_send.call_args.args
         assert file_paths == []
         assert "https://x.com/a.png" in body
         assert "https://x.com/b.png" in body

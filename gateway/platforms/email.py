@@ -609,6 +609,25 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
 
+    def _resolve_subject(
+        self,
+        to_addr: str,
+        explicit_subject: Optional[str] = None,
+    ) -> str:
+        """Resolve email subject from explicit value, thread context, or body."""
+        # Explicit subject from caller takes precedence
+        if explicit_subject:
+            return explicit_subject
+        # Thread context (reply to inbound email)
+        ctx = self._thread_context.get(to_addr, {})
+        if "subject" in ctx:
+            subject = ctx["subject"]
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
+            return subject
+        # Fresh outbound — no "Re:" prefix
+        return "Hermes Agent"
+
     async def send(
         self,
         chat_id: str,
@@ -617,10 +636,11 @@ class EmailAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an email reply to the given address."""
+        _subject = (metadata or {}).get("subject")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, _subject
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -632,20 +652,17 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        msg["Subject"] = subject
+        msg["Subject"] = self._resolve_subject(to_addr, subject)
 
         # Threading headers
+        ctx = self._thread_context.get(to_addr, {})
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
@@ -728,6 +745,7 @@ class EmailAdapter(BasePlatformAdapter):
             return
 
         body = "\n\n".join(body_parts)
+        _subject = (metadata or {}).get("subject")
 
         try:
             loop = asyncio.get_running_loop()
@@ -737,6 +755,7 @@ class EmailAdapter(BasePlatformAdapter):
                 chat_id,
                 body,
                 local_paths,
+                _subject,
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -747,18 +766,16 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        subject: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        msg["Subject"] = subject
+        msg["Subject"] = self._resolve_subject(to_addr, subject)
 
+        ctx = self._thread_context.get(to_addr, {})
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
@@ -806,6 +823,7 @@ class EmailAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
+        _subject = (kwargs.get("metadata") or {}).get("subject")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -815,6 +833,7 @@ class EmailAdapter(BasePlatformAdapter):
                 caption or "",
                 file_path,
                 file_name,
+                _subject,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -827,18 +846,16 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        msg["Subject"] = subject
+        msg["Subject"] = self._resolve_subject(to_addr, subject)
 
+        ctx = self._thread_context.get(to_addr, {})
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id

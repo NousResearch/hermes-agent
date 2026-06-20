@@ -41,13 +41,23 @@ Define a shorthand first:
 GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
 ```
 
-### Step 0: Check if already set up
+### Step 0: Choose an account alias and check if already set up
+
+By default, this skill preserves the legacy single-account layout:
 
 ```bash
 $GSETUP --check
 ```
 
-If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
+For multiple Google accounts, choose short path-safe aliases such as `personal`
+and `work`, then pass `--account` to every setup command for that account:
+
+```bash
+$GSETUP --account personal --check
+$GSETUP --account work --check
+```
+
+If it prints `AUTHENTICATED`, skip to Usage for that account — setup is already done.
 
 ### Step 1: Triage — ask the user what they need
 
@@ -103,10 +113,15 @@ Tell the user:
 > Important Hermes CLI note: if the file path starts with `/`, do NOT send only the bare path as its own message in the CLI, because it can be mistaken for a slash command. Send it in a sentence instead, like:
 > `The JSON file path is: /home/user/Downloads/client_secret_....json`
 
-Once they provide the path:
+Once they provide the path, store it for the account being configured:
 
 ```bash
+# Legacy/default account
 $GSETUP --client-secret /path/to/client_secret.json
+
+# Named accounts
+$GSETUP --account personal --client-secret /path/to/personal_client_secret.json
+$GSETUP --account work --client-secret /path/to/work_client_secret.json
 ```
 
 If they paste the raw client ID / client secret values instead of a file path,
@@ -119,16 +134,15 @@ explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
 Use the service set chosen in Step 1. Examples:
 
 ```bash
-$GSETUP --auth-url --services email,calendar --format json
-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
-$GSETUP --auth-url --services all --format json
+$GSETUP --auth-url
+$GSETUP --account personal --auth-url
+$GSETUP --account work --auth-url
 ```
 
-This returns JSON with an `auth_url` field and also saves the exact URL to
-`~/.hermes/google_oauth_last_url.txt`.
+The command prints the exact URL to send to the user.
 
 Agent rules for this step:
-- Extract the `auth_url` field and send that exact URL to the user as a single line.
+- Send the printed URL to the user as a single line.
 - Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
 - Tell them to copy the ENTIRE redirected URL from the browser address bar.
 - If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
@@ -141,7 +155,9 @@ pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:
 
 ```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
+$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
+$GSETUP --account personal --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
+$GSETUP --account work --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
 ```
 
 If `--auth-code` fails because the code expired, was already used, or came from
@@ -153,16 +169,21 @@ browser redirect only.
 
 ```bash
 $GSETUP --check
+$GSETUP --account personal --check
+$GSETUP --account work --check
 ```
 
-Should print `AUTHENTICATED`. Setup is complete — token refreshes automatically from now on.
+Should print `AUTHENTICATED` for the account being configured. Setup is complete — token refreshes automatically from now on.
 
 ### Notes
 
-- Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
-- Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
-- If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
-- To revoke: `$GSETUP --revoke`
+- The legacy/default token is stored at `~/.hermes/google_token.json` and auto-refreshes.
+- Named account tokens are stored at `~/.hermes/google/accounts/<alias>/google_token.json`.
+- Named account client secrets are stored at `~/.hermes/google/accounts/<alias>/google_client_secret.json`.
+- Pending OAuth session state/verifier are stored temporarily next to the account token until exchange completes.
+- If `gws` is installed, `google_api.py` points it at the selected account's token file. Users do not need to run a separate `gws auth login` flow.
+- To revoke: `$GSETUP --revoke` or `$GSETUP --account work --revoke`.
+- To list configured named aliases: `$GSETUP --list-accounts`.
 
 ## Usage
 
@@ -171,6 +192,23 @@ All commands go through the API script. Set `GAPI` as a shorthand:
 ```bash
 GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
 ```
+
+### Multiple accounts
+
+Pass `--account <alias>` before the service name, or set `HERMES_GOOGLE_ACCOUNT`
+for the process. CLI `--account` wins over the environment variable. Omitting
+both preserves the legacy/default single-account behavior.
+
+```bash
+$GAPI --account personal calendar list
+$GAPI --account work gmail search "is:unread" --max 10
+HERMES_GOOGLE_ACCOUNT=work $GAPI gmail search "from:boss@company.com newer_than:1d"
+```
+
+When responding to the user, state the account used, for example:
+"회사 계정(work) Gmail에서 조회했습니다." For write operations such as sending
+mail, creating/deleting calendar events, sharing/deleting Drive files, or editing
+Docs/Sheets, confirm the target account before executing.
 
 ### Gmail
 

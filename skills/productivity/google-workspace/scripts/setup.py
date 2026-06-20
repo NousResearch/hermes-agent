@@ -6,10 +6,16 @@ The agent mediates between this script and the user (works on CLI, Telegram, Dis
 
 Commands:
   setup.py --check                          # Is auth valid? Exit 0 = yes, 1 = no
+  setup.py --account work --check           # Check a named account alias
   setup.py --client-secret /path/to.json    # Store OAuth client credentials
+  setup.py --account work --client-secret /path/to.json
   setup.py --auth-url                       # Print the OAuth URL for user to visit
+  setup.py --account work --auth-url
   setup.py --auth-code CODE                 # Exchange auth code for token
+  setup.py --account work --auth-code CODE
   setup.py --revoke                         # Revoke and delete stored token
+  setup.py --account work --revoke
+  setup.py --list-accounts                  # List configured named aliases
   setup.py --install-deps                   # Install Python dependencies only
 
 Agent workflow:
@@ -37,11 +43,13 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import display_hermes_home, get_hermes_home
+from google_accounts import list_account_aliases, resolve_account_paths
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
 PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"
+CURRENT_ACCOUNT: str | None = None
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -60,6 +68,18 @@ REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
 REDIRECT_URI = "http://localhost:1"
+
+
+def set_account_paths(account: str | None = None):
+    """Select credential files for the legacy default account or a named alias."""
+
+    global CURRENT_ACCOUNT, TOKEN_PATH, CLIENT_SECRET_PATH, PENDING_AUTH_PATH
+    paths = resolve_account_paths(account)
+    CURRENT_ACCOUNT = paths.account
+    TOKEN_PATH = paths.token
+    CLIENT_SECRET_PATH = paths.client_secret
+    PENDING_AUTH_PATH = paths.pending_auth
+    return paths
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -270,12 +290,14 @@ def store_client_secret(path: str):
         print("Download the correct file from: https://console.cloud.google.com/apis/credentials")
         sys.exit(1)
 
+    CLIENT_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
     CLIENT_SECRET_PATH.write_text(json.dumps(data, indent=2))
     print(f"OK: Client secret saved to {CLIENT_SECRET_PATH}")
 
 
 def _save_pending_auth(*, state: str, code_verifier: str):
     """Persist the OAuth session bits needed for a later token exchange."""
+    PENDING_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
     PENDING_AUTH_PATH.write_text(
         json.dumps(
             {
@@ -410,10 +432,15 @@ def exchange_auth_code(code: str):
         print(f"WARNING: Token missing some Google Workspace scopes: {', '.join(missing_scopes)}")
         print("Some services may not be available.")
 
+    TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_PATH.write_text(json.dumps(token_payload, indent=2))
     PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")
-    print(f"Profile-scoped token location: {display_hermes_home()}/google_token.json")
+    if CURRENT_ACCOUNT:
+        print(f"Google account alias: {CURRENT_ACCOUNT}")
+        print(f"Profile-scoped token location: {display_hermes_home()}/google/accounts/{CURRENT_ACCOUNT}/google_token.json")
+    else:
+        print(f"Profile-scoped token location: {display_hermes_home()}/google_token.json")
 
 
 def revoke():
@@ -451,6 +478,7 @@ def revoke():
 
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace OAuth setup for Hermes")
+    parser.add_argument("--account", default=None, help="Named Google account alias (e.g. personal, work). Omit for legacy default account.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true", help="Check if auth is valid (exit 0=yes, 1=no)")
     group.add_argument("--check-live", action="store_true", help="Check auth with a real API call (detects disabled_client)")
@@ -459,7 +487,14 @@ def main():
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
+    group.add_argument("--list-accounts", action="store_true", help="List configured named Google account aliases")
     args = parser.parse_args()
+
+    try:
+        set_account_paths(args.account)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        sys.exit(2)
 
     if args.check:
         sys.exit(0 if check_auth() else 1)
@@ -475,6 +510,9 @@ def main():
         revoke()
     elif args.install_deps:
         sys.exit(0 if install_deps() else 1)
+    elif getattr(args, "list_accounts", False):
+        aliases = list_account_aliases()
+        print(json.dumps(aliases, indent=2))
 
 
 if __name__ == "__main__":

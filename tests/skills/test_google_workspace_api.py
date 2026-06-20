@@ -68,6 +68,16 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
     path.write_text(json.dumps(data))
 
 
+def test_bridge_default_token_path_preserves_legacy_layout(bridge_module):
+    assert bridge_module.get_token_path() == bridge_module.get_hermes_home() / "google_token.json"
+
+
+def test_bridge_env_account_uses_named_token_path(bridge_module, monkeypatch):
+    monkeypatch.setenv("HERMES_GOOGLE_ACCOUNT", "work")
+
+    assert bridge_module.get_token_path() == bridge_module.get_hermes_home() / "google" / "accounts" / "work" / "google_token.json"
+
+
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
     """Non-expired token is returned without refresh."""
     future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
@@ -173,6 +183,49 @@ def test_bridge_main_injects_token_env(bridge_module, tmp_path):
 
     assert captured["env"]["GOOGLE_WORKSPACE_CLI_TOKEN"] == "ya29.injected"
     assert captured["cmd"] == ["gws", "gmail", "+triage"]
+
+
+def test_api_default_paths_preserve_legacy_single_account_layout(api_module):
+    paths = api_module.resolve_account_paths(None)
+
+    assert paths.token == api_module.HERMES_HOME / "google_token.json"
+    assert paths.client_secret == api_module.HERMES_HOME / "google_client_secret.json"
+
+
+def test_api_named_account_paths_are_isolated_under_google_accounts(api_module):
+    paths = api_module.resolve_account_paths("personal")
+
+    assert paths.token == api_module.HERMES_HOME / "google" / "accounts" / "personal" / "google_token.json"
+    assert paths.client_secret == api_module.HERMES_HOME / "google" / "accounts" / "personal" / "google_client_secret.json"
+
+
+def test_api_account_env_updates_gws_credentials_file(api_module, monkeypatch):
+    monkeypatch.setenv("HERMES_GOOGLE_ACCOUNT", "work")
+
+    env = api_module._gws_env()
+
+    expected = api_module.HERMES_HOME / "google" / "accounts" / "work" / "google_token.json"
+    assert env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] == str(expected)
+
+
+def test_api_account_cli_option_is_parsed_before_service(api_module, monkeypatch):
+    captured = {}
+
+    def fake_search(args):
+        captured["account"] = args.account
+        captured["token_path"] = api_module.TOKEN_PATH
+
+    monkeypatch.setattr(api_module, "gmail_search", fake_search)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["google_api.py", "--account", "work", "gmail", "search", "is:unread"],
+    )
+
+    api_module.main()
+
+    assert captured["account"] == "work"
+    assert captured["token_path"] == api_module.HERMES_HOME / "google" / "accounts" / "work" / "google_token.json"
 
 
 def test_api_calendar_list_uses_events_list(api_module):

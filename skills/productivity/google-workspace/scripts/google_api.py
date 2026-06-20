@@ -6,18 +6,18 @@ existing Hermes-facing JSON contract and falls back to the Python client
 libraries if `gws` is not installed.
 
 Usage:
-  python google_api.py gmail search "is:unread" [--max 10]
-  python google_api.py gmail get MESSAGE_ID
-  python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
-  python google_api.py gmail reply MESSAGE_ID --body "Thanks"
-  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
-  python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
-  python google_api.py drive search "budget report" [--max 10]
-  python google_api.py contacts list [--max 20]
-  python google_api.py sheets get SHEET_ID RANGE
-  python google_api.py sheets update SHEET_ID RANGE --values '[[...]]'
-  python google_api.py sheets append SHEET_ID RANGE --values '[[...]]'
-  python google_api.py docs get DOC_ID
+  python google_api.py [--account work] gmail search "is:unread" [--max 10]
+  python google_api.py [--account work] gmail get MESSAGE_ID
+  python google_api.py [--account work] gmail send --to user@example.com --subject "Hi" --body "Hello"
+  python google_api.py [--account work] gmail reply MESSAGE_ID --body "Thanks"
+  python google_api.py [--account work] calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py [--account work] calendar create --summary "Meeting" --start DATETIME --end DATETIME
+  python google_api.py [--account work] drive search "budget report" [--max 10]
+  python google_api.py [--account work] contacts list [--max 20]
+  python google_api.py [--account work] sheets get SHEET_ID RANGE
+  python google_api.py [--account work] sheets update SHEET_ID RANGE --values '[[...]]'
+  python google_api.py [--account work] sheets append SHEET_ID RANGE --values '[[...]]'
+  python google_api.py [--account work] docs get DOC_ID
 """
 
 import argparse
@@ -37,10 +37,12 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+from google_accounts import resolve_account_paths
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
+CURRENT_ACCOUNT: str | None = None
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -54,6 +56,18 @@ SCOPES = [
 ]
 
 
+def set_account_paths(account: str | None = None):
+    """Select credential files for the legacy default account or a named alias."""
+
+    global CURRENT_ACCOUNT, TOKEN_PATH, CLIENT_SECRET_PATH
+    selected = account if account is not None else (CURRENT_ACCOUNT or os.getenv("HERMES_GOOGLE_ACCOUNT"))
+    paths = resolve_account_paths(selected)
+    CURRENT_ACCOUNT = paths.account
+    TOKEN_PATH = paths.token
+    CLIENT_SECRET_PATH = paths.client_secret
+    return paths
+
+
 def _normalize_authorized_user_payload(payload: dict) -> dict:
     normalized = dict(payload)
     if not normalized.get("type"):
@@ -62,9 +76,11 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 
 def _ensure_authenticated():
+    set_account_paths()
     if not TOKEN_PATH.exists():
         print("Not authenticated. Run the setup script first:", file=sys.stderr)
-        print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
+        account_hint = f" --account {CURRENT_ACCOUNT}" if CURRENT_ACCOUNT else ""
+        print(f"  python {Path(__file__).parent / 'setup.py'}{account_hint} --auth-url", file=sys.stderr)
         sys.exit(1)
 
 
@@ -87,6 +103,7 @@ def _gws_binary() -> str | None:
 
 
 def _gws_env() -> dict[str, str]:
+    set_account_paths()
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
     return env
@@ -1053,6 +1070,7 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
+    parser.add_argument("--account", default=None, help="Named Google account alias (e.g. personal, work). Omit for legacy default account.")
     sub = parser.add_subparsers(dest="service", required=True)
 
     # --- Gmail ---
@@ -1218,6 +1236,11 @@ def main():
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()
+    try:
+        set_account_paths(args.account)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
     args.func(args)
 
 

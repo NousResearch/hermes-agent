@@ -132,6 +132,27 @@ def setup_module(monkeypatch, tmp_path):
     return module
 
 
+class TestAccountPaths:
+    def test_default_paths_preserve_legacy_single_account_layout(self, setup_module):
+        paths = setup_module.resolve_account_paths(None)
+
+        assert paths.token == setup_module.HERMES_HOME / "google_token.json"
+        assert paths.client_secret == setup_module.HERMES_HOME / "google_client_secret.json"
+        assert paths.pending_auth == setup_module.HERMES_HOME / "google_oauth_pending.json"
+
+    def test_named_account_paths_are_isolated_under_google_accounts(self, setup_module):
+        paths = setup_module.resolve_account_paths("work")
+
+        assert paths.token == setup_module.HERMES_HOME / "google" / "accounts" / "work" / "google_token.json"
+        assert paths.client_secret == setup_module.HERMES_HOME / "google" / "accounts" / "work" / "google_client_secret.json"
+        assert paths.pending_auth == setup_module.HERMES_HOME / "google" / "accounts" / "work" / "google_oauth_pending.json"
+
+    @pytest.mark.parametrize("alias", ["../work", "work/account", "work account", "", "."])
+    def test_account_alias_rejects_unsafe_names(self, setup_module, alias):
+        with pytest.raises(ValueError):
+            setup_module.resolve_account_paths(alias)
+
+
 class TestGetAuthUrl:
     def test_persists_state_and_code_verifier_for_later_exchange(self, setup_module, capsys):
         setup_module.get_auth_url()

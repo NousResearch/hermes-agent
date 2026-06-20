@@ -16,10 +16,11 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+from google_accounts import resolve_account_paths
 
 
 def get_token_path() -> Path:
-    return get_hermes_home() / "google_token.json"
+    return resolve_account_paths(os.getenv("HERMES_GOOGLE_ACCOUNT")).token
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:

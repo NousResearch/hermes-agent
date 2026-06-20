@@ -26,6 +26,7 @@ class StubConnector:
     def __init__(self, descriptor: CapabilityDescriptor) -> None:
         self._descriptor = descriptor
         self._inbound: Optional[InboundHandler] = None
+        self._interrupt_inbound: Optional[Any] = None
         self.connected = False
         self.sent: List[Dict[str, Any]] = []
         self.interrupts: List[Dict[str, Any]] = []
@@ -51,6 +52,11 @@ class StubConnector:
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
 
+    def set_interrupt_inbound_handler(self, handler: Any) -> None:
+        """Mirror the real WS transport: the adapter registers its interrupt
+        bridge here so connector→gateway interrupt_inbound frames route to it."""
+        self._interrupt_inbound = handler
+
     async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
         self.sent.append(action)
         if action.get("op") == "send":
@@ -73,3 +79,9 @@ class StubConnector:
         if self._inbound is None:
             raise RuntimeError("no inbound handler registered (call adapter.connect first)")
         await self._inbound(event)
+
+    async def push_interrupt(self, session_key: str, chat_id: str) -> None:
+        """Simulate the connector delivering an interrupt_inbound over the WS."""
+        if self._interrupt_inbound is None:
+            raise RuntimeError("no interrupt_inbound handler registered (call adapter.connect first)")
+        await self._interrupt_inbound(session_key, chat_id)

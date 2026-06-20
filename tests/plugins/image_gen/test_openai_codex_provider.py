@@ -67,6 +67,11 @@ class TestMetadata:
         assert schema["env_vars"] == []
         assert schema["badge"] == "free"
 
+    def test_capabilities_advertise_image_editing(self, provider):
+        caps = provider.capabilities()
+        assert caps["modalities"] == ["text", "image"]
+        assert caps["max_reference_images"] == 16
+
 
 # ── Availability ────────────────────────────────────────────────────────────
 
@@ -159,6 +164,71 @@ class TestGenerate:
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
+
+    def test_codex_stream_request_includes_image_inputs(self, tmp_path):
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        payload = codex_plugin._build_responses_payload(
+            prompt="turn the blue circle green",
+            size="1024x1024",
+            quality="medium",
+            image_sources=[str(source), "https://example.com/ref.png"],
+        )
+
+        content = payload["input"][0]["content"]
+        assert content[0] == {"type": "input_text", "text": "turn the blue circle green"}
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+        assert content[2] == {"type": "input_image", "image_url": "https://example.com/ref.png"}
+
+    def test_generate_forwards_image_sources_to_codex_stream(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, image_sources=None):
+            captured.update({
+                "token": token,
+                "prompt": prompt,
+                "size": size,
+                "quality": quality,
+                "image_sources": image_sources,
+            })
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate(
+            "turn the blue circle green",
+            aspect_ratio="square",
+            image_url="https://example.com/source.png",
+            reference_image_urls=["https://example.com/ref.png"],
+        )
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert captured["image_sources"] == [
+            "https://example.com/source.png",
+            "https://example.com/ref.png",
+        ]
+
+    def test_generate_clamps_codex_reference_images_to_cap(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, image_sources=None):
+            captured["image_sources"] = image_sources
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        refs = [f"https://example.com/ref-{idx}.png" for idx in range(20)]
+        result = provider.generate("combine the references", reference_image_urls=refs)
+
+        assert result["success"] is True
+        assert captured["image_sources"] == refs[:16]
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""

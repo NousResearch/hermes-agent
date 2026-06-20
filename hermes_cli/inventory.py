@@ -117,7 +117,8 @@ def build_models_payload(
     pricing: bool = False,
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
-    max_models: int = 50,
+    refresh: bool = False,
+    max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -144,6 +145,10 @@ def build_models_payload(
       selecting Portal-recommended Nous models and applying tier gating. Keep
       this false for UI picker opens; explicit auth/model flows can opt in
       when they need freshly-purchased credits to show up immediately.
+    - ``refresh``: bust the per-provider model-id disk cache so every row
+      re-fetches its live catalog. Set only for an explicit user-triggered
+      "refresh models" action; normal picker opens leave it false to stay
+      snappy on the 1h cache.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -155,6 +160,7 @@ def build_models_payload(
         custom_providers=ctx.custom_providers,
         force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
+        refresh=refresh,
     )
 
     # --- Deduplicate: remove models from aggregators that overlap with
@@ -178,6 +184,14 @@ def build_models_payload(
                 user_models.update(m.lower() for m in (row.get("models") or []))
         if user_models:
             for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_aggregator() reports True for every custom:*
+                # slug.  Without this guard the dedup strips a user-defined
+                # custom provider's entire model list (all of it lives in
+                # user_models), emptying its picker row.
+                if row.get("is_user_defined"):
+                    continue
                 slug = row.get("slug", "")
                 if not _is_aggregator(slug):
                     continue

@@ -17,6 +17,7 @@ Conversational style and visual style are separate concepts:
 
 ```bash
 /skin                # show the current skin and list available skins
+/skin auto           # follow system light/dark appearance when detectable
 /skin ares           # switch to a built-in skin
 /skin mytheme        # switch to a custom skin from ~/.hermes/skins/mytheme.yaml
 ```
@@ -32,6 +33,7 @@ display:
 
 | Skin | Description | Agent branding | Visual character |
 |------|-------------|----------------|------------------|
+| `auto` | System appearance alias | `Hermes Agent` | Resolves at startup or `/skin auto` time to `daylight` for detected light mode and `default` for dark or unknown environments. |
 | `default` | Classic Hermes — gold and kawaii | `Hermes Agent` | Warm gold borders, cornsilk text, kawaii faces in spinners. The familiar caduceus banner. Clean and inviting. |
 | `ares` | War-god theme — crimson and bronze | `Ares Agent` | Deep crimson borders with bronze accents. Aggressive spinner verbs ("forging", "marching", "tempering steel"). Custom sword-and-shield ASCII art banner. |
 | `mono` | Monochrome — clean grayscale | `Hermes Agent` | All grays — no color. Borders are `#555555`, text is `#c9d1d9`. Ideal for minimal terminal setups or screen recordings. |
@@ -266,6 +268,6 @@ Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [pr
 - Built-in skins load from `hermes_cli/skin_engine.py`.
 - Unknown skins automatically fall back to `default`.
 - `/skin` updates the active CLI theme immediately for the current session.
-- User skins in `~/.hermes/skins/` take precedence over built-in skins with the same name.
+- User skins in `~/.hermes/skins/` take precedence over built-in skins with the same name, except the reserved `auto` alias.
 - Skin changes via `/skin` are session-only. To make a skin your permanent default, set it in `config.yaml`.
 - The `banner_logo` and `banner_hero` fields support Rich console markup (e.g., `[bold #FF0000]text[/]`) for colored ASCII art.

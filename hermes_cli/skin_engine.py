@@ -875,7 +875,7 @@ def _resolve_auto_skin_name() -> str:
 
 
 def load_skin(name: str) -> SkinConfig:
-    """Load a skin by name. Checks user skins first, then built-in."""
+    """Load a skin by name. Handles aliases, then user skins, then built-ins."""
     if str(name or "").strip().lower() == "auto":
         return load_skin(_resolve_auto_skin_name())
 

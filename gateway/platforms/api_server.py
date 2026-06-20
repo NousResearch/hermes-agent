@@ -782,6 +782,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        # Whether to emit hermes.tool.progress SSE events during streaming.
+        # Set to false via platforms.api_server.tool_progress_events to
+        # suppress custom SSE events for frontends that only handle standard
+        # OpenAI delta chunks.  See #12020.
+        self._tool_progress_events: bool = _coerce_request_bool(
+            extra.get("tool_progress_events", True), default=True,
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1178,7 +1185,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
-                "tool_progress_events": True,
+                "tool_progress_events": self._tool_progress_events,
                 "approval_events": True,
                 "session_resources": True,
                 "session_chat": True,
@@ -1657,6 +1664,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+            if not self._tool_progress_events:
+                return
             if event_type == "reasoning.available":
                 _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
@@ -1893,7 +1902,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 Skips tools whose names start with ``_`` so internal
                 events (``_thinking``, …) stay off the wire — matching
                 the prior ``_on_tool_progress`` filter exactly.
+
+                Silently suppressed when ``tool_progress_events`` is
+                disabled in the api_server platform config (#12020).
                 """
+                if not self._tool_progress_events:
+                    return
                 if not tool_call_id or function_name.startswith("_"):
                     return
                 _started_tool_call_ids.add(tool_call_id)
@@ -1914,6 +1928,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 id, or never seen) so clients never get an orphaned
                 ``completed`` they can't correlate to a prior ``running``.
                 """
+                if not self._tool_progress_events:
+                    return
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
@@ -3678,6 +3694,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+            if not self._tool_progress_events:
+                return
             ts = time.time()
             if event_type == "tool.started":
                 _push({

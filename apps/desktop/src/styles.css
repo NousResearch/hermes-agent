@@ -317,10 +317,10 @@
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
-    --conversation-text-font-size: 0.8125rem;
-    --conversation-tool-font-size: 0.6875rem;
-    --conversation-caption-font-size: 0.75rem;
-    --conversation-line-height: 1.125rem;
+    --conversation-text-font-size: 0.9375rem;
+    --conversation-tool-font-size: 0.8125rem;
+    --conversation-caption-font-size: 0.8125rem;
+    --conversation-line-height: 1.35rem;
     --conversation-caption-line-height: 1rem;
     --conversation-turn-gap: 0.375rem;
     /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air

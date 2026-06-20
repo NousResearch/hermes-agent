@@ -290,7 +290,7 @@ const AssistantMessage: FC<{
 
   return (
     <MessagePrimitive.Root
-      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
+      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden border-l-2 border-(--ui-stroke-tertiary) pl-3"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       data-streaming={isRunning ? 'true' : undefined}
@@ -827,7 +827,7 @@ function StickyHumanMessageContainer({ attachments, children }: { attachments?: 
 // so without the carve-out, clicking a stuck bubble drags the window instead of
 // opening the edit composer.
 const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-[color-mix(in_srgb,var(--dt-primary)_16%,var(--ui-chat-bubble-background))] px-3 py-2 text-left ring-1 ring-[color-mix(in_srgb,var(--dt-primary)_22%,transparent)] [-webkit-app-region:no-drag]'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
   'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'

@@ -138,4 +138,16 @@ describe('click-to-edit user message', () => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
   })
+
+  it('visually separates human prompts from assistant responses', async () => {
+    const { container } = render(<StockHarness onEdit={async () => {}} />)
+
+    const userBubble = await screen.findByRole('button', { name: 'Edit message' })
+    const assistantRoot = container.querySelector('[data-slot="aui_assistant-message-root"]')
+
+    expect(userBubble.className).toContain('bg-[color-mix(in_srgb,var(--dt-primary)_16%')
+    expect(userBubble.className).toContain('ring-1')
+    expect(assistantRoot?.className).toContain('border-l-2')
+    expect(assistantRoot?.className).toContain('pl-3')
+  })
 })

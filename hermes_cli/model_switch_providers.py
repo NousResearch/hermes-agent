@@ -1084,6 +1084,30 @@ def list_authenticated_providers(
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 
+def _inject_aliases_into_rows(results: list[dict]) -> None:
+    """Surface configured model aliases on matching picker rows."""
+    try:
+        from hermes_cli.model_switch import DIRECT_ALIASES, _ensure_direct_aliases
+
+        _ensure_direct_aliases()
+        rows = {str(row.get("slug", "")).lower(): row for row in results}
+        for alias_name, alias in DIRECT_ALIASES.items():
+            row = rows.get(str(alias.provider or "").lower())
+            model = str(alias.model or "").strip()
+            if row is None or not model:
+                continue
+            models = row.get("models")
+            if not isinstance(models, list):
+                continue
+            row.setdefault("model_aliases", {}).setdefault(model, alias_name)
+            if any(model.lower() == str(item).lower() for item in models):
+                continue
+            models.insert(0, model)
+            row["total_models"] = row.get("total_models", len(models) - 1) + 1
+    except Exception:
+        pass
+
+
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
@@ -1114,6 +1138,8 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                 row["models"] = [current_model, *models]
                 row["total_models"] = row.get("total_models", len(models)) + 1
             break
+
+    _inject_aliases_into_rows(results)
 
     # Current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

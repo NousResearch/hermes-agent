@@ -80,8 +80,8 @@ gateway:
     default_desc:          "技能命令"
     none:                  "没有可用的命令。"
     header:                "📚 **命令**（共 {total} 个，第 {page}/{total_pages} 页）"
-    nav_prev:              "`/commands {page}` ← 上一页"
-    nav_next:              "下一页 → `/commands {page}`"
+    nav_prev:              "/commands {page} ← 上一页"
+    nav_next:              "下一页 → /commands {page}"
     out_of_range:          "_（请求的第 {requested} 页超出范围，显示第 {page} 页。）_"
 
   compress:

@@ -366,7 +366,32 @@ export const en: Translations = {
       installError: 'Could not install that theme.',
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
-      importedBadge: 'Imported'
+      importedBadge: 'Imported',
+      pet: {
+        title: 'Pet',
+        intro:
+          'Adopt an animated petdex mascot that floats over the app and reacts to what Hermes is doing — running while tools execute, celebrating on success, sulking on errors.',
+        restartHint:
+          'Pets need a quick restart — the running app started before this feature was added. Quit and reopen Hermes, then come back here.',
+        on: 'On',
+        off: 'Off',
+        scaleTitle: 'Size',
+        scaleDesc: 'Resize the floating mascot. Applies everywhere instantly.',
+        chooseTitle: 'Choose a pet',
+        chooseDesc: 'Picking one installs it (if needed) and makes it active.',
+        searchPlaceholder: 'Search pets…',
+        unreachable: "Couldn't reach the petdex gallery. Check your connection and reopen this page.",
+        noMatch: query => `No pets match "${query}".`,
+        installedTag: 'installed',
+        countCapped: (cap, total) => `Showing ${cap} of ${total} — type to narrow it down.`,
+        count: n => `${n} pet${n === 1 ? '' : 's'}.`,
+        uninstall: name => `Uninstall ${name}`,
+        adoptFailed: slug => `Could not adopt ${slug}`,
+        uninstallFailed: slug => `Could not uninstall ${slug}`,
+        noneAvailable: 'No pets available to turn on right now.',
+        turnOnFailed: 'Could not turn the pet on.',
+        turnOffFailed: 'Could not turn the pet off.'
+      }
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -714,8 +739,22 @@ export const en: Translations = {
     commandCenter: 'Command Center',
     appearance: 'Appearance',
     settings: 'Settings',
-    changeTheme: 'Change theme...',
+    changeTheme: 'Change theme',
     changeColorMode: 'Change color mode...',
+    pets: {
+      title: 'Pets',
+      placeholder: 'Search pets…',
+      loading: 'Loading petdex gallery…',
+      error: 'Could not reach the petdex gallery.',
+      staleBackend: 'Restart Hermes to use pets — the backend predates this feature.',
+      empty: 'No matching pets.',
+      turnOff: 'Turn off',
+      turnOn: 'Turn on',
+      installed: 'Installed',
+      adoptFailed: 'Could not adopt that pet.',
+      toggleFailed: 'Could not toggle the pet.',
+      noneAvailable: 'No pets available — pick one below to install.'
+    },
     installTheme: {
       title: 'Install theme...',
       placeholder: 'Search the VS Code Marketplace...',

@@ -1037,17 +1037,6 @@ def init_agent(
         short_uuid = uuid.uuid4().hex[:6]
         agent.session_id = f"{timestamp_str}_{short_uuid}"
 
-    # Expose session ID to tools (terminal, execute_code) so agents can
-    # reference their own session for --resume commands, cross-session
-    # coordination, and logging. Keep the ContextVar and os.environ
-    # fallback synchronized because different tool paths still read both.
-    try:
-        from gateway.session_context import set_current_session_id
-
-        set_current_session_id(agent.session_id)
-    except Exception:
-        os.environ["HERMES_SESSION_ID"] = agent.session_id
-
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"
@@ -1066,13 +1055,33 @@ def init_agent(
     # logs_dir is retained unconditionally for request_dump_*.json (debug
     # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
     
-    # Track conversation messages for session logging
-    agent._session_messages: List[Dict[str, Any]] = []
-    # Responses encrypted reasoning replay state.  Some OpenAI-compatible
-    # routes accept GPT-5 Responses requests but later reject replayed
-    # encrypted reasoning blobs (HTTP 400 ``invalid_encrypted_content``).
-    # When that happens we disable replay for the rest of the session and
-    # fall back to stateless continuity.  See
+    # SQLite session store (optional -- provided by CLI or gateway)
+    agent._session_db = session_db
+    agent._parent_session_id = parent_session_id
+
+    # Expose session ID to tools (terminal, execute_code) so agents can
+    # reference their own session for --resume commands, cross-session
+    # coordination, and logging. Keep the ContextVar and os.environ
+    # fallback synchronized because different tool paths still read both.
+    try:
+        from gateway.session_context import _SESSION_ID, set_current_session_id
+
+        if agent._parent_session_id:
+            _SESSION_ID.set(agent.session_id)
+        else:
+            set_current_session_id(agent.session_id)
+    except Exception:
+        if not agent._parent_session_id:
+            os.environ["HERMES_SESSION_ID"] = agent.session_id
+
+    agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+    agent._session_db_created = False  # DB row deferred to run_conversation()
+    agent._session_init_model_config = {
+        "max_iterations": agent.max_iterations,
+        "reasoning_config": reasoning_config,
+        "max_tokens": max_tokens,
+    }
+
     # agent/conversation_loop.py's invalid_encrypted_content retry branch.
     agent._codex_reasoning_replay_enabled = True
     agent._memory_write_origin = "assistant_tool"
@@ -1089,17 +1098,6 @@ def init_agent(
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
     )
-    
-    # SQLite session store (optional -- provided by CLI or gateway)
-    agent._session_db = session_db
-    agent._parent_session_id = parent_session_id
-    agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
-    agent._session_db_created = False  # DB row deferred to run_conversation()
-    agent._session_init_model_config = {
-        "max_iterations": agent.max_iterations,
-        "reasoning_config": reasoning_config,
-        "max_tokens": max_tokens,
-    }
     
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore

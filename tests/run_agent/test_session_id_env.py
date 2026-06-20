@@ -2,11 +2,13 @@
 
 import os
 import sys
+from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+from gateway.session_context import get_session_env
 from run_agent import AIAgent
 
 
@@ -57,5 +59,24 @@ def test_session_id_contextvar_set():
         skip_context_files=True,
         skip_memory=True,
     )
-    from gateway.session_context import get_session_env
     assert get_session_env("HERMES_SESSION_ID") == custom_id
+
+
+def test_subagent_init_preserves_parent_env_session_id():
+    """Subagents should not overwrite the parent process env session id."""
+    parent_id = "20260511_140000_parent01"
+    os.environ["HERMES_SESSION_ID"] = parent_id
+
+    with patch("run_agent.AIAgent._create_openai_client", return_value=object()):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            parent_session_id=parent_id,
+        )
+
+    assert agent.session_id != parent_id
+    assert os.environ["HERMES_SESSION_ID"] == parent_id
+    assert get_session_env("HERMES_SESSION_ID") == agent.session_id

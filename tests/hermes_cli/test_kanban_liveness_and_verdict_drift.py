@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from hermes_cli import kanban as kc
@@ -110,6 +109,120 @@ def test_consume_review_verdicts_approved_unblocks_source_once(tmp_path: Path, m
         assert len(events) == 1
 
 
+def test_consume_review_verdicts_approved_ignores_negated_red_human_prose(tmp_path: Path, monkeypatch) -> None:
+    _isolated_home(tmp_path, monkeypatch)
+    with kb.connect_closing() as conn:
+        source = kb.create_task(
+            conn,
+            title="source with negated red prose",
+            assignee="stark",
+            tenant="molly-v2-working-system",
+        )
+        assert kb.block_task(
+            conn,
+            source,
+            reason="review-required: no red gate remains; no human approval required",
+        )
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                source,
+                "blocked",
+                {"reason": "review-required", "gate": "yellow", "owner_hint": "stark"},
+            )
+        review = kb.create_task(conn, title="review source", assignee="brennan")
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="APPROVED: no typed hold",
+            metadata={"review_of": source, "verdict": "APPROVED"},
+        )
+
+        result = kb.consume_review_verdicts(conn)
+
+        assert result.consumed_review_verdicts == [source]
+        assert result.created_review_verdict_followups == []
+        source_task = kb.get_task(conn, source)
+        assert source_task is not None
+        assert source_task.status == "ready"
+
+
+def test_consume_review_verdicts_approved_preserves_typed_red_human_hold(tmp_path: Path, monkeypatch) -> None:
+    _isolated_home(tmp_path, monkeypatch)
+    with kb.connect_closing() as conn:
+        source = kb.create_task(
+            conn,
+            title="source with typed red hold",
+            assignee="stark",
+            tenant="molly-v2-working-system",
+        )
+        assert kb.block_task(conn, source, reason="review-required: needs review")
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                source,
+                "blocked",
+                {"reason": "review-required", "gate": "red", "human_approval_required": True},
+            )
+        review = kb.create_task(conn, title="review source", assignee="brennan")
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="APPROVED: code is fine but red hold remains",
+            metadata={"review_of": source, "verdict": "APPROVED"},
+        )
+
+        result = kb.consume_review_verdicts(conn)
+
+        assert result.consumed_review_verdicts == [source]
+        assert len(result.created_review_verdict_followups) == 1
+        source_task = kb.get_task(conn, source)
+        assert source_task is not None
+        assert source_task.status == "blocked"
+        packet = kb.get_task(conn, result.created_review_verdict_followups[0])
+        assert packet is not None
+        assert packet.status == "blocked"
+        assert packet.assignee == "default"
+        assert packet.idempotency_key == f"review-verdict:{source}:red-human-hold"
+
+
+def test_consume_review_verdicts_composite_changes_requested_stop_routes_red_human(tmp_path: Path, monkeypatch) -> None:
+    _isolated_home(tmp_path, monkeypatch)
+    with kb.connect_closing() as conn:
+        source = kb.create_task(
+            conn,
+            title="source with composite stop review",
+            assignee="stark",
+            tenant="molly-v2-working-system",
+        )
+        assert kb.block_task(conn, source, reason="review-required: needs independent review")
+        review = kb.create_task(conn, title="review source", assignee="brennan")
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="CHANGES REQUESTED / STOP: human approval required before unblock.",
+            metadata={
+                "schema": "hermes.review_verdict.v1",
+                "review_of": source,
+                "verdict": "CHANGES_REQUESTED",
+            },
+        )
+
+        result = kb.consume_review_verdicts(conn)
+
+        assert result.consumed_review_verdicts == [source]
+        assert len(result.created_review_verdict_followups) == 1
+        packet = kb.get_task(conn, result.created_review_verdict_followups[0])
+        assert packet is not None
+        assert packet.assignee == "default"
+        assert packet.status == "blocked"
+        assert packet.idempotency_key == f"review-verdict:{source}:red-human-hold"
+        assert "verdict=STOP_RED_HUMAN" in (packet.body or "")
+        source_task = kb.get_task(conn, source)
+        assert source_task is not None
+        assert source_task.status == "blocked"
+
+
 def test_consume_review_verdicts_changes_requested_creates_one_followup(tmp_path: Path, monkeypatch) -> None:
     _isolated_home(tmp_path, monkeypatch)
     with kb.connect_closing() as conn:
@@ -152,8 +265,51 @@ def test_consume_review_verdicts_changes_requested_creates_one_followup(tmp_path
 
         second = kb.consume_review_verdicts(conn)
         assert second.created_review_verdict_followups == []
+        review_run = conn.execute(
+            "SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (review,),
+        ).fetchone()
+        assert review_run is not None
         rows = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ?",
-            (f"review-verdict:{review}:{source}:CHANGES_REQUESTED",),
+            (f"review-verdict:{source}:{review_run['id']}:changes_requested",),
         ).fetchall()
         assert len(rows) == 1
+
+
+def test_create_task_rechecks_idempotency_inside_write_transaction(tmp_path: Path, monkeypatch) -> None:
+    _isolated_home(tmp_path, monkeypatch)
+    key = "review-verdict:t_source:2:changes_requested"
+    original_new_task_id = kb._new_task_id
+    injected = {"done": False}
+
+    def racing_new_task_id() -> str:
+        if not injected["done"]:
+            injected["done"] = True
+            monkeypatch.setattr(kb, "_new_task_id", original_new_task_id)
+            with kb.connect_closing() as contender:
+                kb.create_task(
+                    contender,
+                    title="concurrent winner",
+                    assignee="stark",
+                    idempotency_key=key,
+                )
+            monkeypatch.setattr(kb, "_new_task_id", racing_new_task_id)
+        return original_new_task_id()
+
+    monkeypatch.setattr(kb, "_new_task_id", racing_new_task_id)
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="late loser",
+            assignee="stark",
+            idempotency_key=key,
+        )
+        rows = conn.execute(
+            "SELECT id, title FROM tasks WHERE idempotency_key = ? ORDER BY created_at ASC, id ASC",
+            (key,),
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["title"] == "concurrent winner"
+    assert task_id == rows[0]["id"]

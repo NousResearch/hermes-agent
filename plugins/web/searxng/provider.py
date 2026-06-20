@@ -18,6 +18,14 @@ Config keys this provider responds to::
 Env var::
 
     SEARXNG_URL=http://localhost:8080
+    SEARXNG_CLIENT_IP=127.0.0.1   # optional, overrides the X-Forwarded-For value
+
+When a SearXNG instance is reached directly (e.g. over an SSH tunnel) with no
+reverse proxy populating the client IP, its bot-detection/limiter can reject
+the JSON API request with ``HTTP 400`` because no ``X-Forwarded-For`` nor
+``X-Real-IP`` header is present. We send a loopback client IP on every request
+so the limiter always has an address to key on. Override with
+``SEARXNG_CLIENT_IP`` if the instance trusts a specific source address.
 """
 
 from __future__ import annotations
@@ -42,6 +50,22 @@ def _searxng_url() -> str:
     if val is None:
         val = os.getenv("SEARXNG_URL", "")
     return (val or "").strip()
+
+
+def _client_ip() -> str:
+    """Return the client IP to advertise to SearXNG's bot-detection/limiter.
+
+    Defaults to loopback so a direct (proxy-less) instance always has an
+    address to key on. Override with ``SEARXNG_CLIENT_IP``."""
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value("SEARXNG_CLIENT_IP")
+    except Exception:
+        val = None
+    if val is None:
+        val = os.getenv("SEARXNG_CLIENT_IP", "")
+    return (val or "").strip() or "127.0.0.1"
 
 
 class SearXNGWebSearchProvider(WebSearchProvider):
@@ -79,12 +103,17 @@ class SearXNGWebSearchProvider(WebSearchProvider):
             "pageno": 1,
         }
 
+        client_ip = _client_ip()
         try:
             resp = httpx.get(
                 f"{base_url}/search",
                 params=params,
                 timeout=15,
-                headers={"Accept": "application/json"},
+                headers={
+                    "Accept": "application/json",
+                    "X-Forwarded-For": client_ip,
+                    "X-Real-IP": client_ip,
+                },
             )
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:

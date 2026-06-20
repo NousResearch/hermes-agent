@@ -207,6 +207,42 @@ class TestSearXNGSearchProviderSearch:
 
         assert calls[0] == "http://localhost:8080/search", f"Got: {calls[0]}"
 
+    def test_sends_client_ip_headers_by_default(self, monkeypatch):
+        """A loopback client IP is sent so a proxy-less instance's bot-detection
+        does not reject the JSON API request with HTTP 400."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.delenv("SEARXNG_CLIENT_IP", raising=False)
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        mock_resp = self._make_mock_response({"results": []})
+
+        captured = {}
+        def capture_get(url, **kwargs):
+            captured.update(kwargs.get("headers", {}))
+            return mock_resp
+
+        with patch("httpx.get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert captured.get("X-Forwarded-For") == "127.0.0.1"
+        assert captured.get("X-Real-IP") == "127.0.0.1"
+
+    def test_client_ip_header_overridable_via_env(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("SEARXNG_CLIENT_IP", "10.0.0.5")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        mock_resp = self._make_mock_response({"results": []})
+
+        captured = {}
+        def capture_get(url, **kwargs):
+            captured.update(kwargs.get("headers", {}))
+            return mock_resp
+
+        with patch("httpx.get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert captured.get("X-Forwarded-For") == "10.0.0.5"
+        assert captured.get("X-Real-IP") == "10.0.0.5"
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"

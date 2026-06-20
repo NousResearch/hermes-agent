@@ -997,8 +997,11 @@ def test_block_then_unblock(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
-def test_unblock_resets_failure_counters(kanban_home):
-    """unblock_task must reset consecutive_failures and last_failure_error."""
+def test_unblock_resets_failure_counters_when_no_gave_up(kanban_home):
+    """unblock_task resets consecutive_failures and last_failure_error for tasks
+    that have NOT hit the circuit-breaker (no gave_up event). Operator-initiated
+    blocks (reason='need input') should fully clear the counter.
+    """
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
         kb.claim_task(conn, t)
@@ -1015,6 +1018,60 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.status == "ready"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+
+
+def test_unblock_preserves_failure_counters_after_gave_up(kanban_home):
+    """unblock_task must PRESERVE consecutive_failures + last_failure_error
+    when the task has previously hit the circuit-breaker (gave_up event).
+
+    Without this guard, manual unblocks of repeatedly-crashing tasks reset
+    the counter to 0 and let the breaker never re-trip:
+    crash → gave_up → user-unblock → reset → crash → ... (#2026-06-20-HERMES-2G).
+    recompute_ready() then sees failures < effective_limit and auto-recovers.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="crash-looper", assignee="a")
+        kb.claim_task(conn, t)
+        # Trip the breaker twice (default limit = 2)
+        kb._record_task_failure(
+            conn, t, error="crash 1", outcome="crashed",
+            release_claim=True, end_run=True, failure_limit=2,
+        )
+        kb._record_task_failure(
+            conn, t, error="crash 2", outcome="crashed",
+            release_claim=True, end_run=True, failure_limit=2,
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 2
+        # Verify gave_up event was emitted
+        gave_up = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'gave_up'",
+            (t,),
+        ).fetchone()
+        assert gave_up is not None
+        # Now user manually unblocks — counter MUST survive
+        assert kb.unblock_task(conn, t)
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        # The whole point of this test: counter is NOT reset
+        assert task.consecutive_failures == 2, (
+            f"consecutive_failures was reset to {task.consecutive_failures} "
+            "after unblock of a gave_up task — this is the bug #2026-06-20-HERMES-2G"
+        )
+        assert task.last_failure_error is not None
+        # And recompute_ready refuses to re-promote (failures >= limit)
+        # — but it's already 'ready' so this is a no-op. The real protection
+        # is on the NEXT crash: failures=2, crash adds 1 → failures=3 → blocked.
+        # Simulate that:
+        kb._record_task_failure(
+            conn, t, error="crash 3", outcome="crashed",
+            release_claim=False, end_run=False, failure_limit=2,
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked", (
+            f"task should be blocked after 3rd crash (failures=3 >= 2); got {task.status}"
+        )
 
 
 def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
@@ -1056,11 +1113,19 @@ def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
         assert promoted == 0
         assert kb.get_task(conn, child).status == "blocked"
 
-        # Explicit unblock should still work and reset the counter.
+        # Explicit unblock after gave_up: status flips back to ready but
+        # the circuit-breaker counter is PRESERVED (per #2026-06-20-HERMES-2G
+        # unblock-loop fix). The next crash will then re-trip the breaker
+        # immediately. Operator can still reset the counter by editing
+        # consecutive_failures manually if they want a clean slate.
         assert kb.unblock_task(conn, child)
         task = kb.get_task(conn, child)
         assert task.status == "ready"
-        assert task.consecutive_failures == 0
+        assert task.consecutive_failures >= 2, (
+            "unblock_task must preserve the circuit-breaker counter after "
+            "gave_up (#2026-06-20-HERMES-2G); got "
+            f"consecutive_failures={task.consecutive_failures}"
+        )
 
 
 def test_recompute_ready_recovers_below_limit(kanban_home):
@@ -4160,8 +4225,17 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 # ---------------------------------------------------------------------------
 # reap_worker_zombies() tests
 # ---------------------------------------------------------------------------
+# reap_worker_zombies() is a no-op on Windows (os.waitpid is POSIX-only), so
+# tests that mock os.waitpid to drive the reap loop are POSIX-only by design.
+# Use ``_windows_skip`` on every test that depends on the reap loop running.
+_windows_skip = pytest.mark.skipif(
+    os.name == "nt",
+    reason="reap_worker_zombies is a no-op on Windows (os.waitpid POSIX-only); "
+           "these tests verify the POSIX reap loop directly",
+)
 
 
+@_windows_skip
 def test_reap_worker_zombies_returns_count():
     """reap_worker_zombies() returns the list of reaped PIDs."""
     from unittest.mock import patch
@@ -4202,6 +4276,7 @@ def test_reap_worker_zombies_noop_no_children():
     assert result == []
 
 
+@_windows_skip
 def test_reap_worker_zombies_records_exit_status():
     """reap_worker_zombies() calls _record_worker_exit for each reaped pid."""
     from unittest.mock import patch
@@ -4225,6 +4300,7 @@ def test_reap_worker_zombies_records_exit_status():
     assert calls == [(12345, 0)]
 
 
+@_windows_skip
 def test_reap_worker_zombies_handles_waitpid_os_error():
     """reap_worker_zombies() does not propagate generic OSError from os.waitpid."""
     from unittest.mock import patch
@@ -4234,6 +4310,11 @@ def test_reap_worker_zombies_handles_waitpid_os_error():
     assert result == []
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="reap_worker_zombies is a no-op on Windows (os.waitpid POSIX-only); "
+           "these tests verify the POSIX reap loop directly",
+)
 def test_zombie_reaper_runs_despite_board_connect_failure():
     """reap_worker_zombies runs even when a board tick raises an error."""
     from unittest.mock import patch
@@ -4260,6 +4341,11 @@ def test_zombie_reaper_runs_despite_board_connect_failure():
     assert pids == [12345, 67890]
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="reap_worker_zombies is a no-op on Windows (os.waitpid POSIX-only); "
+           "these tests verify the POSIX reap loop directly",
+)
 def test_zombie_reaper_survives_all_boards_failing():
     """reap_worker_zombies runs each tick regardless of board tick failures."""
     from unittest.mock import patch
@@ -4291,6 +4377,7 @@ def test_zombie_reaper_survives_all_boards_failing():
     assert total_reaped == 10
 
 
+@_windows_skip
 def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
     """The reaper inside dispatch_once still works after refactor to reap_worker_zombies()."""
     from unittest.mock import patch

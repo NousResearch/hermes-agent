@@ -4374,6 +4374,14 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    PRESERVES ``consecutive_failures`` when the task has previously hit the
+    circuit-breaker (``gave_up`` event). Without this guard, manual
+    unblocks of repeatedly-crashing tasks reset the counter and create
+    an unbounded retry loop: crash → gave_up → user-unblock → reset →
+    crash → gave_up → ... (#2026-06-20-HERMES-2G-UNBLOCK-LOOP).
+    The 2-fail circuit-breaker was specifically designed to trip on
+    3rd crash of a session, but only if the counter survives recovery.
     """
     now = int(time.time())
     with write_txn(conn):
@@ -4406,12 +4414,31 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
-        )
+        # Preserve the circuit-breaker counter when this task has previously
+        # hit ``gave_up`` (issue #2026-06-20-HERMES-2G-UNBLOCK-LOOP). Without
+        # this, manual unblocks of repeatedly-crashing tasks would reset
+        # ``consecutive_failures`` to 0 and let the breaker never re-trip
+        # (crash → gave_up → user-unblock → reset → crash → ...).
+        had_gave_up = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'gave_up' LIMIT 1",
+            (task_id,),
+        ).fetchone() is not None
+        if had_gave_up:
+            # Keep consecutive_failures + last_failure_error intact so the
+            # circuit-breaker stays armed. recompute_ready() will see
+            # failures >= effective_limit and refuse to auto-recover.
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, current_run_id = NULL "
+                "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+                (new_status, task_id),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, current_run_id = NULL, "
+                "consecutive_failures = 0, last_failure_error = NULL "
+                "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+                (new_status, task_id),
+            )
         if cur.rowcount != 1:
             return False
         _append_event(
@@ -5108,16 +5135,45 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
+    # WIFEXITED / WIFSIGNALED are POSIX-only (os.waitpid status encoding).
+    # On Windows, ``raw`` is the raw exit code from os.waitpid — there's
+    # no signal-vs-exit bitmask. Treat it as the exit code directly so
+    # the rate-limit sentinel (KANBAN_RATE_LIMIT_EXIT_CODE) is recognized
+    # here too (was: AttributeError swallowed by the except → "unknown" →
+    # counted as a real crash → circuit-breaker tripped on quota walls,
+    # #2026-06-20-HERMES-2G).
+    #
+    # Encoding detection: callers may pass either
+    #   * a POSIX wait-status (``code << 8`` per the platform convention
+    #     used by tests via the _exited_status helper), or
+    #   * the raw exit code (Windows waitpid path; third-party callers).
+    # We support BOTH: if the value decodes as a valid POSIX wait-status
+    # (low byte zero + high byte < 256), use the decoded code. Otherwise
+    # the value IS the exit code. This keeps the contract identical on
+    # both platforms AND with the existing test helpers.
+    _wifexited = getattr(os, "WIFEXITED", None)
+    _wifsignaled = getattr(os, "WIFSIGNALED", None)
+    _wexitstatus = getattr(os, "WEXITSTATUS", None)
+    _wtermsig = getattr(os, "WTERMSIG", None)
     try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
+        if _wifsignaled is not None and _wifsignaled(raw):
+            return ("signaled", _wtermsig(raw) if _wtermsig else None)
+        # Decide the exit code: POSIX decoder if available, else heuristic
+        # (low byte 0 + high byte small) else raw.
+        code: Optional[int] = None
+        if _wexitstatus is not None and _wifexited is not None and _wifexited(raw):
+            code = _wexitstatus(raw)
+        elif (raw & 0xFF) == 0 and 0 < (raw >> 8) < 256:
+            # POSIX-style wait-status: exit_code << 8. Low byte 0 = exited
+            # normally (WIFEXITED), high byte = the exit code (≤255).
+            code = raw >> 8
+        else:
+            code = int(raw)
+        if code == 0:
+            return ("clean_exit", 0)
+        if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", code)
+        return ("nonzero_exit", code)
     except Exception:
         pass
     return ("unknown", None)

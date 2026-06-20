@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -350,6 +351,21 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _is_allowed_temp_path(resolved: str) -> bool:
+    """Return True for files under the platform temp directory.
+
+    macOS resolves /var/folders/... to /private/var/folders/..., which is
+    otherwise covered by the broad /private/var/ sensitive-system guard.
+    Test and runtime temp files are intentionally writable by file tools.
+    """
+    try:
+        temp_root = str(Path(tempfile.gettempdir()).resolve())
+    except (OSError, ValueError):
+        temp_root = os.path.realpath(tempfile.gettempdir())
+    temp_root = os.path.normpath(temp_root)
+    return resolved == temp_root or resolved.startswith(temp_root + os.sep)
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -357,6 +373,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
+    if _is_allowed_temp_path(os.path.normpath(resolved)):
+        return None
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

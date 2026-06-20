@@ -204,6 +204,37 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_current_session_excluded_before_newest_fetch_window(self, db):
+        _seed_modpack_sessions(db)
+
+        db.create_session("s_current", source="cli")
+        now = int(time.time())
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now, "Current Modpack Debugging", "s_current"),
+        )
+        for idx in range(60):
+            db.append_message(
+                "s_current",
+                role="user",
+                content=f"modpack regression note {idx}",
+                timestamp=now + idx,
+            )
+        db._conn.commit()
+
+        result = json.loads(
+            session_search(
+                query="modpack",
+                limit=2,
+                sort="newest",
+                db=db,
+                current_session_id="s_current",
+            )
+        )
+
+        assert result["count"] == 2
+        assert [r["session_id"] for r in result["results"]] == ["s_newest", "s_middle"]
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):

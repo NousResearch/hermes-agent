@@ -2057,6 +2057,7 @@ class TelegramAdapter(BasePlatformAdapter):
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
+                logger.warning("[%s] Discovering Telegram API fallback IPs via DNS-over-HTTPS…", self.name)
                 fallback_ips = await discover_fallback_ips()
                 logger.info(
                     "[%s] Auto-discovered Telegram fallback IPs: %s",
@@ -2116,16 +2117,37 @@ class TelegramAdapter(BasePlatformAdapter):
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
-            # Start polling — retry initialize() for transient TLS resets
+            # Start polling — retry initialize() for transient TLS resets.
+            # Each attempt is capped by _init_timeout so a single unreachable
+            # fallback-IP chain can't block startup indefinitely.
             try:
                 from telegram.error import NetworkError, TimedOut
             except ImportError:
                 NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
             _max_connect = 8
+            _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 30.0)
             for _attempt in range(_max_connect):
                 try:
-                    await self._app.initialize()
+                    logger.warning(
+                        "[%s] Connecting to Telegram (attempt %d/%d)…",
+                        self.name, _attempt + 1, _max_connect,
+                    )
+                    await asyncio.wait_for(self._app.initialize(), timeout=_init_timeout)
                     break
+                except asyncio.TimeoutError:
+                    if _attempt < _max_connect - 1:
+                        wait = min(2 ** _attempt, 15)
+                        logger.warning(
+                            "[%s] Connect attempt %d/%d timed out after %.0fs — retrying in %ds",
+                            self.name, _attempt + 1, _max_connect, _init_timeout, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        raise OSError(
+                            f"Telegram initialization timed out after {_max_connect} attempts "
+                            f"({_init_timeout:.0f}s each). Check network connectivity to api.telegram.org "
+                            f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT to a lower value."
+                        )
                 except (NetworkError, TimedOut, OSError) as init_err:
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)

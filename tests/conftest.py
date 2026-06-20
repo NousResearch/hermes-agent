@@ -56,6 +56,16 @@ if str(PROJECT_ROOT) not in sys.path:
 
 _CREDENTIAL_SUFFIXES = (
     "_API_KEY",
+    # Bare _KEY catches provider keys that don't use the _API_KEY suffix —
+    # notably CLAUDE_API_PROXY_KEY / CLAUDE_API_PROXY_F{N}_KEY / GATEWAY_PROXY_KEY,
+    # which hermes_cli.env_loader seeds into os.environ from the real ~/.hermes/.env
+    # at import time (before a test's HERMES_HOME redirect applies). Left unstripped,
+    # they register as `claude-api-proxy` providers and hijack resolve_provider("auto")
+    # auto-detection (it returns claude-api-proxy before reaching the Bedrock branch),
+    # breaking test_bedrock_integration's AWS auto-detect. The only non-credential
+    # _KEY var in practice is HERMES_SESSION_KEY, already stripped via
+    # _HERMES_BEHAVIORAL_VARS below.
+    "_KEY",
     "_TOKEN",
     "_SECRET",
     "_PASSWORD",
@@ -414,6 +424,42 @@ def _hermetic_environment(tmp_path, monkeypatch):
         _aux_mod._reset_aux_unhealthy_cache()
         _aux_mod.clear_runtime_main()
         _aux_mod._client_cache.clear()
+    except Exception:
+        pass
+
+    # 5c. Reset the models.dev capability cache. agent.models_dev caches the
+    #     provider/model registry in a module-level dict (_models_dev_cache,
+    #     1h TTL). test_models_dev.py assigns a tiny 6-provider SAMPLE_REGISTRY
+    #     to it directly (no teardown), and test_vision_routing_31179's
+    #     _fresh_modules() reimports auxiliary_client/image_routing but does
+    #     NOT drop agent.models_dev — so a later vision test reads the stale
+    #     6-key cache (missing real capability metadata), _lookup_supports_vision
+    #     returns the wrong answer, and "skip text-only main / use vision-capable
+    #     main" assertions flip. Reset to an empty, expired cache so the next
+    #     test refetches (or stubs) cleanly. Tests that exercise the cache set
+    #     it explicitly after this fixture runs, so this does not interfere.
+    try:
+        import agent.models_dev as _md_mod
+        _md_mod._models_dev_cache = {}
+        _md_mod._models_dev_cache_time = 0
+        _md_mod._MODELS_DEV_TO_PROVIDER = None
+    except Exception:
+        pass
+
+    # 5d. Reset the active-skin singleton. hermes_cli.skin_engine caches the
+    #     active skin in module globals (_active_skin / _active_skin_name),
+    #     lazily initialised by get_active_skin() and mutated by
+    #     set_active_skin()/init_skin_from_config(). Once any test (or a config
+    #     load reading a leaked display.skin) switches away from "default", the
+    #     cached skin persists and a later test that asserts default behaviour
+    #     (e.g. get_cute_tool_message's "┊" tool prefix) reads the wrong skin
+    #     (ares→"╎", daylight/poseidon→"│"). Reset to the lazy-init state so
+    #     each test starts on "default"; tests that need a skin set it
+    #     explicitly after this fixture runs.
+    try:
+        import hermes_cli.skin_engine as _skin_mod
+        _skin_mod._active_skin = None
+        _skin_mod._active_skin_name = "default"
     except Exception:
         pass
 

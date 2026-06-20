@@ -99,3 +99,58 @@ class TestRealHomeEnvStripped:
 
         assert os.getenv("HERMES_REAL_HOME") in (None, "")
 
+
+class TestModelsDevCacheReset:
+    """agent.models_dev._models_dev_cache must be empty at test entry so a
+    prior test's tiny SAMPLE_REGISTRY can't poison capability lookups
+    (e.g. flip vision-capable model detection)."""
+
+    def test_a_poison_models_dev_cache(self):
+        import time
+        import agent.models_dev as md
+
+        md._models_dev_cache = {"openai": {"models": {}}}
+        md._models_dev_cache_time = time.time()
+        assert md._models_dev_cache
+
+    def test_b_models_dev_cache_clean_next_test(self):
+        import agent.models_dev as md
+
+        assert md._models_dev_cache == {}
+        assert md._models_dev_cache_time == 0
+
+
+class TestSkinSingletonReset:
+    """hermes_cli.skin_engine active-skin globals must reset to the lazy-init
+    default so a prior test's non-default skin can't change default-skin
+    assertions (e.g. the get_cute_tool_message "┊" tool prefix)."""
+
+    def test_a_switch_skin(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_skin_name
+
+        set_active_skin("ares")
+        assert get_active_skin_name() == "ares"
+
+    def test_b_skin_back_to_default(self):
+        import hermes_cli.skin_engine as se
+
+        assert se._active_skin is None
+        assert se._active_skin_name == "default"
+
+
+class TestBareKeyEnvStripped:
+    """Bare *_KEY credential env vars (CLAUDE_API_PROXY_KEY etc., seeded from
+    the real ~/.hermes/.env at import) must be stripped so they don't hijack
+    resolve_provider('auto') auto-detection in later tests."""
+
+    def test_bare_key_vars_not_in_env(self):
+        import os
+
+        leaked = [
+            k for k in os.environ
+            if k.endswith("_KEY")
+            and not k.endswith(("_ACCESS_KEY", "_PRIVATE_KEY", "_ENCRYPT_KEY", "_AES_KEY"))
+        ]
+        assert leaked == [], f"bare _KEY credential env vars leaked: {leaked}"
+
+

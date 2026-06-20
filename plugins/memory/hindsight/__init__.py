@@ -50,7 +50,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-_MIN_CLIENT_VERSION = "0.4.22"
+# Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
+_MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -98,6 +99,17 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return True, None
     except Exception as exc:
         return False, str(exc)
+
+
+def _ensure_cloud_client_dependency() -> None:
+    """Install the Hindsight cloud client lazily before importing it."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("memory.hindsight", prompt=False)
+    except ImportError:
+        pass
+    except Exception as exc:
+        raise ImportError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +714,7 @@ class HindsightMemoryProvider(MemoryProvider):
         from hermes_cli.config import save_config
         from hermes_cli.secret_prompt import masked_secret_prompt
 
-        from hermes_cli.memory_setup import _curses_select
+        from hermes_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup
 
         print("\n  Configuring Hindsight memory:\n")
 
@@ -719,7 +731,10 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
         existing_mode = existing_config.get("mode")
         mode_default_idx = mode_values.index(existing_mode) if existing_mode in mode_values else 0
-        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx)
+        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx, cancel_returns=_CANCELLED)
+        if mode_idx == _CANCELLED:
+            _print_cancelled_setup()
+            return
         mode = mode_values[mode_idx]
 
         provider_config: dict = dict(existing_config)
@@ -727,7 +742,6 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        _MIN_CLIENT_VERSION = "0.4.22"
         cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
         local_dep = "hindsight-all"
         if mode == "local_embedded":
@@ -736,6 +750,27 @@ class HindsightMemoryProvider(MemoryProvider):
             deps_to_install = [cloud_dep]
         else:
             deps_to_install = [cloud_dep]
+
+        llm_provider = ""
+        if mode == "local_embedded":
+            providers_list = list(_PROVIDER_DEFAULT_MODELS.keys())
+            llm_items = [
+                (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
+                for p in providers_list
+            ]
+            existing_llm_provider = provider_config.get("llm_provider")
+            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
+            llm_idx = _curses_select(
+                "  Select LLM provider",
+                llm_items,
+                default=llm_default_idx,
+                cancel_returns=_CANCELLED,
+            )
+            if llm_idx == _CANCELLED:
+                _print_cancelled_setup()
+                return
+            llm_provider = providers_list[llm_idx]
+            provider_config["llm_provider"] = llm_provider
 
         print("\n  Checking dependencies...")
         uv_path = shutil.which("uv")
@@ -785,18 +820,6 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_writes["HINDSIGHT_API_KEY"] = api_key
 
         else:  # local_embedded
-            providers_list = list(_PROVIDER_DEFAULT_MODELS.keys())
-            llm_items = [
-                (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
-                for p in providers_list
-            ]
-            existing_llm_provider = provider_config.get("llm_provider")
-            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
-            llm_idx = _curses_select("  Select LLM provider", llm_items, default=llm_default_idx)
-            llm_provider = providers_list[llm_idx]
-
-            provider_config["llm_provider"] = llm_provider
-
             if llm_provider == "openai_compatible":
                 existing_base_url = provider_config.get("llm_base_url", "")
                 prompt = "  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1)"
@@ -978,6 +1001,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
+                _ensure_cloud_client_dependency()
                 from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}

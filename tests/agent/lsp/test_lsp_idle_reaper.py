@@ -10,6 +10,14 @@ class FakeClient:
     async def shutdown(self) -> None:
         self.shutdown_calls += 1
 
+    @property
+    def has_active_requests(self) -> bool:
+        return False
+
+    @property
+    def inflight(self) -> int:
+        return 0
+
 
 @pytest.mark.asyncio
 async def test_reaps_idle_clients_and_removes_state() -> None:

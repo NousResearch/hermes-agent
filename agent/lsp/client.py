@@ -42,11 +42,12 @@ Implementation notes:
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
 from agent.lsp.protocol import (
@@ -218,6 +219,13 @@ class LSPClient:
         # when the server announces a new dynamic provider.
         self._registration_event = asyncio.Event()
 
+        # In-flight request count.  ``inc_inflight`` / ``dec_inflight`` are
+        # maintained by the manager-level ``_loop.run`` boundary so the
+        # reaper can guarantee it never evicts a client that has an
+        # outstanding request mid-flight.  Per-call booleans would race.
+        self._inflight = 0
+        self._inflight_lock = asyncio.Lock()
+
     @property
     def is_running(self) -> bool:
         return self._state == "running" and self._proc is not None and self._proc.returncode is None
@@ -225,6 +233,39 @@ class LSPClient:
     @property
     def state(self) -> str:
         return self._state
+
+    async def inc_inflight(self) -> None:
+        async with self._inflight_lock:
+            self._inflight += 1
+
+    async def dec_inflight(self) -> None:
+        async with self._inflight_lock:
+            if self._inflight > 0:
+                self._inflight -= 1
+
+    @property
+    def inflight(self) -> int:
+        return self._inflight
+
+    @property
+    def has_active_requests(self) -> bool:
+        return self._inflight > 0
+
+    @asynccontextmanager
+    async def track_request(self) -> AsyncIterator[None]:
+        """Mark this client as having one in-flight request for the duration.
+
+        The reaper refuses to evict a client with ``inflight > 0`` so a
+        long-running diagnostic fetch is never interrupted mid-call by a
+        cap-eviction sweep.  Always use ``async with client.track_request()``
+        around the await chain that does LSP work, paired with a try/finally
+        so a cancellation or exception doesn't leak the counter.
+        """
+        await self.inc_inflight()
+        try:
+            yield
+        finally:
+            await self.dec_inflight()
 
     async def start(self) -> None:
         """Spawn the server and complete the initialize handshake.

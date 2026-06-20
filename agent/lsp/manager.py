@@ -46,6 +46,7 @@ from agent.lsp.client import (
     DIAGNOSTICS_DOCUMENT_WAIT,
     LSPClient,
 )
+from agent.lsp.metrics import LSPMetrics
 from agent.lsp.servers import (
     ServerContext,
     find_server_for_file,
@@ -58,7 +59,79 @@ from agent.lsp.workspace import (
 
 logger = logging.getLogger("agent.lsp.manager")
 
-DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
+# Reasonable defaults.  All three are overridable via config.yaml.
+DEFAULT_IDLE_TIMEOUT = 180.0  # seconds; clients idle > this are reap candidates
+DEFAULT_REAPER_INTERVAL = 60.0  # seconds between idle sweeps
+DEFAULT_TOTAL_LSP_CAP = 12  # hard cap on simultaneously-running LSP clients
+DEFAULT_PER_SERVER_LIMITS: Dict[str, int] = {
+    # Maps LSP server_id -> max concurrent clients.
+    "pyright": 8,
+    "typescript-language-server": 4,
+    "vue-language-server": 2,
+    "svelte-language-server": 2,
+}
+
+
+def _read_process_stats(server_ids: List[str]) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Best-effort open-fd count, RSS for this process, and aggregate RSS of LSP children.
+
+    Returns (fd_count_or_None, rss_bytes_or_None, lsp_child_rss_or_None).
+    Uses psutil when available; falls back to /proc on Linux and
+    ``psutil``-free macOS probes when not.  Always returns a tuple.
+    Never raises — the metrics surface is best-effort.
+
+    Per the user instruction, this counts numeric descriptor entries only:
+    ``len(os.listdir('/proc/self/fd'))`` on Linux, and on macOS we walk
+    ``lsof -p <pid>`` and count the lines whose FD column parses as a
+    bare integer (regular FDs), not memory-mapped libraries or other
+    rows lsof may report.
+    """
+    fd_count: Optional[int] = None
+    rss_bytes: Optional[int] = None
+    lsp_rss: Optional[int] = None
+    pid = os.getpid()
+
+    try:
+        import psutil  # type: ignore[import-untyped]
+
+        proc: Any = None
+        try:
+            proc = psutil.Process(pid)
+            rss_bytes = int(proc.memory_info().rss)
+        except Exception:  # noqa: BLE001
+            rss_bytes = None
+        if proc is not None:
+            try:
+                fd_count = int(proc.num_fds())
+            except (AttributeError, OSError):
+                fd_count = None
+            try:
+                lsp_rss_total = 0
+                lsp_seen = False
+                for child in proc.children(recursive=False):
+                    cmdline = " ".join(child.cmdline() or [])
+                    if not cmdline:
+                        continue
+                    if not any(sid in cmdline for sid in server_ids):
+                        continue
+                    lsp_seen = True
+                    try:
+                        lsp_rss_total += int(child.memory_info().rss)
+                    except (psutil.NoSuchProcess, OSError):
+                        pass
+                lsp_rss = lsp_rss_total if lsp_seen else 0
+            except (psutil.NoSuchProcess, OSError):
+                lsp_rss = None
+    except Exception:  # noqa: BLE001
+        # psutil not installed; skip — callers will see None values.
+        pass
+    if fd_count is None and os.path.isdir("/proc/self/fd"):
+        try:
+            fd_count = len(os.listdir("/proc/self/fd"))
+        except OSError:
+            fd_count = None
+
+    return fd_count, rss_bytes, lsp_rss
 
 
 class _BackgroundLoop:
@@ -155,6 +228,9 @@ class LSPService:
         init_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         disabled_servers: Optional[List[str]] = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+        reaper_interval: float = DEFAULT_REAPER_INTERVAL,
+        total_lsp_cap: int = DEFAULT_TOTAL_LSP_CAP,
+        per_server_caps: Optional[Dict[str, int]] = None,
     ) -> None:
         self._enabled = enabled
         self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
@@ -164,7 +240,16 @@ class LSPService:
         self._env_overrides = env_overrides or {}
         self._init_overrides = init_overrides or {}
         self._disabled_servers = set(disabled_servers or [])
-        self._idle_timeout = idle_timeout
+        self._idle_timeout = max(0.0, float(idle_timeout))
+        self._reaper_interval = max(1.0, float(reaper_interval))
+        self._total_lsp_cap = max(1, int(total_lsp_cap))
+        self._per_server_caps: Dict[str, int] = dict(DEFAULT_PER_SERVER_LIMITS)
+        if per_server_caps:
+            for sid, cap in per_server_caps.items():
+                try:
+                    self._per_server_caps[sid] = max(0, int(cap))
+                except (TypeError, ValueError):
+                    continue
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -176,12 +261,18 @@ class LSPService:
         self._spawning: Dict[Tuple[str, str], asyncio.Future] = {}
         self._last_used: Dict[Tuple[str, str], float] = {}
         self._state_lock = threading.Lock()
+        self._metrics = LSPMetrics()
 
         # Delta baseline: file path → snapshot of diagnostics taken
         # immediately before a write.  ``get_diagnostics_sync`` filters
         # out anything in the baseline so the agent only sees errors
         # introduced by the current edit.
         self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Reaper task — runs on the LSP background loop.  Started lazily
+        # on the first call to ``_get_or_spawn`` so the service is
+        # dormant until something actually needs an LSP client.
+        self._reaper_task: Optional[asyncio.Task] = None
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -208,6 +299,24 @@ class LSPService:
             idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
         except (TypeError, ValueError):
             idle_timeout = DEFAULT_IDLE_TIMEOUT
+        try:
+            reaper_interval = float(
+                lsp_cfg.get("reaper_interval", DEFAULT_REAPER_INTERVAL)
+            )
+        except (TypeError, ValueError):
+            reaper_interval = DEFAULT_REAPER_INTERVAL
+        try:
+            total_lsp_cap = int(lsp_cfg.get("total_lsp_cap", DEFAULT_TOTAL_LSP_CAP))
+        except (TypeError, ValueError):
+            total_lsp_cap = DEFAULT_TOTAL_LSP_CAP
+        raw_caps = lsp_cfg.get("per_server_caps") or {}
+        per_server_caps: Dict[str, int] = {}
+        if isinstance(raw_caps, dict):
+            for sid, cap in raw_caps.items():
+                try:
+                    per_server_caps[str(sid)] = int(cap)
+                except (TypeError, ValueError):
+                    continue
         install_strategy = lsp_cfg.get("install_strategy", "auto")
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
@@ -240,6 +349,9 @@ class LSPService:
             init_overrides=init_overrides,
             disabled_servers=disabled,
             idle_timeout=idle_timeout,
+            reaper_interval=reaper_interval,
+            total_lsp_cap=total_lsp_cap,
+            per_server_caps=per_server_caps,
         )
 
     # ------------------------------------------------------------------
@@ -456,8 +568,9 @@ class LSPService:
         if client is None:
             return []
         try:
-            version = await client.open_file(file_path, language_id=language_id_for(file_path))
-            await client.wait_for_diagnostics(file_path, version, mode=self._wait_mode)
+            async with client.track_request():
+                version = await client.open_file(file_path, language_id=language_id_for(file_path))
+                await client.wait_for_diagnostics(file_path, version, mode=self._wait_mode)
         except Exception as e:  # noqa: BLE001
             logger.debug("snapshot open/wait failed: %s", e)
             return []
@@ -469,9 +582,10 @@ class LSPService:
         if client is None:
             return []
         try:
-            version = await client.open_file(file_path, language_id=language_id_for(file_path))
-            await client.save_file(file_path)
-            await client.wait_for_diagnostics(file_path, version, mode=self._wait_mode)
+            async with client.track_request():
+                version = await client.open_file(file_path, language_id=language_id_for(file_path))
+                await client.save_file(file_path)
+                await client.wait_for_diagnostics(file_path, version, mode=self._wait_mode)
         except Exception as e:  # noqa: BLE001
             logger.debug("open/wait failed for %s: %s", file_path, e)
             return []
@@ -487,9 +601,14 @@ class LSPService:
             client = self._clients.get((srv.server_id, ws))
         if client is None:
             return []
-        return list(client.diagnostics_for(file_path))
+        # Snapshot reads the cached store synchronously; mark inflight
+        # so a concurrent cap-eviction can't tear down the underlying
+        # process between our lookup and the read.
+        async with client.track_request():
+            return list(client.diagnostics_for(file_path))
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
+        await self._maybe_start_reaper_async()
         await self._reap_idle_clients_async()
 
         srv = find_server_for_file(file_path)
@@ -515,6 +634,8 @@ class LSPService:
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
+                self._last_used[key] = time.time()
+                self._metrics.incr("reuses")
                 eventlog.log_active(srv.server_id, per_server_root)
                 return client
             spawning = self._spawning.get(key)
@@ -523,6 +644,20 @@ class LSPService:
                 return await spawning
             except Exception:  # noqa: BLE001
                 return None
+
+        # Enforce caps BEFORE spawning a new process.  If we're at the
+        # per-server or total limit, try to evict an idle peer first.
+        evicted = await self._enforce_caps(srv.server_id)
+        if not evicted:
+            # Cap held by active peers — refuse to spawn.  Callers will
+            # retry on the next request; meanwhile the active request
+            # completes normally.
+            logger.debug(
+                "LSP cap held for server=%s (active peers all busy); refusing spawn",
+                srv.server_id,
+            )
+            eventlog.log_cap_blocked(srv.server_id)
+            return None
 
         # Begin spawn
         loop = asyncio.get_running_loop()
@@ -560,12 +695,14 @@ class LSPService:
                 await client.start()
             except Exception as e:  # noqa: BLE001
                 eventlog.log_spawn_failed(srv.server_id, per_server_root, e)
+                self._metrics.incr("spawn_failures")
                 self._broken.add(key)
                 spawn_future.set_result(None)
                 return None
             with self._state_lock:
                 self._clients[key] = client
             self._last_used[key] = time.time()
+            self._metrics.incr("spawns")
             eventlog.log_active(srv.server_id, per_server_root)
             spawn_future.set_result(client)
             return client
@@ -573,31 +710,148 @@ class LSPService:
             with self._state_lock:
                 self._spawning.pop(key, None)
 
-    async def _reap_idle_clients_async(self, *, now: float | None = None) -> None:
+    async def _enforce_caps(self, server_id: str) -> bool:
+        """Enforce per-server and total LSP caps, evicting idle peers if needed.
+
+        Returns True if a new client may be spawned (either because the
+        cap is not yet hit, or because we successfully evicted an idle
+        peer).  Returns False if the cap is held by active peers.
+        """
+        async def _evict_one_idle() -> bool:
+            """Evict the LRU idle client.  Returns True if one was evicted."""
+            with self._state_lock:
+                # Eligible: in _clients, NOT spawning, inflight==0,
+                # not currently being torn down.  Pick by oldest
+                # ``_last_used`` so the LRU peer leaves first.
+                candidates = [
+                    (key, last)
+                    for key, last in self._last_used.items()
+                    if key in self._clients
+                    and key not in self._spawning
+                    and not self._clients[key].has_active_requests
+                ]
+                if not candidates:
+                    return False
+                victims = [
+                    self._clients[k] for k, _ in sorted(candidates, key=lambda kv: kv[1])
+                ]
+                victim_keys = [
+                    k for k, _ in sorted(candidates, key=lambda kv: kv[1])
+                ]
+
+            evictions = 0
+            for client, key in zip(victims, victim_keys):
+                with self._state_lock:
+                    self._clients.pop(key, None)
+                    self._last_used.pop(key, None)
+                try:
+                    await client.shutdown()
+                    self._metrics.incr("shutdowns")
+                    self._metrics.incr("reaps_cap")
+                    eventlog.log_cap_eviction(key[0], key[1])
+                    evictions += 1
+                    break
+                except Exception as e:  # noqa: BLE001
+                    self._metrics.incr("shutdown_failures")
+                    logger.debug("LSP cap eviction shutdown failed: %s", e)
+            return evictions > 0
+
+        with self._state_lock:
+            total = len(self._clients)
+            same_server = sum(
+                1 for sid, _ in self._clients.keys() if sid == server_id
+            )
+
+        per_server_cap = self._per_server_caps.get(server_id, self._total_lsp_cap)
+
+        def _under_cap(t: int, s: int) -> bool:
+            return t < self._total_lsp_cap and s < per_server_cap
+
+        if _under_cap(total, same_server):
+            return True
+
+        # At or over cap.  Evict idle peers one at a time, recomputing
+        # counts after each eviction so we exit as soon as the cap has
+        # slack.  Bound the loop so a flood of requests can't drive us
+        # into unbounded eviction work.
+        for _ in range(max(2, self._total_lsp_cap)):
+            if not await _evict_one_idle():
+                break
+            with self._state_lock:
+                total = len(self._clients)
+                same_server = sum(
+                    1 for sid, _ in self._clients.keys() if sid == server_id
+                )
+            if _under_cap(total, same_server):
+                return True
+        return False
+
+    async def _maybe_start_reaper_async(self) -> None:
+        """Start the periodic reaper task on first use, then leave it alone."""
+        if self._reaper_task is not None and not self._reaper_task.done():
+            return
+        if self._idle_timeout <= 0:
+            return  # Reaping disabled — no point starting the task.
+        loop = asyncio.get_running_loop()
+        self._reaper_task = loop.create_task(
+            self._reaper_loop(),
+            name="hermes-lsp-reaper",
+        )
+
+    async def _reaper_loop(self) -> None:
+        """Run ``_reap_idle_clients_async`` forever on the configured interval."""
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(self._reaper_interval)
+                except asyncio.CancelledError:
+                    raise
+                try:
+                    await self._reap_idle_clients_async()
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("LSP reaper tick failed: %s", e)
+        except asyncio.CancelledError:
+            return
+
+    async def _reap_idle_clients_async(self, *, now: Optional[float] = None) -> None:
         """Shutdown LSP clients that have been idle longer than the timeout.
 
         The service keeps one language server per ``(server_id, workspace)``.
         Long-lived gateway/cron processes can touch many temporary worktrees over
         time, so stale clients must be reaped or their stdio pipes accumulate
         until the process hits RLIMIT_NOFILE.
+
+        Never evicts a client with ``inflight > 0`` — eviction only targets
+        clients that are fully idle so no in-flight request is interrupted.
         """
         if self._idle_timeout <= 0:
             return
 
         cutoff = (time.time() if now is None else now) - self._idle_timeout
-        stale_clients: list[LSPClient] = []
+        stale_clients: List[LSPClient] = []
+        active_blocked = 0
 
         with self._state_lock:
             stale_keys = [
                 key
                 for key, last_used in list(self._last_used.items())
-                if last_used < cutoff and key in self._clients and key not in self._spawning
+                if last_used < cutoff
+                and key in self._clients
+                and key not in self._spawning
             ]
             for key in stale_keys:
-                client = self._clients.pop(key, None)
+                client = self._clients.get(key)
+                if client is None:
+                    continue
+                if client.has_active_requests:
+                    active_blocked += 1
+                    continue
+                self._clients.pop(key, None)
                 self._last_used.pop(key, None)
-                if client is not None:
-                    stale_clients.append(client)
+                stale_clients.append(client)
+
+        if active_blocked:
+            self._metrics.incr("reaps_blocked_active", active_blocked)
 
         if not stale_clients:
             return
@@ -608,18 +862,144 @@ class LSPService:
         )
         for result in results:
             if isinstance(result, Exception):
+                self._metrics.incr("shutdown_failures")
                 logger.debug("LSP idle client shutdown failed: %s", result)
+            else:
+                self._metrics.incr("shutdowns")
+        self._metrics.incr("reaps_idle", len(stale_clients))
+
+    async def _reap_idle_clients_async(self, *, now: Optional[float] = None) -> None:  # noqa: F811
+        """Shutdown LSP clients that have been idle longer than the timeout.
+
+        The service keeps one language server per ``(server_id, workspace)``.
+        Long-lived gateway/cron processes can touch many temporary worktrees over
+        time, so stale clients must be reaped or their stdio pipes accumulate
+        until the process hits RLIMIT_NOFILE.
+
+        Never evicts a client with ``inflight > 0`` — eviction only targets
+        clients that are fully idle so no in-flight request is interrupted.
+        """
+        if self._idle_timeout <= 0:
+            return
+
+        cutoff = (time.time() if now is None else now) - self._idle_timeout
+        stale_clients: List[LSPClient] = []
+        active_blocked = 0
+
+        with self._state_lock:
+            stale_keys = [
+                key
+                for key, last_used in list(self._last_used.items())
+                if last_used < cutoff
+                and key in self._clients
+                and key not in self._spawning
+            ]
+            for key in stale_keys:
+                client = self._clients.get(key)
+                if client is None:
+                    continue
+                if client.has_active_requests:
+                    active_blocked += 1
+                    continue
+                self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+                stale_clients.append(client)
+
+        if active_blocked:
+            self._metrics.incr("reaps_blocked_active", active_blocked)
+
+        if not stale_clients:
+            return
+
+        results = await asyncio.gather(
+            *(client.shutdown() for client in stale_clients),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                self._metrics.incr("shutdown_failures")
+                logger.debug("LSP idle client shutdown failed: %s", result)
+            else:
+                self._metrics.incr("shutdowns")
+        self._metrics.incr("reaps_idle", len(stale_clients))
 
     async def _shutdown_async(self) -> None:
+        # Cancel the periodic reaper first so it can't race with our
+        # shutdown and try to call ``client.shutdown()`` on already-purged
+        # clients during garbage collection.
+        if self._reaper_task is not None:
+            self._reaper_task.cancel()
+            try:
+                await self._reaper_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reaper_task = None
+
         with self._state_lock:
             clients = list(self._clients.values())
             self._clients.clear()
             self._broken.clear()
             self._last_used.clear()
+        if not clients:
+            return
         await asyncio.gather(
             *(c.shutdown() for c in clients),
             return_exceptions=True,
         )
+
+    # ------------------------------------------------------------------
+    # metrics (used by ``hermes lsp status`` and the gateway's status surface)
+    # ------------------------------------------------------------------
+
+    def snapshot_metrics(self) -> Dict[str, Any]:
+        """Return a snapshot of the service's runtime state.
+
+        Includes:
+        - ``metrics``: aggregate counters (spawns, reuses, reaps_idle,
+          reaps_cap, reaps_blocked_active, shutdowns, shutdown_failures,
+          spawn_failures)
+        - ``clients``: list of {server_id, workspace_root, inflight,
+          last_used, is_running} for every live client
+        - ``caps``: total cap, per-server caps, current counts
+        - ``idle_timeout_seconds``, ``reaper_interval_seconds``
+        - ``process_fd_count``: best-effort open-fd count for the
+          current process (requires psutil, else None)
+        - ``process_rss_bytes``: best-effort RSS for the current process
+          (requires psutil, else None)
+        - ``lsp_child_rss_bytes``: sum of RSS for LSP child PIDs, best-effort
+        """
+        with self._state_lock:
+            clients_payload = [
+                {
+                    "server_id": k[0],
+                    "workspace_root": k[1],
+                    "inflight": self._clients[k].inflight,
+                    "last_used": self._last_used.get(k),
+                    "is_running": self._clients[k].is_running,
+                }
+                for k in list(self._clients.keys())
+            ]
+            counts_per_server: Dict[str, int] = {}
+            for k in self._clients.keys():
+                counts_per_server[k[0]] = counts_per_server.get(k[0], 0) + 1
+            live_server_ids = sorted({k[0] for k in self._clients.keys()})
+
+        fd_count, rss_bytes, lsp_rss = _read_process_stats(live_server_ids)
+        return {
+            "metrics": self._metrics.as_dict(),
+            "clients": clients_payload,
+            "caps": {
+                "total_lsp_cap": self._total_lsp_cap,
+                "per_server_caps": dict(self._per_server_caps),
+                "current_total": len(clients_payload),
+                "current_per_server": counts_per_server,
+            },
+            "idle_timeout_seconds": self._idle_timeout,
+            "reaper_interval_seconds": self._reaper_interval,
+            "process_fd_count": fd_count,
+            "process_rss_bytes": rss_bytes,
+            "lsp_child_rss_bytes": lsp_rss,
+        }
 
     # ------------------------------------------------------------------
     # status / introspection (used by ``hermes lsp status``)

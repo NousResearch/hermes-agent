@@ -188,6 +188,31 @@ def log_spawn_failed(server_id: str, workspace_root: str, exc: BaseException) ->
     )
 
 
+def log_cap_eviction(server_id: str, workspace_root: str) -> None:
+    """An idle LSP peer was evicted to make room under a cap.  INFO.
+
+    Eviction only happens when an active request tries to spawn a new
+    client and the per-server or total cap is already met.  Emitted
+    on every eviction so users can see when caps are biting.
+    """
+    _emit(server_id, logging.INFO, f"cap eviction for {workspace_root}")
+
+
+def log_cap_blocked(server_id: str) -> None:
+    """A spawn request was refused because the cap was held by active peers.
+
+    INFO every time — this is the diagnostic users need when an editor
+    keeps failing to spawn and they want to know whether caps are the
+    reason rather than a broken binary.
+    """
+    _emit(server_id, logging.INFO, "cap held by active peers; spawn refused")
+
+
+def log_reaper_sweep(server_id: str, count: int) -> None:
+    """Periodic reaper swept N idle clients for this server.  DEBUG."""
+    _emit(server_id, logging.DEBUG, f"reaper swept {count} idle client(s)")
+
+
 def reset_announce_caches() -> None:
     """Test-only: clear the dedup caches.  Production code never calls this."""
     with _announce_lock:
@@ -209,5 +234,8 @@ __all__ = [
     "log_timeout",
     "log_server_error",
     "log_spawn_failed",
+    "log_cap_eviction",
+    "log_cap_blocked",
+    "log_reaper_sweep",
     "reset_announce_caches",
 ]

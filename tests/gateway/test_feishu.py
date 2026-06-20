@@ -21,6 +21,32 @@ except ImportError:
     _HAS_LARK_OAPI = False
 
 
+async def _direct(func, *args, **kwargs):
+    """Stand-in for asyncio.to_thread that runs the SDK call inline."""
+    return func(*args, **kwargs)
+
+
+def _capturing_adapter():
+    """A FeishuAdapter whose message API records the last create/update request."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.feishu import FeishuAdapter
+
+    adapter = FeishuAdapter(PlatformConfig())
+    captured = {}
+
+    class _MessageAPI:
+        def __getattr__(self, _name):  # create and update both record then succeed
+            def call(request):
+                captured["request"] = request
+                captured["method"] = _name
+                return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_1"))
+
+            return call
+
+    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+    return adapter, captured
+
+
 def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder = Mock()
     mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
@@ -2578,6 +2604,65 @@ class TestAdapterBehavior(unittest.TestCase):
         payload = json.loads(captured["request"].request_body.content)
         elements = payload["zh_cn"]["content"][0]
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_routes_markdown_table_to_post(self):
+        """A GFM table renders as post; the raw pipes are passed through, not downgraded to text."""
+        adapter, captured = _capturing_adapter()
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content="| A | B |\n|---|---|\n| 1 | 2 |"))
+        self.assertTrue(result.success)
+        body = captured["request"].request_body
+        self.assertEqual(body.msg_type, "post")
+        self.assertIn("| A | B |", body.content)
+        self.assertEqual(captured["method"], "create")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_routes_markdown_table_to_post(self):
+        """The shared payload seam carries the fix to the streaming/edit (update) path."""
+        adapter, captured = _capturing_adapter()
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            asyncio.run(adapter.edit_message(chat_id="oc_chat", message_id="om_1", content=table))
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        self.assertEqual(captured["method"], "update")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_keeps_post_for_prose_surrounding_a_table(self):
+        """Mixed prose + table stays post, so the rest of the markdown is no longer stripped (#23938)."""
+        adapter, _ = _capturing_adapter()
+        msg_type, _payload = adapter._build_outbound_payload("## H\n\n**bold** intro\n\n| A | B |\n|---|---|\n| 1 | 2 |")
+        self.assertEqual(msg_type, "post")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_normalizes_crlf_table_to_post(self):
+        """A CRLF table is normalized before detection instead of leaking as raw text."""
+        adapter, _ = _capturing_adapter()
+        msg_type, _payload = adapter._build_outbound_payload("| A | B |\r\n|---|---|\r\n| 1 | 2 |")
+        self.assertEqual(msg_type, "post")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_single_pipe_line_stays_plain_text(self):
+        """A lone pipe (e.g. a type union) is not a table and must not route to post."""
+        adapter, _ = _capturing_adapter()
+        msg_type, _payload = adapter._build_outbound_payload("def f(x: int | str) -> bool: ...")
+        self.assertEqual(msg_type, "text")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_table_detection_ignores_horizontal_rule(self):
+        from gateway.platforms.feishu import _MARKDOWN_TABLE_RE
+
+        self.assertIsNone(_MARKDOWN_TABLE_RE.search("above\n\n---\n\nbelow"))
+        self.assertIsNotNone(_MARKDOWN_TABLE_RE.search("| A | B |\n|---|---|"))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_table_inside_code_fence_stays_a_single_post_row(self):
+        """Now that fenced content reaches post, a fenced table must stay one verbatim code row."""
+        from gateway.platforms.feishu import _build_markdown_post_rows
+
+        rows = _build_markdown_post_rows("```\n| A | B |\n|---|---|\n| 1 | 2 |\n```")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("```", rows[0][0]["text"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):

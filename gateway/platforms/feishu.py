@@ -154,8 +154,8 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# A header row (line starting with |) followed by a separator line: routes table
+# content into the post 'md' pipeline, which Feishu renders natively.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -4374,16 +4374,16 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # _MARKDOWN_TABLE_RE and the post row-splitter match on literal "\n", so a
+        # CRLF table would slip through detection and leak raw pipes as plain text.
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        # Route markdown-rich content (GFM tables included) through post so Feishu
+        # renders it natively. Feishu added server-side table support to post 'md'
+        # elements, so the old force-text table downgrade is obsolete (verified on
+        # feishu.cn; see docs/plans/2026-05-30-feishu-markdown-table-rendering.md).
+        if _MARKDOWN_TABLE_RE.search(content) or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        return "text", json.dumps({"text": content}, ensure_ascii=False)
 
     async def _send_uploaded_file_message(
         self,

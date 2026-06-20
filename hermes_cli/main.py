@@ -6061,7 +6061,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_resolve_project_venv_dir() or (PROJECT_ROOT / "venv"))}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -6790,7 +6790,7 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(_resolve_project_venv_dir() or (PROJECT_ROOT / "venv"))}
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -6873,10 +6873,26 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _resolve_project_venv_dir() -> Path | None:
+    """Return the project virtualenv directory, or None if there isn't one.
+
+    Honors both ``venv`` and ``.venv`` — the latter is the name
+    ``python -m venv`` suggests by convention and is extremely common. The
+    previous hardcoded ``venv``-only check silently returned None for ``.venv``
+    installs, disabling the Windows update quarantine and concurrent-instance
+    detection that depend on it (#49665).
+    """
+    for name in ("venv", ".venv"):
+        candidate = PROJECT_ROOT / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    venv_dir = _resolve_project_venv_dir()
+    if venv_dir is None:
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
     return scripts if scripts.is_dir() else None
@@ -8985,7 +9001,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_resolve_project_venv_dir() or (PROJECT_ROOT / "venv"))}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

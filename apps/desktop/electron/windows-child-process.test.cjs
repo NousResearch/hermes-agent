@@ -28,13 +28,13 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
 
   requireHiddenChildOptions(source, "execFileSync(\n          'reg'")
-  requireHiddenChildOptions(source, 'execFileSync(\n          pyExe')
-  requireHiddenChildOptions(source, 'spawn(\n      resolveGitBinary()')
+  requireHiddenChildOptions(source, "execFileSync(\n          pyExe")
+  requireHiddenChildOptions(source, "spawn(\n      resolveGitBinary()")
   requireHiddenChildOptions(source, "execFileSync('taskkill'")
-  requireHiddenChildOptions(source, 'spawn(\n        command,\n        args')
+  requireHiddenChildOptions(source, "spawn(\n        command,\n        args")
   requireHiddenChildOptions(source, "spawn('curl'")
-  requireHiddenChildOptions(source, 'spawn(\n    backend.command,\n    backend.args')
-  requireHiddenChildOptions(source, 'hermesProcess = spawn(\n      backend.command,\n      backend.args')
+  requireHiddenChildOptions(source, "spawn(\n    backend.command,\n    backend.args")
+  requireHiddenChildOptions(source, "hermesProcess = spawn(\n      backend.command,\n      backend.args")
   requireHiddenChildOptions(source, "spawn(\n        py,\n        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
 })
 

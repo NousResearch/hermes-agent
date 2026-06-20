@@ -172,6 +172,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [systemOpen, setSystemOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [axiOpen, setAxiOpen] = useState(false)
 
   const truncLine = (pfx: string, items: string[]) => {
     let line = ''
@@ -257,6 +258,18 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           ) : (
             <Text color={t.color.error}>failed</Text>
           )}
+        </Text>
+      ))}
+    </>
+  )
+
+  // ── Collapsible AXI section ──
+  const axiBody = () => (
+    <>
+      {(info.axi_servers ?? []).map(s => (
+        <Text key={s.name} wrap="truncate">
+          <Text color={t.color.muted}>{`  ${s.name} `}</Text>
+          <Text color={t.color.muted}>{`[${s.type}]`}</Text>
         </Text>
       ))}
     </>
@@ -384,12 +397,28 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Box>
         )}
 
+        {/* ── AXI Servers (collapsed by default) ── */}
+        {info.axi_servers && info.axi_servers.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <CollapseToggle
+              count={info.axi_servers.length}
+              onToggle={() => setAxiOpen(v => !v)}
+              open={axiOpen}
+              suffix="available"
+              t={t}
+              title="AXI Servers"
+            />
+            {axiOpen && axiBody()}
+          </Box>
+        )}
+
         <Text />
 
         <Text color={t.color.text}>
           {toolsTotal} tools{' · '}
           {skillsTotal} skills
           {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
+          {info.axi_servers?.length ? ` · ${info.axi_servers.length} AXI` : ''}
           {' · '}
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>

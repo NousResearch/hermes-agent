@@ -143,7 +143,14 @@ export interface McpServerStatus {
   transport: string
 }
 
+export interface AxiServerStatus {
+  name: string
+  type: string
+  source?: string
+}
+
 export interface SessionInfo {
+  axi_servers?: AxiServerStatus[]
   cwd?: string
   fast?: boolean
   lazy?: boolean

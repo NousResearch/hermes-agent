@@ -1576,6 +1576,12 @@ def _session_info(agent, session: dict | None = None) -> dict:
     except Exception:
         info["mcp_servers"] = []
     try:
+        from tools.mcp_tool import get_axi_status
+
+        info["axi_servers"] = get_axi_status()
+    except Exception:
+        info["axi_servers"] = []
+    try:
         info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
     except Exception:
         pass

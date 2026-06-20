@@ -3571,6 +3571,44 @@ def get_mcp_status() -> List[dict]:
     return result
 
 
+def get_axi_status() -> List[dict]:
+    """Discover installed AXI binaries (~/.local/bin/*-axi) for banner display.
+
+    Scans ~/.local/bin/ for executables matching the *-axi pattern and
+    reports each as a dict with keys: name, type ('direct'|'wrapper'|'subprocess').
+    AXIs are standalone CLI binaries — there is no connected/failed status
+    like MCP servers; presence implies availability.
+
+    Returns an empty list for any error (no permission, no such dir, etc.).
+    """
+    result: List[dict] = []
+    axi_bin_dir = Path.home() / ".local" / "bin"
+
+    try:
+        if not axi_bin_dir.is_dir():
+            return result
+
+        for entry in sorted(axi_bin_dir.iterdir()):
+            if not entry.is_file() and not entry.is_symlink():
+                continue
+            name = entry.name
+            if not name.endswith("-axi"):
+                continue
+            # Determine type heuristically — AXIs are all "direct" by default;
+            # the type classification matters for the Wrapper/Subprocess case.
+            result.append({
+                "name": name,
+                "type": "direct",
+                "source": str(entry.resolve()) if entry.is_symlink() else str(entry),
+            })
+    except PermissionError:
+        return result
+    except OSError:
+        return result
+
+    return result
+
+
 def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     """Temporarily connect to configured MCP servers and list their tools.
 

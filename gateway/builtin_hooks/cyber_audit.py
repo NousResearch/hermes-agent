@@ -197,6 +197,21 @@ async def handle(event_type: str, context: dict) -> None:
             )
         }
 
+    gate_metadata = context.get("agentcyber_gate") or context.get("cyber_execution_gate")
+    if isinstance(gate_metadata, dict):
+        record["agentcyber_gate"] = {
+            key: gate_metadata.get(key)
+            for key in (
+                "gate",
+                "allowed",
+                "reason",
+                "asset_matches",
+                "candidates",
+                "breakglass_approval_id",
+            )
+            if key in gate_metadata
+        }
+
     if event_type == "agent:step":
         tool_call = context.get("tool_call") or {}
         tool_result = context.get("tool_result") or {}

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from hermes_cli.agentcyber import apply_agentcyber_setup, build_status_report
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from hermes_cli.agentcyber import apply_agentcyber_setup, build_status_report, agentcyber_command
 
 
 def test_agentcyber_status_reports_tool_visibility_and_safe_runtime():
@@ -66,3 +71,54 @@ def test_agentcyber_setup_can_enable_live_usb_explicitly():
 
     assert "cyber" in updated["platform_toolsets"]["cli"]
     assert "live_usb" in updated["platform_toolsets"]["cli"]
+
+
+def test_agentcyber_breakglass_create_list_revoke_json(tmp_path, capsys):
+    store = tmp_path / "breakglass.jsonl"
+    create_args = SimpleNamespace(
+        agentcyber_action="breakglass",
+        breakglass_action="create",
+        tool="terminal",
+        args_json=json.dumps({"command": "password reset 192.168.1.120"}),
+        operator="kbun",
+        reason="owned lab recovery",
+        ttl_minutes=15,
+        store=str(store),
+        apply=True,
+        json=True,
+    )
+
+    assert agentcyber_command(create_args) == 0
+    created = json.loads(capsys.readouterr().out)
+    approval_id = created["approval_id"]
+    assert approval_id.startswith("bg_")
+    assert created["dry_run"] is False
+    assert "password reset" in created["redacted_args"]["command"]
+
+    assert agentcyber_command(SimpleNamespace(agentcyber_action="breakglass", breakglass_action="list", store=str(store), json=True)) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed[0]["approval_id"] == approval_id
+    assert listed[0]["revoked"] is False
+
+    assert agentcyber_command(SimpleNamespace(agentcyber_action="breakglass", breakglass_action="revoke", approval_id=approval_id, store=str(store), json=True)) == 0
+    revoked = json.loads(capsys.readouterr().out)
+    assert revoked["approval_id"] == approval_id
+    assert revoked["revoked"] is True
+
+
+def test_agentcyber_breakglass_rejects_non_s5(tmp_path):
+    args = SimpleNamespace(
+        agentcyber_action="breakglass",
+        breakglass_action="create",
+        tool="read_file",
+        args_json=json.dumps({"path": "README.md"}),
+        operator="kbun",
+        reason="not destructive",
+        ttl_minutes=15,
+        store=str(tmp_path / "breakglass.jsonl"),
+        apply=True,
+        json=True,
+    )
+
+    with pytest.raises(SystemExit, match="only for S5"):
+        agentcyber_command(args)

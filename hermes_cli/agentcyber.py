@@ -10,6 +10,7 @@ import json
 import subprocess
 import urllib.request
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
@@ -191,6 +192,125 @@ def _format_status(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _approval_to_dict(approval) -> dict[str, Any]:  # noqa: ANN001
+    return {
+        "approval_id": approval.approval_id,
+        "created_at": approval.created_at,
+        "expires_at": approval.expires_at,
+        "operator": approval.operator,
+        "reason": approval.reason,
+        "gate": approval.gate,
+        "tool_name": approval.tool_name,
+        "asset_matches": list(approval.asset_matches),
+        "revoked": approval.revoked,
+        "redacted_args": approval.redacted_args or {},
+    }
+
+
+def _breakglass_store(path: str):
+    from agent.cyber_breakglass import BreakGlassStore
+
+    return BreakGlassStore(Path(path).expanduser()) if path else BreakGlassStore()
+
+
+def _create_breakglass_approval(args) -> tuple[object, bool]:  # noqa: ANN001
+    from agent.cyber_policy import classify_tool_gate, load_asset_registry
+
+    from hermes_cli.config import load_config
+
+    try:
+        function_args = json.loads(getattr(args, "args_json", "") or "{}")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--args-json must be valid JSON: {exc}") from exc
+    if not isinstance(function_args, dict):
+        raise SystemExit("--args-json must decode to an object")
+
+    tool_name = getattr(args, "tool", "")
+    gate, _reason, candidates = classify_tool_gate(tool_name, function_args)
+    if gate != "S5":
+        raise SystemExit(f"break-glass approvals are only for S5 actions; classified as {gate}")
+    registry = load_asset_registry(load_config())
+    matched = registry.matching_assets(candidates, gate="S3") if candidates else []
+    asset_matches = tuple(asset.name for asset in matched)
+    if not asset_matches:
+        raise SystemExit("S5 approval requires at least one matching authorized asset")
+
+    store = _breakglass_store(getattr(args, "store", ""))
+    approval = store.create(
+        tool_name=tool_name,
+        function_args=function_args,
+        gate=gate,
+        asset_matches=asset_matches,
+        operator=getattr(args, "operator", ""),
+        reason=getattr(args, "reason", ""),
+        ttl_minutes=int(getattr(args, "ttl_minutes", 15)),
+    ) if getattr(args, "apply", False) else None
+    if approval is None:
+        from agent.cyber_breakglass import BreakGlassApproval, fingerprint_tool_call, redacted_args, utc_now, _iso
+        from datetime import timedelta
+
+        now = utc_now()
+        approval = BreakGlassApproval(
+            approval_id="DRY-RUN",
+            created_at=_iso(now),
+            expires_at=_iso(now + timedelta(minutes=max(1, int(getattr(args, "ttl_minutes", 15))))),
+            operator=getattr(args, "operator", ""),
+            reason=getattr(args, "reason", ""),
+            gate=gate,
+            tool_name=tool_name,
+            args_fingerprint=fingerprint_tool_call(tool_name, function_args),
+            asset_matches=asset_matches,
+            redacted_args=redacted_args(function_args),
+        )
+    return approval, bool(getattr(args, "apply", False))
+
+
+def _handle_breakglass(args) -> int:  # noqa: ANN001
+    action = getattr(args, "breakglass_action", None)
+    if action in {"create", "request"}:
+        approval, applied = _create_breakglass_approval(args)
+        payload = _approval_to_dict(approval)
+        payload["dry_run"] = not applied
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"approval_id: {approval.approval_id}")
+            print(f"gate: {approval.gate}")
+            print(f"tool: {approval.tool_name}")
+            print(f"asset_matches: {', '.join(approval.asset_matches)}")
+            print(f"expires_at: {approval.expires_at}")
+            print("status: written" if applied else "status: dry-run; re-run with --apply to write")
+        return 0
+
+    if action == "list":
+        store = _breakglass_store(getattr(args, "store", ""))
+        payload = [_approval_to_dict(approval) for approval in store.list()]
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            if not payload:
+                print("No break-glass approvals found.")
+            for item in payload:
+                print(f"{item['approval_id']} {item['gate']} {item['tool_name']} expires={item['expires_at']} revoked={item['revoked']}")
+        return 0
+
+    if action == "revoke":
+        store = _breakglass_store(getattr(args, "store", ""))
+        try:
+            approval = store.revoke(getattr(args, "approval_id", ""))
+        except KeyError as exc:
+            raise SystemExit(f"unknown break-glass approval: {getattr(args, 'approval_id', '')}") from exc
+        payload = _approval_to_dict(approval)
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"revoked: {approval.approval_id}")
+        return 0
+
+    print("Usage: hermes agentcyber breakglass {create,list,revoke}")
+    return 2
+
+
 def agentcyber_command(args) -> int:  # noqa: ANN001
     from hermes_cli.config import load_config, save_config
 
@@ -202,6 +322,9 @@ def agentcyber_command(args) -> int:  # noqa: ANN001
         else:
             print(_format_status(report))
         return 0
+
+    if action == "breakglass":
+        return _handle_breakglass(args)
 
     if action == "setup":
         new_config = apply_agentcyber_setup(

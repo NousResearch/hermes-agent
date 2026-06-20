@@ -3850,6 +3850,19 @@ class SessionDB:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
             return cursor.fetchone()[0]
 
+    def has_active_messages(self, session_id: str) -> bool:
+        """Return whether a session has any active persisted transcript rows."""
+        if not session_id:
+            return False
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM messages "
+                "WHERE session_id = ? AND active = 1 LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        return row is not None
+
     # =========================================================================
     # Export and cleanup
     # =========================================================================

@@ -960,6 +960,7 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        db_activity_check_session_id = None
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -995,8 +996,20 @@ class SessionStore:
                     # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation
-                    reset_had_activity = entry.total_tokens > 0
+                    # Track whether the expired session had any real conversation.
+                    # SessionEntry token counters are lightweight and may be
+                    # stale in gateway sessions; canonical transcript activity
+                    # lives in state.db.
+                    reset_had_activity = any((
+                        entry.total_tokens,
+                        entry.input_tokens,
+                        entry.output_tokens,
+                        entry.cache_read_tokens,
+                        entry.cache_write_tokens,
+                        entry.last_prompt_tokens,
+                    ))
+                    if not reset_had_activity:
+                        db_activity_check_session_id = entry.session_id
                     db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
@@ -1029,6 +1042,21 @@ class SessionStore:
             }
 
         # SQLite operations outside the lock
+        if self._db and db_activity_check_session_id:
+            try:
+                db_has_activity = self._db.has_active_messages(
+                    db_activity_check_session_id
+                )
+            except Exception as e:
+                logger.debug("Session DB activity check failed: %s", e)
+            else:
+                if db_has_activity:
+                    with self._lock:
+                        current = self._entries.get(session_key)
+                        if current is entry and not current.reset_had_activity:
+                            current.reset_had_activity = True
+                            self._save()
+
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")

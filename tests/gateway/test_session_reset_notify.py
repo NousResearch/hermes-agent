@@ -162,6 +162,51 @@ class TestSessionEntryReason:
         assert entry2.was_auto_reset is True
         assert entry2.reset_had_activity is True
 
+    def test_reset_had_activity_true_when_db_has_messages_without_tokens(self, tmp_path):
+        """Persisted transcript activity counts when SessionEntry counters are stale."""
+        from hermes_state import SessionDB
+
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path / "sessions",
+        )
+
+        if store._db:
+            store._db.close()
+        store._db = SessionDB(db_path=tmp_path / "state.db")
+
+        source = _make_source()
+        old_entry = store.get_or_create_session(source)
+        old_session_id = old_entry.session_id
+
+        store._db.append_message(
+            session_id=old_session_id,
+            role="user",
+            content="hello before idle expiry",
+        )
+
+        assert store._db.get_session(old_session_id)["message_count"] == 1
+        assert old_entry.total_tokens == 0
+        assert old_entry.last_prompt_tokens == 0
+
+        old_entry.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        new_entry = store.get_or_create_session(source)
+
+        assert new_entry.was_auto_reset is True
+        assert new_entry.auto_reset_reason == "idle"
+        assert new_entry.session_id != old_session_id
+        assert new_entry.reset_had_activity is True
+
+        # The corrected flag is persisted for a gateway restart.
+        store._loaded = False
+        store._entries.clear()
+        store._ensure_loaded()
+
+        restored = store._entries[new_entry.session_key]
+        assert restored.reset_had_activity is True
+
 
 # ---------------------------------------------------------------------------
 # SessionResetPolicy notify config

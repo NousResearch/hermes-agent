@@ -10,6 +10,7 @@ Verifies that the agent cache correctly:
 """
 
 import threading
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -376,6 +377,16 @@ class TestExtractCacheBustingConfig:
         assert parse_calls == [config_path]
 
         config_path.write_text("{\n  \"changed\": true\n}")
+        # Ensure mtime actually advances — some filesystems (tmpfs, WSL
+        # VHDX) have coarse timestamps so back-to-back writes can land on
+        # the same nanosecond.  Nudge the timestamp forward explicitly.
+        import os, time
+        cur = config_path.stat().st_mtime_ns
+        os.utime(config_path, (time.time() + 1, time.time() + 1))
+        # Verify the nudge worked; if not, the test environment truly has
+        # no resolution and we skip the assertion (CI ext4 always works).
+        if config_path.stat().st_mtime_ns == cur:
+            pytest.skip("mtime did not advance — filesystem has no timestamp resolution")
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first

@@ -34,7 +34,7 @@ from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
     atomic_yaml_write,
@@ -1152,7 +1152,7 @@ class GatewaySlashCommandsMixin:
                             current_model=_cur_model,
                             current_base_url=_cur_base_url,
                             current_api_key=_cur_api_key,
-                            is_global=False,
+                            is_global=persist_global,
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
@@ -1216,6 +1216,36 @@ class GatewaySlashCommandsMixin:
                         # stale cache signature to trigger a rebuild.
                         _self._evict_cached_agent(_session_key)
 
+                        # Persist to config (default) unless --session opted out,
+                        # mirroring the text /model command path above so a picked
+                        # model survives across sessions like a typed one (#49066).
+                        if persist_global:
+                            try:
+                                if config_path.exists():
+                                    with open(config_path, encoding="utf-8") as f:
+                                        _persist_cfg = yaml.safe_load(f) or {}
+                                else:
+                                    _persist_cfg = {}
+                                _raw_model = _persist_cfg.get("model")
+                                if isinstance(_raw_model, dict):
+                                    _persist_model_cfg = _raw_model
+                                elif isinstance(_raw_model, str) and _raw_model.strip():
+                                    _persist_model_cfg = {"default": _raw_model.strip()}
+                                    _persist_cfg["model"] = _persist_model_cfg
+                                else:
+                                    _persist_model_cfg = {}
+                                    _persist_cfg["model"] = _persist_model_cfg
+                                _persist_model_cfg["default"] = result.new_model
+                                _persist_model_cfg["provider"] = result.target_provider
+                                if result.base_url:
+                                    _persist_model_cfg["base_url"] = result.base_url
+                                if str(result.target_provider or "").strip().lower() != "custom":
+                                    clear_model_endpoint_credentials(_persist_model_cfg)
+                                from hermes_cli.config import save_config
+                                save_config(_persist_cfg)
+                            except Exception as e:
+                                logger.warning("Failed to persist model switch: %s", e)
+
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [t("gateway.model.switched", model=result.new_model)]
@@ -1249,7 +1279,10 @@ class GatewaySlashCommandsMixin:
                             if mi.has_cost_data():
                                 lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
                             lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
-                        lines.append(t("gateway.model.session_only_hint"))
+                        if persist_global:
+                            lines.append(t("gateway.model.saved_global"))
+                        else:
+                            lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -1398,6 +1431,8 @@ class GatewaySlashCommandsMixin:
                     model_cfg["provider"] = result.target_provider
                     if result.base_url:
                         model_cfg["base_url"] = result.base_url
+                    if str(result.target_provider or "").strip().lower() != "custom":
+                        clear_model_endpoint_credentials(model_cfg)
                     from hermes_cli.config import save_config
                     save_config(cfg)
                 except Exception as e:

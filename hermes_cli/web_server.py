@@ -48,6 +48,7 @@ from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
+    clear_model_endpoint_credentials,
     get_config_path,
     get_env_path,
     get_hermes_home,
@@ -921,8 +922,11 @@ def _apply_main_model_assignment(
     # same-provider re-pick so re-selecting a model doesn't wipe the key.
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
+        model_cfg.pop("api", None)
     elif model_cfg.get("api_key") and new_provider != prev_provider:
-        model_cfg["api_key"] = ""
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
+    if new_provider != prev_provider:
+        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
     model_cfg.pop("context_length", None)
     return model_cfg
 
@@ -4014,6 +4018,169 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
     except Exception:
         _log.exception("POST /api/model/set failed")
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
+
+
+def _apply_model_assignment_sync(
+    scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
+):
+    """Synchronous body of POST /api/model/set.
+
+    Runs inside ``_profile_scope`` (in a worker thread) so every
+    load_config/save_config lands in the requested profile.  Raises
+    HTTPException for validation errors — the async wrapper re-raises them.
+    """
+    cfg = load_config()
+
+    if scope == "main":
+        if not provider or not model:
+            raise HTTPException(status_code=400, detail="provider and model required for main")
+        provider, model = _normalize_main_model_assignment(provider, model)
+        model_cfg = _apply_main_model_assignment(
+            cfg.get("model", {}), provider, model, base_url, api_key
+        )
+        cfg["model"] = model_cfg
+
+        # When switching the main provider to Nous, mirror the CLI's
+        # post-model-selection behaviour (hermes_cli/main.py
+        # prompt_enable_tool_gateway / tools_config apply_nous_managed_defaults):
+        # auto-route any *unconfigured* tools through the Nous Tool Gateway.
+        # This is purely additive — apply_nous_managed_defaults skips every
+        # tool where the user already has a direct key (FIRECRAWL_API_KEY,
+        # FAL_KEY, etc.) or an explicit backend/provider in config, so it
+        # never overwrites a user's own setup. GUI users thus land on the
+        # gateway the same way CLI users do, without a separate prompt.
+        gateway_tools: list[str] = []
+        if provider.strip().lower() == "nous":
+            try:
+                from hermes_cli.nous_subscription import apply_nous_managed_defaults
+                from hermes_cli.tools_config import _get_platform_tools
+
+                enabled = _get_platform_tools(
+                    cfg, "cli", include_default_mcp_servers=False
+                )
+                changed = apply_nous_managed_defaults(
+                    cfg,
+                    enabled_toolsets=enabled,
+                    force_fresh=True,
+                )
+                gateway_tools = sorted(changed)
+            except Exception:
+                # Portal lookup hiccups / non-subscriber / non-nous gating
+                # must never block saving the model assignment.
+                _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
+
+        save_config(cfg)
+
+        # Register a named ``custom_providers`` entry for a custom/local
+        # endpoint, mirroring the ``hermes model`` custom flow
+        # (_save_custom_provider). Without this the endpoint only lives in
+        # ``model.*`` and the picker has no proper ready row for it — the
+        # GUI then surfaces a "needs setup" dead-end on the bare ``custom``
+        # provider. Dedups by base_url, so re-saving is idempotent.
+        if provider.strip().lower() in {"custom", "local"} and base_url:
+            try:
+                from hermes_cli.main import _auto_provider_name, _save_custom_provider
+
+                _save_custom_provider(
+                    base_url,
+                    api_key,
+                    model,
+                    name=_auto_provider_name(base_url),
+                )
+            except Exception:
+                # Never block the assignment on the bookkeeping write —
+                # model.* is already persisted and routable.
+                _log.debug("custom_providers registration skipped", exc_info=True)
+
+        # Surface auxiliary slots still pinned to a *different* provider than
+        # the new main one. Switching the main model does NOT touch aux pins
+        # (they're independent, sticky per-task overrides — see
+        # auxiliary_client._resolve_auto). A user who switches main away from
+        # a now-unpaid provider (e.g. nous with $0 balance) keeps paying 402s
+        # on every background aux call until they reset those pins. We never
+        # auto-clear them — pinning aux to a cheaper/different model is a
+        # legitimate config — but we tell the caller so the UI can offer a
+        # "reset to main" nudge instead of silently burning credits.
+        new_provider = provider.strip().lower()
+        stale_aux: list[dict] = []
+        aux_cfg = cfg.get("auxiliary", {})
+        if isinstance(aux_cfg, dict):
+            for slot in _AUX_TASK_SLOTS:
+                slot_cfg = aux_cfg.get(slot)
+                if not isinstance(slot_cfg, dict):
+                    continue
+                slot_provider = str(slot_cfg.get("provider", "") or "").strip()
+                if (
+                    slot_provider
+                    and slot_provider.lower() not in {"auto", ""}
+                    and slot_provider.lower() != new_provider
+                ):
+                    stale_aux.append({
+                        "task": slot,
+                        "provider": slot_provider,
+                        "model": str(slot_cfg.get("model", "") or ""),
+                    })
+
+        return {
+            "ok": True,
+            "scope": "main",
+            "provider": provider,
+            "model": model,
+            "base_url": model_cfg.get("base_url", ""),
+            "gateway_tools": gateway_tools,
+            "stale_aux": stale_aux,
+        }
+
+    # scope == "auxiliary"
+    aux = cfg.get("auxiliary")
+    if not isinstance(aux, dict):
+        aux = {}
+
+    if task == "__reset__":
+        # Reset every slot to provider="auto", model="" — keeps other fields intact.
+        for slot in _AUX_TASK_SLOTS:
+            slot_cfg = aux.get(slot)
+            if not isinstance(slot_cfg, dict):
+                slot_cfg = {}
+            slot_cfg["provider"] = "auto"
+            slot_cfg["model"] = ""
+            slot_cfg.pop("base_url", None)
+            clear_model_endpoint_credentials(slot_cfg)
+            aux[slot] = slot_cfg
+        cfg["auxiliary"] = aux
+        save_config(cfg)
+        return {"ok": True, "scope": "auxiliary", "reset": True}
+
+    if not provider:
+        raise HTTPException(status_code=400, detail="provider required for auxiliary")
+
+    targets = [task] if task else list(_AUX_TASK_SLOTS)
+    for slot in targets:
+        if slot not in _AUX_TASK_SLOTS:
+            raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
+        slot_cfg = aux.get(slot)
+        if not isinstance(slot_cfg, dict):
+            slot_cfg = {}
+        prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
+        new_provider = provider.strip().lower()
+        slot_cfg["provider"] = provider
+        slot_cfg["model"] = model
+        if new_provider != prev_provider and new_provider != "custom":
+            slot_cfg.pop("base_url", None)
+            clear_model_endpoint_credentials(slot_cfg)
+        aux[slot] = slot_cfg
+
+    cfg["auxiliary"] = aux
+    save_config(cfg)
+    return {
+        "ok": True,
+        "scope": "auxiliary",
+        "tasks": targets,
+        "provider": provider,
+        "model": model,
+    }
+
+
 
 
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:

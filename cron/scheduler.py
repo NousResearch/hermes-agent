@@ -872,6 +872,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+        target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
@@ -886,18 +887,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
                     if future is None:
                         adapter_ok = False
+                        target_errors.append("live adapter event loop scheduling failed")
                     else:
                         try:
                             send_result = future.result(timeout=60)
-                        except TimeoutError:
+                        except TimeoutError as te:
                             future.cancel()
+                            target_errors.append(f"live adapter send timed out: {te}")
                             raise
-                        if send_result and not getattr(send_result, "success", True):
-                            err = getattr(send_result, "error", "unknown")
+                        except Exception as ex:
+                            target_errors.append(f"live adapter send failed: {ex}")
+                            raise
+
+                        if send_result is None or not getattr(send_result, "success", True):
+                            err = getattr(send_result, "error", "unknown") if send_result else "no response from adapter"
+                            msg = f"live adapter send to {platform_name}:{chat_id} failed: {err}"
                             logger.warning(
-                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                                job["id"], platform_name, chat_id, err,
+                                "Job '%s': %s, falling back to standalone",
+                                job["id"], msg,
                             )
+                            target_errors.append(msg)
                             adapter_ok = False  # fall through to standalone path
                         elif (
                             send_result
@@ -929,9 +938,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
+                err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
+                if not any(err_msg in err for err in target_errors):
+                    target_errors.append(err_msg)
                 logger.warning(
-                    "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
-                    job["id"], platform_name, chat_id, e,
+                    "Job '%s': %s, falling back to standalone",
+                    job["id"], err_msg,
                 )
 
         if not delivered:
@@ -951,13 +963,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
+                target_errors.extend([msg])
+                delivery_errors.extend(target_errors)
                 continue
 
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
+                target_errors.extend([msg])
+                delivery_errors.extend(target_errors)
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)

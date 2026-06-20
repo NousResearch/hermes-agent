@@ -17,7 +17,7 @@ Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
+- Single `memory` tool with action parameter: add, replace, remove
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
@@ -139,8 +139,7 @@ class MemoryStore:
 
         The live ``memory_entries`` / ``user_entries`` lists keep the
         original text so the user can still SEE poisoned entries via
-        ``memory(action=read)`` and remove them — silently dropping them
-        would hide the attack from the user.
+        see poisoned entries by inspecting the source files directly, and remove them — silently dropping them would hide the attack from the user.
 
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
@@ -196,7 +195,7 @@ class MemoryStore:
                 sanitized.append(
                     f"[BLOCKED: {filename} entry contained threat pattern(s): "
                     f"{', '.join(findings)}. Removed from system prompt; "
-                    f"use memory(action=read) to inspect and memory(action=remove) "
+                    f"use memory(action=remove) "
                     f"to delete the original.]"
                 )
             else:

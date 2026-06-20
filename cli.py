@@ -1017,11 +1017,20 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             # partially-initialised agents where the attribute is missing.
             _session_msgs = getattr(_active_agent_ref, "_session_messages", None)
             if isinstance(_session_msgs, list):
+                logger.info(
+                    "CLI cleanup calling memory shutdown for session %s with %d message(s)",
+                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                    len(_session_msgs),
+                )
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
+                logger.info(
+                    "CLI cleanup calling memory shutdown for session %s without session message list",
+                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                )
                 _active_agent_ref.shutdown_memory_provider()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
 
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:

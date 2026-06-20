@@ -1349,18 +1349,36 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "code_verifier": verifier,
         }).encode()
 
-        req = urllib.request.Request(
+        # Anthropic migrated the OAuth token endpoint to platform.claude.com;
+        # console.anthropic.com/v1/oauth/token now returns 404. Try the new
+        # host first and fall back to the legacy one (mirrors token refresh).
+        token_endpoints = [
+            "https://platform.claude.com/v1/oauth/token",
             _OAUTH_TOKEN_URL,
-            data=exchange_data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
-            },
-            method="POST",
-        )
+        ]
+        result = None
+        last_error = None
+        for endpoint in token_endpoints:
+            req = urllib.request.Request(
+                endpoint,
+                data=exchange_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    result = json.loads(resp.read().decode())
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
+                continue
 
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode())
+        if result is None:
+            raise last_error if last_error is not None else ValueError("Token exchange failed")
     except Exception as e:
         print(f"Token exchange failed: {e}")
         return None

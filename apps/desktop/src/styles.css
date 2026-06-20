@@ -1102,10 +1102,6 @@ canvas {
   --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
 }
 
-[data-slot='composer-root']:has([data-slot='composer-completion-drawer']) {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
-}
-
 /* Tool/thinking blocks now live at message-text alignment (no leading
    chevron column to escape into), so their headers and bodies share a
    common left edge with the model's text. */

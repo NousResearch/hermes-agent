@@ -91,7 +91,14 @@ export function ModelPill({
   return (
     <DropdownMenu onOpenChange={setOpen} open={open}>
       <DropdownMenuTrigger asChild>
-        <Button aria-label={title} className={pillClass} disabled={disabled} title={title} type="button" variant="ghost">
+        <Button
+          aria-label={title}
+          className={pillClass}
+          disabled={disabled}
+          title={title}
+          type="button"
+          variant="ghost"
+        >
           {label}
         </Button>
       </DropdownMenuTrigger>

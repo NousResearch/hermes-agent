@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { composerPanelCard } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -57,8 +58,8 @@ export function ContextMenu({
             <Codicon name="add" size="0.875rem" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-60" side="top" sideOffset={10}>
-          <DropdownMenuLabel className="text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/85">
+        <DropdownMenuContent align="start" className={cn('w-60', composerPanelCard)} side="top" sideOffset={6}>
+          <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
             {c.attachLabel}
           </DropdownMenuLabel>
           <ContextMenuItem disabled={!onPickFiles} icon={FileText} onSelect={onPickFiles}>
@@ -142,7 +143,12 @@ function PromptSnippetsDialog({ onInsertText, onOpenChange, open }: PromptSnippe
 
 export function ContextMenuItem({ children, disabled, icon: Icon, onSelect }: ContextMenuItemProps) {
   return (
-    <DropdownMenuItem disabled={disabled} onSelect={onSelect}>
+    // Override font size + highlight to match the / · @ completion rows exactly.
+    <DropdownMenuItem
+      className="text-[length:var(--conversation-tool-font-size)] focus:bg-(--ui-bg-tertiary)"
+      disabled={disabled}
+      onSelect={onSelect}
+    >
       <Icon />
       <span>{children}</span>
     </DropdownMenuItem>

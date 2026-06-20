@@ -40,7 +40,7 @@ import {
   isBrowsingHistory,
   resetBrowseState
 } from '@/store/composer-input-history'
-import { $composerPopoutPosition, $composerPoppedOut, setComposerPoppedOut } from '@/store/composer-popout'
+import { $composerPopoutPosition, $composerPoppedOut, POPOUT_WIDTH_REM, setComposerPoppedOut } from '@/store/composer-popout'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
@@ -88,6 +88,7 @@ import {
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
+  deleteChipBeforeCaret,
   deleteSelectionInEditor,
   insertPlainTextAtCaret,
   normalizeComposerEditorDom,
@@ -441,7 +442,10 @@ export function ChatBar({
       return
     }
 
-    if (draft.includes('\n')) {
+    // Only a non-trailing newline forces an immediate expand. A trailing newline
+    // (or phantom \n from contenteditable junk) is left to the ResizeObserver,
+    // which expands only when the editor's real height actually grows.
+    if (draft.trimEnd().includes('\n')) {
       setExpanded(true)
     }
   }, [draft, expanded])
@@ -887,6 +891,22 @@ export function ChatBar({
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
     if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
+    // Plain Backspace right after a directive chip: remove the chip + its
+    // auto-inserted trailing space as one unit, so deleting a directive never
+    // leaves an orphaned space. (Modified backspaces stay native.)
+    if (
+      event.key === 'Backspace' &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      deleteChipBeforeCaret(event.currentTarget)
+    ) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
       return
     }
 
@@ -1930,7 +1950,7 @@ export function ChatBar({
                   bottom: `${popoutPosition.bottom}px`,
                   right: `${popoutPosition.right}px`,
                   // A compact one-sentence width when floating.
-                  ['--composer-popout-width' as string]: '19.5rem'
+                  ['--composer-popout-width' as string]: `${POPOUT_WIDTH_REM}rem`
                 }
               : undefined
           }
@@ -1995,7 +2015,6 @@ export function ChatBar({
               className={cn(
                 'group/composer-surface relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out focus-within:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
                 COMPOSER_DROP_FADE_CLASS,
-                'group-has-data-[state=open]/composer:border-t-transparent',
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}
               data-slot="composer-surface"

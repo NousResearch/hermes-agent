@@ -14,6 +14,10 @@ export interface PopoutPosition {
   right: number
 }
 
+// Floating composer width (rem). Shared by the inline style that sets
+// --composer-popout-width and the peel-off drag math (to center it on the cursor).
+export const POPOUT_WIDTH_REM = 19.5
+
 // Default pop-out placement: tucked into the bottom-right of the thread, clear
 // of the window chrome. Matches the brief's "default to the right bottom".
 const DEFAULT_POSITION: PopoutPosition = { bottom: 24, right: 24 }

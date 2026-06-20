@@ -10,6 +10,7 @@ from agent.cyber_policy import (
     gate_tool_call_for_agent,
     load_asset_registry,
 )
+from agent.cyber_breakglass import BreakGlassStore
 from agent.cyber_routing import (
     CyberRoute,
     ProviderPreference,
@@ -103,6 +104,65 @@ def test_execution_gate_blocks_destructive_s5_even_on_lab_assets():
 
     assert decision.gate == "S5"
     assert decision.allowed is False
+    assert "valid explicit human approval" in decision.reason
+
+
+def test_execution_gate_allows_s5_with_exact_valid_breakglass_approval(tmp_path):
+    store = BreakGlassStore(tmp_path / "breakglass.jsonl")
+    command_args = {"command": "password reset 192.168.1.120"}
+    approval = store.create(
+        tool_name="terminal",
+        function_args=command_args,
+        gate="S5",
+        asset_matches=("bc-lab-lan",),
+        operator="kbun",
+        reason="owned lab recovery",
+        ttl_minutes=15,
+    )
+
+    decision = evaluate_execution_gate(
+        "terminal",
+        {**command_args, "approval_token": approval.approval_id},
+        config={
+            "agent_cyber": {
+                "include_builtin_bc_assets": True,
+                "execution_gates": {"breakglass_store": str(store.path)},
+            }
+        },
+    )
+
+    assert decision.gate == "S5"
+    assert decision.allowed is True
+    assert decision.approval_id == approval.approval_id
+    assert decision.to_metadata()["breakglass_approval_id"] == approval.approval_id
+
+
+def test_execution_gate_rejects_mismatched_breakglass_approval(tmp_path):
+    store = BreakGlassStore(tmp_path / "breakglass.jsonl")
+    approval = store.create(
+        tool_name="terminal",
+        function_args={"command": "password reset 192.168.1.120"},
+        gate="S5",
+        asset_matches=("bc-lab-lan",),
+        operator="kbun",
+        reason="owned lab recovery",
+        ttl_minutes=15,
+    )
+
+    decision = evaluate_execution_gate(
+        "terminal",
+        {"command": "password reset 192.168.1.121", "approval_token": approval.approval_id},
+        config={
+            "agent_cyber": {
+                "include_builtin_bc_assets": True,
+                "execution_gates": {"breakglass_store": str(store.path)},
+            }
+        },
+    )
+
+    assert decision.gate == "S5"
+    assert decision.allowed is False
+    assert "fingerprint mismatch" in decision.reason
 
 
 def test_registered_cyber_tools_have_intentional_gate_classification():

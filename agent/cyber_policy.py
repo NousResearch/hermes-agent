@@ -138,15 +138,19 @@ class ExecutionGateDecision:
     reason: str
     asset_matches: tuple[str, ...] = ()
     candidates: tuple[str, ...] = ()
+    approval_id: str = ""
 
     def to_metadata(self) -> dict[str, Any]:
-        return {
+        metadata = {
             "gate": self.gate,
             "allowed": self.allowed,
             "reason": self.reason,
             "asset_matches": list(self.asset_matches),
             "candidates": list(self.candidates),
         }
+        if self.approval_id:
+            metadata["breakglass_approval_id"] = self.approval_id
+        return metadata
 
 
 def builtin_bc_asset_registry() -> AssetRegistry:
@@ -268,7 +272,37 @@ def evaluate_execution_gate(
         return ExecutionGateDecision(gate, True, reason, candidates=tuple(candidates))
 
     if gate == "S5":
-        return ExecutionGateDecision(gate, False, "S5 destructive/external-high-risk action requires explicit human approval outside autonomous tool flow", candidates=tuple(candidates))
+        matched = registry.matching_assets(candidates, gate="S3") if candidates else []
+        asset_matches = tuple(asset.name for asset in matched)
+        from agent.cyber_breakglass import BreakGlassStore, extract_approval_id, validate_approval
+
+        store_path = gates_cfg.get("breakglass_store") or gates_cfg.get("breakglass_store_path")
+        store = BreakGlassStore(Path(str(store_path)).expanduser()) if store_path else None
+        approval_check = validate_approval(
+            approval_id=extract_approval_id(function_args),
+            tool_name=tool_name,
+            function_args=function_args,
+            gate=gate,
+            asset_matches=asset_matches,
+            store=store,
+        )
+        if approval_check.allowed and approval_check.approval is not None:
+            return ExecutionGateDecision(
+                gate,
+                True,
+                approval_check.reason,
+                asset_matches=asset_matches,
+                candidates=tuple(candidates),
+                approval_id=approval_check.approval.approval_id,
+            )
+        return ExecutionGateDecision(
+            gate,
+            False,
+            f"S5 destructive/external-high-risk action requires valid explicit human approval outside autonomous tool flow: {approval_check.reason}",
+            asset_matches=asset_matches,
+            candidates=tuple(candidates),
+            approval_id=approval_check.approval.approval_id if approval_check.approval else "",
+        )
 
     matched = registry.matching_assets(candidates, gate=gate) if candidates else []
     if matched or (not candidates and gate == "S3"):

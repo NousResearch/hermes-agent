@@ -2305,10 +2305,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # sweep still happens after jobs finish without stalling the tick.
         if _all_futures:
             _remaining = [len(_all_futures)]
+            _done_lock = threading.Lock()
 
             def _on_done(_f: concurrent.futures.Future) -> None:
-                _remaining[0] -= 1
-                if _remaining[0] <= 0:
+                with _done_lock:
+                    _remaining[0] -= 1
+                    should_sweep = _remaining[0] <= 0
+                if should_sweep:
                     _sweep_mcp_orphans()
 
             for _f in _all_futures:

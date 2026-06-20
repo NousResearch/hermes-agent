@@ -3915,6 +3915,30 @@ def _set_nested(config, dotted_key: str, value):
         current[last] = value
 
 
+def clear_model_endpoint_credentials(
+    model_cfg: Dict[str, Any],
+    *,
+    clear_api_key: bool = True,
+    clear_api_mode: bool = True,
+) -> Dict[str, Any]:
+    """Remove stale inline endpoint credentials from a model config.
+
+    ``model.api_key`` is valid only for explicit custom endpoint assignments.
+    Built-in providers resolve credentials from env vars, auth.json, or the
+    credential pool. When switching away from a custom endpoint, leaving these
+    fields behind keeps secrets in config.yaml and can contaminate later custom
+    resolution paths.
+    """
+    if not isinstance(model_cfg, dict):
+        return model_cfg
+    if clear_api_key:
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api", None)
+    if clear_api_mode:
+        model_cfg.pop("api_mode", None)
+    return model_cfg
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).

@@ -378,6 +378,99 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
     assert "api_mode" not in model
 
 
+def _seed_stale_custom_model(tmp_path, monkeypatch):
+    import yaml
+
+    config_home = tmp_path / "hermes"
+    config_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(config_home))
+    config_path = config_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "custom",
+                    "default": "glm-5.2",
+                    "base_url": "https://api.neuralwatt.com/v1",
+                    "api_key": "${NEURALWATT_API_KEY}",
+                    "api": "legacy-stale-key",
+                    "api_mode": "anthropic_messages",
+                }
+            },
+            sort_keys=False,
+        )
+    )
+    (config_home / ".env").write_text("")
+    return config_path
+
+
+def test_model_flow_openrouter_clears_stale_custom_key(tmp_path, monkeypatch):
+    import yaml
+
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_api_key",
+        lambda *args, **kwargs: ("sk-openrouter", False),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.model_ids",
+        lambda **kwargs: ["anthropic/claude-sonnet-4.6"],
+    )
+    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: "anthropic/claude-sonnet-4.6",
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    hermes_main._model_flow_openrouter({}, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config["model"]
+    assert model["provider"] == "openrouter"
+    assert model["default"] == "anthropic/claude-sonnet-4.6"
+    assert model["api_mode"] == "chat_completions"
+    assert "api_key" not in model
+    assert "api" not in model
+
+
+def test_model_flow_anthropic_clears_stale_custom_key_and_mode(tmp_path, monkeypatch):
+    import yaml
+
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+
+    monkeypatch.setattr("hermes_cli.auth.get_anthropic_key", lambda: "sk-ant-api03-test")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.is_claude_code_token_valid",
+        lambda creds: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_setup_flows._prompt_auth_credentials_choice",
+        lambda title: "use",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: "claude-sonnet-4-6",
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    hermes_main._model_flow_anthropic({}, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config["model"]
+    assert model["provider"] == "anthropic"
+    assert model["default"] == "claude-sonnet-4-6"
+    assert "base_url" not in model
+    assert "api_key" not in model
+    assert "api" not in model
+    assert "api_mode" not in model
+
+
 def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
     from hermes_cli.nous_account import NousPortalAccountInfo
 

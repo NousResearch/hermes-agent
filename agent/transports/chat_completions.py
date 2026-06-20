@@ -19,6 +19,17 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+_STRIP_TOP_LEVEL_MESSAGE_KEYS = (
+    "codex_reasoning_items",
+    "codex_message_items",
+    "tool_name",
+    "timestamp",
+    "message_id",
+    "observed",
+    "finish_reason",
+)
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
@@ -150,6 +161,10 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - SQLite session replay metadata: ``timestamp``, ``message_id``,
+          ``observed``, and ``finish_reason``. These fields are useful for
+          local persistence/history but are not part of the Chat Completions
+          message schema and strict providers reject them as extra inputs.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -168,11 +183,7 @@ class ChatCompletionsTransport(ProviderTransport):
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if (
-                "codex_reasoning_items" in msg
-                or "codex_message_items" in msg
-                or "tool_name" in msg
-            ):
+            if any(key in msg for key in _STRIP_TOP_LEVEL_MESSAGE_KEYS):
                 needs_sanitize = True
                 break
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
@@ -198,9 +209,8 @@ class ChatCompletionsTransport(ProviderTransport):
         for msg in sanitized:
             if not isinstance(msg, dict):
                 continue
-            msg.pop("codex_reasoning_items", None)
-            msg.pop("codex_message_items", None)
-            msg.pop("tool_name", None)
+            for key in _STRIP_TOP_LEVEL_MESSAGE_KEYS:
+                msg.pop(key, None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

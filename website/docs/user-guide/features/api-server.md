@@ -213,7 +213,10 @@ Returns a machine-readable description of the API server's stable surface for ex
     "responses_api": true,
     "run_submission": true,
     "run_status": true,
+    "run_event_history": true,
     "run_events_sse": true,
+    "run_events_sanitized": true,
+    "run_reasoning_redacted": true,
     "run_stop": true
   }
 }
@@ -258,11 +261,31 @@ Poll the current run state. This is useful for dashboards that need status witho
   "session_id": "space-session",
   "model": "hermes-agent",
   "output": "Done.",
-  "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
+  "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250},
+  "events": [
+    {"event": "run.started", "status": "running", "summary": "Run started"},
+    {
+      "event": "tool.started",
+      "tool_call_id": "call_1",
+      "tool": "terminal",
+      "status": "running",
+      "arguments_preview": {"command": "pytest tests/gateway/test_api_server_runs.py"}
+    },
+    {
+      "event": "tool.completed",
+      "tool_call_id": "call_1",
+      "tool": "terminal",
+      "status": "completed",
+      "result_preview": "12 passed"
+    },
+    {"event": "run.completed", "status": "completed", "summary": "Run completed"}
+  ],
+  "event_count": 4,
+  "events_truncated": false
 }
 ```
 
-Statuses are retained briefly after terminal states (`completed`, `failed`, or `cancelled`) for polling and UI reconciliation.
+Statuses and a bounded sanitized event history are retained briefly after terminal states (`completed`, `failed`, or `cancelled`) for polling and UI reconciliation. The timeline intentionally contains tool names, sanitized argument previews, sanitized result previews, lifecycle state, token usage, approval markers, and redacted reasoning markers, not private chain-of-thought text. Secret-looking fields such as API keys, tokens, cookies, and passwords are redacted before emission.
 
 ### GET /v1/runs/\{run_id\}/events
 

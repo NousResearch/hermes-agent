@@ -92,6 +92,13 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+RUN_EVENT_HISTORY_LIMIT = 200
+RUN_EVENT_PREVIEW_LIMIT = 1_200
+RUN_EVENT_COLLECTION_LIMIT = 20
+RUN_EVENT_SECRET_FIELD_RE = re.compile(
+    r"(?:api[_-]?key|authorization|bearer|cookie|credential|password|secret|token)",
+    re.IGNORECASE,
+)
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -398,8 +405,14 @@ class ResponseStore:
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
         # hermes_state._WAL_INCOMPAT_MARKERS).
-        from hermes_state import apply_wal_with_fallback
-        apply_wal_with_fallback(self._conn, db_label="response_store.db")
+        try:
+            from hermes_state import apply_wal_with_fallback
+            apply_wal_with_fallback(self._conn, db_label="response_store.db")
+        except Exception:
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                pass
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS responses (
                 response_id TEXT PRIMARY KEY,
@@ -777,6 +790,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Bounded, sanitized event history for polling UIs that cannot hold SSE.
+        self._run_event_history: Dict[str, List[Dict[str, Any]]] = {}
+        self._run_event_sequences: Dict[str, int] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -1175,7 +1191,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "responses_streaming": True,
                 "run_submission": True,
                 "run_status": True,
+                "run_event_history": True,
                 "run_events_sse": True,
+                "run_events_sanitized": True,
+                "run_reasoning_redacted": True,
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
@@ -3646,6 +3665,66 @@ class APIServerAdapter(BasePlatformAdapter):
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
+    @classmethod
+    def _safe_run_event_preview(cls, value: Any, limit: int = RUN_EVENT_PREVIEW_LIMIT, _depth: int = 0) -> Any:
+        """Return a JSON-safe, bounded preview for public run lifecycle events."""
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if _depth >= 3:
+            return cls._truncate_run_event_text(str(value), limit)
+        if isinstance(value, str):
+            return cls._truncate_run_event_text(value, limit)
+        if isinstance(value, dict):
+            preview: Dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= RUN_EVENT_COLLECTION_LIMIT:
+                    preview["..."] = f"{len(value) - RUN_EVENT_COLLECTION_LIMIT} more keys"
+                    break
+                key_text = str(key)
+                if RUN_EVENT_SECRET_FIELD_RE.search(key_text):
+                    preview[key_text] = "[redacted]"
+                else:
+                    preview[key_text] = cls._safe_run_event_preview(item, limit=limit, _depth=_depth + 1)
+            return preview
+        if isinstance(value, (list, tuple)):
+            items = [
+                cls._safe_run_event_preview(item, limit=limit, _depth=_depth + 1)
+                for item in list(value)[:RUN_EVENT_COLLECTION_LIMIT]
+            ]
+            if len(value) > RUN_EVENT_COLLECTION_LIMIT:
+                items.append(f"... {len(value) - RUN_EVENT_COLLECTION_LIMIT} more items")
+            return items
+        return cls._truncate_run_event_text(str(value), limit)
+
+    @staticmethod
+    def _truncate_run_event_text(text: str, limit: int = RUN_EVENT_PREVIEW_LIMIT) -> str:
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)] + "..."
+
+    def _record_run_event(self, run_id: str, event: Dict[str, Any], *, store: bool = True) -> Dict[str, Any]:
+        """Attach stable metadata and retain sanitized run events for polling."""
+        now = time.time()
+        event = dict(event)
+        event.setdefault("run_id", run_id)
+        event.setdefault("timestamp", now)
+        sequence = self._run_event_sequences.get(run_id, 0) + 1
+        self._run_event_sequences[run_id] = sequence
+        event.setdefault("sequence", sequence)
+        event.setdefault("id", f"{run_id}_evt_{sequence:06d}")
+
+        if store:
+            history = self._run_event_history.setdefault(run_id, [])
+            history.append(event)
+            if len(history) > RUN_EVENT_HISTORY_LIMIT:
+                del history[: len(history) - RUN_EVENT_HISTORY_LIMIT]
+            status = self._run_statuses.get(run_id)
+            if status is not None:
+                status["event_count"] = len(history)
+                status["last_event"] = event.get("event")
+                status["updated_at"] = now
+        return event
+
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
@@ -3657,18 +3736,19 @@ class APIServerAdapter(BasePlatformAdapter):
             "updated_at": now,
         })
         current.setdefault("created_at", fields.pop("created_at", now))
+        current.setdefault("event_count", len(self._run_event_history.get(run_id, [])))
         current.update(fields)
         self._run_statuses[run_id] = current
         return current
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
-        """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        """Return a progress callback for reasoning/subagent events.
+
+        Tool starts/completions are emitted by the exact tool lifecycle
+        callbacks below, which include call IDs and sanitized arguments/results.
+        """
         def _push(event: Dict[str, Any]) -> None:
-            self._set_run_status(
-                run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
-            )
+            event = self._record_run_event(run_id, event)
             q = self._run_streams.get(run_id)
             if q is None:
                 return
@@ -3679,31 +3759,69 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
-            if event_type == "tool.started":
-                _push({
-                    "event": "tool.started",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "preview": preview,
-                })
-            elif event_type == "tool.completed":
-                _push({
-                    "event": "tool.completed",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "duration": round(kwargs.get("duration", 0), 3),
-                    "error": kwargs.get("is_error", False),
-                })
-            elif event_type == "reasoning.available":
+            if event_type in {"tool.started", "tool.completed"}:
+                return
+            if event_type in {"reasoning.available", "_thinking"}:
                 _push({
                     "event": "reasoning.available",
                     "run_id": run_id,
                     "timestamp": ts,
-                    "text": preview or "",
+                    "summary": "Intermediate model reasoning was produced and redacted.",
+                    "redacted": True,
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
+            elif event_type == "subagent_progress" or str(event_type).startswith("subagent."):
+                _push({
+                    "event": "subagent.progress",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "summary": self._truncate_run_event_text(str(tool_name or preview or ""), 500),
+                    "details": self._safe_run_event_preview(kwargs, limit=500),
+                })
+
+        return _callback
+
+    def _make_run_tool_start_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+        """Return a tool_start_callback that emits sanitized started events."""
+        def _callback(tool_call_id: str, function_name: str, function_args: Any):
+            event = self._record_run_event(run_id, {
+                "event": "tool.started",
+                "tool_call_id": tool_call_id,
+                "tool": function_name,
+                "status": "running",
+                "arguments_preview": self._safe_run_event_preview(function_args),
+                "summary": f"Started {function_name}",
+            })
+            q = self._run_streams.get(run_id)
+            if q is None:
+                return
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, event)
+            except Exception:
+                pass
+
+        return _callback
+
+    def _make_run_tool_complete_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+        """Return a tool_complete_callback that emits sanitized completion events."""
+        def _callback(tool_call_id: str, function_name: str, function_args: Any, function_result: Any):
+            result_text = "" if function_result is None else str(function_result)
+            event = self._record_run_event(run_id, {
+                "event": "tool.completed",
+                "tool_call_id": tool_call_id,
+                "tool": function_name,
+                "status": "completed",
+                "arguments_preview": self._safe_run_event_preview(function_args),
+                "result_preview": self._safe_run_event_preview(result_text),
+                "result_chars": len(result_text),
+                "summary": f"Completed {function_name}",
+            })
+            q = self._run_streams.get(run_id)
+            if q is None:
+                return
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, event)
+            except Exception:
+                pass
 
         return _callback
 
@@ -3719,7 +3837,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return key_err
 
         # Enforce concurrency limit
-        if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
+        active_run_count = sum(1 for task in self._active_run_tasks.values() if not task.done())
+        if active_run_count >= self._MAX_CONCURRENT_RUNS:
             return web.json_response(
                 _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
                 status=429,
@@ -3797,6 +3916,22 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions[run_id] = approval_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
+        tool_start_cb = self._make_run_tool_start_callback(run_id, loop)
+        tool_complete_cb = self._make_run_tool_complete_callback(run_id, loop)
+
+        def _put_run_event(event: Dict[str, Any]) -> None:
+            try:
+                recorded = self._record_run_event(run_id, event)
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
+                if running_loop is loop:
+                    q.put_nowait(recorded)
+                else:
+                    loop.call_soon_threadsafe(q.put_nowait, recorded)
+            except Exception:
+                pass
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
@@ -3819,21 +3954,35 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             model=body.get("model", self._model_name),
         )
+        _put_run_event({
+            "event": "run.queued",
+            "timestamp": created_at,
+            "status": "queued",
+            "summary": "Run queued",
+        })
 
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
+                _put_run_event({
+                    "event": "run.started",
+                    "status": "running",
+                    "summary": "Run started",
+                })
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    tool_start_callback=tool_start_cb,
+                    tool_complete_callback=tool_complete_cb,
                     gateway_session_key=gateway_session_key,
                 )
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
-                    event = dict(approval_data or {})
+                    approval_preview = self._safe_run_event_preview(approval_data or {})
+                    event = approval_preview if isinstance(approval_preview, dict) else {"details": approval_preview}
                     event.update({
                         "event": "approval.request",
                         "run_id": run_id,
@@ -3845,10 +3994,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "waiting_for_approval",
                         last_event="approval.request",
                     )
-                    try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
-                    except Exception:
-                        pass
+                    _put_run_event(event)
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars, set_session_vars
@@ -3904,11 +4050,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
+                    _put_run_event({
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
+                        "status": "failed",
                         "error": error_msg,
+                        "summary": "Run failed",
                     })
                     self._set_run_status(
                         run_id,
@@ -3918,12 +4066,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    _put_run_event({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
+                        "status": "completed",
                         "output": final_response,
                         "usage": usage,
+                        "summary": "Run completed",
                     })
                     self._set_run_status(
                         run_id,
@@ -3938,14 +4088,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "cancelled",
                     last_event="run.cancelled",
                 )
-                try:
-                    q.put_nowait({
-                        "event": "run.cancelled",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                    })
-                except Exception:
-                    pass
+                _put_run_event({
+                    "event": "run.cancelled",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "status": "cancelled",
+                    "summary": "Run cancelled",
+                })
                 raise
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
@@ -3955,15 +4104,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     error=str(exc),
                     last_event="run.failed",
                 )
-                try:
-                    q.put_nowait({
-                        "event": "run.failed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "error": str(exc),
-                    })
-                except Exception:
-                    pass
+                _put_run_event({
+                    "event": "run.failed",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "status": "failed",
+                    "error": self._truncate_run_event_text(str(exc), 500),
+                    "summary": "Run failed",
+                })
             finally:
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
@@ -4016,7 +4164,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
-        return web.json_response(status)
+        events = list(self._run_event_history.get(run_id, []))
+        payload = dict(status)
+        payload["events"] = events
+        payload["event_count"] = len(events)
+        payload["events_truncated"] = (
+            bool(events)
+            and len(events) >= RUN_EVENT_HISTORY_LIMIT
+            and int(events[0].get("sequence", 1) or 1) > 1
+        )
+        return web.json_response(payload)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -4136,16 +4293,17 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         self._set_run_status(run_id, "running", last_event="approval.responded")
+        response_event = self._record_run_event(run_id, {
+            "event": "approval.responded",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "choice": choice,
+            "resolved": resolved,
+        })
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
-                q.put_nowait({
-                    "event": "approval.responded",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "choice": choice,
-                    "resolved": resolved,
-                })
+                q.put_nowait(response_event)
             except Exception:
                 pass
 
@@ -4170,6 +4328,19 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        stop_event = self._record_run_event(run_id, {
+            "event": "run.stopping",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "status": "stopping",
+            "summary": "Stop requested",
+        })
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait(stop_event)
+            except Exception:
+                pass
 
         if agent is not None:
             try:
@@ -4230,6 +4401,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
+                self._run_event_history.pop(run_id, None)
+                self._run_event_sequences.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

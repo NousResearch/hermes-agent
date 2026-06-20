@@ -224,6 +224,74 @@ class TestRunStatus:
                 assert status["output"] == "done"
                 assert status["usage"]["total_tokens"] == 6
                 assert status["last_event"] == "run.completed"
+                assert status["event_count"] == len(status["events"])
+                assert [event["event"] for event in status["events"]][-1] == "run.completed"
+
+    @pytest.mark.asyncio
+    async def test_status_includes_sanitized_event_history(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _run_conversation(**kwargs):
+                    create_kwargs = mock_create.call_args.kwargs
+                    create_kwargs["tool_progress_callback"](
+                        "reasoning.available",
+                        "_thinking",
+                        "private scratchpad text that must stay hidden",
+                        None,
+                    )
+                    create_kwargs["tool_start_callback"](
+                        "call_terminal",
+                        "terminal",
+                        {"command": "echo hi", "api_key": "sk-secret"},
+                    )
+                    create_kwargs["tool_complete_callback"](
+                        "call_terminal",
+                        "terminal",
+                        {"command": "echo hi"},
+                        "hi\n",
+                    )
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_agent.session_prompt_tokens = 4
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 6
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    assert status_resp.status == 200
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                event_names = [event["event"] for event in status["events"]]
+                assert "run.started" in event_names
+                assert "reasoning.available" in event_names
+                assert "tool.started" in event_names
+                assert "tool.completed" in event_names
+                assert event_names[-1] == "run.completed"
+
+                reasoning_event = next(event for event in status["events"] if event["event"] == "reasoning.available")
+                assert reasoning_event["redacted"] is True
+                assert "private scratchpad" not in json.dumps(status)
+
+                started_event = next(event for event in status["events"] if event["event"] == "tool.started")
+                assert started_event["tool_call_id"] == "call_terminal"
+                assert started_event["arguments_preview"]["command"] == "echo hi"
+                assert started_event["arguments_preview"]["api_key"] == "[redacted]"
+
+                completed_event = next(event for event in status["events"] if event["event"] == "tool.completed")
+                assert completed_event["tool_call_id"] == "call_terminal"
+                assert completed_event["result_preview"] == "hi\n"
 
     @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):

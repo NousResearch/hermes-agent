@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
@@ -61,6 +62,26 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_RAW_MEMORY_METADATA_TYPES = {
+    "prompt_submit",
+    "raw_transcript",
+    "context_compaction",
+    "tool_output",
+    "conversation_turn",
+}
+_RAW_MEMORY_STATES = {"raw", "candidate", "superseded", "stale"}
+_RAW_RECALL_TEXT_MARKERS = (
+    "prompt_submit:",
+    "[context compaction",
+    "context compaction — reference only",
+    "--- end of context summary",
+    "<untrusted_tool_result",
+    "tool output:",
+)
+_CONTEXT_COMPACTION_RE = re.compile(
+    r"\[CONTEXT COMPACTION\s+—\s+REFERENCE ONLY\].*?(?:--- END OF CONTEXT SUMMARY.*?(?:\n|$)|\[/CONTEXT COMPACTION\])",
+    re.IGNORECASE | re.DOTALL,
+)
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -72,6 +93,67 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+
+
+def _metadata_get(metadata: Any, key: str) -> str:
+    """Best-effort metadata lookup for SDK objects or plain dicts."""
+    if not metadata:
+        return ""
+    if isinstance(metadata, dict):
+        value = metadata.get(key, "")
+    else:
+        value = getattr(metadata, key, "")
+    return str(value or "").strip().lower()
+
+
+def _strip_operational_memory_artifacts(text: str) -> str:
+    """Remove Hermes operational handoff/debug blocks before retention.
+
+    Context compaction blocks are useful inside one session, but retaining and
+    embedding them as long-term memory pollutes recall with stale intermediate
+    state. Keep the user's actual message around the block, if any.
+    """
+    if not text:
+        return ""
+    return _CONTEXT_COMPACTION_RE.sub("", text).strip()
+
+
+def _is_recall_result_allowed(result: Any) -> bool:
+    """Return False for raw/stale operational memories.
+
+    Hindsight is the storage/retrieval backend; Hermes still owns the policy
+    for what is safe to inject into the prompt. Auto-recall should prefer the
+    consolidated knowledge layer and must not surface raw prompt_submit turns,
+    context compaction summaries, tool-output snippets, or superseded/candidate
+    facts as authoritative memory.
+    """
+    text = str(getattr(result, "text", "") or "").strip()
+    metadata = getattr(result, "metadata", None)
+    memory_type = _metadata_get(metadata, "type") or _metadata_get(metadata, "memory_type")
+    state = _metadata_get(metadata, "state")
+    category = _metadata_get(metadata, "category")
+    if memory_type in _RAW_MEMORY_METADATA_TYPES or category in _RAW_MEMORY_METADATA_TYPES:
+        return False
+    if state in _RAW_MEMORY_STATES:
+        return False
+    lowered = text.lower()
+    return not any(marker in lowered for marker in _RAW_RECALL_TEXT_MARKERS)
+
+
+def _format_recall_results(results: Any, *, numbered: bool = False) -> list[str]:
+    """Filter and format Hindsight recall results for prompt/tool output."""
+    lines: list[str] = []
+    for result in results or []:
+        if not _is_recall_result_allowed(result):
+            continue
+        text = str(getattr(result, "text", "") or "").strip()
+        if not text:
+            continue
+        if numbered:
+            lines.append(f"{len(lines) + 1}. {text}")
+        else:
+            lines.append(f"- {text}")
+    return lines
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -1439,7 +1521,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = "\n".join(_format_recall_results(resp.results)) if resp.results else ""
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1451,6 +1533,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        user_content = _strip_operational_memory_artifacts(user_content)
+        assistant_content = _strip_operational_memory_artifacts(assistant_content)
         return [
             {
                 "role": "user",
@@ -1464,11 +1548,20 @@ class HindsightMemoryProvider(MemoryProvider):
             },
         ]
 
-    def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
+    def _build_metadata(
+        self,
+        *,
+        message_count: int,
+        turn_index: int,
+        memory_type: str = "manual_retention",
+        state: str = "confirmed",
+    ) -> Dict[str, str]:
         metadata: Dict[str, str] = {
             "retained_at": _utc_timestamp(),
             "message_count": str(message_count),
             "turn_index": str(turn_index),
+            "type": memory_type,
+            "state": state,
         }
         if self._retain_source:
             metadata["source"] = self._retain_source
@@ -1581,6 +1674,8 @@ class HindsightMemoryProvider(MemoryProvider):
         metadata_snapshot = self._build_metadata(
             message_count=len(turns_to_retain) * 2,
             turn_index=self._turn_index,
+            memory_type="conversation_turn",
+            state="raw",
         )
         num_turns = len(turns_to_retain)
         bank_id = self._bank_id
@@ -1670,7 +1765,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
+                lines = _format_recall_results(resp.results, numbered=True)
+                if not lines:
+                    return json.dumps({"result": "No relevant memories found."})
                 return json.dumps({"result": "\n".join(lines)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)

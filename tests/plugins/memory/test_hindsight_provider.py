@@ -27,6 +27,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _strip_operational_memory_artifacts,
 )
 
 
@@ -209,6 +210,16 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
         "agent:fakeassistantname",
         "source_system:hermes-agent",
     ]
+
+
+def test_strip_operational_memory_artifacts_removes_context_compaction_block():
+    text = "before\n[CONTEXT COMPACTION — REFERENCE ONLY]\nstale row 60 candidate\n--- END OF CONTEXT SUMMARY — respond below ---\nafter"
+
+    assert _strip_operational_memory_artifacts(text) == "before\nafter"
+
+
+def test_strip_operational_memory_artifacts_preserves_normal_text():
+    assert _strip_operational_memory_artifacts("User prefers concise replies") == "User prefers concise replies"
 
 
 def test_normalize_retain_tags_accepts_json_array_string():
@@ -696,6 +707,24 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
+    def test_recall_filters_raw_and_stale_operational_results(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(text="prompt_submit: User: old raw turn"),
+                SimpleNamespace(text="[CONTEXT COMPACTION — REFERENCE ONLY] stale summary"),
+                SimpleNamespace(text="Candidate Google Workspace invoice", metadata={"state": "candidate"}),
+                SimpleNamespace(text="Superseded fact", metadata={"state": "superseded"}),
+                SimpleNamespace(text="Raw transcript", metadata={"type": "raw_transcript"}),
+                SimpleNamespace(text="Confirmed final fact", metadata={"state": "confirmed"}),
+            ]
+        )
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "google workspace invoice"}
+        ))
+
+        assert result["result"] == "1. Confirmed final fact"
+
     def test_recall_passes_max_tokens(self, provider_with_config):
         p = provider_with_config(recall_max_tokens=2048)
         p.handle_tool_call("hindsight_recall", {"query": "test"})
@@ -855,6 +884,21 @@ class TestPrefetch:
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
 
+    def test_queue_prefetch_filters_raw_operational_results(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(text="prompt_submit: User: old raw turn"),
+                SimpleNamespace(text="Durable confirmed fact", metadata={"state": "confirmed"}),
+                SimpleNamespace(text="Stale candidate", metadata={"state": "candidate"}),
+            ]
+        )
+
+        provider.queue_prefetch("test query")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == "- Durable confirmed fact"
+
 
 # ---------------------------------------------------------------------------
 # sync_turn tests
@@ -912,6 +956,8 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
+        assert item["metadata"]["type"] == "conversation_turn"
+        assert item["metadata"]["state"] == "raw"
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
 
@@ -929,6 +975,20 @@ class TestSyncTurn:
         assert "conv" in item["tags"]
         assert "session1" in item["tags"]
         assert "session:test-session" in item["tags"]
+
+    def test_sync_turn_strips_context_compaction_blocks_before_retain(self, provider):
+        provider.sync_turn(
+            "real ask\n[CONTEXT COMPACTION — REFERENCE ONLY]\nstale candidate\n--- END OF CONTEXT SUMMARY — respond below ---\ncurrent ask",
+            "done",
+        )
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        content = json.loads(item["content"])
+        retained_user = content[0][0]["content"]
+        assert "stale candidate" not in retained_user
+        assert "CONTEXT COMPACTION" not in retained_user
+        assert retained_user == "User: real ask\ncurrent ask"
 
     def test_sync_turn_uses_aretain_batch(self, provider):
         """sync_turn should use aretain_batch with retain_async."""

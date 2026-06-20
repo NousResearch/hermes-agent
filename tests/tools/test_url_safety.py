@@ -222,6 +222,74 @@ class TestIsSafeUrl:
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
 
+    # ---- myqcloud.com suffix trust (deny-list: loopback/multicast/unspecified/link-local) ----
+
+    def test_myqcloud_benchmark_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.11", 0)),
+        ]):
+            assert is_safe_url("https://ww-aibot-img-1.cos.ap-guangzhou.myqcloud.com/file") is True
+
+    def test_myqcloud_rfc1918_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("10.0.0.1", 0)),
+        ]):
+            assert is_safe_url("https://mybucket.cos.ap-shanghai.myqcloud.com/obj") is True
+
+    def test_myqcloud_cgnat_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.64.0.1", 0)),
+        ]):
+            assert is_safe_url("https://example.file.myqcloud.com/path") is True
+
+    def test_myqcloud_loopback_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert is_safe_url("https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/x") is False
+
+    def test_myqcloud_multicast_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("224.0.0.1", 0)),
+        ]):
+            assert is_safe_url("https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/x") is False
+
+    def test_myqcloud_unspecified_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("0.0.0.0", 0)),
+        ]):
+            assert is_safe_url("https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/x") is False
+
+    def test_myqcloud_ipv6_link_local_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fe80::1", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/x") is False
+
+    def test_myqcloud_ipv4_link_local_blocked(self):
+        # link-local (169.254.x.x) is in _ALWAYS_BLOCKED_NETWORKS — blocked for everyone
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.42.1", 0)),
+        ]):
+            assert is_safe_url("https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/x") is False
+
+    def test_myqcloud_requires_https(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.11", 0)),
+        ]):
+            assert is_safe_url("http://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/file") is False
+
+    def test_myqcloud_subdomain_not_trusted(self):
+        # "notmyqcloud.com" should NOT match ".myqcloud.com" suffix (the leading dot prevents it)
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.11", 0)),
+        ]):
+            assert is_safe_url("https://evil.notmyqcloud.com/x") is False
+
+    def test_myqcloud_dns_failure_still_blocked(self):
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
+            assert is_safe_url("https://ww-aibot-img.cos.ap-guangzhou.myqcloud.com/file") is False
+
 
 class TestAsyncIsSafeUrl:
     """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""

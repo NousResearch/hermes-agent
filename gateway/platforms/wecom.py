@@ -65,8 +65,10 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    safe_url_for_log,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,6 +222,7 @@ class WeComAdapter(BasePlatformAdapter):
             from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
                 timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+                event_hooks={"response": [_ssrf_redirect_guard]},
             )
             await self._open_connection()
             self._mark_connected()
@@ -371,6 +374,8 @@ class WeComAdapter(BasePlatformAdapter):
                     await self._dispatch_payload(payload)
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
+            else:
+                logger.debug("[%s] Ignored non-TEXT websocket frame: type=%s", self.name, msg.type)
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""
@@ -495,6 +500,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not isinstance(body, dict):
             return
 
+        msgtype = str(body.get("msgtype") or "").lower()
+
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
@@ -536,7 +543,7 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
+            logger.info("[%s] Empty WeCom message skipped (msgtype=%s, body_keys=%s)", self.name, msgtype, list(body.keys())[:10])
             return
 
         source = self.build_source(
@@ -773,7 +780,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
         except Exception as exc:
-            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, safe_url_for_log(url), exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
@@ -781,7 +788,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, safe_url_for_log(url), exc)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
@@ -790,7 +797,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
             except ValueError as exc:
-                logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
+                logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, safe_url_for_log(url), exc)
                 return None
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
@@ -1072,12 +1079,15 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> Tuple[bytes, Dict[str, str]]:
         from tools.url_safety import is_safe_url
         if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
-        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        client = self._http_client or httpx.AsyncClient(
+            timeout=30.0, follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        )
         created_client = client is not self._http_client
         try:
             async with client.stream(

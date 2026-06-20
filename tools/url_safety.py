@@ -110,11 +110,22 @@ _ALWAYS_BLOCKED_NETWORKS = (
 )
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
-# This is intentionally narrow: QQ media downloads can legitimately resolve
-# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+# These hostnames belong to CDN providers whose real public IPs are
+# redirected to private ranges by local DNS proxies (e.g. Clash Fake IP
+# mode). The trust anchor is the domain name, not the IP range.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
 })
+
+# Trusted domain suffixes — hostnames ending with any of these may bypass
+# the private-IP block. Same rationale as _TRUSTED_PRIVATE_IP_HOSTS:
+# local DNS proxies (Clash Fake IP, corporate DNS, VPNs) may return
+# private-range addresses for these domains even though their real IPs
+# are public. Only trusts HTTPS; loopback/multicast/unspecified are
+# still blocked regardless.
+_TRUSTED_PRIVATE_IP_SUFFIXES = (
+    ".myqcloud.com",      # Tencent COS (WeCom/QQ file & image CDN)
+)
 
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
 # ipaddress.is_private — it returns False for both is_private and is_global.
@@ -306,9 +317,33 @@ def is_always_blocked_url(url: str) -> bool:
         return False
 
 
+def _is_trusted_cdn_hostname(hostname: str, scheme: str) -> bool:
+    """Return True for HTTPS hostnames matching a trusted CDN suffix.
+
+    Trusted-suffix hosts get a narrower bypass than exact-match trusted
+    hosts: only loopback, multicast, and unspecified addresses are still
+    blocked. All other private ranges (RFC1918, CGNAT, benchmark) are
+    allowed — necessary for environments where DNS proxies return fake
+    IPs from these ranges (e.g. Clash Fake IP mode uses 198.18.0.0/15).
+    """
+    return scheme == "https" and hostname.endswith(_TRUSTED_PRIVATE_IP_SUFFIXES)
+
+
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
-    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+    return (
+        scheme == "https"
+        and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+    ) or _is_trusted_cdn_hostname(hostname, scheme)
+
+
+def _is_invalid_trusted_cdn_ip(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """Return True for addresses that can never identify an external CDN."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local
 
 
 def is_safe_url(url: str) -> bool:
@@ -341,6 +376,7 @@ def is_safe_url(url: str) -> bool:
         allow_all_private = _global_allow_private_urls()
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
+        trusted_cdn_hostname = _is_trusted_cdn_hostname(hostname, scheme)
 
         # Try to resolve and check IP
         try:
@@ -366,12 +402,20 @@ def is_safe_url(url: str) -> bool:
                 )
                 return False
 
-            if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
-                logger.warning(
-                    "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
-                )
-                return False
+            if not allow_all_private:
+                if trusted_cdn_hostname and _is_invalid_trusted_cdn_ip(ip):
+                    logger.warning(
+                        "Blocked request — trusted CDN host %s resolved to "
+                        "invalid address: %s",
+                        hostname, ip_str,
+                    )
+                    return False
+                elif not allow_private_ip and _is_blocked_ip(ip):
+                    logger.warning(
+                        "Blocked request to private/internal address: %s -> %s",
+                        hostname, ip_str,
+                    )
+                    return False
 
         if allow_all_private:
             logger.debug(

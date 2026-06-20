@@ -1196,9 +1196,20 @@ def _start_local_openviking_server(endpoint: str) -> tuple[bool, str]:
     return True, f"Started openviking-server on {host}:{port} in the background. Logs: {log_path}"
 
 
-def _wait_for_openviking_health(endpoint: str, *, timeout_seconds: float = 15.0) -> bool:
+def _wait_for_openviking_health(
+    endpoint: str,
+    *,
+    timeout_seconds: float = 15.0,
+    should_stop=None,
+) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
+        # Bail out promptly if the provider is being torn down, so the daemon
+        # thread running this waiter can be join()ed at shutdown instead of
+        # lingering up to ``timeout_seconds`` (a worker still alive at
+        # interpreter exit aborts CPython with SIGABRT at Py_FinalizeEx).
+        if should_stop is not None and should_stop():
+            return False
         ok, _message = _validate_openviking_reachability(endpoint)
         if ok:
             return True
@@ -2076,6 +2087,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not _wait_for_openviking_health(
             endpoint,
             timeout_seconds=_LOCAL_OPENVIKING_AUTOSTART_TIMEOUT,
+            should_stop=lambda: self._shutting_down,
         ):
             _emit_runtime_warning(
                 _runtime_openviking_timeout_message(endpoint),
@@ -3422,6 +3434,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
             deferred_workers = list(self._deferred_commit_threads)
         with self._memory_write_lock:
             memory_write_workers = list(self._memory_write_threads)
+        # The runtime-autostart waiter is a tracked daemon thread that blocks on
+        # network health probes; it must be joined too, or it can be left alive
+        # at interpreter exit (SIGABRT at Py_FinalizeEx). Setting _shutting_down
+        # above makes its health-wait loop bail out promptly so the join lands.
+        with self._runtime_start_lock:
+            runtime_start_thread = self._runtime_start_thread
         for t in all_workers:
             if t.is_alive():
                 t.join(timeout=5.0)
@@ -3431,6 +3449,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         for t in memory_write_workers:
             if t.is_alive():
                 t.join(timeout=5.0)
+        if runtime_start_thread is not None and runtime_start_thread.is_alive():
+            runtime_start_thread.join(timeout=5.0)
         # Clear atexit reference so it doesn't double-commit.
         global _last_active_provider
         if _last_active_provider is self:

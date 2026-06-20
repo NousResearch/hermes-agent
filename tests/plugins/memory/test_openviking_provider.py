@@ -945,10 +945,14 @@ def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeyp
     assert provider._client is not None
     assert provider._client.endpoint == "http://127.0.0.1:1934"
     assert provider._client.api_key == "secret"
-    assert wait_calls == [(
-        "http://127.0.0.1:1934",
-        {"timeout_seconds": openviking_module._LOCAL_OPENVIKING_AUTOSTART_TIMEOUT},
-    )]
+    assert len(wait_calls) == 1
+    endpoint, wait_kwargs = wait_calls[0]
+    assert endpoint == "http://127.0.0.1:1934"
+    assert wait_kwargs["timeout_seconds"] == openviking_module._LOCAL_OPENVIKING_AUTOSTART_TIMEOUT
+    assert callable(wait_kwargs["should_stop"])
+    assert wait_kwargs["should_stop"]() is False
+    provider._shutting_down = True
+    assert wait_kwargs["should_stop"]() is True
     assert any("OpenViking memory is active" in message for message in statuses)
 
 

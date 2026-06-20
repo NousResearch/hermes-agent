@@ -207,6 +207,7 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            resume_thread_id=getattr(agent, "_resume_codex_thread_id", None),
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

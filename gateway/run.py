@@ -2349,6 +2349,8 @@ def _preserve_queued_followup_history_offset(
 
     merged = dict(followup_result)
     merged["history_offset"] = current_offset
+    if not merged.get("codex_thread_id") and current_result.get("codex_thread_id"):
+        merged["codex_thread_id"] = current_result.get("codex_thread_id")
     return merged
 
 
@@ -9882,6 +9884,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                codex_thread_id=agent_result.get("codex_thread_id"),
             )
 
             # Intentional silence is a delivery decision, not a transcript
@@ -13651,6 +13654,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if cached[2] != _live:
                     _cache[session_key] = (cached[0], cached[1], _live)
 
+    @staticmethod
+    def _session_entry_codex_thread_id(session_store, session_key: str) -> Optional[str]:
+        try:
+            session_entry = session_store._entries.get(session_key)
+        except Exception:
+            return None
+        thread_id = getattr(session_entry, "codex_thread_id", None)
+        thread_id = str(thread_id).strip() if thread_id else ""
+        return thread_id or None
+
+    @staticmethod
+    def _codex_thread_id_from_agent(agent: Any) -> Optional[str]:
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            return None
+        codex_session = getattr(agent, "_codex_session", None)
+        if codex_session is None:
+            return None
+        thread_id = getattr(codex_session, "_thread_id", None)
+        return str(thread_id) if thread_id else None
+
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
 
@@ -15415,6 +15438,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            try:
+                _resume_codex_tid = self._session_entry_codex_thread_id(
+                    self.session_store,
+                    session_key,
+                )
+                if _resume_codex_tid:
+                    agent._resume_codex_thread_id = _resume_codex_tid
+            except Exception:
+                logger.debug("codex resume-thread pin skipped", exc_info=True)
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
@@ -15953,6 +15985,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
+                    "codex_thread_id": (
+                        self._codex_thread_id_from_agent(agent_holder[0])
+                        or result.get("codex_thread_id")
+                    ),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
                     "session_id": effective_session_id,
@@ -16053,6 +16089,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
+                "codex_thread_id": (
+                    self._codex_thread_id_from_agent(agent)
+                    or (
+                        result_holder[0].get("codex_thread_id")
+                        if result_holder[0]
+                        else None
+                    )
+                ),
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "last_prompt_tokens": _last_prompt_toks,
@@ -16468,6 +16512,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "api_calls": _iter_n,
                     "tools": tools_holder[0] or [],
                     "history_offset": 0,
+                    "codex_thread_id": (
+                        self._codex_thread_id_from_agent(_timed_out_agent)
+                        or (
+                            result_holder[0].get("codex_thread_id")
+                            if result_holder[0]
+                            else None
+                        )
+                    ),
                     "failed": True,
                 }
 

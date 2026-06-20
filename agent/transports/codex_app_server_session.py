@@ -208,6 +208,7 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        resume_thread_id: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
@@ -225,6 +226,11 @@ class CodexAppServerSession:
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
+        self._resume_thread_id: Optional[str] = (
+            str(resume_thread_id).strip() or None
+            if resume_thread_id
+            else None
+        )
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
@@ -251,6 +257,22 @@ class CodexAppServerSession:
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
         )
+        if self._resume_thread_id:
+            resumed_id = self._try_resume(self._resume_thread_id)
+            if resumed_id:
+                self._thread_id = resumed_id
+                logger.info(
+                    "codex app-server thread resumed: id=%s cwd=%s",
+                    self._thread_id[:8],
+                    self._cwd,
+                )
+                return self._thread_id
+            logger.info(
+                "codex app-server thread resume failed for id=%s; starting fresh thread",
+                self._resume_thread_id[:8],
+            )
+            self._resume_thread_id = None
+
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
         #   1. `thread/start.permissions` is gated behind the experimentalApi
@@ -295,6 +317,29 @@ class CodexAppServerSession:
             self._cwd,
         )
         return self._thread_id
+
+    def _try_resume(self, thread_id: str) -> Optional[str]:
+        """Attempt to attach to a previously-created Codex thread."""
+        if self._client is None:
+            return None
+        try:
+            result = self._client.request(
+                "thread/resume",
+                {"threadId": thread_id},
+                timeout=30,
+            )
+        except (CodexAppServerError, TimeoutError) as exc:
+            logger.debug("codex thread/resume failed for %s: %s", thread_id[:8], exc)
+            return None
+
+        thread_obj = result.get("thread") or {}
+        resumed_id = (
+            thread_obj.get("id")
+            or thread_obj.get("sessionId")
+            or result.get("sessionId")
+            or result.get("threadId")
+        )
+        return str(resumed_id) if resumed_id else None
 
     def close(self) -> None:
         if self._closed:

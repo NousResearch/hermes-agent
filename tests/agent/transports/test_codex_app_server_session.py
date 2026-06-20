@@ -161,6 +161,41 @@ class TestLifecycle:
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
 
+    def test_resume_thread_id_uses_thread_resume(self):
+        client = FakeClient()
+
+        def handler(method, params):
+            if method == "thread/resume":
+                return {"thread": {"id": params["threadId"]}}
+            if method == "thread/start":
+                raise AssertionError("thread/start should not run after resume")
+            return {}
+
+        client._request_handler = handler
+        s = make_session(client, resume_thread_id="thread-existing-001")
+
+        assert s.ensure_started() == "thread-existing-001"
+        assert [method for method, _ in client.requests] == ["thread/resume"]
+
+    def test_resume_failure_falls_back_to_thread_start(self):
+        client = FakeClient()
+
+        def handler(method, params):
+            if method == "thread/resume":
+                return {}
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fresh-002"}}
+            return {}
+
+        client._request_handler = handler
+        s = make_session(client, resume_thread_id="thread-missing-001")
+
+        assert s.ensure_started() == "thread-fresh-002"
+        assert [method for method, _ in client.requests] == [
+            "thread/resume",
+            "thread/start",
+        ]
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)

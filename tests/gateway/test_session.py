@@ -1223,6 +1223,74 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+
+class TestCodexThreadId:
+    """Codex app-server thread ids must survive gateway session persistence."""
+
+    def test_session_entry_default(self):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+
+        assert entry.codex_thread_id is None
+
+    def test_session_entry_roundtrip(self):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            codex_thread_id="thread-abc",
+        )
+
+        restored = SessionEntry.from_dict(entry.to_dict())
+
+        assert restored.codex_thread_id == "thread-abc"
+
+    def test_session_entry_from_old_data(self):
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry.from_dict({
+            "session_key": "test",
+            "session_id": "s1",
+            "created_at": "2025-01-01T00:00:00",
+            "updated_at": "2025-01-01T00:00:00",
+        })
+
+        assert entry.codex_thread_id is None
+
+    def test_update_session_sets_codex_thread_id(self, tmp_path):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", codex_thread_id="thread-live-123")
+
+        assert entry.codex_thread_id == "thread-live-123"
+
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

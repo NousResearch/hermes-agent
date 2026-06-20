@@ -2963,6 +2963,29 @@ def run_conversation(
                     )
 
                 if is_payload_too_large:
+                    # Before counting a compression attempt, try shrinking
+                    # oversized native image parts in-place. Providers like
+                    # Anthropic return 413 (not 400 "image exceeds N MB")
+                    # when the *whole* request is oversized — usually because
+                    # one or more inline base64 images are huge. Compression
+                    # drops *old* messages, so a fresh user turn with a 20 MB
+                    # iPhone photo would 413, compress (no change), 413,
+                    # compress (no change), … until max attempts. Try shrink
+                    # once; if it changes anything, retry without burning a
+                    # compression attempt. See the symmetric 400 handler
+                    # above (FailoverReason.image_too_large).
+                    if (
+                        not image_shrink_retry_attempted
+                        and agent._try_shrink_image_parts_in_messages(api_messages)
+                    ):
+                        image_shrink_retry_attempted = True
+                        agent._vprint(
+                            f"{agent.log_prefix}📐 413 payload too large — shrank "
+                            f"oversized image part(s) and retrying before compression...",
+                            force=True,
+                        )
+                        continue
+
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
                         # Terminal — surface the buffered retry trace.

@@ -440,6 +440,70 @@ class TestHTTP413Compression:
         assert result.get("partial") is True
         assert "413" in result["error"]
 
+    def test_413_with_oversized_image_shrinks_before_compression(self, agent):
+        """A 413 on a turn with an oversized inline image should shrink first.
+
+        Regression for the items-for-sale workflow: a 15-25 MB iPhone photo
+        inlined as a data:base64 URL triggers Anthropic's 413 (whole-request
+        payload too large, NOT the 400 "image exceeds 5 MB" path). Before
+        the fix, the 413 handler went straight to _compress_context, which
+        drops old messages but leaves the huge user image in place → 413 →
+        compress → 413 → … until max attempts → session auto-reset.
+        With the fix, _try_shrink_image_parts_in_messages runs first, shrinks
+        the image, and the retry succeeds without burning a compression slot.
+        """
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="OK after shrink", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
+
+        with (
+            patch.object(
+                agent, "_try_shrink_image_parts_in_messages", return_value=True
+            ) as mock_shrink,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("look at this photo")
+
+        # Shrink helper was called and short-circuited the recovery —
+        # compression must NOT have run on this turn.
+        assert mock_shrink.call_count >= 1
+        mock_compress.assert_not_called()
+        assert result["completed"] is True
+        assert result["final_response"] == "OK after shrink"
+
+    def test_413_falls_back_to_compression_when_no_image_to_shrink(self, agent):
+        """413 without any oversized images: shrink returns False, compression runs."""
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="OK after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(
+                agent, "_try_shrink_image_parts_in_messages", return_value=False
+            ) as mock_shrink,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        assert mock_shrink.call_count >= 1
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+
 
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""

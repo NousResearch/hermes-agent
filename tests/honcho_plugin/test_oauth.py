@@ -142,6 +142,52 @@ class TestEnsureFreshToken:
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", stale_raw, now=1000)
         assert token == "hch-at-old"  # the on-disk fresh credential's access token
 
+    def test_refresh_holds_cross_process_lock(self, tmp_path, monkeypatch):
+        # A second opener must not grab <config>.lock mid-refresh — proving the
+        # rotation is serialized machine-wide so peers can't replay the token.
+        fcntl = pytest.importorskip("fcntl")
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=100)}})
+        seen = {}
+
+        def fake_post(url, data, timeout):
+            with open(f"{path}.lock", "a+b") as other:
+                try:
+                    fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(other.fileno(), fcntl.LOCK_UN)
+                    seen["held"] = False
+                except OSError:
+                    seen["held"] = True
+            return {"access_token": "hch-at-new", "refresh_token": "hch-rt-new",
+                    "expires_in": 3600, "scope": "write", "token_type": "Bearer"}
+
+        monkeypatch.setattr(oauth, "_http_post_form", fake_post)
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
+        assert refreshed is True and seen.get("held") is True
+        # Released afterward: a non-blocking acquire now succeeds.
+        with open(f"{path}.lock", "a+b") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+    def test_refresh_degrades_when_lock_unavailable(self, tmp_path, monkeypatch):
+        # No flock (unsupported FS/platform) must not block refresh — it falls
+        # back to in-process serialization only.
+        fcntl = pytest.importorskip("fcntl")
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=100)}})
+
+        def no_flock(*a, **k):
+            raise OSError("flock unsupported")
+
+        monkeypatch.setattr(fcntl, "flock", no_flock)
+        monkeypatch.setattr(
+            oauth, "_http_post_form",
+            lambda *a, **k: {"access_token": "hch-at-new", "refresh_token": "hch-rt-new",
+                             "expires_in": 3600, "scope": "write", "token_type": "Bearer"},
+        )
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
+        assert token == "hch-at-new" and refreshed is True
+
 
 class TestInstallGrant:
     def test_deep_merges_config_and_preserves_other_hosts(self, tmp_path):

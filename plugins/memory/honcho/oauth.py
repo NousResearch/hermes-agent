@@ -17,6 +17,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -38,6 +39,55 @@ _REFRESH_TIMEOUT_SECONDS = 15.0
 # under the lock (double-checked) so racing callers don't replay a rotated
 # refresh token and trip reuse detection.
 _refresh_lock = threading.Lock()
+
+
+@contextmanager
+def _config_refresh_lock(path: Path):
+    """Machine-wide advisory lock around read-refresh-persist.
+
+    The in-process ``_refresh_lock`` can't stop a second process (a sibling
+    Hermes profile or the desktop app sharing this honcho.json) from replaying
+    the single-use refresh token and tripping reuse-detection — which revokes
+    the whole grant. An OS file lock on ``<config>.lock`` serializes rotation
+    across processes; best-effort, so a platform without flock degrades to
+    in-process serialization only.
+    """
+    lock_path = Path(f"{path}.lock")
+    fh = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "a+b")
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        logger.debug("Honcho OAuth cross-process lock unavailable; in-process only", exc_info=True)
+        if fh is not None:
+            fh.close()
+            fh = None
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            fh.close()
 
 # In-memory expiry cache keyed by (config path, host) → (expires_at, access).
 # Lets the hot path (every memory access calls this) skip the honcho.json read
@@ -236,8 +286,9 @@ def ensure_fresh_token(
     if not cred.is_expired(now=now):
         return cred.access_token, False
 
-    with _refresh_lock:
-        # Re-read under the lock: another thread may have just rotated the token.
+    with _refresh_lock, _config_refresh_lock(path):
+        # Re-read under both locks: another thread or process may have just
+        # rotated the token — adopt theirs instead of replaying the old one.
         fresh_block = (_read_config(path).get("hosts") or {}).get(host) or {}
         current = OAuthCredential.from_host_block(fresh_block) or cred
         if not current.is_expired(now=now):

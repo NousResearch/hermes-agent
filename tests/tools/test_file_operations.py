@@ -507,6 +507,34 @@ class TestShellFileOpsHelpers:
         result = file_ops._add_line_numbers(long_line)
         assert "[truncated]" in result
 
+    def test_newline_terminated_content_has_no_phantom_line(self, file_ops):
+        # A file ending in a newline (the normal, well-formed case) has its
+        # last line terminated, NOT followed by an empty line. The gutter must
+        # match `cat -n`: three lines in, three numbered lines out.
+        result = file_ops._add_line_numbers("line1\nline2\nline3\n")
+        assert result == "1|line1\n2|line2\n3|line3"
+        assert "4|" not in result
+        assert len(result.split("\n")) == 3
+
+    def test_non_terminated_content_still_numbered_correctly(self, file_ops):
+        # Content with no trailing newline was already correct; guard it.
+        result = file_ops._add_line_numbers("line1\nline2\nline3")
+        assert result == "1|line1\n2|line2\n3|line3"
+
+    def test_trailing_blank_line_is_kept(self, file_ops):
+        # "a" then a genuine blank line, then the terminating newline: that is
+        # two lines (a, blank), so only the single terminator is dropped.
+        result = file_ops._add_line_numbers("a\n\n")
+        assert result == "1|a\n2|"
+        assert "3|" not in result
+
+    def test_newline_terminated_with_offset_has_no_phantom_line(self, file_ops):
+        # A truncated page (offset>1) that ends on a newline must not append a
+        # phantom numbered line at the page boundary.
+        result = file_ops._add_line_numbers("def f():\n    return 1\n", start_line=10)
+        assert result == "10|def f():\n11|    return 1"
+        assert "12|" not in result
+
     def test_unified_diff(self, file_ops):
         old = "line1\nline2\nline3\n"
         new = "line1\nchanged\nline3\n"

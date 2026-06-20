@@ -841,6 +841,14 @@ class ShellFileOperations(FileOperations):
         """
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
+        # A trailing newline terminates the final line; it does not start a
+        # new, empty line. Splitting on '\n' without accounting for that gives
+        # a spurious empty element, so every newline-terminated file (the
+        # common, well-formed case) would render a phantom "<N+1>|" line that
+        # is not in the file. Drop the single terminating newline first, the
+        # way `cat -n` and editor gutters do.
+        if content.endswith('\n'):
+            content = content[:-1]
         lines = content.split('\n')
         numbered = []
         for i, line in enumerate(lines, start=start_line):

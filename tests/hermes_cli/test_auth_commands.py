@@ -862,6 +862,55 @@ def test_auth_switch_reorders_provider_pool(tmp_path, monkeypatch, capsys):
     assert [entry["priority"] for entry in entries] == [0, 1, 2]
 
 
+def test_interactive_auth_menu_exposes_switch(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-a",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-primary",
+                    },
+                    {
+                        "id": "cred-b",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-backup",
+                    },
+                ]
+            },
+        },
+    )
+    answers = iter(["3", "openrouter", "backup"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    from hermes_cli.auth_commands import _interactive_auth
+
+    _interactive_auth()
+
+    out = capsys.readouterr().out
+    assert "3. Switch active credential for a provider" in out
+    assert 'Switched openrouter to credential "backup" (now #1)' in out
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert [entry["label"] for entry in payload["credential_pool"]["openrouter"]] == [
+        "backup",
+        "primary",
+    ]
+
+
 def test_auth_switch_accepts_id_target(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(

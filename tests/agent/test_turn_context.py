@@ -47,6 +47,9 @@ class _FakeAgent:
         self.max_iterations = 90
         self.tools = []
         self.valid_tool_names = set()
+        self.enabled_toolsets = None
+        self.disabled_toolsets = None
+        self._skip_mcp_refresh = False
         self.compression_enabled = False
         self.context_compressor = types.SimpleNamespace(
             protect_first_n=2, protect_last_n=2
@@ -185,3 +188,74 @@ def test_no_review_when_memory_disabled():
     agent = _FakeAgent()
     ctx = _build(agent)
     assert ctx.should_review_memory is False
+
+
+# ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────
+#
+# A slow MCP server that connects after the agent's build-time tool snapshot
+# must become callable by the user's NEXT turn — without mutating an in-flight
+# turn's cached request prefix. The prologue is exactly that boundary, so the
+# refresh hook lives here. These assert the contract (R1/R2/R6 in the spec),
+# not timing permutations.
+
+
+def test_between_turns_refresh_adds_late_tool_when_servers_registered():
+    """R1: a tool that registered since build lands in this turn's snapshot."""
+    agent = _FakeAgent()
+
+    new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
+
+    import model_tools
+    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
+         patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
+        _build(agent)
+
+    assert "mcp_x_tool" in agent.valid_tool_names
+    assert any(t["function"]["name"] == "mcp_x_tool" for t in agent.tools)
+
+
+def test_between_turns_refresh_skipped_when_no_servers():
+    """R6: the common case (no MCP servers) never walks the registry."""
+    agent = _FakeAgent()
+    import model_tools
+
+    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=False), \
+         patch.object(model_tools, "get_tool_definitions") as gtd:
+        _build(agent)
+
+    gtd.assert_not_called()
+
+
+def test_between_turns_refresh_skipped_when_skip_flag_set():
+    """Internal forks (background_review) set _skip_mcp_refresh to keep tools[]
+    byte-identical to the parent for cache parity — the hook must honor it even
+    when MCP servers are registered."""
+    agent = _FakeAgent()
+    agent._skip_mcp_refresh = True
+    import model_tools
+
+    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
+         patch.object(model_tools, "get_tool_definitions") as gtd:
+        _build(agent)
+
+    gtd.assert_not_called()
+
+
+def test_between_turns_refresh_no_churn_when_unchanged():
+    """R2: an unchanged tool set leaves the snapshot object identity intact
+    (no needless swap → nothing for the next request prefix to diff against)."""
+    agent = _FakeAgent()
+    same = [{"type": "function", "function": {"name": "a", "description": "", "parameters": {}}}]
+    agent.tools = same
+    agent.valid_tool_names = {"a"}
+
+    import model_tools
+    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
+         patch.object(
+             model_tools, "get_tool_definitions",
+             return_value=[{"type": "function", "function": {"name": "a", "description": "", "parameters": {}}}],
+         ):
+        _build(agent)
+
+    assert agent.tools is same  # not replaced → no churn
+

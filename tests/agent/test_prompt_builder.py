@@ -28,6 +28,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -1512,8 +1513,9 @@ class TestParallelToolCallGuidance:
 
     def test_steers_batching_into_one_response(self):
         text = PARALLEL_TOOL_CALL_GUIDANCE.lower()
-        # Must tell the model to group independent calls together.
-        assert "single response" in text or "same" in text and "turn" in text
+        # Must tell the model to group independent calls together — accept any
+        # phrasing that means "one turn" without freezing exact wording.
+        assert "single response" in text or ("same" in text and "turn" in text)
         assert "independent" in text
 
     def test_carves_out_dependent_calls(self):
@@ -1533,6 +1535,11 @@ class TestParallelToolCallGuidance:
         # Heading delimits it as its own section in the assembled prompt.
         assert PARALLEL_TOOL_CALL_GUIDANCE.lstrip().startswith("#")
 
+    def test_not_duplicated_in_google_guidance(self):
+        # The universal block is now the single source of parallel-batching
+        # steer. The Google-only block must NOT carry its own copy, otherwise
+        # Gemini/Gemma would receive the instruction twice in one prompt.
+        assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
 
 
 # =========================================================================

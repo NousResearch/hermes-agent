@@ -1201,6 +1201,21 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
+    # Seconds to wait at agent-build time for in-flight MCP server discovery
+    # to finish before the agent snapshots its tool list.  MCP discovery runs
+    # in a background thread so a slow/dead server can't freeze startup; this
+    # bounds how long the first agent build blocks on it.  The wait returns
+    # the INSTANT discovery completes, so users with no MCP servers (the common
+    # case) or fast servers pay ~0s regardless of this value — the bound is
+    # only reached when a server is genuinely still connecting.  The old 0.75s
+    # default was a touch short for HTTP/OAuth servers on a cold connect; a
+    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
+    # only a turn-1 latency/UX knob: a server that misses this window is still
+    # picked up automatically on the next turn by the between-turns refresh
+    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
+    # small so a slow/dead server adds little to first-response latency.
+    "mcp_discovery_timeout": 1.5,
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -1423,6 +1438,7 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
             "extra_body": {},
+            "language": "",
         },
         "tts_audio_tags": {
             "provider": "auto",
@@ -3897,6 +3913,30 @@ def _set_nested(config, dotted_key: str, value):
         current[int(last)] = value
     else:
         current[last] = value
+
+
+def clear_model_endpoint_credentials(
+    model_cfg: Dict[str, Any],
+    *,
+    clear_api_key: bool = True,
+    clear_api_mode: bool = True,
+) -> Dict[str, Any]:
+    """Remove stale inline endpoint credentials from a model config.
+
+    ``model.api_key`` is valid only for explicit custom endpoint assignments.
+    Built-in providers resolve credentials from env vars, auth.json, or the
+    credential pool. When switching away from a custom endpoint, leaving these
+    fields behind keeps secrets in config.yaml and can contaminate later custom
+    resolution paths.
+    """
+    if not isinstance(model_cfg, dict):
+        return model_cfg
+    if clear_api_key:
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api", None)
+    if clear_api_mode:
+        model_cfg.pop("api_mode", None)
+    return model_cfg
 
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:

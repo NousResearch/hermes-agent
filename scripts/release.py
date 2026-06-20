@@ -48,6 +48,7 @@ AUTHOR_MAP = {
     "charles@salesondemand.io": "salesondemandio",
     "victor@rocketfueldev.com": "victor-kyriazakos",
     "87440198+JoaoMarcos44@users.noreply.github.com": "JoaoMarcos44",
+    "joaomarcosdias444@gmail.com": "JoaoMarcos44",
     "286497132+srojk34@users.noreply.github.com": "srojk34",
     "59806492+sitkarev@users.noreply.github.com": "sitkarev",
     "zheng@omegasys.eu": "omegazheng",
@@ -106,6 +107,8 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "275304381+hakanpak@users.noreply.github.com": "hakanpak",
+    "ludo.galabru@solana.org": "lgalabru",
     "johnjacobkenny@users.noreply.github.com": "johnjacobkenny",
     "chanyoung.kim@nota.ai": "channkim",
     "skyzh@mail.build": "xxchan",
@@ -1586,6 +1589,26 @@ AUTHOR_MAP = {
     "infinitycrew39@gmail.com": "infinitycrew39",  # PR #47945 salvage (scope langfuse trace state by turn/request ids; #48292)
     "eurekaxun@163.com": "huangxun375-stack",  # PR #37251 / #48894 structured OpenViking sync
     "218421507+Sahil-SS9@users.noreply.github.com": "Sahil-SS9",  # PR #48466/#44919/#44909/#42209 salvage (cron/checkpoint/kanban/skill)
+    # v0.17.0 additions
+    "2081789787@qq.com": "pengyuyanITYU",  # PR #43618 (harden local file tree paths)
+    "adalsteinni@gmail.com": "AIalliAI",  # PR #44159 (desktop hover-reveal inset)
+    "ameobius@local.host": "ameobius",  # PR #44383 co-author (discord gateway task recovery)
+    "andyfieb@gmail.com": "mollusk",  # PR #44493 (desktop assistant-ui recovery)
+    "drmani215@gmail.com": "bionicbutterfly13",  # direct email match
+    "enesilhaydin@gmail.com": "enesilhaydin",  # direct email match
+    "evisolpxe@gmail.com": "Evisolpxe",  # direct email match
+    "fyzan.shaik@gmail.com": "fyzanshaik",  # direct email match
+    "info@amik.co": "AMIK-coorporations",  # PR #40578 (Urdu README) co-author
+    "info@amikchat.site": "AMIK-coorporations",  # PR #40578 (Urdu README)
+    "kyssta69@gmail.com": "kyssta-exe",  # PR #44282 (Windows dashboard re-exec)
+    "loongfay@foxmail.com": "loongfay",  # PR #43508 (Yuanbao wechat forward msg)
+    "maplestoryjuni222@gmail.com": "BROCCOLO1D",  # PR #42733 (lazy-parse docker env config)
+    "marvin@photon.codes": "underthestars-zhy",  # PR #46907 co-author (Photon Spectrum project ids)
+    "omar@kostudios.io": "OmarB97",  # PR #43977 (desktop session model metadata)
+    "omarbaradei21@gmail.com": "OmarB97",  # PR #43977 (desktop session model metadata)
+    "philip.a.dsouza@gmail.com": "PhilipAD",  # direct email match
+    "qs2816661685@gmail.com": "qingshan89",  # PR #46895 co-author (desktop remote artifact download)
+    "yspdev@gmail.com": "AJ",  # PR #44510 co-author (desktop named-profile boot loop)
 }
 
 

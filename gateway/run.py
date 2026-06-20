@@ -805,6 +805,13 @@ def _build_gateway_agent_history(
     # tools that were killed mid-flight.
     agent_history = _strip_interrupted_tool_tails(agent_history)
 
+    # Strip a dangling assistant(tool_calls) tail with no tool answers —
+    # the signature of a SIGKILL mid-tool-call (e.g. the tool itself ran
+    # `docker restart`/`kill` and took the gateway down before the result
+    # was persisted). Without this the model re-issues the unanswered call
+    # on resume and loops the restart forever (#49201).
+    agent_history = _strip_dangling_tool_call_tail(agent_history)
+
     observed_context = "\n".join(observed_group_context).strip() or None
     return agent_history, observed_context
 
@@ -928,6 +935,50 @@ def _strip_interrupted_tool_tails(
         i += 1
 
     return cleaned
+
+
+def _strip_dangling_tool_call_tail(
+    agent_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Strip a trailing ``assistant(tool_calls)`` block left with NO answers.
+
+    When a tool call itself kills the gateway process (``docker restart``,
+    ``systemctl restart``, ``kill``, ``hermes gateway restart``), the process
+    is terminated by SIGKILL *mid-call* — before the tool result is ever
+    written and before the orderly shutdown rewind
+    (``_drop_trailing_empty_response_scaffolding``) can run.  The last thing
+    persisted is the ``assistant`` message that issued the ``tool_calls``,
+    with zero matching ``tool`` rows.
+
+    On resume the model sees an unanswered tool call at the tail and naturally
+    re-issues it — which restarts the gateway again, producing the infinite
+    reboot loop in #49201.  ``_strip_interrupted_tool_tails`` does not catch
+    this because there is no tool result to inspect for an interrupt marker.
+
+    This strips that dangling tail at the source so there is nothing for the
+    model to re-execute.  It only acts when the tail is an
+    ``assistant(tool_calls)`` whose calls have NO corresponding ``tool``
+    results — a completed assistant→tool pair (any tool answers present) is
+    left untouched so genuine mid-progress tool loops still resume.
+    """
+    if not agent_history:
+        return agent_history
+
+    last = agent_history[-1]
+    if not (
+        isinstance(last, dict)
+        and last.get("role") == "assistant"
+        and last.get("tool_calls")
+    ):
+        return agent_history
+
+    logger.debug(
+        "Stripping dangling unanswered assistant(tool_calls) tail "
+        "(%d call(s)) — process likely killed mid-tool-call by a "
+        "restart/shutdown command (#49201)",
+        len(last.get("tool_calls") or []),
+    )
+    return agent_history[:-1]
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
@@ -11656,7 +11707,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # consented to the prompt-cache invalidation via the slash-confirm
             # gate in _handle_reload_mcp_command before we reach this point.
             try:
-                from model_tools import get_tool_definitions
+                from tools.mcp_tool import refresh_agent_mcp_tools
                 _cache = getattr(self, "_agent_cache", None)
                 _cache_lock = getattr(self, "_agent_cache_lock", None)
                 if _cache_lock is not None and _cache:
@@ -11668,15 +11719,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 continue
                             if _agent is None:
                                 continue
-                            new_defs = get_tool_definitions(
-                                enabled_toolsets=getattr(_agent, "enabled_toolsets", None),
-                                disabled_toolsets=getattr(_agent, "disabled_toolsets", None),
-                                quiet_mode=True,
-                            )
-                            _agent.tools = new_defs
-                            _agent.valid_tool_names = {
-                                t["function"]["name"] for t in new_defs
-                            } if new_defs else set()
+                            # Preserve each cached agent's build-time toolset
+                            # selection EXACTLY: a gateway session built with a
+                            # restricted enabled_toolsets (e.g. ["safe"]) must
+                            # NOT silently gain tools after a reload. This is the
+                            # opposite of the interactive CLI/TUI /reload-mcp,
+                            # which is a single user re-applying their own config
+                            # edit; gateway agents are per-session and may be
+                            # deliberately locked down. (Contract is asserted by
+                            # test_reload_mcp_preserves_per_agent_toolset_overrides.)
+                            refresh_agent_mcp_tools(_agent, quiet_mode=True)
             except Exception as _exc:
                 logger.debug(
                     "Failed to update cached agent tools after MCP reload: %s",
@@ -15700,14 +15752,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else "a gateway interruption"
                 )
                 _persist_user_message_override = message
+                # The empty-message case is the auto-resume startup turn
+                # synthesized by _schedule_resume_pending_sessions — there is
+                # no NEW user message to address, so tell the model to report
+                # recovery instead of the (nonexistent) "new message".
+                if message:
+                    _resume_guidance = (
+                        "Address the user's NEW message below FIRST and focus "
+                        "on what the user is asking now."
+                    )
+                else:
+                    _resume_guidance = (
+                        "Report to the user that the session was restored "
+                        "successfully and ask what they would like to do next."
+                    )
                 message = (
-                    f"[System note: A new message has arrived. The previous turn "
-                    f"was interrupted by {_reason_phrase}. "
-                    f"Address the user's NEW message below FIRST. "
+                    f"[System note: The previous turn was interrupted by "
+                    f"{_reason_phrase}; the gateway is now back online. "
+                    f"Any restart/shutdown command in the history has already "
+                    f"run — do NOT re-execute or verify it. {_resume_guidance} "
                     f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history and focus on what the "
-                    f"user is asking now.]\n\n"
-                    + message
+                    f"work from the conversation history.]"
+                    + (f"\n\n{message}" if message else "")
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message

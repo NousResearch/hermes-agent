@@ -537,6 +537,13 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            # The review fork pins the parent's cached system prompt and keeps
+            # ``tools[]`` byte-identical to the parent so its outbound request
+            # hits the same provider cache prefix (see the toolset-parity note
+            # above). The between-turns MCP refresh in build_turn_context would
+            # add late-connecting MCP tools to this fork and break that parity,
+            # so opt the review fork out of it.
+            review_agent._skip_mcp_refresh = True
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled

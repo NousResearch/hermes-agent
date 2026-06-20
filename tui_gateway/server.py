@@ -1148,6 +1148,14 @@ def _session_cwd(session: dict | None) -> str:
     return _completion_cwd()
 
 
+def _session_source(session: dict | None) -> str:
+    if session:
+        source = str(session.get("source") or "").strip()
+        if source:
+            return source
+    return "tui"
+
+
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
@@ -1247,7 +1255,7 @@ def _ensure_session_db_row(session: dict) -> None:
     try:
         db.create_session(
             key,
-            source="tui",
+            source=_session_source(session),
             model=row_model,
             model_config=model_config or None,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
@@ -1416,7 +1424,13 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
         # know the parent workspace pass it explicitly so spawned agents inherit
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
-        return set_session_vars(session_key=session_key, cwd=resolved)
+        source = "tui"
+        with _sessions_lock:
+            for sess in list(_sessions.values()):
+                if sess.get("session_key") == session_key:
+                    source = _session_source(sess)
+                    break
+        return set_session_vars(session_key=session_key, source=source, cwd=resolved)
     except Exception:
         return []
 
@@ -3557,26 +3571,19 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             ):
                 return
             try:
-                from model_tools import get_tool_definitions
+                from tools.mcp_tool import refresh_agent_mcp_tools
 
-                new_defs = get_tool_definitions(
-                    enabled_toolsets=_load_enabled_toolsets(),
-                    quiet_mode=True,
-                )
+                added = refresh_agent_mcp_tools(agent, quiet_mode=True)
             except Exception as exc:
                 logger.warning(
-                    "Late MCP refresh: get_tool_definitions failed for %s: %s",
+                    "Late MCP refresh: tool snapshot rebuild failed for %s: %s",
                     sid,
                     exc,
                 )
                 return
-            # No change (discovery added nothing new) → don't churn the client.
-            if len(new_defs or []) == len(getattr(agent, "tools", []) or []):
+            # No new tools landed (discovery added nothing) → don't churn the client.
+            if not added:
                 return
-            agent.tools = new_defs
-            agent.valid_tool_names = (
-                {t["function"]["name"] for t in new_defs} if new_defs else set()
-            )
             info = _session_info(agent, session)
         # Emit outside the lock — write_json must not block under _sessions_lock.
         _emit("session.info", sid, info)
@@ -4190,6 +4197,7 @@ def _(rid, params: dict) -> dict:
     except Exception:
         explicit_cwd = False
     resolved_cwd = _completion_cwd(params)
+    source = str(params.get("source") or "tui").strip() or "tui"
     _enable_gateway_prompts()
 
     # ``profile`` (app-global remote mode): a new chat started under a non-launch
@@ -4255,6 +4263,7 @@ def _(rid, params: dict) -> dict:
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),
+            "source": source,
             "slash_worker": None,
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
@@ -4528,6 +4537,7 @@ def _(rid, params: dict) -> dict:
         # report its liveness from the relay registry so the window paints a
         # busy indicator instead of a dead idle transcript.
         child_running = _child_run_active(target)
+        source = str(params.get("source") or "tui").strip() or "tui"
         with _session_resume_lock:
             live = _find_live_session_by_key(target)
             if live is not None:
@@ -4563,6 +4573,7 @@ def _(rid, params: dict) -> dict:
                     "running": False,
                     "session_key": target,
                     "show_reasoning": _load_show_reasoning(),
+                    "source": source,
                     "slash_worker": None,
                     "tool_progress_mode": _load_tool_progress_mode(),
                     "tool_started_at": {},
@@ -5760,7 +5771,7 @@ def _(rid, params: dict) -> dict:
             )
         db.create_session(
             new_key,
-            source="tui",
+            source=_session_source(session),
             model=_resolve_model(),
             # Stable _branched_from marker so list_sessions_rich() keeps the
             # branch visible in /resume and /sessions. The TUI branch leaves
@@ -8414,15 +8425,14 @@ def _(rid, params: dict) -> dict:
             # The user already consented to the prompt-cache invalidation via
             # the confirm gate above.  Mirrors gateway/run.py::_execute_mcp_reload.
             try:
-                from model_tools import get_tool_definitions
+                from tools.mcp_tool import refresh_agent_mcp_tools
 
-                new_defs = get_tool_definitions(
-                    enabled_toolsets=_load_enabled_toolsets(),
+                # Explicit reload: re-resolve enabled toolsets so a server the
+                # user just enabled in config this session is picked up.
+                refresh_agent_mcp_tools(
+                    agent,
+                    enabled_override=_load_enabled_toolsets(),
                     quiet_mode=True,
-                )
-                agent.tools = new_defs
-                agent.valid_tool_names = (
-                    {t["function"]["name"] for t in new_defs} if new_defs else set()
                 )
             except Exception as _exc:
                 logger.warning(

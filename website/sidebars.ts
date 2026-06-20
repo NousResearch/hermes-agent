@@ -18,7 +18,7 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Using Hermes',
+      label: 'Using Nautilus',
       collapsed: true,
       items: [
         'user-guide/cli',

@@ -2795,6 +2795,53 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+def _resume_status_for_run(
+    conn: sqlite3.Connection,
+    run_id: Optional[int],
+    *,
+    default: str = "ready",
+) -> str:
+    """Return the lane a failed/reclaimed run should resume in.
+
+    Review tasks are claimed through :func:`claim_review_task`, which records
+    ``source_status='review'`` on the run's ``claimed`` event. Recovery paths
+    must preserve that lane; otherwise a failed review run falls back into the
+    normal ready queue and gets respawned as a regular worker instead of a
+    review worker.
+    """
+    if run_id is None:
+        return default
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE run_id = ? AND kind = 'claimed' "
+        "ORDER BY id DESC LIMIT 1",
+        (int(run_id),),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return default
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        return default
+    if not isinstance(payload, dict):
+        return default
+    if str(payload.get("source_status") or "").strip().lower() == "review":
+        return "review"
+    return default
+
+
+def _resume_status_for_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    default: str = "ready",
+) -> str:
+    """Return the lane the task's active run should resume in."""
+    return _resume_status_for_run(
+        conn, _current_run_id(conn, task_id), default=default,
+    )
+
+
 def _synthesize_ended_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3305,12 +3352,13 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
+            resume_status = _resume_status_for_task(conn, row["id"])
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                (resume_status, row["id"], row["claim_lock"], now),
             )
             if cur.rowcount != 1:
                 continue
@@ -3352,7 +3400,7 @@ def reclaim_task(
     reason: Optional[str] = None,
     signal_fn=None,
 ) -> bool:
-    """Operator-driven reclaim: release the claim and reset to ``ready``.
+    """Operator-driven reclaim: release the claim and requeue the task.
 
     Unlike :func:`release_stale_claims` which only acts on tasks whose
     ``claim_expires`` has passed, this function reclaims immediately
@@ -3377,12 +3425,13 @@ def reclaim_task(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
     with write_txn(conn):
+        resume_status = _resume_status_for_task(conn, task_id)
         cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "UPDATE tasks SET status = ?, claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?",
-            (task_id, prev_lock),
+            (resume_status, task_id, prev_lock),
         )
         if cur.rowcount != 1:
             return False
@@ -5276,7 +5325,7 @@ def enforce_max_runtime(
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
     Sends SIGTERM, waits a short grace window, then SIGKILL. Emits a
-    ``timed_out`` event and drops the task back to ``ready`` so the next
+    ``timed_out`` event and drops the task back to its dispatch lane so the next
     dispatcher tick re-spawns it — unless the spawn-failure circuit
     breaker has already given up, in which case the task stays blocked
     where ``_record_spawn_failure`` parked it.
@@ -5340,12 +5389,13 @@ def enforce_max_runtime(
                     pass
 
         with write_txn(conn):
+            resume_status = _resume_status_for_task(conn, tid)
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running'",
-                (tid,),
+                (resume_status, tid),
             )
             if cur.rowcount == 1:
                 payload = {
@@ -5465,12 +5515,13 @@ def detect_stale_running(
             continue
 
         with write_txn(conn):
+            resume_status = _resume_status_for_task(conn, tid)
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running'",
-                (tid,),
+                (resume_status, tid),
             )
             if cur.rowcount != 1:
                 continue
@@ -5530,7 +5581,7 @@ def _error_fingerprint(error_text: str) -> str:
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
-    Appends a ``crashed`` event and drops the task back to ``ready``.
+    Appends a ``crashed`` event and drops the task back to its dispatch lane.
     Different from ``release_stale_claims``: this checks liveness
     immediately rather than waiting for the claim TTL.
 
@@ -5639,11 +5690,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            resume_status = _resume_status_for_task(conn, row["id"])
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running'",
-                (row["id"],),
+                (resume_status, row["id"]),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
@@ -5749,11 +5801,11 @@ def _record_task_failure(
 
     * ``release_claim=True, end_run=True`` — spawn-failure path.
       Caller has a running task with an open run; this transitions
-      it back to ``ready`` (or ``blocked`` when the breaker trips),
+      it back to its dispatch lane (or ``blocked`` when the breaker trips),
       releases the claim, and closes the run with ``outcome=<outcome>``.
 
     * ``release_claim=False, end_run=False`` — timeout/crash path.
-      Caller has ALREADY flipped the task to ``ready`` and closed the
+      Caller has ALREADY flipped the task to its dispatch lane and closed the
       run with the appropriate outcome. This just increments the
       counter; if the breaker trips, the task is re-transitioned
       ``ready → blocked`` and a ``gave_up`` event is emitted.
@@ -5844,13 +5896,14 @@ def _record_task_failure(
         else:
             # Below threshold.
             if release_claim:
-                # Spawn path: transition running → ready + clear claim.
+                resume_status = _resume_status_for_task(conn, task_id)
+                # Spawn path: transition running back to its dispatch lane.
                 conn.execute(
-                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
-                    (failures, error[:500], task_id),
+                    (resume_status, failures, error[:500], task_id),
                 )
             else:
                 # Timeout/crash path: task is already at ``ready`` via

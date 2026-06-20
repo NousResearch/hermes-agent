@@ -3609,6 +3609,59 @@ def test_dispatch_review_does_not_claim_ready_tasks(
         claimed = kb.claim_review_task(conn, t)
     assert claimed is None
 
+
+def test_reclaim_review_task_returns_to_review(kanban_home):
+    """Manual reclaim must preserve the review lane for review runs."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me", assignee="alice")
+        _set_task_status(conn, t, "review")
+        claimed = kb.claim_review_task(conn, t, claimer="review:1")
+
+        assert claimed is not None
+        assert kb.reclaim_task(conn, t, reason="operator reclaim") is True
+        assert kb.get_task(conn, t).status == "review"
+
+
+def test_stale_reclaim_review_task_returns_to_review(kanban_home, monkeypatch):
+    """TTL reclaim must not demote review runs into the ready queue."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me", assignee="alice")
+        _set_task_status(conn, t, "review")
+        host = _kb._claimer_id().split(":", 1)[0]
+        claimed = kb.claim_review_task(conn, t, claimer=f"{host}:review")
+
+        assert claimed is not None
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+        assert kb.release_stale_claims(conn, signal_fn=lambda _pid, _sig: None) == 1
+        assert kb.get_task(conn, t).status == "review"
+
+
+def test_dispatch_review_spawn_failure_returns_to_review(
+    kanban_home, all_assignees_spawnable,
+):
+    """A failed review spawn should stay in the review lane for retry."""
+
+    def boom(_task, _workspace, board=None):
+        raise RuntimeError("spawn blew up")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me", assignee="alice")
+        _set_task_status(conn, t, "review")
+        res = kb.dispatch_once(conn, spawn_fn=boom, failure_limit=2)
+
+        assert res.auto_blocked == []
+        task = kb.get_task(conn, t)
+        assert task.status == "review"
+        assert task.consecutive_failures == 1
+
 # Stale detection — detect_stale_running
 # ---------------------------------------------------------------------------
 

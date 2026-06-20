@@ -3647,6 +3647,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._approval_lock = threading.Lock()
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
+        # Ctrl+S stash: stores the current draft prompt so the user can
+        # run a slash command without losing what they typed. The stashed
+        # text is automatically restored to the input buffer after the
+        # next slash command completes. Mirrors Claude Code's Ctrl+S.
+        self._stashed_input: str | None = None
         self._model_picker_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
@@ -5845,6 +5850,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
+        _cprint(f"  {_DIM}Stash draft: Ctrl+S to stash/restore your prompt while running a command{_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
@@ -7472,6 +7478,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
     
+    def _maybe_restore_stashed_input(self) -> None:
+        """Restore Ctrl+S-stashed input to the buffer after a slash command.
+
+        Called from the background process_loop thread, so the actual buffer
+        write is scheduled on the prompt_toolkit event loop via
+        ``call_soon_threadsafe``. If the buffer already has text (user started
+        typing during the command), the stash is silently discarded.
+        """
+        if not self._stashed_input:
+            return
+        stash = self._stashed_input
+        self._stashed_input = None
+
+        def _restore() -> None:
+            try:
+                if not self._app or not self._app.is_running:
+                    return
+                buf = self._app.current_buffer
+                if not buf.text.strip():
+                    buf.text = stash
+                    buf.cursor_position = len(stash)
+                    _cprint(f"\n  {_DIM}📋 Restored stashed input ({len(stash)} char{'s' if len(stash) != 1 else ''}).{_RST}")
+                    self._invalidate()
+            except Exception:
+                pass
+
+        try:
+            app_loop = getattr(self._app, "loop", None)
+            if app_loop:
+                app_loop.call_soon_threadsafe(_restore)
+            else:
+                _restore()
+        except Exception:
+            pass
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -12123,6 +12164,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_turn_interrupted = False
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._stashed_input = None  # Clear any stale Ctrl+S stash on (re)start
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager
@@ -12316,6 +12358,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # redraw fires. Every other early-return branch in this
                     # handler invalidates after reset — match them.
                     event.app.invalidate()
+                    # Restore stashed input (Ctrl+S) after inline slash command
+                    if self._stashed_input and not self._should_exit:
+                        _stash = self._stashed_input
+                        self._stashed_input = None
+                        event.app.current_buffer.text = _stash
+                        event.app.current_buffer.cursor_position = len(_stash)
                     return
 
                 # Handle /steer while the agent is running immediately on the
@@ -12334,6 +12382,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # linger in the input area (looking unsent) and invite an
                     # accidental re-submit. See issue #34569.
                     event.app.invalidate()
+                    # Restore stashed input (Ctrl+S) after inline slash command
+                    if self._stashed_input:
+                        _stash = self._stashed_input
+                        self._stashed_input = None
+                        event.app.current_buffer.text = _stash
+                        event.app.current_buffer.cursor_position = len(_stash)
                     return
 
                 # Snapshot and clear attached images
@@ -12835,6 +12889,48 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 self._should_exit = True
                 event.app.exit()
+
+        # Ctrl+S filter: only active during normal input (not in modal prompts).
+        _stash_filter = Condition(
+            lambda: not self._clarify_state and not self._approval_state
+            and not self._slash_confirm_state and not self._sudo_state
+            and not self._secret_state and not self._model_picker_state
+        )
+
+        @kb.add('c-s', filter=_stash_filter)
+        def handle_ctrl_s(event):
+            """Ctrl+S: stash the current draft prompt (or restore a stashed one).
+
+            Mirrors Claude Code's Ctrl+S: stashes whatever you've typed so you
+            can run a slash command, then the stashed text is automatically
+            restored to the input buffer after the command completes.
+
+            Toggle behaviour:
+            - Buffer has text → stash it, clear the buffer.
+            - Buffer is empty and a stash exists → restore the stash.
+            - Buffer is empty and no stash → no-op.
+
+            Note: some terminals intercept Ctrl+S as XOFF flow control. If the
+            key doesn't reach Hermes, run ``stty -ixon`` in your shell or add
+            it to your shell profile. prompt_toolkit's raw mode usually disables
+            IXON, but tmux/SSH/screen layers can re-enable it.
+            """
+            buf = event.app.current_buffer
+            current = buf.text
+            if current.strip():
+                self._stashed_input = current
+                buf.reset()
+                _plural = "s" if len(current) != 1 else ""
+                _cprint(f"\n  {_DIM}📋 Stashed {len(current)} char{_plural}. Will restore after next slash command.{_RST}")
+                event.app.invalidate()
+            elif self._stashed_input:
+                stash = self._stashed_input
+                self._stashed_input = None
+                buf.text = stash
+                buf.cursor_position = len(stash)
+                _plural = "s" if len(stash) != 1 else ""
+                _cprint(f"\n  {_DIM}📋 Restored stashed input ({len(stash)} char{_plural}).{_RST}")
+                event.app.invalidate()
 
         _modal_prompt_active = Condition(
             lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state)
@@ -14083,6 +14179,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             self._pending_agent_seed = None
                             user_input = _seed
                         else:
+                            # Restore stashed input (Ctrl+S) after slash command
+                            self._maybe_restore_stashed_input()
                             continue
                     
                     # Expand paste references back to full content
@@ -14099,6 +14197,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
                     # Regular chat - run agent
+                    # Clear stashed input — user has sent a real message
+                    self._stashed_input = None
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
 

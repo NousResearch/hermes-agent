@@ -12520,7 +12520,7 @@ def main():
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
 
     # =========================================================================
-    # agents-os command — local Doni/Hermes operating layer
+    # agents-os command — local Hermes operating layer
     # =========================================================================
     from hermes_cli.agents_os import register_subparser as register_agents_os_subparser
 

@@ -102,6 +102,3 @@ acp_registry/
 .gitattributes
 .hadolint.yaml
 .mailmap
-
-# Top-level LICENSE (not matched by *.md); not needed inside the container
-LICENSE

@@ -75,3 +75,68 @@ async def test_send_without_transport_returns_failure():
     result = await a.send("chat1", "hello")
     assert result.success is False
     assert result.error == "no transport"
+
+
+class _CaptureTransport:
+    """Minimal RelayTransport stand-in that records the outbound action."""
+
+    def __init__(self):
+        self.sent = None
+
+    def set_inbound_handler(self, h):  # noqa: D401
+        self._h = h
+
+    async def send_outbound(self, action):
+        self.sent = action
+        return {"success": True, "message_id": "m1"}
+
+
+def _make_event(chat_id="chan-1", guild_id="guild-9"):
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    src = SessionSource(
+        platform=Platform.RELAY,
+        chat_id=chat_id,
+        chat_type="channel",
+        guild_id=guild_id,
+    )
+    return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
+@pytest.mark.asyncio
+async def test_send_reattaches_guild_id_from_inbound_scope():
+    """The connector's egress guard resolves the owning tenant from
+    metadata.guild_id; the gateway's generic delivery path drops it, so the
+    relay adapter must re-attach the guild scope learned from the inbound event.
+    Regression for live 'discord egress declined: target not routed to an
+    onboarded tenant'."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    # Simulate the connector delivering an inbound message in guild-9 / chan-1,
+    # but don't run the full handle_message pipeline — just the scope capture.
+    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+
+    await a.send("chan-1", "the reply")
+
+    assert t.sent["metadata"].get("guild_id") == "guild-9"
+
+
+@pytest.mark.asyncio
+async def test_send_without_known_scope_omits_guild_id():
+    """A chat we never saw inbound (e.g. a DM) gets no guild_id — no-op, never
+    invents a scope."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    await a.send("unknown-chat", "hi")
+    assert "guild_id" not in t.sent["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_send_preserves_explicit_guild_id():
+    """An explicitly-provided metadata.guild_id is never overwritten."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+    await a.send("chan-1", "hi", metadata={"guild_id": "explicit-1"})
+    assert t.sent["metadata"]["guild_id"] == "explicit-1"

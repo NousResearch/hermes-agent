@@ -281,6 +281,45 @@ def _compression_threshold_for_model(
         return _CODEX_GPT55_COMPACTION_THRESHOLD
     return None
 
+
+def resolve_compression_threshold(
+    per_model: Any,
+    model: Optional[str],
+    provider: Optional[str] = None,
+    *,
+    global_threshold: float = 0.50,
+    allow_codex_gpt55_autoraise: bool = True,
+) -> float:
+    """Resolve the compression threshold fraction for a model, applying the
+    canonical precedence chain (first hit wins):
+
+      1. config ``compression.per_model_threshold`` map (user-tunable)
+      2. built-in per-model / route default (``_compression_threshold_for_model``)
+      3. global ``compression.threshold`` (``global_threshold``)
+
+    This is the single source of truth shared by ``agent_init`` (session start)
+    and ``ContextCompressor.update_model`` (model switch / fallback) so the
+    destination model's configured threshold survives a mid-session route swap.
+    Returns a fraction in (0, 1].
+
+    ``_resolve_per_model_threshold`` (the config-map lookup) lives in
+    ``agent.agent_init``; it is imported lazily here to avoid an import cycle
+    (``agent_init`` imports this module).
+    """
+    from agent.agent_init import _resolve_per_model_threshold
+
+    cfg_thresh = _resolve_per_model_threshold(per_model, model)
+    if cfg_thresh is not None:
+        return cfg_thresh
+
+    builtin = _compression_threshold_for_model(
+        model, provider, allow_codex_gpt55_autoraise=allow_codex_gpt55_autoraise,
+    )
+    if builtin is not None:
+        return builtin
+
+    return global_threshold
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 def _get_aux_model_for_provider(provider_id: str) -> str:
     """Return the cheap auxiliary model for a provider.

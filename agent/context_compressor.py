@@ -689,6 +689,28 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
+        # Re-resolve the threshold for the DESTINATION model when the
+        # compression config was threaded at construction (agent_init). A
+        # mid-session fallback (e.g. opus 1M -> gpt-5.5 272K) must honor the new
+        # model's compression.per_model_threshold instead of re-applying the OLD
+        # model's stored threshold_percent to the new, smaller window — the
+        # 2026-06-19 compaction-thrash root cause. Shared resolver = same
+        # precedence as init (per_model_threshold -> built-in family -> global).
+        # When the config was NOT threaded (older/direct callers), keep the
+        # legacy behavior of re-applying the stored percent.
+        if self._per_model_threshold_cfg is not None or self._global_threshold_percent is not None:
+            from agent.auxiliary_client import resolve_compression_threshold
+            self.threshold_percent = resolve_compression_threshold(
+                self._per_model_threshold_cfg,
+                model,
+                provider,
+                global_threshold=(
+                    self._global_threshold_percent
+                    if self._global_threshold_percent is not None
+                    else self.threshold_percent
+                ),
+                allow_codex_gpt55_autoraise=self._codex_gpt55_autoraise,
+            )
         self.threshold_tokens = max(
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
@@ -716,7 +738,19 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        per_model_threshold: "dict | None" = None,
+        global_threshold_percent: "float | None" = None,
+        codex_gpt55_autoraise: bool = True,
     ):
+        # Compression-threshold config for re-resolving the destination model's
+        # threshold on a model switch / fallback (update_model). When threaded
+        # by agent_init these let update_model honor compression.per_model_threshold
+        # for the NEW model instead of re-applying the OLD model's stored percent
+        # (the 2026-06-19 compaction-thrash bug). When None (older/direct callers)
+        # update_model keeps the legacy "re-apply stored percent" behavior.
+        self._per_model_threshold_cfg = per_model_threshold
+        self._global_threshold_percent = global_threshold_percent
+        self._codex_gpt55_autoraise = codex_gpt55_autoraise
         self.model = model
         self.base_url = base_url
         self.api_key = api_key

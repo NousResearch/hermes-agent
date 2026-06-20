@@ -1301,6 +1301,11 @@ def init_agent(
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
     compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    # Stable copy of the GLOBAL config threshold, captured before the per-model /
+    # built-in override below reassigns ``compression_threshold``. Threaded into
+    # the compressor so update_model's re-resolution has the correct global
+    # fallback tier (2026-06-19 compaction-thrash fix).
+    _global_compression_threshold = compression_threshold
     # Per-model threshold override.  Resolution order (first hit wins):
     #   1. config ``compression.per_model_threshold`` map (user-tunable)
     #   2. built-in per-model default / codex gpt-5.5 autoraise
@@ -1585,6 +1590,16 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            # Thread the compression-threshold config so update_model can
+            # re-resolve the DESTINATION model's threshold on a mid-session
+            # fallback/switch (2026-06-19 compaction-thrash fix). The
+            # threshold_percent above is already the init-resolved value for
+            # agent.model; these add the raw inputs for re-resolution and do
+            # not change init behavior. _global_threshold is the global config
+            # threshold BEFORE any per-model/built-in override (captured above).
+            per_model_threshold=_per_model,
+            global_threshold_percent=_global_compression_threshold,
+            codex_gpt55_autoraise=_codex_gpt55_autoraise,
         )
     agent.compression_enabled = compression_enabled
 

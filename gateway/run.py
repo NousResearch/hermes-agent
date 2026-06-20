@@ -12666,8 +12666,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "and any other notable visual information."
         )
 
+        # Filter out empty/None paths before attempting vision analysis
+        valid_paths = [p for p in image_paths if p and p.strip()]
         enriched_parts = []
-        for path in image_paths:
+        for path in valid_paths:
             try:
                 logger.debug("Auto-analyzing user image: %s", path)
                 result_json = await vision_analyze_tool(

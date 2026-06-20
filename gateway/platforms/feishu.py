@@ -3732,7 +3732,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return cached_path, media_type
         except Exception:
             logger.warning("[Feishu] Failed to cache image resource %s", image_key, exc_info=True)
-            return "", ""
+            return None, None
 
     async def _download_feishu_message_resource(
         self,

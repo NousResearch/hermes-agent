@@ -78,8 +78,38 @@ def test_maybe_wrap_anthropic_rewraps_kimi_coding_url():
     assert isinstance(result, AnthropicAuxiliaryClient)
 
 
-def test_maybe_wrap_anthropic_rewraps_slash_anthropic_url():
-    """Plain OpenAI client pointed at any /anthropic URL gets rewrapped."""
+def test_maybe_wrap_anthropic_skips_minimax_text_models():
+    """MiniMax text models (M2/M2.1/M2.5/M2.7/highspeed, future M3+) on /anthropic
+    URL bypass the Anthropic wrapper and use plain OpenAI chat completions.
+    Their /anthropic endpoint only supports vision (MiniMaxVLClient).
+    """
+    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
+
+    plain_client = MagicMock(name="plain_openai")
+    fake_anthropic = MagicMock(name="anthropic_sdk_client")
+
+    # None of these MiniMax text models should be rewrapped
+    for model in ("MiniMax-M2.7", "MiniMax-M2.7-highspeed",
+                  "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"):
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=fake_anthropic,
+        ):
+            result = _maybe_wrap_anthropic(
+                plain_client, model, "mm-key",
+                "https://api.minimax.io/anthropic", api_mode=None,
+            )
+        assert result is plain_client, (
+            f"{model} on /anthropic endpoint must NOT be rewrapped — "
+            "it uses OpenAI chat completions at /v1"
+        )
+        assert not isinstance(result, AnthropicAuxiliaryClient)
+
+
+def test_maybe_wrap_anthropic_still_wraps_non_minimax_on_anthropic_url():
+    """Non-MiniMax models on /anthropic URLs still get rewrapped.
+    Regression guard: the MiniMax skip must not break other providers.
+    """
     from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
 
     plain_client = MagicMock(name="plain_openai")
@@ -90,10 +120,12 @@ def test_maybe_wrap_anthropic_rewraps_slash_anthropic_url():
         return_value=fake_anthropic,
     ):
         result = _maybe_wrap_anthropic(
-            plain_client, "MiniMax-M2.7", "mm-key",
+            plain_client, "claude-sonnet-4.6", "sk-ant-test",
             "https://api.minimax.io/anthropic", api_mode=None,
         )
-    assert isinstance(result, AnthropicAuxiliaryClient)
+    assert isinstance(result, AnthropicAuxiliaryClient), (
+        "Non-MiniMax models on /anthropic URL must still be rewrapped"
+    )
 
 
 def test_maybe_wrap_anthropic_skips_openai_wire_urls():

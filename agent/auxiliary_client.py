@@ -1208,6 +1208,20 @@ def _maybe_wrap_anthropic(
     if not should_wrap:
         return client_obj
 
+    # All MiniMax text models (M2/M2.1/M2.5/M2.7/highspeed, future M3/M4, etc.)
+    # do not support the Anthropic Messages API — their /anthropic endpoint only
+    # works for vision tasks (MiniMaxVLClient).  Rewriting to /v1 lets them use
+    # OpenAI chat completions.  Only skip the wrap if the model name starts with
+    # "minimax-m" (excludes MiniMaxVL vision models).
+    model_lower = (model or "").lower()
+    if "minimax" in base_url.lower() and model_lower.startswith("minimax-m"):
+        rewritten_base = _to_openai_base_url(base_url)
+        logger.debug(
+            "Auxiliary transport: MiniMax text model %r on /anthropic endpoint "
+            "— rewriting to OpenAI chat completions (%s)",
+            model, rewritten_base)
+        return client_obj
+
     try:
         from agent.anthropic_adapter import build_anthropic_client
     except ImportError:
@@ -1324,6 +1338,167 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     if not api_key or not base_url:
         return None
     return api_key, base_url
+
+
+_MINIMAX_VLM_URL = "https://api.minimaxi.com/v1/coding_plan/vlm"
+
+
+class _MiniMaxVLAdapter:
+    """OpenAI-client-compatible adapter that translates vision calls to MiniMax VLM."""
+
+    def __init__(self, api_key: str, model: str = "MiniMax-M2.7"):
+        self._api_key = api_key
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        import json, urllib.request
+
+        messages = kwargs.get("messages", [])
+        text_parts, image_url = self._extract_text_and_image(messages)
+        prompt_text = "\n".join(text_parts) if text_parts else "描述这张图片"
+
+        payload = {"model": self._model, "prompt": prompt_text, "image_url": image_url}
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            _MINIMAX_VLM_URL, data=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._api_key}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raise Exception(f"MiniMax VLM HTTP {e.code}: {e.read().decode()}")
+        except Exception as exc:
+            raise Exception(f"MiniMax VLM request failed: {exc}")
+
+        content = result.get("content", "") or ""
+        return _MiniMaxVLResponse(content)
+
+    def _extract_text_and_image(self, messages: list) -> tuple:
+        text_parts, image_url = [], None
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                if role == "user" and content.strip():
+                    text_parts.append(content.strip())
+            elif isinstance(content, list):
+                for block in content:
+                    btype = block.get("type", "")
+                    if btype == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif btype == "image_url":
+                        image_url = block.get("image_url", {})
+                        if isinstance(image_url, dict):
+                            image_url = image_url.get("url", "")
+                    elif btype == "image":
+                        source = block.get("source", {})
+                        if source.get("type") == "base64":
+                            media_type = source.get("media_type", "image/jpeg")
+                            data = source.get("data", "")
+                            image_url = f"data:{media_type};base64,{data}"
+                        elif source.get("type") == "url":
+                            image_url = source.get("url", "")
+        return text_parts, image_url
+
+
+class _MiniMaxVLResponse:
+    def __init__(self, content: str):
+        self.content = content
+        self.role = "assistant"
+        self._raw = {"choices": [{"message": {"content": content}}]}
+
+    @property
+    def choices(self):
+        return [_VLChoice(msg) for msg in self._raw["choices"]]
+
+    def model_dump(self, **kwargs) -> dict:
+        return self._raw
+
+    def model_dump_json(self, **kwargs) -> str:
+        import json
+        return json.dumps(self._raw)
+
+
+class _VLChoice:
+    def __init__(self, choice_dict: dict):
+        self._dict = choice_dict
+        self.message = _VLMessage(choice_dict.get("message", {}))
+
+    def model_dump(self, **kwargs) -> dict:
+        return self._dict
+
+
+class _VLMessage:
+    def __init__(self, msg_dict: dict):
+        self._dict = msg_dict
+        self.content = msg_dict.get("content", "")
+        self.role = msg_dict.get("role", "assistant")
+
+    def model_dump(self, **kwargs) -> dict:
+        return self._dict
+
+
+class AsyncMiniMaxVLAdapter:
+    def __init__(self, sync_adapter: "_MiniMaxVLAdapter"):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class MiniMaxVLClient:
+    def __init__(self, api_key: str, model: str = "MiniMax-M2.7"):
+        adapter = _MiniMaxVLAdapter(api_key, model)
+        self.chat = _MiniMaxChatShim(adapter)
+        self.api_key = api_key
+        self.base_url = _MINIMAX_VLM_URL
+
+    def close(self):
+        pass
+
+
+class _MiniMaxChatShim:
+    def __init__(self, adapter: "_MiniMaxVLAdapter"):
+        self.completions = adapter
+
+    def create(self, **kwargs):
+        return self.completions.create(**kwargs)
+
+
+class _AsyncMiniMaxVLClient:
+    def __init__(self, adapter: "AsyncMiniMaxVLAdapter"):
+        self.chat = _AsyncMiniMaxVLChatShim(adapter)
+        self.api_key = None
+        self.base_url = _MINIMAX_VLM_URL
+
+
+class _AsyncMiniMaxVLChatShim:
+    def __init__(self, adapter: "AsyncMiniMaxVLAdapter"):
+        self.completions = adapter
+
+    async def create(self, **kwargs):
+        return await self.completions.create(**kwargs)
+
+
+def _try_minimax_vision(api_key: str = None) -> Tuple[Any, str]:
+    """Return a MiniMaxVLClient and model name if MiniMax credentials are available."""
+    if not api_key:
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            for provider_id in ("minimax-cn", "minimax"):
+                creds = resolve_api_key_provider_credentials(provider_id)
+                api_key = str(creds.get("api_key", "")).strip()
+                if api_key:
+                    break
+        except Exception:
+            pass
+    if not api_key:
+        return None, None
+    model = "MiniMax-M2.7"
+    client = MiniMaxVLClient(api_key=api_key, model=model)
+    return client, model
 
 
 def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
@@ -4206,6 +4381,8 @@ def _resolve_strict_vision_backend(
         return _try_anthropic()
     if provider == "custom":
         return _try_custom_endpoint()
+    if provider in ("minimax", "minimax-cn"):
+        return _try_minimax_vision()
     return None, None
 
 

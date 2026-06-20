@@ -80,6 +80,163 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return _first_threat_message(content, scope="strict")
 
 
+# ---------------------------------------------------------------------------
+# Cognitive consolidation — contradiction resolution on memory write (#676)
+#
+# When enabled, an ``add`` doesn't just append: an auxiliary LLM compares the
+# new content against the FULL existing entry list and proposes a
+# ConsolidationPlan (per-entry keep/update/delete + whether to insert the new
+# content). This resolves contradictions ("user prefers X" vs a later "user now
+# prefers Y") in-place instead of accumulating stale, conflicting entries.
+#
+# Storage adaptation: Hermes memory is char-capped markdown (small), so we feed
+# the WHOLE entry list to the LLM rather than running embedding similarity
+# search — the entire store fits in one prompt. Scope/importance/category
+# auto-classification from the original #676 is intentionally NOT built here; it
+# depends on the SQLite memory store migration (#509) that does not yet exist.
+#
+# Default OFF (opt-in via ``memory.cognitive: true``), matching the repo's
+# convention for cognitive features (curator ``consolidate`` defaults False) and
+# avoiding an auxiliary LLM call on every memory write by default.
+#
+# Graceful degradation is mandatory: ANY failure here falls back to the plain
+# append path. Memory is ALWAYS stored; cognitive analysis is best-effort.
+# ---------------------------------------------------------------------------
+
+# Default-off, per the repo convention for cognitive/aux-cost features.
+DEFAULT_COGNITIVE_ENABLED = False
+
+
+def _cognitive_enabled() -> bool:
+    """Return whether contradiction consolidation runs on memory writes.
+
+    Resolved at CALL TIME (Rule 1 — never bound as a default arg) from
+    ``memory.cognitive`` in ~/.hermes/config.yaml. Tolerates a missing file or
+    malformed config by returning the default (OFF). Fails closed so a config
+    read error never silently enables aux-LLM cost or alters the write path.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as e:
+        logger.debug("Failed to load config for memory cognitive flag: %s", e)
+        return DEFAULT_COGNITIVE_ENABLED
+    if not isinstance(cfg, dict):
+        return DEFAULT_COGNITIVE_ENABLED
+    mem = cfg.get("memory") or {}
+    if not isinstance(mem, dict):
+        return DEFAULT_COGNITIVE_ENABLED
+    return bool(mem.get("cognitive", DEFAULT_COGNITIVE_ENABLED))
+
+
+_CONSOLIDATION_SYSTEM_PROMPT = (
+    "You maintain a small, durable memory store. The user is adding ONE new "
+    "entry. Compare it against every EXISTING entry and decide how to keep the "
+    "store consistent and non-redundant.\n\n"
+    "For each existing entry (by its number), choose exactly one action:\n"
+    "  - \"keep\": the entry is unaffected by the new content.\n"
+    "  - \"update\": the new content REFINES or partially supersedes this "
+    "entry; provide \"updated_content\" with the merged/corrected text.\n"
+    "  - \"delete\": the new content CONTRADICTS or fully supersedes this entry; "
+    "it should be removed.\n\n"
+    "Then decide \"insert_new\": true to store the new content as its own "
+    "entry, or false if it was already fully merged into an updated entry.\n\n"
+    "Be conservative: only update/delete on a genuine contradiction or clear "
+    "redundancy. When in doubt, keep the existing entry and insert the new one. "
+    "Never invent facts not present in the entries or the new content.\n\n"
+    "Respond with ONLY a JSON object, no prose, in this exact shape:\n"
+    "{\"entries\": [{\"index\": <int>, \"action\": \"keep|update|delete\", "
+    "\"updated_content\": \"<text, only for update>\"}], \"insert_new\": "
+    "<true|false>}"
+)
+
+
+def _build_consolidation_messages(new_content: str, entries: List[str]) -> List[Dict[str, str]]:
+    """Build the chat messages for the consolidation LLM call."""
+    numbered = "\n".join(f"{i}. {e}" for i, e in enumerate(entries))
+    user = (
+        f"NEW ENTRY to add:\n{new_content}\n\n"
+        f"EXISTING ENTRIES ({len(entries)} total):\n{numbered}"
+    )
+    return [
+        {"role": "system", "content": _CONSOLIDATION_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def _parse_consolidation_plan(raw: str, entry_count: int) -> Dict[str, Any]:
+    """Parse + validate the LLM's JSON ConsolidationPlan.
+
+    Returns a normalized dict ``{"entries": {idx: (action, updated_content)},
+    "insert_new": bool}``. Raises ValueError on any malformed/invalid payload so
+    the caller falls back to a plain append (graceful degradation).
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("empty consolidation response")
+    # Tolerate models that wrap JSON in a ```json fence.
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.strip()
+
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("consolidation plan is not an object")
+
+    insert_new = data.get("insert_new", True)
+    if not isinstance(insert_new, bool):
+        raise ValueError("insert_new is not a boolean")
+
+    plan_entries: Dict[int, tuple] = {}
+    for item in data.get("entries", []) or []:
+        if not isinstance(item, dict):
+            raise ValueError("entry plan item is not an object")
+        idx = item.get("index")
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            raise ValueError(f"entry index is not an int: {idx!r}")
+        if idx < 0 or idx >= entry_count:
+            raise ValueError(f"entry index {idx} out of range [0,{entry_count})")
+        action = item.get("action")
+        if action not in {"keep", "update", "delete"}:
+            raise ValueError(f"unknown entry action: {action!r}")
+        updated = item.get("updated_content")
+        if action == "update":
+            if not isinstance(updated, str) or not updated.strip():
+                raise ValueError("update action requires non-empty updated_content")
+            updated = updated.strip()
+        else:
+            updated = None
+        plan_entries[idx] = (action, updated)
+
+    return {"entries": plan_entries, "insert_new": insert_new}
+
+
+def _request_consolidation_plan(
+    new_content: str, entries: List[str], main_runtime: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Call the auxiliary LLM and return the parsed ConsolidationPlan.
+
+    Mirrors the auxiliary-call pattern in ``agent/title_generator.py``
+    (``from agent.auxiliary_client import call_llm`` -> ``call_llm(task=...,
+    messages=[...], ...)`` -> ``response.choices[0].message.content``). Raises on
+    any failure so the caller falls back to a plain append.
+    """
+    from agent.auxiliary_client import call_llm
+
+    messages = _build_consolidation_messages(new_content, entries)
+    response = call_llm(
+        task="memory_consolidation",
+        messages=messages,
+        max_tokens=2000,
+        temperature=0.0,
+        main_runtime=main_runtime,
+    )
+    raw = (response.choices[0].message.content or "").strip()
+    return _parse_consolidation_plan(raw, len(entries))
+
+
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     """Build the error dict returned when external drift is detected.
 
@@ -360,6 +517,17 @@ class MemoryStore:
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
+            # Cognitive consolidation (#676): when enabled AND there are existing
+            # entries, let an auxiliary LLM resolve contradictions/redundancy
+            # against the whole entry list before the plain append. Best-effort:
+            # any failure falls through to the simple-append path below so the
+            # write is NEVER lost. Returns a success response when it commits,
+            # or None to fall back.
+            if entries and _cognitive_enabled():
+                consolidated = self._consolidate_add(target, content, entries, limit)
+                if consolidated is not None:
+                    return consolidated
+
             # Calculate what the new total would be
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
@@ -384,6 +552,101 @@ class MemoryStore:
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry added.")
+
+    def _consolidate_add(
+        self, target: str, content: str, entries: List[str], limit: int
+    ) -> Optional[Dict[str, Any]]:
+        """Run contradiction consolidation for an ``add`` (#676).
+
+        Asks the auxiliary LLM how the new ``content`` interacts with the
+        existing ``entries`` (keep/update/delete each + whether to insert the
+        new content), applies the plan to a working copy, re-checks the char
+        limit on the FINAL set, and commits via the same write path as a plain
+        append. Runs under the caller's existing ``_file_lock`` — it does NOT
+        take a second lock.
+
+        Returns a success response dict when it commits a consolidated write, or
+        ``None`` to signal the caller should fall back to the plain-append path.
+        ``None`` is returned for EVERY failure mode (LLM error, malformed plan,
+        over-budget result, no-op plan) so a consolidation problem never loses
+        the write and never raises. Memory is always stored.
+        """
+        try:
+            plan = _request_consolidation_plan(content, entries)
+        except Exception:
+            logger.warning(
+                "Memory consolidation LLM/parse failed; falling back to plain append.",
+                exc_info=True,
+            )
+            return None
+
+        try:
+            plan_entries: Dict[int, tuple] = plan["entries"]
+            insert_new: bool = plan["insert_new"]
+
+            # Build the working set: keep order, apply update/delete by index.
+            working: List[str] = []
+            updated_count = 0
+            deleted_count = 0
+            for i, entry in enumerate(entries):
+                action, updated_content = plan_entries.get(i, ("keep", None))
+                if action == "delete":
+                    deleted_count += 1
+                    continue
+                if action == "update" and updated_content:
+                    # Re-scan LLM-produced content before it can enter the store.
+                    if _scan_memory_content(updated_content):
+                        logger.warning(
+                            "Consolidation produced a flagged update; falling back to plain append."
+                        )
+                        return None
+                    working.append(updated_content)
+                    updated_count += 1
+                else:
+                    working.append(entry)
+
+            if insert_new:
+                working.append(content)
+
+            # A plan that changes nothing (keep-all + insert) is just a plain
+            # append — let the caller's append path handle it for an identical
+            # response/shape.
+            if updated_count == 0 and deleted_count == 0 and insert_new:
+                return None
+
+            # Deduplicate while preserving order (an update may collide with an
+            # existing entry).
+            working = list(dict.fromkeys(working))
+
+            # Re-check the char limit on the FINAL set. If consolidation somehow
+            # grew the store past the limit, fall back to the plain-append path
+            # which surfaces the canonical over-budget error to the model.
+            new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
+            if new_total > limit:
+                logger.warning(
+                    "Consolidated set over budget (%d/%d); falling back to plain append.",
+                    new_total, limit,
+                )
+                return None
+
+            self._set_entries(target, working)
+            self.save_to_disk(target)
+        except Exception:
+            logger.warning(
+                "Memory consolidation apply failed; falling back to plain append.",
+                exc_info=True,
+            )
+            return None
+
+        parts = []
+        if updated_count:
+            parts.append(f"updated {updated_count} contradicting entr{'y' if updated_count == 1 else 'ies'}")
+        if deleted_count:
+            parts.append(f"removed {deleted_count} superseded entr{'y' if deleted_count == 1 else 'ies'}")
+        if insert_new:
+            parts.append("added the new entry")
+        message = "Consolidated memory: " + ", ".join(parts) + "." if parts else "Entry added."
+        return self._success_response(target, message)
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""

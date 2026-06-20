@@ -31,6 +31,9 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Self-hosted katana extraction/crawl (service-gated: only present when the
+    # `katana` binary is installed — see tools/katana_tool.py check_fn).
+    "katana_extract", "katana_crawl",
     # Terminal + process management
     "terminal", "process",
     # Read the desktop GUI's embedded terminal pane (gated on HERMES_DESKTOP

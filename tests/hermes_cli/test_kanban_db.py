@@ -1724,6 +1724,173 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_dispatch_blocks_missing_forced_skill_before_worker_spawn(kanban_home, all_assignees_spawnable):
+    profile_home = kanban_home / "profiles" / "alice"
+    (profile_home / "skills").mkdir(parents=True)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="needs missing skill",
+            assignee="alice",
+            skills=["missing-specialist-skill"],
+        )
+        res = kb.dispatch_once(conn)
+        task = kb.get_task(conn, t)
+        assert task is not None
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id",
+            (t,),
+        ).fetchall()
+
+    assert not res.spawned
+    assert t in res.auto_blocked
+    assert task.status == "blocked"
+    assert task.claim_lock is None
+    assert any(e["kind"] == "blocked" and "missing-specialist-skill" in e["payload"] for e in events)
+
+
+def test_missing_forced_skill_auto_syncs_when_policy_allows(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "code-reviewer"
+    (profile_home / "skills").mkdir(parents=True)
+    canonical_skill = root / "skills" / "github" / "github-code-review"
+    canonical_skill.mkdir(parents=True)
+    (canonical_skill / "SKILL.md").write_text(
+        "---\nname: github-code-review\ndescription: review\n---\n\n# Review\n",
+        encoding="utf-8",
+    )
+    policy = root / "local" / "hermes-os" / "profile-skill-sync-policy.yaml"
+    policy.parent.mkdir(parents=True)
+    policy.write_text(
+        f"""
+canonical_skill_root: {root / 'skills'}
+profile_root: {root / 'profiles'}
+backup_root: {root / 'local' / 'backups' / 'profile-skill-sync'}
+sync_profiles:
+  - code-reviewer
+sync_skills:
+  - github-code-review
+create_missing_skill_dirs: true
+""".strip(),
+        encoding="utf-8",
+    )
+    script = root / "local" / "scripts" / "profile_skill_sync.py"
+    script.parent.mkdir(parents=True)
+    # Test repos do not contain Hoang's local script, so write the tiny behavior
+    # the dispatcher requires: create the missing allowlisted profile skill.
+    script.write_text(
+        """
+import pathlib, shutil, sys
+policy = pathlib.Path(sys.argv[-1])
+root = policy.parents[2]
+src = root / 'skills' / 'github' / 'github-code-review'
+dst = root / 'profiles' / 'code-reviewer' / 'skills' / 'github' / 'github-code-review'
+dst.parent.mkdir(parents=True, exist_ok=True)
+if dst.exists():
+    shutil.rmtree(dst)
+shutil.copytree(src, dst)
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_PROFILE_SKILL_SYNC_POLICY", str(policy))
+    monkeypatch.setenv("HERMES_PROFILE_SKILL_SYNC_SCRIPT", str(script))
+
+    assert kb._missing_forced_skills(str(profile_home), ["github-code-review"]) == ["github-code-review"]
+    remaining = kb._maybe_sync_missing_forced_skills(
+        "code-reviewer",
+        str(profile_home),
+        ["github-code-review"],
+    )
+
+    assert remaining == []
+    assert kb._skill_available(str(profile_home), "github-code-review") is True
+
+
+def test_missing_forced_skill_auto_sync_fails_closed_when_not_allowlisted(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "code-reviewer"
+    (profile_home / "skills").mkdir(parents=True)
+    policy = root / "local" / "hermes-os" / "profile-skill-sync-policy.yaml"
+    policy.parent.mkdir(parents=True)
+    policy.write_text(
+        """
+sync_profiles:
+  - code-reviewer
+sync_skills:
+  - some-other-skill
+create_missing_skill_dirs: true
+""".strip(),
+        encoding="utf-8",
+    )
+    script = root / "local" / "scripts" / "profile_skill_sync.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise SystemExit(99)\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_PROFILE_SKILL_SYNC_POLICY", str(policy))
+    monkeypatch.setenv("HERMES_PROFILE_SKILL_SYNC_SCRIPT", str(script))
+
+    remaining = kb._maybe_sync_missing_forced_skills(
+        "code-reviewer",
+        str(profile_home),
+        ["github-code-review"],
+    )
+
+    assert remaining == ["github-code-review"]
+
+
+def test_forced_skill_resolves_by_frontmatter_name(tmp_path):
+    home = tmp_path / "profile-home"
+    skill_dir = home / "skills" / "custom-category" / "directory-name"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: frontmatter-skill\ndescription: demo\n---\n\n# Skill\n",
+        encoding="utf-8",
+    )
+
+    assert kb._skill_available(str(home), "frontmatter-skill") is True
+    assert kb._missing_forced_skills(str(home), ["frontmatter-skill", "absent"]) == ["absent"]
+
+
+def test_forced_skill_resolves_from_runtime_overlay_root(tmp_path, monkeypatch):
+    """Preflight should accept skills available through worker-scoped overlay roots."""
+    home = tmp_path / "profile-home"
+    (home / "skills").mkdir(parents=True)
+    overlay_root = tmp_path / "overlay-skills"
+    skill_dir = overlay_root / "task-category" / "overlay-only-dir"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: overlay-only-skill\ndescription: demo\n---\n\n# Overlay Skill\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SKILLS_EXTERNAL_DIRS", str(overlay_root))
+
+    assert kb._skill_available(str(home), "overlay-only-skill") is True
+    assert kb._missing_forced_skills(str(home), ["overlay-only-skill", "absent"]) == ["absent"]
+
+
+def test_forced_skill_resolves_from_worker_profile_external_dirs(tmp_path, monkeypatch):
+    """Preflight should mirror the worker profile's skills.external_dirs config."""
+    home = tmp_path / "profile-home"
+    (home / "skills").mkdir(parents=True)
+    external_root = home / "relative-external-skills"
+    skill_dir = external_root / "custom-category" / "configured-dir"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: configured-external-skill\ndescription: demo\n---\n\n# Configured\n",
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text(
+        "skills:\n  external_dirs:\n    - relative-external-skills\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("HERMES_SKILLS_EXTERNAL_DIRS", raising=False)
+
+    assert kb._skill_available(str(home), "configured-external-skill") is True
+    assert kb._missing_forced_skills(str(home), ["configured-external-skill"]) == []
+
+
 def test_dispatch_max_spawn_counts_existing_running_tasks(
     kanban_home, all_assignees_spawnable
 ):

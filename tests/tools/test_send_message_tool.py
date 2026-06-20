@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from concurrent.futures import Future
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -3097,3 +3098,351 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+# ---------------------------------------------------------------------------
+# Active-wake receipt primitive
+# ---------------------------------------------------------------------------
+
+
+class TestActiveWakeReceipt:
+    """Regression tests for the gateway-owned active-wake receipt envelope.
+
+    The receipt exposes classification fields for AgentFlow delivery_attempt
+    semantics without persisting raw transcripts, paths, or secrets. AgentFlow
+    remains the policy owner: Hermes only reports whether a wake was attempted.
+    """
+
+    def _make_config(self):
+        telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        return SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: None,
+        ), telegram_cfg
+
+    def _completed_schedule(self, handled):
+        def _schedule(coro, loop, **_kwargs):
+            handled.append((coro, loop))
+            asyncio.run(coro)
+            fut = Future()
+            fut.set_result(None)
+            return fut
+        return _schedule
+
+    def _active_wake_event_text_for(self, message):
+        config, _telegram_cfg = self._make_config()
+        handled = []
+        scheduled = []
+        loop = object()
+
+        class FakeAdapter:
+            async def handle_message(self, event):
+                handled.append(event)
+
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: FakeAdapter()}, _gateway_loop=loop)
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True, "message_id": "msg-safe"})), \
+             patch("gateway.run._gateway_runner_ref", new=lambda: runner), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=self._completed_schedule(scheduled)), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": message,
+                        "trigger_agent": True,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["triggered_agent"] is True
+        mirror_mock.assert_not_called()
+        assert len(handled) == 1
+        return handled[0].text
+
+    def test_sent_and_triggered(self):
+        """Visible send succeeds + live adapter present => triggered_agent true."""
+        config, telegram_cfg = self._make_config()
+        handled = []
+        scheduled = []
+        loop = object()
+
+        class FakeAdapter:
+            async def handle_message(self, event):
+                handled.append(event)
+
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: FakeAdapter()}, _gateway_loop=loop)
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True, "message_id": "msg-123"})), \
+             patch("gateway.run._gateway_runner_ref", new=lambda: runner), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=self._completed_schedule(scheduled)) as schedule_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "wake up",
+                        "trigger_agent": True,
+                        "correlation_id": "corr-abc",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg-123"
+        assert result["triggered_agent"] is True
+        assert result["receipt_correlation"] == "corr-abc"
+        assert "trigger_error" not in result
+        assert "mirrored" not in result
+        mirror_mock.assert_not_called()
+        schedule_mock.assert_called_once()
+        assert scheduled[0][1] is loop
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "wake up"
+        assert event.source.chat_id == "12345"
+        assert event.source.platform == Platform.TELEGRAM
+        assert event.internal is True
+        assert event.source.user_id == "hermes-active-wake"
+
+    def test_synthetic_wake_event_uses_sanitized_text(self):
+        """Active wake must never inject raw MEDIA/path directives into event text."""
+        config, _telegram_cfg = self._make_config()
+        handled = []
+        scheduled = []
+        loop = object()
+
+        class FakeAdapter:
+            async def handle_message(self, event):
+                handled.append(event)
+
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: FakeAdapter()}, _gateway_loop=loop)
+        raw_message = "hello\nMEDIA:/tmp/hermes-active-wake-secret-sk_live_123456.pdf"
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True, "message_id": "msg-safe"})), \
+             patch("gateway.run._gateway_runner_ref", new=lambda: runner), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=self._completed_schedule(scheduled)), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": raw_message,
+                        "trigger_agent": True,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["triggered_agent"] is True
+        mirror_mock.assert_not_called()
+        assert len(handled) == 1
+        event_text = handled[0].text
+        assert event_text == "hello"
+        assert "MEDIA:" not in event_text
+        assert "/tmp/hermes-active-wake-secret-sk_live_123456.pdf" not in event_text
+        assert "secret" not in event_text.lower()
+        assert "sk_live" not in event_text
+
+    @pytest.mark.parametrize(
+        "raw_message, forbidden",
+        [
+            (
+                "inline `MEDIA:/tmp/hermes-inline-sk_live_inline123.pdf` keep",
+                ["MEDIA:", "/tmp/hermes-inline-sk_live_inline123.pdf", "sk_live_inline123"],
+            ),
+            (
+                "```json\n{\"artifact\": \"MEDIA:/tmp/hermes-fenced-sk_live_fenced123.pdf\"}\n```",
+                ["MEDIA:", "/tmp/hermes-fenced-sk_live_fenced123.pdf", "sk_live_fenced123"],
+            ),
+            (
+                "> quoted MEDIA:/tmp/hermes-quoted-sk_live_quoted123.pdf",
+                ["MEDIA:", "/tmp/hermes-quoted-sk_live_quoted123.pdf", "sk_live_quoted123"],
+            ),
+            (
+                '{"file": "/tmp/hermes-json-secret.pdf", "token": "sk_live_json123456"}',
+                ["/tmp/hermes-json-secret.pdf", "sk_live_json123456"],
+            ),
+            (
+                "bare path /home/duckran/.hermes/audio_cache/voice-secret.ogg should redact",
+                ["/home/duckran/.hermes/audio_cache/voice-secret.ogg"],
+            ),
+            (
+                "token fragments sk_live_token123456 and ghp_abcdefghijklmnopqrstuvwxyz1234",
+                ["sk_live_token123456", "ghp_abcdefghijklmnopqrstuvwxyz1234"],
+            ),
+            (
+                "redacted-looking token fragments sk_liv...3456 and ghp_ab...1234",
+                ["sk_liv...3456", "ghp_ab...1234"],
+            ),
+            (
+                "redacted-looking Slack fragments xoxb-1...cdef and xoxb-1234...abcdef",
+                ["xoxb-1...cdef", "xoxb-1234...abcdef"],
+            ),
+        ],
+    )
+    def test_synthetic_wake_event_strictly_sanitizes_protected_spans(self, raw_message, forbidden):
+        """Active wake redacts raw artifacts even in protected Markdown/JSON spans."""
+        event_text = self._active_wake_event_text_for(raw_message)
+
+        for raw in forbidden:
+            assert raw not in event_text
+        assert "MEDIA:" not in event_text
+        assert "sk_live" not in event_text
+
+    def test_sent_and_not_wired(self):
+        """Visible send succeeds but no gateway runner => NOT_WIRED."""
+        config, _telegram_cfg = self._make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True, "message_id": "msg-456"})), \
+             patch("gateway.run._gateway_runner_ref", new=lambda: None), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "wake up",
+                        "trigger_agent": True,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg-456"
+        assert result["triggered_agent"] is False
+        assert result["trigger_error"] == "NOT_WIRED"
+        assert result["receipt_correlation"].startswith("wake_")
+        mirror_mock.assert_not_called()
+
+    def test_send_failed(self):
+        """Visible send fails: no active wake is scheduled."""
+        config, _telegram_cfg = self._make_config()
+        loop = object()
+
+        class FakeAdapter:
+            async def handle_message(self, _event):
+                raise AssertionError("send_failed must not wake agent")
+
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: FakeAdapter()}, _gateway_loop=loop)
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"error": "Telegram send failed: bad chat"})), \
+             patch("gateway.run._gateway_runner_ref", new=lambda: runner), \
+             patch("agent.async_utils.safe_schedule_threadsafe") as schedule_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "wake up",
+                        "trigger_agent": True,
+                    }
+                )
+            )
+
+        assert result["success"] is False
+        assert "error" in result
+        assert result["triggered_agent"] is False
+        assert result["trigger_error"] == "SEND_FAILED"
+        assert result["receipt_correlation"].startswith("wake_")
+        schedule_mock.assert_not_called()
+        mirror_mock.assert_not_called()
+
+    def test_visible_send_alone_does_not_close_origin_return(self):
+        """Without trigger_agent, the result must not contain triggered_agent.
+
+        This is the classification contract: a visible send alone does not mark
+        an active wake as complete, so AgentFlow should not close origin_return
+        unless it sees triggered_agent=true.
+        """
+        config, _telegram_cfg = self._make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True, "message_id": "msg-789"})), \
+             patch("gateway.run._gateway_runner_ref", new=lambda: None), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "just a note",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg-789"
+        assert result["mirrored"] is True
+        assert "triggered_agent" not in result
+        assert "trigger_error" not in result
+        assert "receipt_correlation" not in result
+        mirror_mock.assert_called_once()
+
+    def test_trigger_error_redacted_on_secrets(self):
+        """Scheduling/setup errors in trigger_error must be redacted."""
+        config, _telegram_cfg = self._make_config()
+        leaked = "super-secret-token-123456"
+        loop = object()
+
+        class BadAdapter:
+            async def handle_message(self, _event):
+                return None
+
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: BadAdapter()}, _gateway_loop=loop)
+
+        def _bad_schedule(coro, _loop, **_kwargs):
+            coro.close()
+            raise RuntimeError(f"boom: https://api.example.com/send?access_token={leaked}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True, "message_id": "msg-000"})), \
+             patch("gateway.run._gateway_runner_ref", new=lambda: runner), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_bad_schedule), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "wake up",
+                        "trigger_agent": True,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["triggered_agent"] is False
+        assert leaked not in result["trigger_error"]
+        assert "access_token=***" in result["trigger_error"]

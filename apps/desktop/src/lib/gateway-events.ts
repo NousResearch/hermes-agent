@@ -15,16 +15,32 @@ function asRecord(payload: unknown): Record<string, unknown> {
  * Whether an unscoped event (no `session_id`) must be dropped rather than
  * attributed to the focused chat.
  *
- * Only `subagent.*` qualifies: it describes background/async work that must
- * never attach to whichever chat happens to be focused. Every other scoped
- * event — message/reasoning/thinking/tool/status/prompt — is, when unscoped,
- * the active turn's own output. The gateway always stamps a *background*
- * session's events with that session's id, so a missing id can only mean "the
- * focused turn". #42178 dropped those too, which silently swallowed the live
- * answer; it then reappeared only after a transcript refetch (manual refresh).
+ * Desktop multiplexes concurrent sessions and windows over one event pipeline.
+ * Any transcript-mutating or prompt-blocking event without an explicit
+ * `session_id` is ambiguous there, so attributing it to the focused chat leaks
+ * turns across sessions. The backend now stamps these per-session events
+ * explicitly, so an unscoped copy is malformed and must be dropped.
+ *
+ * Keep genuinely global UI events unscoped (`gateway.ready`, skin changes,
+ * preview restart progress, startup `session.info` without a live session).
  */
 export function gatewayEventRequiresSessionId(eventType: string | undefined): boolean {
-  return eventType?.startsWith('subagent.') ?? false
+  if (!eventType) {
+    return false
+  }
+
+  return (
+    eventType.startsWith('subagent.') ||
+    eventType.startsWith('message.') ||
+    eventType.startsWith('reasoning.') ||
+    eventType.startsWith('tool.') ||
+    eventType === 'clarify.request' ||
+    eventType === 'approval.request' ||
+    eventType === 'sudo.request' ||
+    eventType === 'secret.request' ||
+    eventType === 'status.update' ||
+    eventType === 'review.summary'
+  )
 }
 
 export function gatewayEventCompletedFileDiff(event: RpcEventLike): boolean {

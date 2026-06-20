@@ -6700,6 +6700,16 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
+    elif isinstance(value, str) and value.startswith('[') and value.endswith(']'):
+        # Parse bracket-delimited strings as YAML lists so that
+        # ``hermes config set enabled '[icarus]'`` stores a proper list
+        # instead of a literal string.  (#37455)
+        try:
+            parsed = yaml.safe_load(value)
+            if isinstance(parsed, list):
+                value = parsed
+        except Exception:
+            pass  # Keep as string if YAML parse fails
 
     _set_nested(user_config, key, value)
     

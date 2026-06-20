@@ -452,7 +452,7 @@ def _matrix_event_timestamp_seconds(event: Any) -> float:
     return ts
 
 
-def _create_matrix_session(proxy_url: str | None):
+def _create_matrix_session(proxy_url: str | None, trust_env: bool | None = None):
     """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
 
     mautrix's ``HTTPAPI._send()`` calls ``session.request()`` without forwarding
@@ -464,8 +464,12 @@ def _create_matrix_session(proxy_url: str | None):
     """
     import aiohttp
 
+    if trust_env is None:
+        from gateway.platforms.base import should_trust_env
+        trust_env = should_trust_env()
+
     if not proxy_url:
-        return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(trust_env=trust_env)
 
     if proxy_url.split("://")[0].lower().startswith("socks"):
         try:
@@ -480,7 +484,7 @@ def _create_matrix_session(proxy_url: str | None):
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
-            return aiohttp.ClientSession(trust_env=True)
+            return aiohttp.ClientSession(trust_env=trust_env)
 
     return aiohttp.ClientSession(proxy=proxy_url)
 
@@ -1147,8 +1151,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # Ensure store dir exists for E2EE key persistence.
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Create the HTTP API layer.
-        client_session = _create_matrix_session(self._proxy_url)
+        from gateway.platforms.base import should_trust_env
+        client_session = _create_matrix_session(self._proxy_url, trust_env=should_trust_env(self.config))
         api = HTTPAPI(
             base_url=self._homeserver,
             token=self._access_token or "",

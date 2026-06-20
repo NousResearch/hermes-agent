@@ -3252,7 +3252,8 @@ async def _standalone_send(
         return {"error": "Google Chat standalone send: aiohttp not installed"}
 
     try:
-        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=30.0), trust_env=True) as session:
+        from gateway.platforms.base import should_trust_env
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=30.0), trust_env=should_trust_env(pconfig)) as session:
             async with session.post(
                 url,
                 json=body,

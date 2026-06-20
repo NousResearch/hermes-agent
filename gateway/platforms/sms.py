@@ -125,10 +125,10 @@ class SmsAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._webhook_host, self._webhook_port)
-        await site.start()
+        from gateway.platforms.base import should_trust_env
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=should_trust_env(self.config),
         )
         self._running = True
 
@@ -168,9 +168,10 @@ class SmsAdapter(BasePlatformAdapter):
             "Authorization": self._basic_auth_header(),
         }
 
+        from gateway.platforms.base import should_trust_env
         session = self._http_session or aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=should_trust_env(self.config),
         )
         try:
             for chunk in chunks:

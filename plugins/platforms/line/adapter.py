@@ -450,9 +450,10 @@ class _LineClient:
     for the four endpoints we actually call).
     """
 
-    def __init__(self, channel_access_token: str, *, timeout: float = 15.0) -> None:
+    def __init__(self, channel_access_token: str, *, timeout: float = 15.0, trust_env: bool = False) -> None:
         self._token = channel_access_token
         self._timeout = timeout
+        self._trust_env = trust_env
         self._headers = {
             "Authorization": f"Bearer {channel_access_token}",
             "Content-Type": "application/json",
@@ -461,7 +462,7 @@ class _LineClient:
     async def reply(self, reply_token: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=self._trust_env) as session:
             async with session.post(
                 LINE_REPLY_URL,
                 headers=self._headers,
@@ -474,7 +475,7 @@ class _LineClient:
     async def push(self, chat_id: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=self._trust_env) as session:
             async with session.post(
                 LINE_PUSH_URL,
                 headers=self._headers,
@@ -493,7 +494,7 @@ class _LineClient:
         clamped = max(5, min(60, (seconds // 5) * 5 or 5))
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=self._trust_env) as session:
                 await session.post(
                     LINE_LOADING_URL,
                     headers=self._headers,
@@ -507,7 +508,7 @@ class _LineClient:
         import aiohttp
         url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
         timeout = aiohttp.ClientTimeout(total=30.0)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=self._trust_env) as session:
             async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
                 if resp.status >= 400:
                     raise RuntimeError(f"LINE content {resp.status}")
@@ -518,7 +519,7 @@ class _LineClient:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=10.0)
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=self._trust_env) as session:
                 async with session.get(LINE_BOT_INFO_URL, headers=self._headers) as resp:
                     if resp.status >= 400:
                         return None
@@ -765,7 +766,8 @@ class LineAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None
 
-        self._client = _LineClient(self.channel_access_token)
+        from gateway.platforms.base import should_trust_env
+        self._client = _LineClient(self.channel_access_token, trust_env=should_trust_env(self.config))
 
         # Best-effort: fetch our own bot userId for self-message filtering.
         # If the call fails (offline tests, transient 5xx) we fall back to
@@ -1567,7 +1569,8 @@ async def _standalone_send(
         messages.append(_text_message(f"[{len(media_files)} attachment(s) generated; not deliverable from cron]"))
         messages = messages[:LINE_MAX_MESSAGES_PER_CALL]
 
-    client = _LineClient(token)
+    from gateway.platforms.base import should_trust_env
+    client = _LineClient(token, trust_env=should_trust_env(pconfig))
     try:
         await client.push(chat_id, messages)
         return {"success": True, "message_id": None}

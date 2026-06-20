@@ -711,7 +711,8 @@ class SlackAdapter(BasePlatformAdapter):
             "text": text,
         }
         try:
-            async with aiohttp.ClientSession(trust_env=True) as session:
+            from gateway.platforms.base import should_trust_env
+            async with aiohttp.ClientSession(trust_env=should_trust_env(self.config)) as session:
                 async with session.post(
                     ctx["response_url"],
                     json=payload,

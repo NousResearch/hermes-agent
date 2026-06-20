@@ -301,14 +301,14 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
-            # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
+            from gateway.platforms.base import should_trust_env
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
                 limits=platform_httpx_limits(),
+                trust_env=should_trust_env(self.config),
             )
 
             # 1. Get access token
@@ -457,15 +457,17 @@ class QQAdapter(BasePlatformAdapter):
 
         # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
         # local patch, so QQ can regress to direct-connect timeouts after update.
-        self._session = aiohttp.ClientSession(trust_env=True)
-        ws_proxy = (
-            os.getenv("WSS_PROXY")
-            or os.getenv("wss_proxy")
-            or os.getenv("HTTPS_PROXY")
-            or os.getenv("https_proxy")
-            or os.getenv("ALL_PROXY")
-            or os.getenv("all_proxy")
-        )
+        from gateway.platforms.base import should_trust_env
+        trust_env = should_trust_env(self.config)
+        self._session = aiohttp.ClientSession(trust_env=trust_env)
+        ws_proxy = os.getenv("WSS_PROXY") or os.getenv("wss_proxy")
+        if not ws_proxy and trust_env:
+            ws_proxy = (
+                os.getenv("HTTPS_PROXY")
+                or os.getenv("https_proxy")
+                or os.getenv("ALL_PROXY")
+                or os.getenv("all_proxy")
+            )
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={

@@ -197,6 +197,67 @@ def _strip_mdv2(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+def _extract_text_from_rich_message(rich_msg: Any) -> Optional[str]:
+    """Extract plain text from a Telegram rich_message object.
+
+    Telegram Bot API 10.1 echoes ``api_kwargs['rich_message']`` back in
+    ``reply_to_message`` when a user replies to a rich-sent message.
+    The object may be a ``dict`` *or* a ``types.MappingProxyType`` --
+    duck-type via ``.get()`` instead of ``isinstance(..., dict)``.
+
+    Returns the concatenated text, or ``None`` if no usable content is
+    found.
+    """
+    if rich_msg is None:
+        return None
+    # Duck-type: MappingProxyType has .get() but fails isinstance(dict).
+    get = getattr(rich_msg, "get", None)
+    if get is None:
+        return None
+
+    # Prefer structured blocks (Telegram's parsed representation).
+    blocks = get("blocks")
+    if blocks and isinstance(blocks, (list, tuple)):
+        parts: list[str] = []
+        _collect_block_text(blocks, parts)
+        text = "\n".join(parts).strip()
+        if text:
+            return text
+
+    # Fall back to raw markdown if blocks are absent.
+    md = get("markdown")
+    if isinstance(md, str) and md.strip():
+        return md
+
+    return None
+
+
+def _collect_block_text(blocks: list, out: list[str]) -> None:
+    """Recursively collect text strings from rich_message blocks."""
+    for block in blocks:
+        if isinstance(block, str):
+            out.append(block)
+            continue
+        get = getattr(block, "get", None)
+        if get is None:
+            continue
+        # Block with a direct "text" field (paragraph, heading, pre, bold ...).
+        text_val = get("text")
+        if isinstance(text_val, str):
+            out.append(text_val)
+        elif isinstance(text_val, (list, tuple)):
+            _collect_block_text(list(text_val), out)
+        # Nested blocks (list items carry their own "blocks" array).
+        nested = get("blocks")
+        if isinstance(nested, (list, tuple)):
+            _collect_block_text(list(nested), out)
+        # List items: {"label": "...", "blocks": [...]}
+        items = get("items")
+        if isinstance(items, (list, tuple)):
+            _collect_block_text(list(items), out)
+
+
+# ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
 # Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
@@ -6772,18 +6833,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     or None
                 )
                 if not reply_to_text:
-                    # Rich messages (sendRichMessage — the launchd briefings and
-                    # the gateway's own rich finals) are NOT echoed with their
-                    # content in reply_to_message; Telegram sends no text,
-                    # caption, or api_kwargs for them. Recover the text we sent
-                    # from our local send-time index, keyed by message id.
+                    # Bot API 10.1 echoes rich content back in
+                    # reply_to_message.api_kwargs["rich_message"] when a user
+                    # replies to a rich-sent message.  Extract text from the
+                    # structured blocks (or raw markdown) before falling back
+                    # to the local send-time index.
                     try:
-                        from gateway import rich_sent_store
-                        reply_to_text = rich_sent_store.lookup(
-                            str(chat.id), reply_to_id
-                        )
+                        ak = getattr(message.reply_to_message, "api_kwargs", None)
+                        if ak is not None:
+                            rm = ak.get("rich_message") if hasattr(ak, "get") else None
+                            reply_to_text = _extract_text_from_rich_message(rm)
                     except Exception:
-                        reply_to_text = None
+                        pass
+                    if not reply_to_text:
+                        # Legacy fallback: recover from local send-time index
+                        # for messages sent before rich echo was available.
+                        try:
+                            from gateway import rich_sent_store
+                            reply_to_text = rich_sent_store.lookup(
+                                str(chat.id), reply_to_id
+                            )
+                        except Exception:
+                            reply_to_text = None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

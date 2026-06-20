@@ -1354,6 +1354,116 @@ class TestSignalTypingBackoff:
 
 
 # ---------------------------------------------------------------------------
+# _stop_typing_indicator sends explicit sendTyping(stop=True) RPC
+# ---------------------------------------------------------------------------
+
+class TestSignalStopTypingExplicitRPC:
+    """Cancelling the typing indicator must issue an explicit
+    sendTyping(stop=True) RPC so the recipient's device drops the indicator
+    immediately, instead of waiting for Signal's built-in ~5s timeout.
+
+    The stop RPC is best-effort: any failure must not prevent the per-chat
+    backoff state from being cleared.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_sends_stop_rpc_for_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter._stop_typing_indicator("+15555550000")
+
+        assert len(captured) == 1
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["stop"] is True
+        assert captured[0]["params"]["recipient"] == ["uuid-recipient"]
+        assert captured[0]["rpc_id"] == "typing-stop"
+        adapter._resolve_recipient.assert_awaited_once_with("+15555550000")
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_sends_stop_rpc_for_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter._stop_typing_indicator("group:group123")
+
+        assert len(captured) == 1
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["stop"] is True
+        assert captured[0]["params"]["groupId"] == "group123"
+        assert "recipient" not in captured[0]["params"]
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_best_effort_on_rpc_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+
+        # Drive the chat into backoff so we can confirm cleanup still happens
+        # even when the stop RPC itself fails.
+        async def _noop(method, params, rpc_id=None, **kwargs):
+            return None
+
+        adapter._rpc = _noop
+        for _ in range(3):
+            await adapter.send_typing("+155****0000")
+
+        assert adapter._typing_failures.get("+155****0000") == 3
+        assert "+155****0000" in adapter._typing_skip_until
+
+        # Now make the stop RPC raise — backoff state must still be cleared.
+        async def failing_rpc(method, params, rpc_id=None, **kwargs):
+            raise RuntimeError("signal-cli unreachable")
+
+        adapter._rpc = failing_rpc
+
+        await adapter._stop_typing_indicator("+155****0000")
+
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_best_effort_on_recipient_failure(self, monkeypatch):
+        # When _resolve_recipient() raises, the per-chat backoff state must
+        # still be cleared — otherwise a transient resolution failure would
+        # silently keep the chat in cooldown forever.
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(
+            side_effect=RuntimeError("recipient resolution failed")
+        )
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        adapter._typing_failures["+155****0000"] = 2
+        adapter._typing_skip_until["+155****0000"] = 9999999999.0
+
+        await adapter._stop_typing_indicator("+155****0000")
+
+        # No RPC must be issued when recipient resolution itself fails.
+        assert captured == []
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
+
+
+# ---------------------------------------------------------------------------
 # Reply quote extraction
 # ---------------------------------------------------------------------------
 

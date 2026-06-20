@@ -151,12 +151,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\|)|(^\s*\d+\.\s)|(^\s*---+\s*$)|"
+    r"(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|"
+    r"(\*[^\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Detect content that benefits from interactive card rendering:
+#   - Fenced code blocks (```)
+#   - Markdown tables (|header| → |---|---|)
+# Uses schema 2.0 markdown element for proper rendering.
+# Post-type md element also supports tables as fallback.
+_SHOULD_USE_CARD_RE = re.compile(
+    r"(^```)|"  # code blocks
+    r"(^\|.+\|[\r\n]+\|[-:| ]+\|)",  # markdown tables (header + separator)
+    re.MULTILINE,
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -541,6 +550,27 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+# ---------------------------------------------------------------------------
+# Interactive card payload builders
+# ---------------------------------------------------------------------------
+
+
+def _build_card_payload(content: str) -> str:
+    """Build a minimal interactive card with a single markdown element.
+    Uses schema 2.0 (body wrapper) for proper table/code rendering.
+    """
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1798,7 +1828,19 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        # Interactive card rejected; fall back to post
+                        logger.warning(
+                            "[Feishu] Interactive card rejected by API; falling back to post md"
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="post",
+                            payload=_build_markdown_post_payload(chunk),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
                     logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
                     response = await self._feishu_send_with_retry(
@@ -4374,14 +4416,14 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Interactive card path: code blocks (```) and tables (|...|)
+        # get better visual fidelity as schema 2.0 interactive cards.
+        if _SHOULD_USE_CARD_RE.search(content):
+            return "interactive", _build_card_payload(content)
+        # Post path: other markdown content (bold, lists, links, etc.)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
+        # Plain text fallback
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

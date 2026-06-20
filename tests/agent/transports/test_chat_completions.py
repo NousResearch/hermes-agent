@@ -252,6 +252,27 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
+    def test_reasoning_effort_from_config(self, transport):
+        """reasoning_config.effort must propagate, not be hardcoded to medium."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        for effort in ("low", "medium", "high", "xhigh"):
+            kw = transport.build_kwargs(
+                model="gpt-4o", messages=msgs,
+                supports_reasoning=True,
+                reasoning_config={"effort": effort},
+            )
+            assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": effort}
+
+    def test_reasoning_effort_invalid_falls_back_to_medium(self, transport):
+        """Unknown effort values fall back to medium, not crash."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            supports_reasoning=True,
+            reasoning_config={"effort": "garbage"},
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
+
     def test_nous_omits_disabled_reasoning(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("nous")

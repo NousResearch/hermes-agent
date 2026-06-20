@@ -6694,6 +6694,46 @@ class TestSupportsReasoningExtraBody:
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
 
+    def test_custom_provider_model_reasoning_opt_in(self):
+        """providers.<name>.models.<model>.reasoning: true enables reasoning for custom providers."""
+        from unittest.mock import patch as mock_patch
+        agent = self._make_agent()
+        agent.provider = "cliproxyapi"
+        agent.base_url = "http://localhost:8317/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "mimo-v2.5-pro"
+        cfg = {
+            "providers": {
+                "cliproxyapi": {
+                    "models": {
+                        "mimo-v2.5-pro": {"reasoning": True},
+                    }
+                }
+            }
+        }
+        with mock_patch("hermes_cli.config.load_config", return_value=cfg):
+            assert agent._supports_reasoning_extra_body() is True
+
+    def test_custom_provider_without_reasoning_flag_returns_false(self):
+        """Custom provider without reasoning: true must still return False (backwards compat)."""
+        from unittest.mock import patch as mock_patch
+        agent = self._make_agent()
+        agent.provider = "cliproxyapi"
+        agent.base_url = "http://localhost:8317/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "mimo-v2.5-pro"
+        cfg = {
+            "providers": {
+                "cliproxyapi": {
+                    "models": {
+                        "mimo-v2.5-pro": {"context_length": 131072},
+                    }
+                }
+            }
+        }
+        with mock_patch("hermes_cli.config.load_config", return_value=cfg):
+            assert agent._supports_reasoning_extra_body() is False
+
 
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""

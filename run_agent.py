@@ -4862,6 +4862,24 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
+        # Custom/user-defined providers: check providers.<name>.models.<model>.reasoning
+        # in config.yaml. This lets users opt in to reasoning for models served
+        # through custom endpoints (CLIProxyAPI, vLLM, Ollama, etc.) without
+        # adding a dedicated provider profile.
+        try:
+            from hermes_cli.config import load_config as _load_rc_cfg
+            _rc_cfg = _load_rc_cfg()
+            _rc_providers = _rc_cfg.get("providers")
+            if isinstance(_rc_providers, dict):
+                _rc_prov = _rc_providers.get(self.provider or "")
+                if isinstance(_rc_prov, dict):
+                    _rc_models = _rc_prov.get("models")
+                    if isinstance(_rc_models, dict):
+                        _rc_mcfg = _rc_models.get(self.model or "")
+                        if isinstance(_rc_mcfg, dict) and _rc_mcfg.get("reasoning"):
+                            return True
+        except Exception:
+            pass
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:

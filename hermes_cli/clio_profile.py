@@ -64,6 +64,30 @@ def append_clio_execution_profile(
     return profile_text
 
 
+def resolve_clio_anthropic_model(
+    config: Mapping[str, Any] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    current_model: str = "",
+) -> str:
+    """Resolve Clio's Anthropic model from env first, then config, then fallback.
+
+    This helper returns only a model name. It never reads, returns or prints API
+    keys. ``env`` is injectable so tests can prove CLIO_ANTHROPIC_MODEL drives
+    optional Claude Fable 5 selection without requiring that model.
+    """
+    source = env if env is not None else os.environ
+    override = str(source.get(ANTHROPIC_MODEL_ENV_VAR, "")).strip()
+    if override:
+        return override
+    clio_cfg = (config or {}).get("clio", {}) if isinstance(config, Mapping) else {}
+    if isinstance(clio_cfg, Mapping):
+        configured = str(clio_cfg.get("anthropic_model") or "").strip()
+        if configured:
+            return configured
+    return current_model
+
+
 def apply_clio_anthropic_model_override(
     model: str,
     provider: str | None,

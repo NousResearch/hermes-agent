@@ -101,6 +101,22 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
+    CommandDef("blockers", "Show true blockers across active Buidl Goal OS goals", "Session"),
+    CommandDef("plan", "Create or inspect the next Buidl Goal OS plan card", "Session",
+               args_hint="[text]"),
+    CommandDef("execute", "Move the next safe Buidl Goal OS card into execution", "Session",
+               args_hint="[goal_id]"),
+    CommandDef("review", "Show Buidl Goal OS cards waiting for review", "Session"),
+    CommandDef("verify", "Record or request verifier evidence for Buidl Goal OS", "Session",
+               args_hint="[evidence]"),
+    CommandDef("fix-ci", "Create a Buidl Goal OS CI/build failure resolver card", "Session",
+               args_hint="[failure]"),
+    CommandDef("ship", "Mark a Buidl Goal OS goal achieved only with verifier evidence", "Session",
+               args_hint="[goal_id]"),
+    CommandDef("learn", "Create a sanitized Buidl lesson candidate", "Session",
+               args_hint="[session summary]"),
+    CommandDef("checkpoint", "Record a durable Buidl Goal OS checkpoint", "Session",
+               args_hint="[note]"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
@@ -236,6 +252,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
+
+_APP_MENU_EXCLUDED_COMMANDS = frozenset({
+    "blockers", "plan", "execute", "review", "verify", "fix-ci", "ship", "learn", "checkpoint",
+})
+"""Commands that stay dispatchable but are hidden from capped app menus."""
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +531,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in _APP_MENU_EXCLUDED_COMMANDS:
             continue
         # Built-in arg-taking commands are included — their handlers show
         # usage text when invoked without arguments, and hiding them from
@@ -1115,6 +1138,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
+
     # Priority pass: pin high-value aliases (e.g. /btw, /bg, /reset) ahead of
     # everything except /hermes, so a new canonical command can never silently
     # clamp them off the 50-slash cap. Each alias borrows its parent command's
@@ -1130,15 +1154,20 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if cmd is not None:
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
+
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in _APP_MENU_EXCLUDED_COMMANDS:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
     # Second pass: aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in _APP_MENU_EXCLUDED_COMMANDS:
             continue
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation

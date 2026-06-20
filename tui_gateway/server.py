@@ -8893,6 +8893,12 @@ def _(rid, params: dict) -> dict:
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
+        try:
+            from hermes_cli.goal_os import GoalOSManager
+            goal_os_report = GoalOSManager().handle_command("goal", arg)
+            notice = f"{notice}\n{goal_os_report.message}"
+        except Exception:
+            pass
         # Send the goal text as the kickoff prompt. The TUI client sees
         # {type: send, notice, message} → renders `notice` as a sys line,
         # then submits `message` as a user turn. The post-turn judge
@@ -8901,6 +8907,7 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
         )
+
 
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the
@@ -9002,6 +9009,15 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "prefill", "message": target_text, "notice": notice},
         )
+
+    if name in {"blockers", "plan", "execute", "review", "verify", "fix-ci", "ship", "learn", "checkpoint"}:
+        try:
+            from hermes_cli.goal_os import GoalOSManager
+            report = GoalOSManager().handle_command(name, arg)
+            return _ok(rid, {"type": "exec", "output": report.message})
+        except Exception as exc:
+            return _err(rid, 5030, f"Goal OS unavailable: {exc}")
+
 
     if name in {"snapshot", "snap"}:
         subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""

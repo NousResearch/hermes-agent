@@ -1077,7 +1077,7 @@ def _group_photo_message(*, chat_id=-100, caption="Veja esta foto", file_size=10
 def _group_document_message(*, chat_id=-100, caption="Este arquivo", document=None):
     file_obj = SimpleNamespace(
         file_path="documents/report.pdf",
-        download_as_bytearray=AsyncMock(return_value=bytearray(b"%PDF observed bytes")),
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"document observed bytes")),
     )
     document = document or SimpleNamespace(
         file_name="RESULTADO BIOLOGICO - PROTOCOLO 103- URBAN.pdf",
@@ -1207,5 +1207,33 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
         cache_doc.assert_not_called()
         _, message, _ = store.messages[0]
         assert "unsupported" in message["content"].lower()
+
+    asyncio.run(_run())
+
+
+def test_channel_media_post_uses_effective_message():
+    async def _run():
+        adapter = _make_adapter(require_mention=False)
+        adapter.handle_message = AsyncMock()
+        channel_post = _group_voice_message(
+            chat_id=-1001234567890,
+            caption="Channel file upload",
+        )
+        channel_post.chat.type = "channel"
+        channel_post.chat.title = "Example channel"
+        channel_post.from_user = None
+        update = SimpleNamespace(
+            update_id=1001,
+            message=None,
+            effective_message=channel_post,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.chat_id == "-1001234567890"
+        assert event.source.chat_type == "channel"
+        assert event.text == "Channel file upload"
 
     asyncio.run(_run())

@@ -6181,12 +6181,19 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages, downloading images to local cache."""
-        if not update.message:
+        """Handle incoming media messages, downloading file/media attachments to local cache.
+
+        Telegram channel posts arrive as ``update.channel_post`` rather than
+        ``update.message``. Use the same effective-message helper as the text
+        path so channel-uploaded supported files and media are cached and dispatched
+        instead of being dropped before plugins can see them.
+        """
+        msg = self._effective_update_message(update)
+        if not msg:
             return
-        if not self._should_process_message(update.message):
-            if self._should_observe_unmentioned_group_message(update.message):
-                _m = update.message
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                _m = msg
                 _observe_type = self._media_message_type(_m)
                 _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
                 if _m.caption:
@@ -6196,8 +6203,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )
             return
-
-        msg = update.message
 
         msg_type = self._media_message_type(msg)
 

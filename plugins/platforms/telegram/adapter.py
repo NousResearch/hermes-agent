@@ -1614,7 +1614,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             try:
                 await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=list(Update.ALL_TYPES) + ["guest_message"],
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
                 )
@@ -2192,7 +2192,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     url_path=webhook_path,
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=list(Update.ALL_TYPES) + ["guest_message"],
                     drop_pending_updates=True,
                 )
                 self._webhook_mode = True
@@ -2225,7 +2225,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_error_callback_ref = _polling_error_callback
 
                 await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=list(Update.ALL_TYPES) + ["guest_message"],
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )

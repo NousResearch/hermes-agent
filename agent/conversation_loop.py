@@ -2983,6 +2983,7 @@ def run_conversation(
                     agent._buffer_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                     original_len = len(messages)
+                    original_tokens = estimate_messages_tokens_rough(messages)
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
@@ -2992,8 +2993,18 @@ def run_conversation(
                     # messages to the new session, not skipping them.
                     conversation_history = None
 
-                    if len(messages) < original_len:
-                        agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                    # Re-estimate tokens after compression.  Same-message-count
+                    # compression (tool-result pruning, in-place summarization)
+                    # can materially reduce request size without reducing the
+                    # message array.  (#39550)
+                    new_tokens = estimate_messages_tokens_rough(messages)
+                    approx_tokens = new_tokens  # update for downstream logging
+
+                    if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95):
+                        if len(messages) < original_len:
+                            agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                        else:
+                            agent._buffer_status(f"🗜️ Compressed ~{original_tokens:,} → ~{new_tokens:,} tokens, retrying...")
                         time.sleep(2)  # Brief pause between compression retries
                         _retry.restart_with_compressed_messages = True
                         break
@@ -3139,6 +3150,7 @@ def run_conversation(
                     agent._buffer_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                     original_len = len(messages)
+                    original_tokens = estimate_messages_tokens_rough(messages)
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
@@ -3148,9 +3160,18 @@ def run_conversation(
                     # messages to the new session, not skipping them.
                     conversation_history = None
 
-                    if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
+                    # Re-estimate tokens after compression.  Same-message-count
+                    # compression (tool-result pruning, in-place summarization)
+                    # can materially reduce request size without reducing the
+                    # message array.  (#39550)
+                    new_tokens = estimate_messages_tokens_rough(messages)
+                    approx_tokens = new_tokens  # update for downstream logging
+
+                    if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95) or (new_ctx and new_ctx < old_ctx):
                         if len(messages) < original_len:
                             agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                        else:
+                            agent._buffer_status(f"🗜️ Compressed ~{original_tokens:,} → ~{new_tokens:,} tokens, retrying...")
                         time.sleep(2)  # Brief pause between compression retries
                         _retry.restart_with_compressed_messages = True
                         break
@@ -3159,13 +3180,13 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
-                        logger.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
+                        logger.error(f"{agent.log_prefix}Context length exceeded: {new_tokens:,} tokens. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
+                            "error": f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further.",
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,

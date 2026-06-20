@@ -1320,9 +1320,14 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_extract_audio_message_downloads_and_caches(self):
+    def test_extract_audio_message_classified_as_voice(self):
+        """Feishu native voice recordings (message_type='audio') must enter
+        the auto-STT path via MessageType.VOICE.  gateway/run.py skips STT
+        for MessageType.AUDIO, so returning AUDIO here would silently drop
+        all voice messages — same bug fixed for DingTalk in PR #28922."""
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
+        from gateway.platforms.base import MessageType
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_message_resource = AsyncMock(
@@ -1337,9 +1342,54 @@ class TestAdapterBehavior(unittest.TestCase):
         text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
-        self.assertEqual(msg_type.value, "audio")
+        self.assertEqual(msg_type, MessageType.VOICE)
         self.assertEqual(media_urls, ["/tmp/feishu-audio.ogg"])
         self.assertEqual(media_types, ["audio/ogg"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_audio_type_voice_invariant_regardless_of_mime(self):
+        """MessageType.VOICE must be returned for message_type='audio' regardless
+        of the downloaded MIME type (AMR, OGG, OPUS, etc.) — the Feishu API-level
+        message type, not the container format, determines whether STT runs."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.platforms.base import MessageType
+
+        adapter = FeishuAdapter(PlatformConfig())
+        for mime in ("audio/amr", "audio/opus", "audio/mp4", "audio/ogg"):
+            adapter._download_feishu_message_resource = AsyncMock(
+                return_value=("/tmp/feishu-voice.amr", mime)
+            )
+            message = SimpleNamespace(
+                message_type="audio",
+                content='{"file_key":"file_voice","file_name":"voice.amr"}',
+                message_id="om_voice_amr",
+            )
+            _, msg_type, _, _, _ = asyncio.run(adapter._extract_message_content(message))
+            self.assertEqual(msg_type, MessageType.VOICE, f"Expected VOICE for mime={mime}")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_file_message_audio_mime_stays_audio_not_voice(self):
+        """Generic audio file uploads (message_type='file') must NOT be routed
+        through STT — they become MessageType.AUDIO (skipped by gateway/run.py),
+        not MessageType.VOICE.  Only message_type='audio' (native recordings)
+        should become VOICE."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.platforms.base import MessageType
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._download_feishu_message_resource = AsyncMock(
+            return_value=("/tmp/feishu-upload.mp3", "audio/mpeg")
+        )
+        message = SimpleNamespace(
+            message_type="file",
+            content='{"file_key":"file_mp3","file_name":"music.mp3"}',
+            message_id="om_file_mp3",
+        )
+        _, msg_type, _, _, _ = asyncio.run(adapter._extract_message_content(message))
+        self.assertNotEqual(msg_type, MessageType.VOICE)
+        self.assertEqual(msg_type, MessageType.AUDIO)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_file_message_downloads_and_caches(self):

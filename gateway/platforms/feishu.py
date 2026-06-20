@@ -3682,7 +3682,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "photo":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
+            # Feishu's "audio" message type is exclusively for native voice
+            # recordings (captured in-app).  Generic audio file uploads are
+            # classified as "file" → "document", never "audio".  Route all
+            # "audio" messages through STT by returning VOICE; AUDIO is skipped
+            # by gateway/run.py.
+            return MessageType.VOICE
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT

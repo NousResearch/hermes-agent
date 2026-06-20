@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -209,6 +210,145 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic delivery override
+# ---------------------------------------------------------------------------
+# Some cron jobs compose a canonical, fixed-format report and persist its EXACT
+# bytes to a known file DURING the run, then record those same bytes as the
+# job's audited body. The model's *free* final message is meant to be that
+# report verbatim, but a model can still truncate or summarize it (e.g. record
+# a full 1996-char report yet deliver an 844-char "Executed: …" recap).
+# Whenever a job declares a ``deliver_file`` we deliver THAT file's contents
+# instead of the model's final answer, so the delivered message == the recorded
+# body == the composed report, independent of model variance.
+#
+# Opt-in + fully generic: a job with no ``deliver_file`` is completely
+# unaffected (delivers the model final answer exactly as before).
+#   deliver_file    : path the job (re)writes with its canonical body each run.
+#   deliver_markers : optional list of substrings that must ALL appear for a
+#                     body to count as a complete report. Used to (a) refuse to
+#                     substitute an incomplete/garbage file, and (b) log when it
+#                     was the model's OWN final answer that truncated.
+
+def _job_deliver_markers(job: dict) -> list:
+    """Return the job's configured completeness markers as a list of strings."""
+    raw = job.get("deliver_markers")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(m) for m in raw if str(m).strip()]
+
+
+def _missing_markers(text: str, markers: list) -> list:
+    """Return the subset of ``markers`` not present in ``text``."""
+    t = text or ""
+    return [m for m in markers if m not in t]
+
+
+def apply_canonical_delivery_override(
+    job: dict,
+    final_response: str,
+    run_started_at: Optional[float],
+) -> str:
+    """Return the body to deliver for a SUCCESSFUL cron run.
+
+    If the job declares ``deliver_file`` and that file holds a FRESH (written
+    during this run), non-empty, marker-complete canonical body, return it in
+    place of ``final_response`` so delivery is deterministic. Otherwise return
+    ``final_response`` unchanged. Never raises — any failure falls back to the
+    model's final answer so this can only make delivery MORE reliable, never
+    break an otherwise-working job.
+    """
+    try:
+        deliver_file = str(job.get("deliver_file") or "").strip()
+        if not deliver_file:
+            return final_response
+
+        job_id = job.get("id", "?")
+        markers = _job_deliver_markers(job)
+        path = Path(deliver_file).expanduser()
+
+        if not path.is_file():
+            if markers and _missing_markers(final_response, markers):
+                logger.warning(
+                    "Job '%s': deliver_file %s absent and model final answer is "
+                    "missing markers %s — delivering model final answer as-is",
+                    job_id, deliver_file,
+                    _missing_markers(final_response, markers),
+                )
+            return final_response
+
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return final_response
+
+        # Freshness: only trust a file (re)written during THIS run. A stale file
+        # from a prior tick must never be delivered for a run that did not write
+        # one (e.g. the agent errored before composing the report). 2s slack
+        # absorbs clock granularity between run-start capture and file write.
+        if run_started_at is not None and mtime < (run_started_at - 2.0):
+            logger.warning(
+                "Job '%s': deliver_file %s is stale (mtime %.0f < run start "
+                "%.0f) — not overriding; delivering model final answer",
+                job_id, deliver_file, mtime, run_started_at,
+            )
+            return final_response
+
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning(
+                "Job '%s': could not read deliver_file %s: %s — delivering "
+                "model final answer", job_id, deliver_file, exc,
+            )
+            return final_response
+
+        if not body.strip():
+            return final_response
+
+        # The file must itself be a COMPLETE report before we trust it over the
+        # model's answer — never deliver a half-written file.
+        if markers:
+            file_missing = _missing_markers(body, markers)
+            if file_missing:
+                logger.warning(
+                    "Job '%s': deliver_file %s missing markers %s — not "
+                    "overriding; delivering model final answer",
+                    job_id, deliver_file, file_missing,
+                )
+                return final_response
+
+        fr = final_response or ""
+        if body.strip() == fr.strip():
+            # Model echoed the canonical body faithfully. Deliver the file copy
+            # anyway so delivered bytes are byte-identical to the recorded ones.
+            logger.info(
+                "Job '%s': model final answer matches deliver_file %s "
+                "(%d chars) — deterministic delivery confirmed",
+                job_id, deliver_file, len(body.strip()),
+            )
+            return body
+
+        fr_missing = _missing_markers(fr, markers) if markers else []
+        logger.info(
+            "Job '%s': overriding delivery with canonical deliver_file %s "
+            "(file=%d chars vs model final answer=%d chars; final answer "
+            "missing markers %s) — deterministic delivery",
+            job_id, deliver_file, len(body.strip()), len(fr.strip()),
+            fr_missing or "none",
+        )
+        return body
+    except Exception as exc:  # never let the override crash a delivering run
+        logger.warning(
+            "Job '%s': delivery override failed (%s) — using model final answer",
+            job.get("id", "?"), exc,
+        )
+        return final_response
+
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -2067,6 +2207,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
     try:
+        _run_started_at = time.time()
         success, output, final_response, error = run_job(job)
 
         output_file = save_job_output(job["id"], output)
@@ -2076,7 +2217,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # Deliver the final response to the origin/target chat.
         # If the agent responded with [SILENT], skip delivery (but
         # output is already saved above).  Failed jobs always deliver.
-        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+        # On success, apply the deterministic delivery override so a job that
+        # persisted a canonical body (deliver_file) delivers THAT instead of the
+        # model's possibly-truncated final answer.
+        if success:
+            deliver_content = apply_canonical_delivery_override(
+                job, final_response, _run_started_at
+            )
+        else:
+            deliver_content = _summarize_cron_failure_for_delivery(job, error)
         # Treat whitespace-only final responses the same as empty
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.

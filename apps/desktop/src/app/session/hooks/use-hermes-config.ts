@@ -99,7 +99,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setSttEnabled(config.stt?.enabled !== false)
         applyAutoSpeakFromConfig(config)
       } catch {
-        // Config is nice-to-have; chat still works without it.
+      // Config is nice-to-have; chat still works without it.
       }
     },
     [activeSessionIdRef]

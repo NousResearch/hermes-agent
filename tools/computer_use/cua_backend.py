@@ -427,7 +427,7 @@ class CuaDriverBackend(ComputerUseBackend):
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        `get_window_state` with `capture_mode` set to the requested mode.
         """
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
@@ -497,29 +497,41 @@ class CuaDriverBackend(ComputerUseBackend):
         width = height = 0
         window_title = ""
 
+        # cua-driver 0.5.x has no standalone `screenshot` tool — it was merged
+        # into `get_window_state` which captures a PNG as a side effect when
+        # `capture_mode` is "vision" or "som". Use that for all modes.
+        gws_args: Dict[str, Any] = {
+            "pid": self._active_pid,
+            "window_id": self._active_window_id,
+        }
+        if mode in ("som", "vision", "ax"):
+            gws_args["capture_mode"] = mode
+
+        gws_out = self._session.call_tool("get_window_state", gws_args)
+
+        # Extract width/height from structuredContent when available.
+        gws_sc = gws_out.get("structuredContent") or {}
+        if isinstance(gws_sc, dict):
+            if gws_sc.get("screenshot_width"):
+                width = int(gws_sc["screenshot_width"])
+            if gws_sc.get("screenshot_height"):
+                height = int(gws_sc["screenshot_height"])
+
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
+            # Vision mode: just the screenshot PNG, no AX tree parsing.
+            if gws_out.get("images"):
+                png_b64 = gws_out["images"][0]
         else:
-            # get_window_state: AX tree + optional screenshot.
-            gws_out = self._session.call_tool(
-                "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
-            )
+            # ax/som mode: parse AX tree + optional screenshot.
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 
             # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
             m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
+            if tree and not gws_out.get("images"):
                 # ax mode — no screenshot
                 elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
+            elif gws_out.get("images"):
                 png_b64 = gws_out["images"][0]
                 elements = _parse_elements_from_tree(tree)
 

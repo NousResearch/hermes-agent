@@ -22,8 +22,30 @@ TitleCallback = Callable[[str], None]
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
+    "Write the title in the same language the user is writing in. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+_TITLE_PROMPT_PINNED_LANGUAGE = (
+    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
+    "following exchange. The title should capture the main topic or intent. "
+    "Write the title in {language}. "
+    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+)
+
+
+def _title_language() -> str:
+    """Return configured title language, or empty string to match the user."""
+    try:
+        from hermes_cli.config import load_config
+
+        return str(
+            ((load_config() or {}).get("auxiliary") or {})
+            .get("title_generation", {})
+            .get("language", "")
+        ).strip()
+    except Exception:
+        return ""
 
 
 def generate_title(
@@ -48,8 +70,11 @@ def generate_title(
     user_snippet = user_message[:500] if user_message else ""
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
+    language = _title_language()
+    prompt = _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language) if language else _TITLE_PROMPT
+
     messages = [
-        {"role": "system", "content": _TITLE_PROMPT},
+        {"role": "system", "content": prompt},
         {"role": "user", "content": f"User: {user_snippet}\n\nAssistant: {assistant_snippet}"},
     ]
 

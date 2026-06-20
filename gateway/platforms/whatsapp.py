@@ -260,11 +260,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     share it. Only transport-specific code lives here.
     """
 
-    # Default bridge location relative to the hermes-agent install
-    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    # Default bridge location: use HERMES_HOME if available (writable in Docker),
+    # otherwise fall back to the hermes-agent install dir (read-only).
+    # This ensures npm install works in Docker where /opt/hermes is read-only.
+    _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
+        # Resolve default bridge dir after HERMES_HOME is available
+        if WhatsAppAdapter._DEFAULT_BRIDGE_DIR is None:
+            import hermes_constants
+            hermes_home = hermes_constants.get_hermes_home()
+            # Try HERMES_HOME first (writable), then fall back to install dir
+            hermes_home_bridge = hermes_home / "scripts" / "whatsapp-bridge"
+            install_bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+            if hermes_home_bridge.exists() or not install_bridge.exists():
+                WhatsAppAdapter._DEFAULT_BRIDGE_DIR = hermes_home_bridge
+            else:
+                WhatsAppAdapter._DEFAULT_BRIDGE_DIR = install_bridge
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
         self._bridge_script: Optional[str] = config.extra.get(

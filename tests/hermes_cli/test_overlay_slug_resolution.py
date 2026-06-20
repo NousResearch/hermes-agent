@@ -7,11 +7,9 @@ resolution in list_authenticated_providers() Section 2 must bridge this gap.
 Covers: #5223, #6492
 """
 
-import json
 import os
 from unittest.mock import patch
 
-import pytest
 
 from hermes_cli.model_switch import list_authenticated_providers
 

@@ -449,6 +449,89 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypatch):
+    """Stale topic bindings auto-heal to the compression child on next inbound.
+
+    Regression for #20470 / #29712 / #33414. After compression rotates the
+    session_id, the binding row still pointed at the parent. On the next
+    inbound message in that topic, the gateway used to reload the oversized
+    parent transcript and re-run preflight compression — sometimes in a loop.
+    The read path now walks ``SessionDB.get_compression_tip()`` and rewrites
+    the binding to the descendant.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    # Build a parent -> compression child chain. end_session sets ended_at;
+    # create_session sets started_at to "now", so the child's started_at is
+    # always >= parent's ended_at on a real clock.
+    session_db.create_session(
+        session_id="parent-session", source="telegram", user_id="208214988",
+    )
+    session_db.end_session("parent-session", end_reason="compression")
+    session_db.create_session(
+        session_id="child-session",
+        source="telegram",
+        user_id="208214988",
+        parent_session_id="parent-session",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    # Pre-bug binding: topic still pointed at the pre-compression parent.
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="parent-session",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    # switch_session() returns a SessionEntry pointing at whatever id was
+    # requested; capture the requested id for assertion.
+    switched_to: dict = {}
+
+    def fake_switch(_key, new_session_id):
+        switched_to["id"] = new_session_id
+        return SessionEntry(
+            session_key=topic_key,
+            session_id=new_session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=topic_source,
+        )
+
+    runner.session_store.switch_session = MagicMock(side_effect=fake_switch)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "success": True,
+            "final_response": "ok",
+            "session_id": "child-session",
+            "messages": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    await runner._handle_message(_make_event("follow up after compression", thread_id="17585"))
+
+    # The route was advanced to the compression tip, not the stale parent.
+    assert switched_to.get("id") == "child-session"
+    # The binding row was rewritten to point at the descendant so future
+    # inbound messages skip the tip walk and resolve directly.
+    refreshed = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert refreshed is not None
+    assert refreshed["session_id"] == "child-session"
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
@@ -960,7 +1043,6 @@ def test_lobby_reminder_is_debounced_per_chat(tmp_path):
 
 def test_binding_survives_session_deletion_via_cascade(tmp_path):
     """Deleting a session with a topic binding must not raise FK errors."""
-    import sqlite3
     db = SessionDB(db_path=tmp_path / "state.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     db.create_session(session_id="sess-to-delete", source="telegram", user_id="208214988")
@@ -988,7 +1070,6 @@ def test_binding_survives_session_deletion_via_cascade(tmp_path):
 
 def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
     """v1 → v2 migration rebuilds the bindings table when FK lacks ON DELETE CASCADE."""
-    import sqlite3
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)
 
@@ -1175,13 +1256,15 @@ def test_recover_returns_none_for_known_topic(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
 
 
-def test_recover_rewrites_unknown_thread_id_to_most_recent(tmp_path):
-    # Cross-topic Reply leak: inbound thread_id is a Telegram-only id we never bound.
+def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
+    # A newly-created Telegram DM topic arrives with a real, previously-unbound
+    # message_thread_id. It must become its own session lane rather than being
+    # rewritten to whichever older topic was most recently active.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
-    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
 
 
 def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):
@@ -1207,6 +1290,31 @@ def test_recover_returns_none_when_no_bindings_yet(tmp_path):
     runner = _make_runner(session_db=db)
 
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+
+
+def test_recover_returns_none_for_brand_new_topic(tmp_path):
+    # Regression for #31086: bindings exist for a prior topic but the user
+    # opened a fresh one (thread_id "99999"). Recovery must return None so the
+    # new topic gets its own session rather than being silently merged into
+    # the previous topic's session. The hijack was self-reinforcing — because
+    # the rewrite ran before _record_telegram_topic_binding, the new topic's
+    # binding row never got written, so every subsequent message in that topic
+    # looked "unknown" and was hijacked again.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-old", source="telegram", user_id="208214988")
+    src_old = _make_source(thread_id="12345")
+    db.bind_telegram_topic(
+        chat_id=src_old.chat_id,
+        thread_id=src_old.thread_id,
+        user_id=src_old.user_id,
+        session_key=build_session_key(src_old),
+        session_id="sess-old",
+    )
+    runner = _make_runner(session_db=db)
+
+    # "99999" is non-lobby and not in the binding table — brand-new topic.
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="99999")) is None
 
 
 def test_list_telegram_topic_bindings_for_chat(tmp_path):

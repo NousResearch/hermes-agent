@@ -1,9 +1,9 @@
 import {
-  HISTORY_RENDER_MAX_CHARS,
-  HISTORY_RENDER_MAX_LINES,
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
-  THINKING_COT_MAX
+  THINKING_COT_MAX,
+  VERBOSE_TRAIL_MAX_CHARS,
+  VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
@@ -129,11 +129,6 @@ export const boundedLiveRenderText = (
   { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
 ) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
 
-export const boundedHistoryRenderText = (
-  text: string,
-  { maxChars = HISTORY_RENDER_MAX_CHARS, maxLines = HISTORY_RENDER_MAX_LINES } = {}
-) => boundedRenderText(text, 'showing tail', { maxChars, maxLines })
-
 const boundedRenderText = (
   text: string,
   labelPrefix: string,
@@ -219,6 +214,37 @@ export const buildToolTrailLine = (
   return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
+const verboseToolBlock = (label: string, text?: string) => {
+  const body = (text ?? '').trim()
+
+  // Persisted trail blocks are kept all session and rendered expanded by
+  // default — cap to a small readable preview (NOT the 16KB live-render
+  // budget) so a large tool output can't balloon the Ink render tree and
+  // silently OOM-kill the TUI. See VERBOSE_TRAIL_MAX_CHARS (#34095).
+  return body
+    ? `${label}:\n${boundedLiveRenderText(body, {
+        maxChars: VERBOSE_TRAIL_MAX_CHARS,
+        maxLines: VERBOSE_TRAIL_MAX_LINES
+      })}`
+    : ''
+}
+
+export const buildVerboseToolTrailLine = (
+  name: string,
+  context: string,
+  error?: boolean,
+  duration?: number,
+  argsText?: string,
+  resultText?: string
+) => {
+  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
+    .filter(Boolean)
+    .join('\n')
+  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
+
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+}
+
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
 
 export const parseToolTrailResultLine = (line: string) => {
@@ -228,10 +254,10 @@ export const parseToolTrailResultLine = (line: string) => {
 
   const mark = line.endsWith(' ✗') ? '✗' : '✓'
   const body = line.slice(0, -2)
-  const [call, detail] = body.split(' :: ', 2)
+  const sep = body.indexOf(' :: ')
 
-  if (detail != null) {
-    return { call, detail, mark }
+  if (sep >= 0) {
+    return { call: body.slice(0, sep), detail: body.slice(sep + 4), mark }
   }
 
   const legacy = body.indexOf(': ')
@@ -310,6 +336,22 @@ export const estimateRows = (text: string, w: number, compact = false) => {
   }
 
   return Math.max(1, rows)
+}
+
+/**
+ * Render an unanswered clarify prompt (timed out, or cancelled with Esc/Ctrl+C)
+ * as a persistent transcript block.  The live `ClarifyPrompt` overlay is torn
+ * down the moment the turn settles, so without this the question + options
+ * vanish from the screen while the agent's follow-up still refers to "the
+ * options above".  Mirrors the option formatting in ClarifyPrompt (the same
+ * 1-based numbered list) so the persisted record reads identically to what was
+ * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
+ */
+export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
+  const head = `ask ${question.trim()}`
+  const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
+
+  return [head, ...opts, `  (${reason} — no selection)`].join('\n')
 }
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()

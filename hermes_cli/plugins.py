@@ -34,7 +34,6 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import importlib.metadata
 import importlib.util
 import inspect
@@ -50,6 +49,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 from hermes_cli.config import cfg_get
+from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -138,10 +138,12 @@ VALID_HOOKS: Set[str] = {
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
+    "api_request_error",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
@@ -275,6 +277,7 @@ class LoadedPlugin:
     module: Optional[types.ModuleType] = None
     tools_registered: List[str] = field(default_factory=list)
     hooks_registered: List[str] = field(default_factory=list)
+    middleware_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
@@ -553,6 +556,46 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- dashboard auth provider registration --------------------------------
+
+    def register_dashboard_auth_provider(self, provider) -> None:
+        """Register a dashboard authentication provider.
+
+        ``provider`` must be an instance of
+        :class:`hermes_cli.dashboard_auth.DashboardAuthProvider`. Used by
+        the dashboard OAuth auth gate, which engages when the dashboard
+        binds to a non-loopback host without ``--insecure``.
+
+        Misbehaving providers (wrong type, duplicate name) are logged at
+        WARNING and silently ignored — never raised — so a broken plugin
+        cannot crash the host. Same convention as
+        ``register_image_gen_provider``.
+        """
+        from hermes_cli.dashboard_auth import (
+            DashboardAuthProvider, register_provider,
+        )
+
+        if not isinstance(provider, DashboardAuthProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a dashboard-auth provider "
+                "that does not inherit from DashboardAuthProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        try:
+            register_provider(provider)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Plugin '%s' failed to register dashboard-auth provider "
+                "%r: %s",
+                self.manifest.name, getattr(provider, "name", "?"), e,
+            )
+            return
+        logger.info(
+            "Plugin '%s' registered dashboard-auth provider: %s (%s)",
+            self.manifest.name, provider.name, provider.display_name,
+        )
+
     # -- video gen provider registration -------------------------------------
 
     def register_video_gen_provider(self, provider) -> None:
@@ -640,6 +683,88 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- TTS provider registration -------------------------------------------
+
+    def register_tts_provider(self, provider) -> None:
+        """Register a text-to-speech backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.tts_provider.TTSProvider`. The ``provider.name``
+        attribute is what ``tts.provider`` in ``config.yaml`` matches
+        against when routing ``text_to_speech`` tool calls — **but
+        only when**:
+
+        1. ``provider.name`` is NOT a built-in TTS provider name
+           (``edge``, ``openai``, ``elevenlabs``, …). Built-ins always
+           win — the registry rejects shadowing names with a warning.
+        2. There is NO ``tts.providers.<name>: type: command`` entry
+           with the same name. Command-providers (PR #17843) win on
+           name collision because config is more local than plugin
+           install.
+
+        Coexists with the command-provider registry rather than
+        replacing it — see issue #30398 for the full design rationale.
+        """
+        from agent.tts_provider import TTSProvider
+        from agent.tts_registry import register_provider as _register_tts_provider
+
+        if not isinstance(provider, TTSProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a TTS provider that does "
+                "not inherit from TTSProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_tts_provider(provider)
+        logger.info(
+            "Plugin '%s' registered TTS provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- transcription (STT) provider registration ---------------------------
+
+    def register_transcription_provider(self, provider) -> None:
+        """Register a speech-to-text backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.transcription_provider.TranscriptionProvider`.
+        The ``provider.name`` attribute is what ``stt.provider`` in
+        ``config.yaml`` matches against when routing
+        :func:`tools.transcription_tools.transcribe_audio` calls —
+        **but only when**:
+
+        1. ``provider.name`` is NOT a built-in STT provider name
+           (``local``, ``local_command``, ``groq``, ``openai``,
+           ``mistral``, ``xai``). Built-ins always win — the registry
+           rejects shadowing names with a warning.
+        2. There is NO ``stt.providers.<name>: type: command`` entry
+           with the same name. Command-providers win on name
+           collision because config is more local than plugin install
+           — same precedence rule as TTS.
+
+        Coexists with the in-tree dispatcher and the STT
+        command-provider registry rather than replacing them. The 6
+        built-in STT backends keep their native implementations in
+        ``tools/transcription_tools.py``; this hook is for *new* Python
+        engines (OpenRouter, SenseAudio, Gemini-STT, custom proprietary
+        backends).
+        """
+        from agent.transcription_provider import TranscriptionProvider
+        from agent.transcription_registry import register_provider as _register_stt_provider
+
+        if not isinstance(provider, TranscriptionProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a transcription provider that "
+                "does not inherit from TranscriptionProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_stt_provider(provider)
+        logger.info(
+            "Plugin '%s' registered transcription provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(
@@ -696,7 +821,178 @@ class PluginContext:
             name,
         )
 
+    # -- slack action handler registration ----------------------------------
+
+    def register_slack_action_handler(
+        self,
+        action_id: Any,
+        callback: Callable,
+    ) -> None:
+        """Register a Slack Block Kit action handler from a plugin.
+
+        Hermes' Slack adapter wires registered handlers into its
+        ``slack_bolt.AsyncApp`` at connect time. The callback is invoked
+        when a user clicks a button (or interacts with another Block Kit
+        action element) whose ``action_id`` matches.
+
+        Callback signature follows the slack_bolt convention::
+
+            async def handler(ack, body, action) -> None:
+                await ack()  # required, within 3 seconds
+                ...
+
+        Args:
+            action_id: Whatever ``slack_bolt.App.action()`` accepts —
+                a literal ``action_id`` string, a compiled ``re.Pattern``
+                for matching multiple ids, or a constraint dict
+                (e.g. ``{"action_id": "...", "block_id": "..."}``).
+            callback: Async callable receiving ``(ack, body, action)``.
+
+        Raises:
+            ValueError: if ``callback`` is not callable, or ``action_id``
+                is empty/None.
+
+        Example::
+
+            async def _on_approve(ack, body, action):
+                await ack()
+                # apply some workflow keyed on action["value"]
+
+            ctx.register_slack_action_handler("inbox_sweep_approve", _on_approve)
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                f"action handler with a non-callable callback."
+            )
+        if action_id is None or (isinstance(action_id, str) and not action_id.strip()):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                f"action handler with an empty action_id."
+            )
+        self._manager._slack_action_handlers.append(
+            (action_id, callback, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Slack action handler: %s",
+            self.manifest.name,
+            action_id,
+        )
+
     # -- hook registration --------------------------------------------------
+
+    # -- auxiliary task registration ---------------------------------------
+
+    def register_auxiliary_task(
+        self,
+        key: str,
+        *,
+        display_name: str,
+        description: str,
+        defaults: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Register a plugin-defined auxiliary LLM task.
+
+        Auxiliary tasks are LLM-backed side jobs (vision analysis, web extraction,
+        compression, smart-approval, etc.) that route through ``auxiliary_client.py``.
+        Each task has its own ``auxiliary.<key>`` config block where users can
+        pin a provider/model independent of the main chat model.
+
+        Plugins use this to declare their own auxiliary tasks without touching
+        core files. After registration, the task:
+
+          - Appears in the ``hermes model → Configure auxiliary models`` picker
+          - Has its provider/model/base_url/api_key bridged from config.yaml to
+            ``AUXILIARY_<KEY_UPPER>_*`` env vars at gateway startup
+          - Gets default routing fields (provider="auto", model="", etc.) merged
+            into loaded configs so ``cfg.get("auxiliary", {}).get(key)`` works
+
+        Args:
+            key: stable task key (snake_case). Used in config ``auxiliary.<key>``
+                and env vars ``AUXILIARY_<KEY_UPPER>_*``. Must not shadow a
+                built-in task key (vision, compression, web_extract, approval,
+                mcp, title_generation, skills_hub, curator).
+            display_name: human-readable name shown in the picker.
+            description: short one-line description shown next to the name.
+            defaults: optional dict of default routing fields. Recognized keys:
+                ``provider`` (default "auto"), ``model`` (default ""),
+                ``base_url`` (default ""), ``api_key`` (default ""),
+                ``timeout`` (default 60), ``extra_body`` (default {}),
+                plus any task-specific extras (e.g. ``download_timeout``).
+                Unknown keys are preserved verbatim — the plugin owns the
+                schema for its own task.
+
+        Raises:
+            ValueError: if *key* is empty, contains invalid characters, or
+                shadows a built-in auxiliary task key.
+
+        Example:
+            ctx.register_auxiliary_task(
+                key="memory_retain_filter",
+                display_name="Memory retain filter",
+                description="hindsight pre-retain dedup/extract",
+                defaults={"provider": "auto", "timeout": 30},
+            )
+        """
+        # Validate key shape
+        if not key or not isinstance(key, str):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register auxiliary task "
+                f"with invalid key {key!r}"
+            )
+        if not all(c.isalnum() or c == "_" for c in key):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' auxiliary task key {key!r} "
+                f"must contain only alphanumeric characters and underscores"
+            )
+
+        # Lazy import to avoid circular: hermes_cli.main imports plugins indirectly
+        from hermes_cli.main import _AUX_TASKS as _BUILTIN_AUX_TASKS
+
+        builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
+        if key in builtin_keys:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' cannot register auxiliary task "
+                f"{key!r} — that key is reserved for a built-in task. "
+                f"Pick a plugin-namespaced key (e.g. '{self.manifest.name}_{key}')."
+            )
+
+        # Reject duplicate registrations across plugins
+        existing = self._manager._aux_tasks.get(key)
+        if existing is not None and existing.get("plugin") != self.manifest.name:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' cannot register auxiliary task "
+                f"{key!r} — already registered by plugin "
+                f"'{existing.get('plugin')}'"
+            )
+
+        # Normalize defaults — plugin owns the schema, but we ensure routing
+        # fields exist with sensible types so consumers don't crash.
+        merged_defaults: Dict[str, Any] = {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        }
+        if defaults:
+            for k, v in defaults.items():
+                merged_defaults[k] = v
+
+        self._manager._aux_tasks[key] = {
+            "key": key,
+            "display_name": display_name,
+            "description": description,
+            "defaults": merged_defaults,
+            "plugin": self.manifest.name,
+        }
+        logger.debug(
+            "Plugin %s registered auxiliary task: %s (%s)",
+            self.manifest.name,
+            key,
+            display_name,
+        )
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
         """Register a lifecycle hook callback.
@@ -714,6 +1010,27 @@ class PluginContext:
             )
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+
+    # -- middleware registration -------------------------------------------
+
+    def register_middleware(self, kind: str, callback: Callable) -> None:
+        """Register a behavior-changing middleware callback.
+
+        Middleware is separate from observer hooks: request middleware may
+        rewrite the effective payload, and execution middleware may wrap the
+        real callback. Unknown kinds are stored for forward compatibility but
+        warned so plugin authors can catch typos.
+        """
+        if kind not in VALID_MIDDLEWARE:
+            logger.warning(
+                "Plugin '%s' registered unknown middleware '%s' "
+                "(valid: %s)",
+                self.manifest.name,
+                kind,
+                ", ".join(sorted(VALID_MIDDLEWARE)),
+            )
+        self._manager._middleware.setdefault(kind, []).append(callback)
+        logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
 
     # -- skill registration -------------------------------------------------
 
@@ -773,6 +1090,7 @@ class PluginManager:
     def __init__(self) -> None:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
+        self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
@@ -782,6 +1100,16 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        # Plugin-registered auxiliary tasks: key → {key, display_name,
+        # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
+        self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Slack Block Kit action handlers registered by plugins. Each entry
+        # is (matcher, callback, plugin_name); the Slack adapter wires them
+        # into its slack_bolt App at connect() time. ``matcher`` is whatever
+        # ``app.action()`` accepts (a literal action_id string, a compiled
+        # ``re.Pattern``, or a constraint dict); ``callback`` is an async
+        # function with the slack_bolt signature ``(ack, body, action)``.
+        self._slack_action_handlers: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -796,16 +1124,41 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
+        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
+        # with all customizations disabled. Skip plugin discovery entirely so
+        # no third-party code (hooks, tools, platforms) loads. Mark as
+        # discovered so callers see a clean empty registry, not a retry loop.
+        if env_var_enabled("HERMES_SAFE_MODE"):
+            logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
+            self._discovered = True
+            return
         if force:
             self._plugins.clear()
             self._hooks.clear()
+            self._middleware.clear()
             self._plugin_tool_names.clear()
+            self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            self._aux_tasks.clear()
+            self._slack_action_handlers.clear()
             self._context_engine = None
+        # Set the flag up front as a re-entrancy guard (a plugin's register()
+        # can transitively trigger discovery again), but reset it if the sweep
+        # raises so a failed scan is NOT cached as "discovered with an empty
+        # registry" — callers swallow the exception and would otherwise be
+        # permanently stranded on the early-return above (the "No web provider
+        # configured" class of failures).
         self._discovered = True
+        try:
+            self._discover_and_load_inner()
+        except BaseException:
+            self._discovered = False
+            raise
 
+    def _discover_and_load_inner(self) -> None:
+        """The actual discovery sweep — see :meth:`discover_and_load`."""
         manifests: List[PluginManifest] = []
 
         # 1. Bundled plugins (<repo>/plugins/<name>/)
@@ -1187,36 +1540,45 @@ class PluginManager:
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
                 ctx = PluginContext(manifest, self)
+                # Snapshot registry state BEFORE register() so each registry's
+                # attribution counts only what THIS plugin actually added.
+                # The previous approach diffed names against all already-loaded
+                # plugins, which mis-credited a plugin that registered a hook /
+                # middleware / tool name an earlier plugin had already used:
+                # the shared name was attributed to the first plugin only, so
+                # later plugins under-reported in `hermes plugins list`.
+                _tools_before = set(self._plugin_tool_names)
+                _hook_counts_before = {
+                    h: len(cbs) for h, cbs in self._hooks.items()
+                }
+                _mw_counts_before = {
+                    kind: len(cbs) for kind, cbs in self._middleware.items()
+                }
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
-                    if t not in {
-                        n
-                        for name, p in self._plugins.items()
-                        for n in p.tools_registered
-                    }
+                    if t not in _tools_before
                 ]
-                loaded.hooks_registered = list(
-                    {
-                        h
-                        for h, cbs in self._hooks.items()
-                        if cbs  # non-empty
-                    }
-                    - {
-                        h
-                        for name, p in self._plugins.items()
-                        for h in p.hooks_registered
-                    }
-                )
+                loaded.hooks_registered = [
+                    h
+                    for h, cbs in self._hooks.items()
+                    if len(cbs) > _hook_counts_before.get(h, 0)
+                ]
+                loaded.middleware_registered = [
+                    kind
+                    for kind, cbs in self._middleware.items()
+                    if len(cbs) > _mw_counts_before.get(kind, 0)
+                ]
                 loaded.commands_registered = [
                     c for c in self._plugin_commands
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
                 loaded.enabled = True
                 logger.debug(
-                    "  registered: %d tool(s), %d hook(s), %d slash command(s), %d CLI command(s)",
+                    "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",
                     len(loaded.tools_registered),
                     len(loaded.hooks_registered),
+                    len(loaded.middleware_registered),
                     len(loaded.commands_registered),
                     sum(
                         1 for c in self._cli_commands
@@ -1313,6 +1675,7 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:
@@ -1328,6 +1691,53 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    def has_hook(self, hook_name: str) -> bool:
+        """Return True when at least one callback is registered for a hook."""
+        return bool(self._hooks.get(hook_name))
+
+    def has_middleware(self, kind: str) -> bool:
+        """Return True when at least one callback is registered for middleware."""
+        return bool(self._middleware.get(kind))
+
+    def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
+        """Call registered middleware callbacks for *kind*.
+
+        Each callback is isolated so one plugin cannot break the base runtime
+        path. Middleware that wants to change behavior must return the shape
+        documented by the caller-specific contract.
+        """
+        callbacks = self._middleware.get(kind, [])
+        results: List[Any] = []
+        for cb in callbacks:
+            try:
+                ret = cb(**kwargs)
+                if ret is not None:
+                    results.append(ret)
+            except Exception as exc:
+                logger.warning(
+                    "Middleware '%s' callback %s raised: %s",
+                    kind,
+                    getattr(cb, "__name__", repr(cb)),
+                    exc,
+                )
+        return results
+
+    # -----------------------------------------------------------------------
+    # Slack action handler accessor
+    # -----------------------------------------------------------------------
+
+    def get_slack_action_handlers(self) -> List[tuple]:
+        """Return the list of plugin-registered Slack action handlers.
+
+        Each entry is a ``(action_id, callback, plugin_name)`` tuple.
+        Consumed by the Slack adapter at connect time to wire callbacks
+        into its ``slack_bolt.AsyncApp``.
+
+        Plugins register handlers via
+        :meth:`PluginContext.register_slack_action_handler`.
+        """
+        return list(self._slack_action_handlers)
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -1348,6 +1758,7 @@ class PluginManager:
                     "enabled": loaded.enabled,
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),
+                    "middleware": len(loaded.middleware_registered),
                     "commands": len(loaded.commands_registered),
                     "error": loaded.error,
                 }
@@ -1409,6 +1820,27 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
+def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
+    """Invoke registered middleware callbacks.
+
+    Returns a list of non-``None`` return values from middleware callbacks.
+    """
+    return get_plugin_manager().invoke_middleware(kind, **kwargs)
+
+
+def has_middleware(kind: str) -> bool:
+    """Return True when middleware callbacks are registered for ``kind``."""
+    manager = get_plugin_manager()
+    method = getattr(manager, "has_middleware", None)
+    if callable(method):
+        return bool(method(kind))
+    return bool(getattr(manager, "_middleware", {}).get(kind))
+
+
+def has_hook(hook_name: str) -> bool:
+    """Return True when a hook has registered callbacks."""
+    return get_plugin_manager().has_hook(hook_name)
+
 
 _thread_tool_whitelist = threading.local()
 
@@ -1431,6 +1863,9 @@ def get_pre_tool_call_block_message(
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """Check ``pre_tool_call`` hooks for a blocking directive.
 
@@ -1455,6 +1890,9 @@ def get_pre_tool_call_block_message(
         task_id=task_id,
         session_id=session_id,
         tool_call_id=tool_call_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
+        middleware_trace=list(middleware_trace or []),
     )
 
     for result in hook_results:
@@ -1546,6 +1984,21 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
+    """Return all plugin-registered auxiliary tasks as a stable-ordered list.
+
+    Each entry is the registration dict from
+    :meth:`PluginContext.register_auxiliary_task`:
+    ``{key, display_name, description, defaults, plugin}``.
+
+    Triggers idempotent plugin discovery so callers can read the registry
+    before any explicit ``discover_plugins()`` call. Sorted by ``key`` for
+    deterministic ordering in pickers and tests.
+    """
+    manager = _ensure_plugins_discovered()
+    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
 
 def get_plugin_toolsets() -> List[tuple]:

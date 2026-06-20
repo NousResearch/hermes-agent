@@ -164,6 +164,14 @@ export interface Translations {
     dismiss: string
   }
 
+  sessionRestore: {
+    title: string
+    body: (count: number) => string
+    restore: string
+    discard: string
+    timestamp: (when: string) => string
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string

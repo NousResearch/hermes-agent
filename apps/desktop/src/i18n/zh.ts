@@ -147,6 +147,15 @@ export const zh: Translations = {
     dismiss: '关闭'
   },
 
+  sessionRestore: {
+    title: '恢复之前的会话？',
+    body: (count: number) =>
+      `Hermes 发现 ${count} 个上次退出时打开的会话。`,
+    restore: '恢复',
+    discard: '重新开始',
+    timestamp: (when: string) => `保存于 ${when}`
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',

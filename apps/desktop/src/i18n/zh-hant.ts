@@ -147,6 +147,15 @@ export const zhHant = defineLocale({
     dismiss: '關閉'
   },
 
+  sessionRestore: {
+    title: '還原先前的會話？',
+    body: (count: number) =>
+      `Hermes 發現 ${count} 個上次結束時打開的會話。`,
+    restore: '還原',
+    discard: '重新開始',
+    timestamp: (when: string) => `儲存於 ${when}`
+  },
+
   titlebar: {
     hideSidebar: '隱藏側邊欄',
     showSidebar: '顯示側邊欄',

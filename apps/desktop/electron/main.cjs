@@ -5248,11 +5248,13 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
+function spawnSecondaryWindow({ sessionId, watch, newSession, bounds } = {}) {
   const icon = getAppIconPath()
   const win = new BrowserWindow({
-    width: SESSION_WINDOW_MIN_WIDTH,
-    height: SESSION_WINDOW_MIN_HEIGHT,
+    width: bounds?.width || SESSION_WINDOW_MIN_WIDTH,
+    height: bounds?.height || SESSION_WINDOW_MIN_HEIGHT,
+    x: bounds ? bounds.x : undefined,
+    y: bounds ? bounds.y : undefined,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
@@ -5288,6 +5290,10 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
 
   wireCommonWindowHandlers(win)
 
+  if (sessionId) {
+    trackSessionWindow(sessionId, win, { watch: watch === true })
+  }
+
   win.loadURL(
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
@@ -5301,8 +5307,8 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+function createSessionWindow(sessionId, { watch = false, bounds = null } = {}) {
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch, bounds }))
 }
 
 // Open a fresh compact window on the new-session draft (#/). Not registry-keyed:
@@ -5427,6 +5433,15 @@ function createWindow() {
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
+
+    // After a short delay to let the renderer mount and register listeners,
+    // notify it of any pending session restore snapshot from a previous quit.
+    setTimeout(() => {
+      const snapshot = pendingSessionRestoreSnapshot()
+      if (snapshot && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('session:restore-available', snapshot)
+      }
+    }, 2000)
   })
 }
 
@@ -5487,6 +5502,18 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 ipcMain.handle('hermes:window:openNewSession', async () => {
   createNewSessionWindow()
 
+  return { ok: true }
+})
+ipcMain.handle('hermes:session-restore:pending', () => pendingSessionRestoreSnapshot())
+
+ipcMain.handle('hermes:session-restore:confirm', () => {
+  const result = restoreSessionWindowsFromSnapshot()
+  clearSessionRestoreSnapshot()
+  return result
+})
+
+ipcMain.handle('hermes:session-restore:discard', () => {
+  clearSessionRestoreSnapshot()
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:reset', async () => {
@@ -6693,6 +6720,10 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  // Persist open session windows so the next launch can offer to restore them.
+  sessionRestoreQuitInProgress = true
+  persistSessionRestoreStateNow()
+
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {

@@ -152,6 +152,15 @@ export const en: Translations = {
     dismiss: 'Dismiss'
   },
 
+  sessionRestore: {
+    title: 'Restore previous sessions?',
+    body: (count: number) =>
+      `Hermes found ${count} session(s) that were open when it last quit.`,
+    restore: 'Restore',
+    discard: 'Start fresh',
+    timestamp: (when: string) => `Saved ${when}`
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',

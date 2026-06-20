@@ -388,6 +388,56 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return global_disabled
 
 
+def get_enabled_skill_categories(platform: str | None = None) -> Optional[Set[str]]:
+    """Read ``skills.categories_enabled`` from config.yaml.
+
+    Args:
+        platform: Explicit platform name (e.g. ``"telegram"``).  When
+            *None*, resolves from ``HERMES_PLATFORM`` or
+            ``HERMES_SESSION_PLATFORM`` env vars.
+
+    Returns:
+        - ``None`` → config key not set → show all (backward compatible)
+        - ``set()`` → empty list in config → show all (no filtering)
+        - ``set[str]`` → only show categories in this set
+
+    Config shape::
+
+        skills:
+          categories_enabled:
+            telegram: [trading, productivity]
+            discord: [devops, coding, deployment]
+    """
+    parsed = _load_raw_config()
+    if not parsed:
+        return None
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+
+    categories_enabled = skills_cfg.get("categories_enabled")
+    if not isinstance(categories_enabled, dict):
+        return None
+
+    from gateway.session_context import get_session_env
+
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+    )
+    if not resolved_platform:
+        return None
+
+    platform_categories = categories_enabled.get(resolved_platform)
+    if platform_categories is None:
+        return None
+    if not platform_categories:  # empty list
+        return set()
+    return set(str(c).strip() for c in platform_categories if str(c).strip())
+
+
 def _normalize_string_set(values) -> Set[str]:
     if values is None:
         return set()

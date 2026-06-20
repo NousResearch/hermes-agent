@@ -21,6 +21,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_enabled_skill_categories,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_environment,
@@ -1265,6 +1266,11 @@ def build_skills_system_prompt(
     the rendered index. Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    ``skills.categories_enabled`` in config.yaml (per-platform whitelist) can
+    filter which categories appear in the index to reduce token waste on
+    platforms that only need a subset of skills (e.g. Telegram vs Discord).
+    Empty or absent → all categories shown (backward compatible).
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1282,6 +1288,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names(_platform_hint or None)
+    enabled_categories = get_enabled_skill_categories(_platform_hint or None)
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1290,6 +1297,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        tuple(sorted(enabled_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1422,6 +1430,16 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    # Per-platform category filtering (skills.categories_enabled in config.yaml).
+    # None → key absent (backward compatible: show all).
+    # set() → empty list (show all).
+    # non-empty set → only keep categories in the whitelisted set.
+    if enabled_categories is not None and enabled_categories:
+        skills_by_category = {
+            cat: skills for cat, skills in skills_by_category.items()
+            if cat in enabled_categories or cat.split("/", 1)[0] in enabled_categories
+        }
 
     # Posture-driven category demotion (e.g. non-coding skills while pairing
     # on code). Demoted categories stay in the index as a single names-only

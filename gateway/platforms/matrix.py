@@ -1532,8 +1532,16 @@ class MatrixAdapter(BasePlatformAdapter):
             if _ss:
                 try:
                     _room_encrypted = bool(await _ss.is_encrypted(RoomID(chat_id)))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "Matrix: cannot determine room encryption state "
+                        "for %s: %s — refusing to send plaintext",
+                        chat_id, exc,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"Cannot determine room encryption state: {exc}",
+                    )
 
         last_event_id = None
         for i, chunk in enumerate(chunks):

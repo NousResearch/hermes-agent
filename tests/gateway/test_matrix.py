@@ -2557,6 +2557,28 @@ class TestMatrixEncryptedSendFallback:
         assert call_args[1].get("disable_encryption") is False
 
     @pytest.mark.asyncio
+    async def test_send_unknown_encryption_state_fails_closed(self):
+        """send() should fail closed when room encryption state is unknown."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$evt")
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(
+            side_effect=Exception("state lookup failed"),
+        )
+        fake_client.crypto = MagicMock()
+        adapter._client = fake_client
+
+        result = await adapter.send("!room:example.org", "secret")
+
+        assert result.success is False
+        assert "encryption state" in result.error.lower()
+        # send_message_event must NOT be called — no plaintext leak
+        fake_client.send_message_event.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_edit_message_encrypted_room_encrypts(self):
         """edit_message() should encrypt content for encrypted rooms."""
         adapter = _make_adapter()

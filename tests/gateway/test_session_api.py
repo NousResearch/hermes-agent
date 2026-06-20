@@ -278,7 +278,11 @@ async def test_session_chat_resumes_compression_tip_instead_of_forking(auth_adap
     # The run must target the live continuation, not the ended parent...
     assert kwargs["session_id"] == "live-tip"
     # ...and history must come from the tip (compressed context), not the parent.
-    assert kwargs["conversation_history"] == [
+    history = kwargs["conversation_history"]
+    assert len(history) == 2
+    assert isinstance(history[0].pop("timestamp"), (int, float))
+    assert isinstance(history[1].pop("timestamp"), (int, float))
+    assert history == [
         {"role": "user", "content": "compressed summary"},
         {"role": "assistant", "content": "post-compression reply"},
     ]

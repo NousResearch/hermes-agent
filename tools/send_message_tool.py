@@ -1024,6 +1024,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
+
+        topic_target = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(str(chat_id))
+        if topic_target:
+            chat_id = topic_target.group(1)
+            if thread_id is None:
+                thread_id = topic_target.group(2)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}

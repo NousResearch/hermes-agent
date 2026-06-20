@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
+import { $showReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   $currentCwd,
   $currentFastMode,
@@ -35,6 +36,7 @@ const mockConfig = (config: Record<string, unknown>) =>
 describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
     // Reset atoms and localStorage between tests
+    setShowReasoningFromConfig(undefined)
     setCurrentCwd('')
     setCurrentFastMode(false)
     setCurrentModelSource('')
@@ -42,6 +44,21 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setDefaultReasoningEffort('')
     setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  it.each([
+    [true, true], [false, false], ['false', false], ['off', false], ['0', false],
+    [' True ', true], ['yes', true], [1, true], [0, false], [undefined, true]
+  ])('resolves reasoning display %j to %j and resets missing config to the default', async (value, expected) => {
+    mockConfig({ display: { show_reasoning: value } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => { await result.current.refreshHermesConfig() })
+    expect($showReasoning.get()).toBe(expected)
+
+    mockConfig({})
+    await act(async () => { await result.current.refreshHermesConfig() })
+    expect($showReasoning.get()).toBe(true)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the
@@ -133,6 +150,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     ownsSwitch = false
     staleConfig.resolve({
+      display: { show_reasoning: false },
       agent: { reasoning_effort: 'high', service_tier: 'priority' },
       terminal: { font_family: 'MesloLGS NF' }
     } as Awaited<ReturnType<typeof getHermesConfig>>)
@@ -145,6 +163,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
     expect($terminalFontFamily.get()).toBe('')
+    expect($showReasoning.get()).toBe(true)
   })
 
   it('does not let an older profile config overwrite a newer profile', async () => {

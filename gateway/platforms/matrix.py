@@ -65,6 +65,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from agent.memory_manager import sanitize_context
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -2037,6 +2039,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Pass-through — Matrix supports standard Markdown natively."""
+        # Defense-in-depth: memory providers may inject fenced
+        # <memory-context> blocks into the prompt. The agent normally scrubs
+        # those from streamed deltas, but Matrix is the final transport
+        # boundary and must not render them if a model echoes the block or a
+        # non-streaming/fallback path bypasses the stream scrubber.
+        content = sanitize_context(content)
         # Strip image markdown; media is uploaded separately.
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
         return content

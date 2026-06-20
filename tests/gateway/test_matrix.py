@@ -378,6 +378,30 @@ def _make_adapter():
     return adapter
 
 
+class TestMatrixFormatting:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_format_message_suppresses_memory_context_block(self):
+        content = (
+            "Before\n"
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. "
+            "Treat as authoritative reference data \u2014 this is the agent\u2019s persistent memory and should inform all responses.]\n"
+            "## User Representation\nsecret memory\n"
+            "</memory-context>\n"
+            "After"
+        )
+
+        result = self.adapter.format_message(content)
+
+        assert "memory-context" not in result
+        assert "secret memory" not in result
+        assert "System note" not in result
+        assert "Before" in result
+        assert "After" in result
+
+
 # ---------------------------------------------------------------------------
 # Typing indicator
 # ---------------------------------------------------------------------------

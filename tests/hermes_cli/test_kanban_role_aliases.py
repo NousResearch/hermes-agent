@@ -35,6 +35,18 @@ def test_create_task_canonicalizes_legacy_role_assignee_aliases(kanban_home: Pat
         assert kb.get_task(conn, steward_id).assignee == "pepper"
 
 
+def test_create_task_canonicalizes_legacy_role_assignee_aliases_even_when_legacy_profile_exists(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"builder", "stark"})
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="build lane", assignee="builder")
+
+        assert kb.get_task(conn, task_id).assignee == "stark"
 def test_dispatch_rewrites_existing_role_alias_rows_before_spawn(
     kanban_home: Path,
     monkeypatch: pytest.MonkeyPatch,

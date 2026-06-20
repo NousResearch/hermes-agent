@@ -2259,13 +2259,6 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     normalized = normalize_profile_name(assignee)
     alias_target = ROLE_ASSIGNEE_ALIASES.get(normalized)
     if alias_target:
-        try:
-            from hermes_cli.profiles import profile_exists
-
-            if profile_exists(normalized):
-                return normalized
-        except Exception:
-            pass
         return alias_target
     return normalized
 
@@ -2435,10 +2428,10 @@ def create_task(
         skills_list = cleaned
 
     # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # duplicate. The preflight keeps the common duplicate path fast; the
+    # same lookup is repeated inside the write transaction below so a racing
+    # creator that wins after this check but before our INSERT cannot produce
+    # a second non-archived row with the same key.
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -2472,6 +2465,16 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                if idempotency_key:
+                    row = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if row:
+                        return row["id"]
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -5509,6 +5512,24 @@ def _extract_review_verdict(metadata: Any) -> Optional[dict[str, Any]]:
     }
 
 
+_REVIEW_OUTPUT_STOP_RED_HUMAN_RE = re.compile(
+    r"\b(?:STOP|RED|HUMAN(?:\s+APPROVAL)?\s+REQUIRED|ROLLBACK)\b",
+    re.IGNORECASE,
+)
+
+
+def _review_output_has_stop_red_human(text: str) -> bool:
+    """Return True for reviewer-authored STOP/RED/HUMAN gate language.
+
+    This is intentionally applied only to completed review output (run summary
+    and explicit metadata summary), not review-card bodies/source prose, so the
+    normal review instructions do not become verdict text.  Within actual
+    reviewer output it preserves fail-closed precedence: STOP/RED/HUMAN beats a
+    lower-severity explicit verdict such as CHANGES_REQUESTED.
+    """
+    return bool(_REVIEW_OUTPUT_STOP_RED_HUMAN_RE.search(text or ""))
+
+
 def _review_verdict_already_consumed(conn: sqlite3.Connection, review_task_id: str) -> bool:
     return bool(conn.execute(
         "SELECT 1 FROM task_events "
@@ -5529,6 +5550,103 @@ def _latest_completed_review_verdict_rows(conn: sqlite3.Connection) -> list[sqli
          ORDER BY COALESCE(r.ended_at, r.started_at, 0) ASC, r.id ASC
         """
     ).fetchall()
+
+
+def _payload_has_typed_red_or_human_hold(payload: Any) -> bool:
+    """Return True only for structured red/human hold metadata.
+
+    Free-text block reasons are intentionally ignored here: review handoff
+    prose often says things like "no red gate remains" and must not be used as
+    control-plane state for APPROVED verdict routing.
+    """
+    if not isinstance(payload, dict):
+        return False
+    for key in (
+        "red_gate",
+        "red_gated",
+        "human_approval_required",
+        "human_required",
+        "stop_red_human",
+    ):
+        if payload.get(key) is True:
+            return True
+    for key in ("gate", "hold", "severity", "verdict", "route", "status"):
+        value = str(payload.get(key) or "").strip().lower().replace("-", "_")
+        if value in {"red", "human", "red_human", "stop_red_human"}:
+            return True
+    return False
+
+
+def _source_has_typed_red_or_human_hold(
+    conn: sqlite3.Connection,
+    source_id: str,
+) -> bool:
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY created_at DESC, id DESC",
+        (source_id,),
+    ).fetchall()
+    return any(
+        _payload_has_typed_red_or_human_hold(
+            json.loads(row["payload"] or "{}")
+        )
+        for row in rows
+    )
+
+
+def _review_verdict_followup_idempotency_key(
+    source_id: str,
+    review_run_id: int,
+    verdict: str,
+) -> str:
+    return f"review-verdict:{source_id}:{review_run_id}:{verdict.lower()}"
+
+
+def _red_human_packet_idempotency_key(source_id: str) -> str:
+    return f"review-verdict:{source_id}:red-human-hold"
+
+
+def _create_review_verdict_followup(
+    conn: sqlite3.Connection,
+    *,
+    source: Task,
+    review_task_id: str,
+    review_run_id: int,
+    verdict: str,
+    summary: str,
+) -> str:
+    if verdict == "CHANGES_REQUESTED":
+        title_prefix = "Address review changes for"
+        assignee = source.assignee
+        key = _review_verdict_followup_idempotency_key(source.id, review_run_id, verdict)
+    elif verdict == "INSUFFICIENT_EVIDENCE":
+        title_prefix = "Provide review evidence for"
+        assignee = source.assignee
+        key = _review_verdict_followup_idempotency_key(source.id, review_run_id, verdict)
+    else:
+        title_prefix = "STOP_RED_HUMAN routing needed:"
+        assignee = "default"
+        key = _red_human_packet_idempotency_key(source.id)
+    body = (
+        "Created by kanban verdict consumer.\n"
+        f"source_task_id={source.id}\n"
+        f"review_task_id={review_task_id}\n"
+        f"review_run_id={review_run_id}\n"
+        f"verdict={verdict}\n\n"
+        f"Review summary: {summary}\n\n"
+        "Do not treat this as approval to apply/restart/deploy/push/merge. Preserve Red gates."
+    )
+    return create_task(
+        conn,
+        title=f"{title_prefix} {source.id}",
+        body=body,
+        assignee=assignee or "default",
+        created_by="kanban-verdict-consumer",
+        tenant=source.tenant,
+        priority=source.priority,
+        initial_status="blocked",
+        idempotency_key=key,
+    )
 
 
 def consume_review_verdicts(conn: sqlite3.Connection) -> ReviewVerdictConsumptionResult:
@@ -5574,41 +5692,45 @@ def consume_review_verdicts(conn: sqlite3.Connection) -> ReviewVerdictConsumptio
                 )
             continue
         verdict = verdict_doc["verdict"]
+        review_run_id = int(row["run_id"])
+        summary = str(verdict_doc.get("summary") or row["summary"] or "")
+        review_output = "\n".join(
+            part
+            for part in (
+                str(verdict_doc.get("summary") or ""),
+                str(row["summary"] or ""),
+            )
+            if part
+        )
+        if verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE"} and _review_output_has_stop_red_human(review_output):
+            verdict = "STOP_RED_HUMAN"
+            verdict_doc["verdict"] = verdict
         payload = {
             **verdict_doc,
             "review_task_id": review_task_id,
-            "review_run_id": int(row["run_id"]),
+            "review_run_id": review_run_id,
         }
         created_followup: Optional[str] = None
-        if verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE"}:
-            title_prefix = (
-                "Address review changes for"
-                if verdict == "CHANGES_REQUESTED"
-                else "Provide review evidence for"
-            )
-            followup_body = (
-                "Created by kanban verdict consumer.\n"
-                f"source_task_id={source_id}\n"
-                f"review_task_id={review_task_id}\n"
-                f"review_run_id={int(row['run_id'])}\n"
-                f"verdict={verdict}\n\n"
-                f"Review summary: {verdict_doc.get('summary') or row['summary'] or ''}\n\n"
-                "Do not treat this as approval to apply/restart/deploy/push/merge. Preserve Red gates."
-            )
-            created_followup = create_task(
+        approved_red_hold = verdict == "APPROVED" and _source_has_typed_red_or_human_hold(
+            conn,
+            source_id,
+        )
+        if (
+            verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE", "STOP_RED_HUMAN"}
+            or approved_red_hold
+        ):
+            followup_verdict = "STOP_RED_HUMAN" if approved_red_hold else verdict
+            created_followup = _create_review_verdict_followup(
                 conn,
-                title=f"{title_prefix} {source_id}",
-                body=followup_body,
-                assignee=source.assignee,
-                created_by="kanban-verdict-consumer",
-                tenant=source.tenant,
-                priority=source.priority,
-                initial_status="blocked",
-                idempotency_key=f"review-verdict:{review_task_id}:{source_id}:{verdict}",
+                source=source,
+                review_task_id=review_task_id,
+                review_run_id=review_run_id,
+                verdict=followup_verdict,
+                summary=summary,
             )
             payload["created_followup"] = created_followup
         with write_txn(conn):
-            if verdict == "APPROVED":
+            if verdict == "APPROVED" and not approved_red_hold:
                 if source.status in {"blocked", "scheduled"}:
                     next_status = "ready"
                     # Preserve dependency semantics: if any parent is still open,
@@ -5626,6 +5748,13 @@ def consume_review_verdicts(conn: sqlite3.Connection) -> ReviewVerdictConsumptio
                         (next_status, source_id),
                     )
                 _append_event(conn, source_id, "review_verdict_approved", payload)
+            elif verdict == "APPROVED" and approved_red_hold:
+                _append_event(
+                    conn,
+                    source_id,
+                    "review_verdict_red_hold",
+                    {**payload, "action": "typed_red_human_hold"},
+                )
             elif verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE"}:
                 _append_event(conn, source_id, "review_verdict_followup_created", payload)
             elif verdict == "STOP_RED_HUMAN":
@@ -5635,7 +5764,7 @@ def consume_review_verdicts(conn: sqlite3.Connection) -> ReviewVerdictConsumptio
                 review_task_id,
                 "review_verdict_consumed",
                 payload,
-                run_id=int(row["run_id"]),
+                run_id=review_run_id,
             )
             conn.execute(
                 "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",

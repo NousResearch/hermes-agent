@@ -704,6 +704,56 @@ class TestGetDueJobs:
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 
+    def test_stale_weekday_digest_cron_recovers_one_missed_fire(self, tmp_cron_dir, monkeypatch):
+        """A missed low-frequency weekday cron must not silently fast-forward.
+
+        Regression coverage for an autonomy digest that last ran Wednesday,
+        missed Thu/Fri while the gateway was unavailable, then restarted after
+        the normal 2h grace window on Saturday morning. The scheduler should
+        return the stale fire once so the run is visible/recoverable; the
+        pre-run advance path will move the next occurrence forward before
+        execution.
+        """
+        pytest.importorskip("croniter")
+        madrid = timezone(timedelta(hours=2))
+        now = datetime(2026, 6, 20, 6, 23, 55, tzinfo=madrid)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "autonomy-afternoon",
+                "name": "autonomy-inbox-afternoon",
+                "prompt": "script-only autonomy afternoon digest",
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "30 15 * * 1-5",
+                    "display": "30 15 * * 1-5",
+                },
+                "schedule_display": "30 15 * * 1-5",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-06-15T08:00:00+02:00",
+                "next_run_at": "2026-06-18T15:30:00+02:00",
+                "last_run_at": "2026-06-17T15:30:49+02:00",
+                "last_status": "ok",
+                "last_error": None,
+                "deliver": "telegram",
+                "origin": None,
+            }]
+        )
+
+        due = get_due_jobs()
+
+        assert [job["id"] for job in due] == ["autonomy-afternoon"]
+        assert get_job("autonomy-afternoon")["next_run_at"] == "2026-06-18T15:30:00+02:00"
+
+        assert advance_next_run("autonomy-afternoon") is True
+        advanced = datetime.fromisoformat(get_job("autonomy-afternoon")["next_run_at"])
+        assert advanced > now
+
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")
         due = get_due_jobs()

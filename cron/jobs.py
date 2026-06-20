@@ -59,6 +59,7 @@ _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+LOW_FREQUENCY_CRON_RECOVERY_SECONDS = 12 * 60 * 60
 
 
 def _jobs_lock_file() -> Path:
@@ -451,6 +452,36 @@ def _compute_grace_seconds(schedule: dict) -> int:
             pass
 
     return MIN_GRACE
+
+
+def _cron_period_seconds(schedule: dict) -> Optional[int]:
+    """Return the approximate period for a cron schedule, when available."""
+    if schedule.get("kind") != "cron" or not HAS_CRONITER:
+        return None
+    try:
+        now = _hermes_now()
+        cron = croniter(schedule["expr"], now)
+        first = cron.get_next(datetime)
+        second = cron.get_next(datetime)
+        return int((second - first).total_seconds())
+    except Exception:
+        return None
+
+
+def _should_recover_stale_recurring_fire(schedule: dict) -> bool:
+    """Return True when a stale recurring fire should run once on recovery.
+
+    Frequent jobs are usually watchdogs or pollers; if the gateway was down,
+    replaying stale executions is more likely to create noise than value.
+    Low-frequency cron jobs are commonly human-facing digests and reviews. For
+    those, silently fast-forwarding after a gateway outage loses the only daily
+    signal, so recover one missed fire and then advance normally before run.
+    """
+    period_seconds = _cron_period_seconds(schedule)
+    return (
+        period_seconds is not None
+        and period_seconds >= LOW_FREQUENCY_CRON_RECOVERY_SECONDS
+    )
 
 
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
@@ -1199,6 +1230,18 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
             if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+                if kind == "cron" and _should_recover_stale_recurring_fire(schedule):
+                    logger.warning(
+                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
+                        "Recovering one low-frequency cron fire instead of "
+                        "silently fast-forwarding.",
+                        job.get("name", job["id"]),
+                        next_run,
+                        grace,
+                    )
+                    due.append(job)
+                    continue
+
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())

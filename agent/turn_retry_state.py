@@ -58,6 +58,12 @@ class TurnRetryState:
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
 
+    # ── Auth-failure provider failover ───────────────────────────────────
+    # Set once we've escalated a persistent 401/403 (after the per-provider
+    # credential-refresh attempt above failed) to the fallback chain, so we
+    # don't loop on the same auth failover within one attempt.
+    auth_failover_attempted: bool = False
+
     # ── Restart signals (read by the outer loop after the attempt) ───────
     restart_with_compressed_messages: bool = False
     restart_with_length_continuation: bool = False

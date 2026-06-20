@@ -43,6 +43,25 @@ Create Kanban tasks when any of these are true:
 
 If *none* of those apply — it's a small one-shot reasoning task — use `delegate_task` instead or answer the user directly.
 
+## User-requested repository changes
+
+When the user asks for a repository code or documentation change, the
+main/default profile should route instead of implementing directly:
+
+1. Create an implementation Kanban task assigned to the project worker profile.
+2. The implementation task must require a branch, commit, push, and PR, and must
+   explicitly forbid merge and auto-merge.
+3. Do not create the reviewer task until the implementation worker has opened
+   the PR. Once the PR URL/number exists, the implementation worker creates a
+   separate reviewer task assigned to the reviewer profile with
+   `parents=[implementation_task_id]`, then completes the implementation task
+   with structured PR handoff metadata. It must not block itself with
+   `review-required`, because a blocked parent keeps the reviewer task in
+   `todo`.
+4. Reviewer output is a verdict or a block with required changes; required
+   changes become a new implementation task linked from the reviewer task. The
+   final merge decision belongs to the user.
+
 ## The anti-temptation rules
 
 Your job description says "route, don't execute." The rules that enforce that:

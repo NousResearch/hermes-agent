@@ -294,6 +294,17 @@ When asked to auto-fix CI, follow this loop:
 
 ## 6. Merging
 
+### Kanban-gated agent work
+
+If this PR came from a Kanban implementation worker, stop after opening the PR,
+creating the reviewer Kanban task with `parents=[implementation_task_id]`, and
+completing the implementation task with PR handoff metadata. Do **not** block the
+implementation task with `review-required` after creating a parent-gated reviewer
+task; that deadlocks review in `todo`. Do **not** merge and do **not** enable
+auto-merge from the implementation or reviewer task. The final merge decision
+belongs to the user/maintainer; the only valid merge trigger is an explicit
+instruction to merge that specific PR.
+
 **With gh:**
 
 ```bash

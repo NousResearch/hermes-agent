@@ -1,6 +1,6 @@
 """Regression tests for the kanban legacy-DB migration self-heal.
 
-Covers two defects fixed together:
+Covers two defects fixed together, plus the generalized durable fix:
 
 * **Defect A** — ``_migrate_add_optional_columns`` ALTERed in the other
   ~18 optional columns for legacy DBs but OMITTED ``claim_lock`` /
@@ -15,9 +15,21 @@ Covers two defects fixed together:
   silently blocking ALL migration on that board forever. It must now log a
   warning and degrade (proceed without the advisory lock).
 
+* **Defect A (generalized)** — fixing only ``claim_lock`` / ``claim_expires``
+  was insufficient: a live stopgap on a real legacy board proved the SAME
+  class of omission also dropped ``started_at``, ``workspace_kind``
+  (``TEXT NOT NULL DEFAULT 'scratch'``), and ``workspace_path`` — all in
+  SCHEMA_SQL's CREATE TABLE but absent from the hand-maintained ALTER list,
+  and all read by the backfill SELECT. This bit 5 times. The migration now
+  derives the authoritative column set directly from SCHEMA_SQL and
+  reconciles ALL missing ``tasks`` columns generically, so no future column
+  can be forgotten. The drift-guard test below fails loudly if the parsed
+  reconcile set and SCHEMA_SQL ever disagree.
+
 Why: legacy/drifted boards must self-heal on the next ``connect()`` with
-the patched code — no manual DB surgery, and an unwritable lock sidecar
-must not wedge kanban on the board indefinitely.
+the patched code — no manual DB surgery, an unwritable lock sidecar must
+not wedge kanban on the board indefinitely, and a future SCHEMA_SQL column
+must never silently break legacy boards again.
 """
 
 from __future__ import annotations
@@ -216,3 +228,260 @@ def test_init_lock_degrades_when_sidecar_unwritable(tmp_path, monkeypatch, caplo
     assert any(
         "init lock" in rec.message.lower() for rec in caplog.records
     ), [rec.message for rec in caplog.records]
+
+
+# The maximally-drifted legacy shape: ONLY the original v1 NOT NULL columns,
+# missing every post-v1 SCHEMA_SQL column INCLUDING the five the live stopgap
+# proved get dropped (claim_lock, claim_expires, started_at, workspace_kind,
+# workspace_path). ``started_at`` is intentionally absent here (unlike
+# ``_LEGACY_TASKS_DDL``) so the test exercises the generic reconcile adding it
+# before the backfill SELECT reads it.
+_FULLY_DRIFTED_TASKS_DDL = """
+CREATE TABLE tasks (
+    id              TEXT PRIMARY KEY,
+    title           TEXT NOT NULL,
+    body            TEXT,
+    assignee        TEXT,
+    status          TEXT NOT NULL,
+    created_at      INTEGER NOT NULL
+)
+"""
+
+# Columns the generic reconcile must SKIP on a legacy table: NOT NULL with no
+# DEFAULT. These are the v1 base columns that always exist on a real board, so
+# the skip path is never hit in practice — but the guard must classify them so
+# a future NOT-NULL-without-default optional column degrades instead of
+# crashing ``ALTER TABLE ADD COLUMN``.
+_NOT_NULL_NO_DEFAULT_BASE = {"title", "status", "created_at"}
+
+
+def _fully_drifted_conn() -> sqlite3.Connection:
+    """Build an in-memory connection shaped like a maximally-drifted board.
+
+    Why: isolates the generic SCHEMA_SQL reconcile from connect/WAL machinery
+    while reproducing the worst-case legacy shape (every post-v1 column gone,
+    including ``started_at`` which the backfill SELECT reads).
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        _FULLY_DRIFTED_TASKS_DDL + ";" + _TASK_RUNS_DDL + ";" + _TASK_EVENTS_DDL
+    )
+    return conn
+
+
+def test_migration_self_heals_fully_drifted_board():
+    """Generalized Defect A: a board missing ALL 5 proven-dropped columns heals.
+
+    Why: a live stopgap proved ``started_at``/``workspace_kind``/
+    ``workspace_path`` are dropped alongside ``claim_lock``/``claim_expires``
+    on legacy boards; patching only the claim_* pair would still crash on
+    ``started_at`` (next in the backfill SELECT). The generic reconcile must
+    add every missing SCHEMA_SQL ``tasks`` column.
+    What: seeds a 'running' task on a table missing all 5 (and every other
+    post-v1 column), runs the migration, asserts no exception, all 5 columns
+    now exist with their SCHEMA_SQL defaults, and the backfill produced a
+    matching run row.
+    Test: this test — on the hardcoded-pair PR it raises
+    ``OperationalError: no such column: started_at``.
+    """
+    conn = _fully_drifted_conn()
+    now = int(time.time())
+    # NOTE: no started_at column to write — it doesn't exist yet on this board.
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES (?, ?, 'running', ?)",
+        ("t-drift-1", "fully drifted running task", now),
+    )
+    conn.commit()
+
+    # Sanity: every proven-dropped column really is absent before migration.
+    pre = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    for col in (
+        "claim_lock",
+        "claim_expires",
+        "started_at",
+        "workspace_kind",
+        "workspace_path",
+    ):
+        assert col not in pre, col
+
+    # (a) no exception — the crux of the generalized defect.
+    kb._migrate_add_optional_columns(conn)
+
+    # (b) all five proven-dropped columns now exist.
+    post = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    for col in (
+        "claim_lock",
+        "claim_expires",
+        "started_at",
+        "workspace_kind",
+        "workspace_path",
+    ):
+        assert col in post, col
+
+    # (c) defaults from SCHEMA_SQL were preserved: the NOT NULL DEFAULT
+    #     'scratch' column backfilled existing rows with 'scratch'.
+    wk = conn.execute(
+        "SELECT workspace_kind FROM tasks WHERE id = ?", ("t-drift-1",)
+    ).fetchone()
+    assert wk["workspace_kind"] == "scratch"
+
+    # (d) the backfill ran end-to-end despite started_at having been absent
+    #     at INSERT time (it is NULL, so the backfill substitutes now()).
+    run = conn.execute(
+        "SELECT task_id, status FROM task_runs WHERE task_id = ?",
+        ("t-drift-1",),
+    ).fetchone()
+    assert run is not None
+    assert run["status"] == "running"
+    ptr = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", ("t-drift-1",)
+    ).fetchone()
+    assert ptr["current_run_id"] is not None
+    conn.close()
+
+
+def _write_legacy_disk_db(path: Path) -> None:
+    """Materialize a pre-claim_lock kanban board as a real on-disk sqlite file.
+
+    Why: the migration helper tests above call ``_migrate_add_optional_columns``
+    directly, but production reaches it only through ``connect()`` — which first
+    runs ``executescript(SCHEMA_SQL)`` (``CREATE TABLE IF NOT EXISTS`` preserves
+    the drifted ``tasks``) and THEN ``_migrate_add_optional_columns``. This
+    builds only the maximally-drifted ``tasks`` table (missing every post-v1
+    column, including the five proven-dropped ones) plus one in-flight
+    ``running`` row; ``connect()`` creates ``task_runs``/``task_events``/indexes
+    from SCHEMA_SQL. A hand-built sqlite file has a valid header so the
+    connect-time integrity guards pass.
+    What: writes ``path`` with a legacy ``tasks`` table and a seeded running row.
+    Test: exercised by ``test_connect_self_heals_legacy_disk_db`` below.
+    """
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(_FULLY_DRIFTED_TASKS_DDL)
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) "
+            "VALUES (?, ?, 'running', ?)",
+            ("t-disk-legacy-1", "legacy on-disk running task", now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_connect_self_heals_legacy_disk_db(tmp_path, monkeypatch):
+    """END-TO-END: a legacy on-disk board self-heals through real ``connect()``.
+
+    Why (maintainer ask): the direct ``_migrate_add_optional_columns`` tests
+    don't prove the self-heal fires on the PRODUCTION path. Production invokes
+    the migration via ``connect()`` after ``SCHEMA_SQL`` (kanban_db.py connect()
+    init block), so the claimed connect-time self-heal needs a disk-backed,
+    real-``connect()`` regression — not a helper call.
+    What: writes a real on-disk legacy board MISSING ``claim_lock`` /
+    ``claim_expires`` (and the rest of the drifted set), points the production
+    path resolver at it via ``HERMES_KANBAN_DB`` under a temp ``HERMES_HOME``,
+    calls ``kb.connect()``, and asserts the missing columns now exist AND the
+    backfill produced the matching ``task_runs`` row + pointer.
+    Test: this test — on code whose ``_migrate_add_optional_columns`` omits the
+    claim columns, ``connect()`` raises ``OperationalError: no such column:
+    claim_lock`` from the backfill SELECT (see the fail-without-fix demo).
+    """
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    db_path = tmp_path / "kanban.db"
+    _write_legacy_disk_db(db_path)
+
+    # Route the real path resolver at our on-disk legacy file and isolate
+    # HERMES_HOME so nothing touches a real board.
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+
+    # Never let a stale per-process cache skip the connect-time init/migration.
+    resolved = str(db_path.resolve())
+    kb._INITIALIZED_PATHS.discard(resolved)
+
+    # Sanity: the on-disk board really lacks the claim columns pre-connect.
+    pre_conn = sqlite3.connect(str(db_path))
+    try:
+        pre = {r[1] for r in pre_conn.execute("PRAGMA table_info(tasks)")}
+    finally:
+        pre_conn.close()
+    assert "claim_lock" not in pre
+    assert "claim_expires" not in pre
+
+    # Real production entrypoint: SCHEMA_SQL (IF NOT EXISTS) then the migration.
+    conn = kb.connect()
+    try:
+        post = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        # (a) the self-heal added the previously-missing claim columns.
+        assert "claim_lock" in post
+        assert "claim_expires" in post
+        # (b) and the rest of the proven-dropped set, via the generic reconcile.
+        for col in ("started_at", "workspace_kind", "workspace_path"):
+            assert col in post, col
+
+        # (c) the backfill SELECT (which reads claim_lock/claim_expires/
+        #     started_at) ran to completion: the in-flight running task got a
+        #     task_runs row and a current_run_id pointer.
+        run = conn.execute(
+            "SELECT status FROM task_runs WHERE task_id = ?",
+            ("t-disk-legacy-1",),
+        ).fetchone()
+        assert run is not None
+        assert run["status"] == "running"
+        ptr = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?",
+            ("t-disk-legacy-1",),
+        ).fetchone()
+        assert ptr["current_run_id"] is not None
+    finally:
+        conn.close()
+        kb._INITIALIZED_PATHS.discard(resolved)
+
+
+def test_no_schema_sql_tasks_column_is_unmigratable():
+    """Drift guard: the reconcile set must equal the SCHEMA_SQL tasks columns.
+
+    Why: every prior incident was a SCHEMA_SQL ``tasks`` column that existed
+    for fresh DBs but was forgotten in the migration, so legacy boards never
+    got it. This test makes that class of bug fail at test time: if a future
+    column is added to SCHEMA_SQL it MUST be reachable by the generic
+    reconcile (which derives its set from SCHEMA_SQL), and any column the
+    reconcile would skip MUST be only a NOT-NULL-without-default base column.
+    What: asserts the parsed reconcile map exactly equals the live fresh-DB
+    ``tasks`` columns, and that the only skip-classified columns are the
+    known v1 NOT-NULL-without-default base columns.
+    Test: this test — adding a column to SCHEMA_SQL's CREATE TABLE without it
+    being parseable, or a new NOT-NULL-without-default optional column,
+    fails this assertion.
+    """
+    # The authoritative reconcile set: exactly what the migration iterates.
+    reconcile = kb._parse_schema_columns("tasks")
+
+    # Ground truth: the columns SQLite reports for a freshly-created board.
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(kb.SCHEMA_SQL)
+    kb._migrate_add_optional_columns(conn)
+    live = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    conn.close()
+
+    # The reconcile set is exactly the SCHEMA_SQL/fresh-DB column set — no
+    # column SCHEMA_SQL declares is unreachable by the migration, and the
+    # migration never invents a column SCHEMA_SQL doesn't have.
+    assert set(reconcile) == live, {
+        "missing_from_reconcile": live - set(reconcile),
+        "extra_in_reconcile": set(reconcile) - live,
+    }
+
+    # The only columns the generic reconcile would SKIP (NOT NULL, no DEFAULT)
+    # are the known v1 base columns — every post-v1 optional column is either
+    # nullable or carries a DEFAULT and is therefore migratable.
+    skipped = {
+        name
+        for name, ddl in reconcile.items()
+        if kb._is_not_null_without_default(ddl)
+    }
+    assert skipped == _NOT_NULL_NO_DEFAULT_BASE, skipped

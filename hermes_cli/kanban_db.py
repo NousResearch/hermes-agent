@@ -1352,11 +1352,41 @@ def _cross_process_init_lock(path: Path):
     is redundant work, not corruption. A bounded "proceed anyway" beats an
     unbounded hang that silently stops the board.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
-    handle = lock_path.open("a+b")
-    acquired = False
+
+    # Open the advisory-lock sidecar, but DEGRADE GRACEFULLY if it can't be
+    # created/opened (e.g. a read-only mount, a lock file owned by another uid,
+    # or a filesystem that rejects the open). Previously any
+    # ``PermissionError``/``OSError`` here raised out of ``connect()`` and
+    # permanently blocked ALL migration on that board — the kanban DB could
+    # never self-heal. The advisory lock is only an optimization to serialize
+    # first-connect setup across processes; the in-process ``_INIT_LOCK`` still
+    # protects threads within this process and the additive migrations are
+    # idempotent and race-tolerant (``_add_column_if_missing`` swallows
+    # duplicate-column races). So on open failure we log once and proceed
+    # WITHOUT the cross-process lock rather than blocking kanban forever.
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except (PermissionError, OSError) as exc:
+        _log.warning(
+            "kanban: cross-process init lock unavailable for %s (%s); "
+            "proceeding without advisory lock — in-process lock still applies "
+            "and additive migrations are idempotent",
+            lock_path,
+            exc,
+        )
+        yield
+        return
+
+    acquired = False
+    lock_degraded = False
+    try:
+        # Bounded, non-blocking acquire (#36644): retry ``LOCK_NB`` up to a
+        # deadline, then proceed WITHOUT the cross-process lock. This preserves
+        # main's bounded-loop behaviour — a wedged holder can no longer block
+        # this connect indefinitely — while the open-failure fallback above and
+        # the lock-error fallback below add graceful degradation on top of it.
         deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
         if _IS_WINDOWS:
             import msvcrt
@@ -1381,11 +1411,27 @@ def _cross_process_init_lock(path: Path):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     acquired = True
                     break
-                except (BlockingIOError, OSError):
+                except BlockingIOError:
+                    # Held by another process — keep polling until the deadline.
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(_INIT_LOCK_POLL_SECONDS)
-        if not acquired:
+                except (PermissionError, OSError) as exc:
+                    # Structural inability to lock this sidecar (bad fd, a
+                    # filesystem without ``flock`` support, etc.) rather than
+                    # simple contention — polling would never succeed, so
+                    # degrade immediately instead of spinning to the deadline.
+                    _log.warning(
+                        "kanban: could not acquire cross-process init lock on "
+                        "%s (%s); proceeding without advisory lock — in-process "
+                        "lock still applies and additive migrations are "
+                        "idempotent",
+                        lock_path,
+                        exc,
+                    )
+                    lock_degraded = True
+                    break
+        if not acquired and not lock_degraded:
             _log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "
                 "without the cross-process lock (in-process lock + idempotent "
@@ -2027,6 +2073,24 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+
+    # ``claim_lock`` / ``claim_expires`` live in SCHEMA_SQL's CREATE TABLE for
+    # fresh DBs but were never added to this additive-migration list. Boards
+    # created before these columns existed therefore lack them, and the
+    # one-shot backfill SELECT below references both — so on a legacy/drifted
+    # board the dispatcher tick crashed with
+    # ``sqlite3.OperationalError: no such column: claim_lock`` (issue: legacy
+    # boards never self-heal). Add them here with the EXACT types from
+    # SCHEMA_SQL (``claim_lock TEXT`` / ``claim_expires INTEGER``) using the
+    # same presence-checked, race-tolerant pattern as every other optional
+    # column, then re-snapshot ``cols`` so the backfill SELECT sees them.
+    if "claim_lock" not in cols:
+        _add_column_if_missing(conn, "tasks", "claim_lock", "claim_lock TEXT")
+    if "claim_expires" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "claim_expires", "claim_expires INTEGER"
+        )
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.

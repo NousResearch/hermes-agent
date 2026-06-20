@@ -26,7 +26,10 @@ class TestExactMatch:
     def test_identical_strings(self):
         new, count, _, err = fuzzy_find_and_replace("abc", "abc", "abc")
         assert count == 0
+        assert err is not None
         assert "identical" in err
+        assert "no edit is needed" in err
+        assert "Re-read/verify" in err
 
     def test_multiline_exact(self):
         content = "line1\nline2\nline3"

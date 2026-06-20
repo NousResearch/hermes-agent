@@ -166,6 +166,36 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
 
+    def test_success_then_failure_keeps_unresolved_failure_without_negating_prior_success(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "/tmp/a.md", "content": "landed content"},
+            json.dumps({"success": True, "bytes_written": 14}),
+            is_error=False,
+        )
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": "/tmp/a.md",
+                "old_string": "updated: 2026-06-17",
+                "new_string": "updated: 2026-06-17",
+            },
+            json.dumps({"success": False, "error": "old_string and new_string are identical"}),
+            is_error=True,
+        )
+
+        state = getattr(agent, "_turn_failed_file_mutations")
+        assert "/tmp/a.md" in state
+        assert state["/tmp/a.md"]["tool"] == "patch"
+        assert "old_string and new_string are identical" in state["/tmp/a.md"]["error_preview"]
+
+        footer = AIAgent._format_file_mutation_failure_footer(state)
+        assert "unresolved file-mutation failure(s) remain for this turn" in footer
+        assert "verify the intended final state" in footer
+        assert "were NOT modified this turn" not in footer
+
     def test_write_file_with_lint_error_counts_as_landed(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
@@ -282,10 +312,11 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        assert "1 file(s) were NOT modified" in out
+        assert "1 unresolved file-mutation failure(s) remain" in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
+        assert "were NOT modified this turn" not in out
 
     def test_truncation_at_10_entries(self):
         failed = {
@@ -293,7 +324,7 @@ class TestFormatFooter:
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file(s) were NOT modified" in out
+        assert "15 unresolved file-mutation failure(s) remain" in out
         assert "… and 5 more" in out
         # Ten file bullets + header + "and X more" line
         lines = out.split("\n")

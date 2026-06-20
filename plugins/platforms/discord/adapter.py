@@ -4138,6 +4138,62 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_name_triggers(self) -> list:
+        """Return configured name wake-words that let the bot answer text-channel
+        messages without an @mention (e.g. "кработ", "крабик", "робби").
+
+        Empty by default → no behaviour change for any profile.  Configure via
+        the ``discord.name_triggers`` list in config.yaml or the comma-separated
+        ``DISCORD_NAME_TRIGGERS`` env var.
+        """
+        raw = self.config.extra.get("name_triggers")
+        if raw is None:
+            raw = os.getenv("DISCORD_NAME_TRIGGERS", "")
+        if isinstance(raw, list):
+            return [str(x).strip() for x in raw if str(x).strip()]
+        return [p.strip() for p in str(raw).split(",") if p.strip()]
+
+    def _discord_name_trigger_regex(self):
+        """Lazily compile + cache the name-trigger matcher.
+
+        Recompiles only when the configured list changes; returns ``None`` when
+        no triggers are configured so the hot path stays cheap.
+        """
+        import re
+
+        names = self._discord_name_triggers()
+        cache_key = tuple(sorted(n.lower() for n in names))
+        if getattr(self, "_name_trigger_key", None) == cache_key:
+            return self._name_trigger_rx
+        if not names:
+            self._name_trigger_key = cache_key
+            self._name_trigger_rx = None
+            return None
+        alt = "|".join(re.escape(n) for n in names)
+        # Unicode-aware boundaries: "бот" must NOT fire inside "работа"/"суббота".
+        self._name_trigger_rx = re.compile(rf"(?iu)(?<!\w)(?:{alt})(?!\w)")
+        self._name_trigger_key = cache_key
+        return self._name_trigger_rx
+
+    def _discord_text_matches_name(self, text: str) -> bool:
+        """True when ``text`` contains one of the configured bot name triggers."""
+        if not text:
+            return False
+        rx = self._discord_name_trigger_regex()
+        return bool(rx and rx.search(text))
+
+    def _discord_strip_leading_name(self, text: str) -> str:
+        """Strip a leading name trigger + trailing punctuation, mirroring the
+        voice wake-word cleanup so the agent receives the actual request."""
+        import re
+
+        names = self._discord_name_triggers()
+        if not text or not names:
+            return text
+        alt = "|".join(re.escape(n) for n in names)
+        stripped = re.sub(rf"(?iu)^\s*(?:{alt})(?!\w)[\s,:;!..\-—–]*", "", text).strip()
+        return stripped or text
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -5236,9 +5292,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not self._discord_thread_require_mention()
             )
 
+            matched_name_trigger = False
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
-                    return
+                    if self._discord_text_matches_name(normalized_content):
+                        normalized_content = self._discord_strip_leading_name(normalized_content)
+                        message.content = normalized_content
+                        mention_prefix = True
+                        matched_name_trigger = True
+                    else:
+                        return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -5250,7 +5313,13 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            if (
+                auto_thread
+                and not skip_thread
+                and not is_voice_linked_channel
+                and not is_reply_message
+                and not matched_name_trigger
+            ):
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
@@ -6985,6 +7054,15 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    nt = discord_cfg.get("name_triggers")
+    if nt is not None and not os.getenv("DISCORD_NAME_TRIGGERS"):
+        if isinstance(nt, list):
+            nt = ",".join(str(v) for v in nt)
+        os.environ["DISCORD_NAME_TRIGGERS"] = str(nt)
+        logger.info(
+            "[Discord] Name triggers enabled from config: %s",
+            os.environ["DISCORD_NAME_TRIGGERS"],
+        )
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
     if isinstance(platforms_cfg, dict):

@@ -99,46 +99,32 @@ class TestWriteFrequencyParsing:
 
 
 # ---------------------------------------------------------------------------
-# resolve_session_name with session_title
+# resolve_session_name
 # ---------------------------------------------------------------------------
 
-class TestResolveSessionNameTitle:
-    def test_manual_override_beats_title(self):
+class TestResolveSessionName:
+    def test_manual_override_wins(self):
         cfg = HonchoClientConfig(sessions={"/my/project": "manual-name"})
-        result = cfg.resolve_session_name("/my/project", session_title="the-title")
+        result = cfg.resolve_session_name("/my/project", session_id="20260309_175514_9797dd")
         assert result == "manual-name"
 
-    def test_title_beats_dirname(self):
+    def test_dirname_used_by_default(self):
         cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="my-project")
-        assert result == "my-project"
+        result = cfg.resolve_session_name("/some/dir")
+        assert result == "dir"
 
-    def test_title_with_peer_prefix(self):
+    def test_dirname_with_peer_prefix(self):
         cfg = HonchoClientConfig(peer_name="eri", session_peer_prefix=True)
-        result = cfg.resolve_session_name("/some/dir", session_title="aeris")
-        assert result == "eri-aeris"
+        result = cfg.resolve_session_name("/some/dir")
+        assert result == "eri-dir"
 
-    def test_title_sanitized(self):
+    def test_gateway_key_used_when_present(self):
         cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="my project/name!")
-        # trailing dashes stripped by .strip('-')
-        assert result == "my-project-name"
-
-    def test_title_all_invalid_chars_falls_back_to_dirname(self):
-        cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="!!! ###")
-        # sanitized to empty → falls back to dirname
-        assert result == "dir"
-
-    def test_none_title_falls_back_to_dirname(self):
-        cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title=None)
-        assert result == "dir"
-
-    def test_empty_title_falls_back_to_dirname(self):
-        cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="")
-        assert result == "dir"
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            gateway_session_key="agent:main:discord:group:123:456",
+        )
+        assert result == "agent-main-discord-group-123-456"
 
     def test_per_session_uses_session_id(self):
         cfg = HonchoClientConfig(session_strategy="per-session")
@@ -155,10 +141,11 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_id=None)
         assert result == "dir"
 
-    def test_title_beats_session_id(self):
-        cfg = HonchoClientConfig(session_strategy="per-session")
-        result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
-        assert result == "my-title"
+    def test_per_repo_uses_repo_name(self):
+        cfg = HonchoClientConfig(session_strategy="per-repo")
+        with patch.object(HonchoClientConfig, "_git_repo_name", return_value="repo-name"):
+            result = cfg.resolve_session_name("/some/dir")
+        assert result == "repo-name"
 
     def test_manual_beats_session_id(self):
         cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})

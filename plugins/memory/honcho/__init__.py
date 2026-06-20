@@ -356,11 +356,9 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def _resolve_session_key(self, cfg, session_id: str, **kwargs) -> str:
         """Resolve the Honcho session key without touching the network."""
-        session_title = kwargs.get("session_title")
         gateway_session_key = kwargs.get("gateway_session_key")
         return (
             cfg.resolve_session_name(
-                session_title=session_title,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
             )

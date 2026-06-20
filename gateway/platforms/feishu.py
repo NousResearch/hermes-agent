@@ -1322,8 +1322,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("[Feishu] WebSocket client crashed: %s", exc, exc_info=True)
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
@@ -1342,6 +1342,11 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             pass
         adapter._ws_thread_loop = None
+
+        if getattr(adapter, "_running", False):
+            import os
+            logger.error("[Feishu] WebSocket loop terminated unexpectedly (zombie state). Forcing process crash to trigger Restarter fallback.")
+            os._exit(1)
 
 
 def check_feishu_requirements() -> bool:

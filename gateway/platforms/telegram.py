@@ -17,6 +17,7 @@ import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
@@ -2451,6 +2452,20 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            # Build inline keyboard from metadata if provided (cron delivery)
+            _inline_reply_markup = None
+            if metadata and metadata.get("inline_buttons"):
+                try:
+                    _rows = metadata["inline_buttons"]
+                    _keyboard = [
+                        [InlineKeyboardButton(text=btn.get("text", ""), callback_data=btn.get("callback_data", ""))
+                         for btn in row]
+                        for row in _rows
+                    ]
+                    _inline_reply_markup = InlineKeyboardMarkup(_keyboard)
+                except Exception as _btn_err:
+                    logger.warning("[%s] Failed to build inline keyboard from metadata: %s", self.name, _btn_err)
+
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
@@ -2495,6 +2510,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
+                # Attach inline keyboard only to the last chunk
+                _chunk_reply_markup = _inline_reply_markup if (i == len(chunks) - 1) else None
+                _markup_kwargs = {"reply_markup": _chunk_reply_markup} if _chunk_reply_markup else {}
                 for _send_attempt in range(3):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
@@ -2507,6 +2525,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **_markup_kwargs,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -2521,6 +2540,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **_markup_kwargs,
                                 )
                             else:
                                 raise
@@ -2708,6 +2728,53 @@ class TelegramAdapter(BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
+    def _inline_keyboard_from_rows(self, rows):
+        """Build an InlineKeyboardMarkup from HERMES_INLINE_BUTTONS rows."""
+        try:
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        text=_b.get("text", ""),
+                        callback_data=_b.get("callback_data", ""),
+                    )
+                    for _b in _row
+                ]
+                for _row in rows
+            ]
+            return InlineKeyboardMarkup(keyboard)
+        except Exception as exc:
+            logger.warning("[%s] Failed to build inline keyboard: %s", self.name, exc)
+            return None
+
+    def _split_inline_buttons_marker(self, text):
+        """Split a ``HERMES_INLINE_BUTTONS:`` marker line out of *text*.
+
+        Returns ``(text_without_marker, rows)`` or ``(text, None)`` when no
+        valid marker line is present (a malformed/partial marker is left as-is,
+        which matters during streaming when the line may arrive incomplete).
+        """
+        if not text or "HERMES_INLINE_BUTTONS:" not in text:
+            return text, None
+        rows = None
+        kept = []
+        for line in text.splitlines():
+            if line.strip().startswith("HERMES_INLINE_BUTTONS:"):
+                try:
+                    import json as _json
+                    _parsed = _json.loads(line.strip()[len("HERMES_INLINE_BUTTONS:"):])
+                    # Telegram allows only ONE inline keyboard per message, so
+                    # the first valid marker wins; strip ALL of them either way
+                    # so no raw marker line ever leaks into the visible text.
+                    if rows is None:
+                        rows = _parsed
+                    continue
+                except Exception:
+                    pass
+            kept.append(line)
+        if rows is None:
+            return text, None
+        return "\n".join(kept), rows
+
     async def edit_message(
         self,
         chat_id: str,
@@ -2730,6 +2797,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        # Streamed responses bypass the base.py final-send button extraction, so
+        # handle HERMES_INLINE_BUTTONS here: strip the marker line out of the
+        # text (so it never shows raw) before any render path, and on the final
+        # edit attach the inline keyboard the agent requested.
+        _md_rows = (metadata or {}).get("inline_buttons")
+        _clean_content, _parsed_rows = self._split_inline_buttons_marker(content)
+        content = _clean_content
+        _rows = _md_rows if _md_rows is not None else _parsed_rows
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -2740,10 +2816,29 @@ class TelegramAdapter(BasePlatformAdapter):
         # table that exceeds the MarkdownV2 limit must not be split into legacy
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
+        # ponytail: rich path returns early, so buttons skip on rich+buttons
+        # (rare); marker is already stripped above so nothing leaks raw.
         if finalize and self._rich_eligible(content):
             rich_result = await self._try_edit_rich(chat_id, message_id, content)
             if rich_result is not None:
                 return rich_result
+
+        _reply_markup = self._inline_keyboard_from_rows(_rows) if (finalize and _rows) else None
+        _markup_kwargs = {"reply_markup": _reply_markup} if _reply_markup is not None else {}
+
+        async def _attach_markup_if_unmodified(err) -> bool:
+            """When the text is unchanged Telegram reports 'not modified' and
+            skips the edit — but we may still need to attach the keyboard. Apply
+            it via editMessageReplyMarkup so buttons land on the final message."""
+            if _reply_markup is None or "not modified" not in str(err).lower():
+                return False
+            try:
+                await self._bot.edit_message_reply_markup(
+                    chat_id=int(chat_id), message_id=int(message_id), reply_markup=_reply_markup,
+                )
+            except Exception:
+                pass
+            return True
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.
@@ -2768,10 +2863,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
+                    **_markup_kwargs,
                 )
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
+                    await _attach_markup_if_unmodified(fmt_err)
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 logger.warning(
@@ -2784,12 +2881,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=_plain,
+                    **_markup_kwargs,
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
+                await _attach_markup_if_unmodified(e)
                 return SendResult(success=True, message_id=message_id)
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
@@ -4248,6 +4347,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
+            # Any callback_data that matched none of the built-in prefixes above
+            # came from a button the agent itself emitted via the
+            # HERMES_INLINE_BUTTONS markup. Treat the tap as a new user turn so
+            # the agent can react (and, if it wants, offer more buttons).
+            await self._handle_agent_button_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))
@@ -4283,6 +4394,94 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_agent_button_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Feed a tap on an agent-emitted inline button back to the agent.
+
+        The agent advertises buttons via ``HERMES_INLINE_BUTTONS`` (see the
+        Telegram platform hint). When one is tapped, its ``callback_data`` is
+        dispatched as the pressing user's next message so the agent can act on
+        it like any other reply — and, if it wants, offer more buttons.
+        """
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to use these buttons.")
+            return
+
+        label = self._inline_button_label_for(query, data) or data
+        await query.answer()
+
+        # Strip the keyboard so the same choice can't fire twice, and append the
+        # chosen option to the original message for a readable transcript.
+        try:
+            original_text = getattr(query.message, "text", "") or ""
+            shown = f"{original_text}\n\n▸ {label}" if original_text else f"▸ {label}"
+            await query.edit_message_text(text=shown[:4096], reply_markup=None)
+        except Exception:
+            pass  # non-fatal if the edit fails (e.g. message too old)
+
+        event = self._build_button_press_event(query, data)
+        if event is None:
+            logger.warning(
+                "[%s] Could not build event for button callback_data=%r", self.name, data
+            )
+            return
+        event = self._apply_telegram_group_observe_attribution(event)
+        await self.handle_message(event)
+
+    def _inline_button_label_for(self, query, data: str) -> Optional[str]:
+        """Return the visible label of the tapped button, if discoverable."""
+        try:
+            markup = getattr(getattr(query, "message", None), "reply_markup", None)
+            for row in getattr(markup, "inline_keyboard", None) or []:
+                for btn in row:
+                    if getattr(btn, "callback_data", None) == data:
+                        return getattr(btn, "text", None)
+        except Exception:
+            pass
+        return None
+
+    def _build_button_press_event(self, query, data: str) -> Optional["MessageEvent"]:
+        """Synthesize a text MessageEvent for an inline-button tap.
+
+        Reuses :meth:`_build_message_event` so session/thread/topic routing is
+        identical to a typed reply: the bot's button message supplies the chat
+        and thread, the pressing user supplies identity, and ``callback_data``
+        becomes the message text.
+        """
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        if chat is None:
+            return None
+        proxy = SimpleNamespace(
+            chat=chat,
+            from_user=getattr(query, "from_user", None),
+            text=data,
+            message_thread_id=getattr(message, "message_thread_id", None),
+            is_topic_message=getattr(message, "is_topic_message", False),
+            message_id=getattr(message, "message_id", 0),
+            date=getattr(message, "date", None),
+            reply_to_message=None,
+            quote=None,
+            forum_topic_created=None,
+            caption=None,
+        )
+        return self._build_message_event(proxy, MessageType.TEXT)
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

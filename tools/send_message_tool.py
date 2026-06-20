@@ -713,7 +713,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, inline_buttons=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -774,6 +774,24 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         except Exception:
             pass
 
+    # If the caller didn't supply inline_buttons, extract a HERMES_INLINE_BUTTONS
+    # marker from the message text and strip it, so the standalone send path
+    # renders buttons the same way the gateway response path does (and no
+    # platform ever shows the raw marker line).
+    if inline_buttons is None and "HERMES_INLINE_BUTTONS:" in message:
+        _kept_lines = []
+        for _line in message.splitlines():
+            if inline_buttons is None and _line.strip().startswith("HERMES_INLINE_BUTTONS:"):
+                try:
+                    import json as _json
+                    inline_buttons = _json.loads(_line.strip()[len("HERMES_INLINE_BUTTONS:"):])
+                    continue
+                except Exception:
+                    pass
+            _kept_lines.append(_line)
+        if inline_buttons is not None:
+            message = "\n".join(_kept_lines)
+
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
     # Telegram measures length in UTF-16 code units, not Unicode codepoints.
@@ -798,6 +816,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                inline_buttons=inline_buttons if is_last else None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -970,7 +989,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, inline_buttons=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1055,6 +1074,24 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+        # Attach an inline keyboard (HERMES_INLINE_BUTTONS) so the standalone
+        # send path keeps the buttons that the live gateway adapter would add.
+        if inline_buttons:
+            try:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                _kb = [
+                    [
+                        InlineKeyboardButton(
+                            text=_b.get("text", ""),
+                            callback_data=_b.get("callback_data", ""),
+                        )
+                        for _b in _row
+                    ]
+                    for _row in inline_buttons
+                ]
+                text_kwargs["reply_markup"] = InlineKeyboardMarkup(_kb)
+            except Exception as _btn_err:
+                logger.warning("send_message: failed to build inline keyboard: %s", _btn_err)
 
         last_msg = None
         warnings = []

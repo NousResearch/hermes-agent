@@ -760,6 +760,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
+    # Extract HERMES_INLINE_BUTTONS: markers from the delivery content so that
+    # inline keyboard buttons can be forwarded to platforms that support them
+    # (currently Telegram).  The marker is a single line:
+    #   HERMES_INLINE_BUTTONS:[[{"text":"...", "callback_data":"..."}]]
+    inline_buttons = None
+    _btn_lines = []
+    _clean_lines = []
+    for _line in cleaned_delivery_content.splitlines():
+        if _line.strip().startswith("HERMES_INLINE_BUTTONS:"):
+            _btn_payload = _line.strip()[len("HERMES_INLINE_BUTTONS:"):]
+            try:
+                inline_buttons = json.loads(_btn_payload)
+            except Exception:
+                logger.warning("Job '%s': failed to parse HERMES_INLINE_BUTTONS payload", job["id"])
+                _clean_lines.append(_line)
+        else:
+            _clean_lines.append(_line)
+    cleaned_delivery_content = "\n".join(_clean_lines)
+
     try:
         config = load_gateway_config()
     except Exception as e:
@@ -813,6 +832,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
+            if inline_buttons and send_metadata:
+                send_metadata["inline_buttons"] = inline_buttons
+            elif inline_buttons:
+                send_metadata = {"inline_buttons": inline_buttons}
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -886,7 +909,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, inline_buttons=inline_buttons)
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -896,7 +919,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, inline_buttons=inline_buttons))
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

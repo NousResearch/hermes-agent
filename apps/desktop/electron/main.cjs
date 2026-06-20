@@ -27,9 +27,11 @@ const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
+  buildSessionRestoreSnapshot,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  parseSessionRestoreSnapshot,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
@@ -309,6 +311,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_SESSION_RESTORE_PATH = path.join(app.getPath('userData'), 'session-restore.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -5099,6 +5102,144 @@ function wireCommonWindowHandlers(win) {
 // close. The primary mainWindow is never tracked here. Pure logic + the URL
 // builder live in session-windows.cjs so they stay unit-testable.
 const sessionWindows = createSessionWindowRegistry()
+const activeSessionWindowState = new Map()
+let sessionRestoreQuitInProgress = false
+let sessionRestorePersistTimer = null
+
+function sessionWindowKey(sessionId) {
+  return typeof sessionId === 'string' ? sessionId.trim() : ''
+}
+
+function openSessionRestoreEntries() {
+  const entries = []
+
+  for (const [sessionId, state] of activeSessionWindowState.entries()) {
+    const win = state.window
+    if (!win || win.isDestroyed()) {
+      continue
+    }
+
+    let bounds = null
+    try {
+      bounds = win.getBounds()
+    } catch {
+      bounds = state.bounds || null
+    }
+
+    entries.push({ sessionId, watch: state.watch === true, bounds })
+  }
+
+  return entries
+}
+
+function writeSessionRestoreSnapshot(snapshot) {
+  fs.mkdirSync(path.dirname(DESKTOP_SESSION_RESTORE_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_SESSION_RESTORE_PATH, JSON.stringify(snapshot, null, 2) + '\n', 'utf8')
+}
+
+function clearSessionRestoreSnapshot() {
+  if (sessionRestorePersistTimer) {
+    clearTimeout(sessionRestorePersistTimer)
+    sessionRestorePersistTimer = null
+  }
+
+  try {
+    fs.rmSync(DESKTOP_SESSION_RESTORE_PATH, { force: true })
+  } catch (error) {
+    rememberLog(`[session-restore] failed to clear restore snapshot: ${error.message}`)
+  }
+}
+
+function persistSessionRestoreStateNow() {
+  if (sessionRestorePersistTimer) {
+    clearTimeout(sessionRestorePersistTimer)
+    sessionRestorePersistTimer = null
+  }
+
+  const snapshot = buildSessionRestoreSnapshot(openSessionRestoreEntries())
+  if (snapshot.entries.length === 0) {
+    clearSessionRestoreSnapshot()
+    return snapshot
+  }
+
+  try {
+    writeSessionRestoreSnapshot(snapshot)
+  } catch (error) {
+    rememberLog(`[session-restore] failed to persist restore snapshot: ${error.message}`)
+  }
+
+  return snapshot
+}
+
+function scheduleSessionRestorePersist() {
+  if (sessionRestoreQuitInProgress) {
+    return
+  }
+
+  if (sessionRestorePersistTimer) {
+    clearTimeout(sessionRestorePersistTimer)
+  }
+
+  sessionRestorePersistTimer = setTimeout(() => persistSessionRestoreStateNow(), 250)
+}
+
+function readSessionRestoreSnapshot() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_SESSION_RESTORE_PATH, 'utf8'))
+    return parseSessionRestoreSnapshot(parsed)
+  } catch {
+    return buildSessionRestoreSnapshot([])
+  }
+}
+
+function trackSessionWindow(sessionId, win, { watch = false } = {}) {
+  const key = sessionWindowKey(sessionId)
+  if (!key || !win || win.isDestroyed()) {
+    return
+  }
+
+  const updateBounds = () => {
+    try {
+      const state = activeSessionWindowState.get(key)
+      if (state) {
+        state.bounds = win.getBounds()
+      }
+    } catch {
+      void 0
+    }
+    scheduleSessionRestorePersist()
+  }
+
+  activeSessionWindowState.set(key, { bounds: null, watch: watch === true, window: win })
+  win.on('move', updateBounds)
+  win.on('resize', updateBounds)
+  win.once('closed', () => {
+    if (!sessionRestoreQuitInProgress) {
+      activeSessionWindowState.delete(key)
+      scheduleSessionRestorePersist()
+    }
+  })
+
+  updateBounds()
+}
+
+function pendingSessionRestoreSnapshot() {
+  const snapshot = readSessionRestoreSnapshot()
+  return snapshot.entries.length > 0 ? snapshot : null
+}
+
+function restoreSessionWindowsFromSnapshot() {
+  const snapshot = readSessionRestoreSnapshot()
+  let restored = 0
+
+  for (const entry of snapshot.entries) {
+    if (createSessionWindow(entry.sessionId, { bounds: entry.bounds, watch: entry.watch === true })) {
+      restored += 1
+    }
+  }
+
+  return { ok: true, restored, snapshot }
+}
 
 function focusWindow(win) {
   if (!win || win.isDestroyed()) return

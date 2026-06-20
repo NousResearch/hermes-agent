@@ -2,9 +2,11 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
+  buildSessionRestoreSnapshot,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
-  createSessionWindowRegistry
+  createSessionWindowRegistry,
+  parseSessionRestoreSnapshot
 } = require('./session-windows.cjs')
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
@@ -196,4 +198,48 @@ test('chatWindowWebPreferences passes the preload path through and keeps the har
   assert.equal(prefs.contextIsolation, true)
   assert.equal(prefs.sandbox, true)
   assert.equal(prefs.nodeIntegration, false)
+})
+
+test('buildSessionRestoreSnapshot dedupes, trims, and preserves valid bounds', () => {
+  const snapshot = buildSessionRestoreSnapshot(
+    [
+      { sessionId: ' s1 ', watch: true, bounds: { x: 12.4, y: 40.6, width: 100, height: 100 } },
+      { sessionId: 's1', watch: false, bounds: { x: 99, y: 99, width: 999, height: 999 } },
+      { sessionId: '', bounds: { x: 0, y: 0, width: 800, height: 600 } },
+      { sessionId: 's2', bounds: { x: 1, y: 2, width: 900, height: 700 } }
+    ],
+    { createdAt: 123 }
+  )
+
+  assert.deepEqual(snapshot, {
+    schemaVersion: 1,
+    createdAt: 123,
+    entries: [
+      { sessionId: 's1', watch: true, bounds: { x: 12, y: 41, width: 420, height: 620 } },
+      { sessionId: 's2', watch: false, bounds: { x: 1, y: 2, width: 900, height: 700 } }
+    ]
+  })
+})
+
+test('parseSessionRestoreSnapshot ignores invalid schema and malformed entries', () => {
+  assert.deepEqual(parseSessionRestoreSnapshot({ schemaVersion: 999, entries: [{ sessionId: 's1' }] }).entries, [])
+
+  const snapshot = parseSessionRestoreSnapshot({
+    schemaVersion: 1,
+    createdAt: 456,
+    entries: [
+      null,
+      { sessionId: 'ok', bounds: { x: 'bad', y: 0, width: 800, height: 600 } },
+      { sessionId: 'with-bounds', bounds: { x: 0, y: 1, width: 800, height: 650 } }
+    ]
+  })
+
+  assert.deepEqual(snapshot, {
+    schemaVersion: 1,
+    createdAt: 456,
+    entries: [
+      { sessionId: 'ok', watch: false },
+      { sessionId: 'with-bounds', watch: false, bounds: { x: 0, y: 1, width: 800, height: 650 } }
+    ]
+  })
 })

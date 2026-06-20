@@ -9,6 +9,8 @@ const { pathToFileURL } = require('node:url')
 // subagent watch / cmd-click session pop-out, not a second full desktop.
 const SESSION_WINDOW_MIN_WIDTH = 420
 const SESSION_WINDOW_MIN_HEIGHT = 620
+const SESSION_RESTORE_SCHEMA_VERSION = 1
+const MAX_RESTORABLE_SESSION_WINDOWS = 32
 
 // Shared webPreferences for every window that renders the chat transcript — the
 // primary window AND the secondary session windows. Keeping it in one place is
@@ -53,6 +55,94 @@ function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, watch,
   }
 
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+}
+
+function normalizeSessionId(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function finiteInteger(value) {
+  return Number.isFinite(value) ? Math.round(value) : null
+}
+
+function normalizeRestoreBounds(bounds) {
+  if (!bounds || typeof bounds !== 'object') {
+    return null
+  }
+
+  const x = finiteInteger(bounds.x)
+  const y = finiteInteger(bounds.y)
+  const width = finiteInteger(bounds.width)
+  const height = finiteInteger(bounds.height)
+
+  if (x === null || y === null || width === null || height === null) {
+    return null
+  }
+
+  return {
+    x,
+    y,
+    width: Math.max(width, SESSION_WINDOW_MIN_WIDTH),
+    height: Math.max(height, SESSION_WINDOW_MIN_HEIGHT)
+  }
+}
+
+function normalizeRestoreEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null
+  }
+
+  const sessionId = normalizeSessionId(entry.sessionId)
+  if (!sessionId) {
+    return null
+  }
+
+  const normalized = {
+    sessionId,
+    watch: entry.watch === true
+  }
+
+  const bounds = normalizeRestoreBounds(entry.bounds)
+  if (bounds) {
+    normalized.bounds = bounds
+  }
+
+  return normalized
+}
+
+function buildSessionRestoreSnapshot(entries, { createdAt = Date.now() } = {}) {
+  const seen = new Set()
+  const normalized = []
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const next = normalizeRestoreEntry(entry)
+    if (!next || seen.has(next.sessionId)) {
+      continue
+    }
+
+    seen.add(next.sessionId)
+    normalized.push(next)
+
+    if (normalized.length >= MAX_RESTORABLE_SESSION_WINDOWS) {
+      break
+    }
+  }
+
+  return {
+    schemaVersion: SESSION_RESTORE_SCHEMA_VERSION,
+    createdAt,
+    entries: normalized
+  }
+}
+
+function parseSessionRestoreSnapshot(raw) {
+  if (!raw || typeof raw !== 'object' || raw.schemaVersion !== SESSION_RESTORE_SCHEMA_VERSION) {
+    return buildSessionRestoreSnapshot([])
+  }
+
+  return buildSessionRestoreSnapshot(raw.entries, {
+    createdAt: typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now()
+  })
 }
 
 // A small registry keyed by sessionId that guarantees one window per chat:
@@ -116,9 +206,12 @@ function createSessionWindowRegistry() {
 }
 
 module.exports = {
+  buildSessionRestoreSnapshot,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  parseSessionRestoreSnapshot,
+  SESSION_RESTORE_SCHEMA_VERSION,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 }

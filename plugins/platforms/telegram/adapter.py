@@ -4292,6 +4292,31 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _notify_clarify_expired(self, query, user_display: str) -> None:
+        """Tell the user a clarify tap arrived too late to be delivered.
+
+        Fires when the clarify entry was evicted by ``clarify_timeout`` or the
+        gateway restarted between asking and the tap. In both cases the agent
+        thread is no longer waiting, so the tap would otherwise leave a
+        misleading ✓ (or an "awaiting typed response" prompt) on a button the
+        agent never receives.
+        """
+        try:
+            await query.answer(text="⚠️ This prompt expired — please /retry.")
+        except Exception:
+            pass
+        try:
+            await query.edit_message_text(
+                text=(
+                    f"❓ {_html.escape(query.message.text or '')}\n\n"
+                    "<i>⚠️ This question expired or the session reset — please /retry.</i>"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4529,11 +4554,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     # clarify.  Do NOT pop _clarify_state yet — we still
                     # need it if the user is slow to respond and the entry
                     # is cleared by something else.
+                    flipped = False
                     try:
                         from tools.clarify_gateway import mark_awaiting_text
-                        mark_awaiting_text(clarify_id)
+                        flipped = mark_awaiting_text(clarify_id)
                     except Exception as exc:
                         logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
+
+                    if not flipped:
+                        # Entry evicted (clarify_timeout) or gateway restarted
+                        # between ask and tap — a typed answer would go nowhere.
+                        self._clarify_state.pop(clarify_id, None)
+                        await self._notify_clarify_expired(query, user_display)
+                        return
 
                     await query.answer(text="✏️ Type your answer in the chat.")
                     try:
@@ -4580,22 +4613,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
                     resolved = False
 
-                await query.answer(text=f"✓ {resolved_text[:60]}")
-                try:
-                    await query.edit_message_text(
-                        text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass
-
                 if resolved:
+                    await query.answer(text=f"✓ {resolved_text[:60]}")
+                    try:
+                        await query.edit_message_text(
+                            text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
                     logger.info(
                         "Telegram clarify button resolved (id=%s, choice=%r, user=%s)",
                         clarify_id, resolved_text, user_display,
                     )
                 else:
+                    # Entry evicted (clarify_timeout) or gateway restarted
+                    # between ask and tap — surface this instead of leaving a
+                    # misleading ✓ on a button the agent will never receive.
+                    await self._notify_clarify_expired(query, user_display)
                     logger.warning(
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,

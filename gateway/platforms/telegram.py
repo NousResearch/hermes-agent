@@ -5579,6 +5579,60 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    @staticmethod
+    def _expand_text_links(text: str, entities: list) -> str:
+        """Convert Telegram text_link entities to Markdown [text](url) syntax.
+
+        Telegram entity offsets are in UTF-16 code units, not Python string
+        indices.  We convert them before slicing so CJK / emoji text is handled
+        correctly.
+
+        Processes entities in reverse offset order so earlier offsets stay
+        valid after each replacement.
+        """
+        if not text or not entities:
+            return text
+
+        import bisect
+
+        # Build a mapping from UTF-16 offset → Python string index.
+        utf16_positions = [0]  # utf16 position at the start of each codepoint
+        for ch in text:
+            utf16_positions.append(utf16_positions[-1] + (2 if ord(ch) > 0xFFFF else 1))
+
+        links = []
+        for entity in entities:
+            entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+            if entity_type != "text_link":
+                continue
+            url = getattr(entity, "url", None)
+            if not url:
+                continue
+            offset = int(getattr(entity, "offset", -1))
+            length = int(getattr(entity, "length", 0))
+            if offset < 0 or length <= 0:
+                continue
+            # Convert UTF-16 offset+length to Python string indices
+            try:
+                py_start = utf16_positions.index(offset)
+            except ValueError:
+                py_start = bisect.bisect_left(utf16_positions, offset)
+                if py_start >= len(utf16_positions):
+                    continue
+            end_utf16 = offset + length
+            try:
+                py_end = utf16_positions.index(end_utf16)
+            except ValueError:
+                py_end = bisect.bisect_left(utf16_positions, end_utf16)
+            links.append((py_start, py_end, url))
+        if not links:
+            return text
+        # Sort by offset descending so replacements don't shift earlier offsets
+        for py_start, py_end, url in sorted(links, key=lambda x: x[0], reverse=True):
+            link_text = text[py_start:py_end]
+            text = text[:py_start] + f"[{link_text}]({url})" + text[py_end:]
+        return text
+
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
         """Return True when a group message should be stored but not dispatched."""
         if not self._telegram_observe_unmentioned_group_messages():
@@ -5977,6 +6031,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = self._expand_text_links(event.text, msg.entities or [])
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -6205,7 +6260,9 @@ class TelegramAdapter(BasePlatformAdapter):
         
         # Add caption as text
         if msg.caption:
-            event.text = self._clean_bot_trigger_text(msg.caption)
+            event.text = self._clean_bot_trigger_text(
+                self._expand_text_links(msg.caption, msg.caption_entities or [])
+            )
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:

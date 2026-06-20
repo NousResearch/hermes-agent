@@ -58,6 +58,7 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 
   return (
     <footer
+      data-statusbar
       className={cn(
         'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
         className

@@ -206,16 +206,16 @@ export function BootFailureOverlay() {
                 </Button>
               )}
               {!remoteReauth ? (
-                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
+                <Button data-boot-action="repair" disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
                   {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
                   {copy.repairInstall}
                 </Button>
               ) : null}
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
+              <Button data-boot-action="local" disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
                 {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
                 {copy.useLocalGateway}
               </Button>
-              <Button onClick={openLogs} variant="ghost">
+              <Button data-boot-action="logs" onClick={openLogs} variant="ghost">
                 <FileText />
                 {copy.openLogs}
               </Button>

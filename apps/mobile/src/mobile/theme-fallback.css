@@ -34,19 +34,17 @@ body {
   position: fixed;
   inset: 0;
   box-sizing: border-box;
-  /* Top is intentionally 0: the chat + bottom bar stay exactly where they were
-     (the approved layout). Only the titlebar is moved below the status bar — see
-     the [data-titlebar-cluster] rule below. Bottom/side insets keep the bottom
-     bar above the nav bar and clear of any notch. */
-  padding-top: 0;
+  /* Inset the whole app by the status-bar height so NOTHING (chat title, message
+     list, etc.) renders behind the clock/battery — the app visually stops at the
+     status bar. The fixed titlebar clusters get the same inset below. */
+  padding-top: env(safe-area-inset-top);
   /* Bottom = nav-bar inset. When the keyboard opens the WebView shrinks above
      it natively (Chromium edge-to-edge), so no manual lift is needed here. */
   padding-bottom: env(safe-area-inset-bottom);
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
-  /* The safe-area strips (notably under the nav bar) show this background. Use
-     the bottom status bar's surface color so the nav-bar area reads as the
-     bottom bar continuing to the screen edge, not a bare white strip. */
+  /* The safe-area strips (status bar on top, nav bar on bottom) show this
+     background, so they read as a clean themed band rather than bare white. */
   background: var(--ui-sidebar-surface-background, var(--dt-background, #0d2f86));
   overflow: hidden;
 }
@@ -57,16 +55,25 @@ body {
 }
 
 /*
- * Move ONLY the desktop titlebar (settings gear, sidebar toggles, swap, etc.)
- * below the status bar. All three titlebar clusters are position:fixed and
- * anchored by --titlebar-controls-top; we add the status-bar inset to that so
- * the buttons clear the clock/battery and become tappable — without touching
- * the chat or the bottom bar. (env(safe-area-inset-top) is real thanks to the
- * SafeArea plugin; it's 0 in a plain browser, so this is a no-op in dev.)
+ * The titlebar clusters (settings gear, sidebar toggles, swap, etc.) are
+ * position:fixed (viewport-relative), so #root's top inset doesn't move them —
+ * add the same status-bar inset here so they land in the chat's titlebar row
+ * (which is now inset by #root) instead of behind the clock/battery.
+ * (env(safe-area-inset-top) is real thanks to the SafeArea plugin; 0 in a plain
+ * browser, so this is a no-op in dev.)
  */
 [data-titlebar-cluster] {
-  /* status-bar inset, nudged up 15px so the titlebar sits a touch higher. */
-  top: calc(var(--titlebar-controls-top, 0px) + env(safe-area-inset-top) - 15px) !important;
+  top: calc(var(--titlebar-controls-top, 0px) + env(safe-area-inset-top)) !important;
+}
+
+/* Slightly larger tap targets for touch — the desktop titlebar buttons are tuned
+   for a mouse. Bumped a little (not a lot) so they're easier to hit. */
+:root {
+  --titlebar-control-size: 1.6rem;
+  --titlebar-control-height: 1.7rem;
+}
+[data-titlebar-cluster] .codicon {
+  font-size: 1rem !important;
 }
 
 /* While a sidebar drawer is open, hide the titlebar — it's position:fixed at a
@@ -105,6 +112,31 @@ body {
   display: none !important;
 }
 
+/* Slightly taller bottom bar with larger text/icons so the items are easier to
+   tap (the desktop bar is h-5 / 0.6875rem — too small for touch). Bumped a
+   little, not a lot. */
+[data-statusbar] {
+  height: 1.75rem !important;
+}
+[data-statusbar] [data-statusbar-id] {
+  font-size: 0.8125rem !important;
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+}
+[data-statusbar] [data-statusbar-id] .codicon {
+  font-size: 0.95rem !important;
+}
+
+/* Boot-failure recovery: the local-install actions (repair the installer, switch
+   to the bundled LOCAL gateway, open desktop logs) don't exist on the remote-only
+   mobile client — the bridge stubs them all. Hide them so only Retry (which
+   reloads and reconnects to the remote gateway) remains. */
+[data-boot-action='repair'],
+[data-boot-action='local'],
+[data-boot-action='logs'] {
+  display: none !important;
+}
+
 /*
  * Overlay screens (Settings / Skills / Profiles …) — native mobile master-detail.
  * The desktop two-pane split would cram both panes on a phone, so instead:
@@ -114,18 +146,26 @@ body {
  *     .mobile-overlay-back button to return. The overlay's own X still closes it.
  */
 @media (max-width: 47.5rem) {
+  /* Inset the whole overlay CARD (Settings/Skills/Profiles) into the safe area so
+     the panel stops at the status bar / nav bar like the rest of the app, instead
+     of sliding under the clock/battery. With the card inset, its inner panels use
+     their normal desktop titlebar clearance — no extra env() needed below. */
+  [data-overlay-view] {
+    padding-top: calc(env(safe-area-inset-top) + 0.5rem) !important;
+    padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem) !important;
+    padding-left: calc(env(safe-area-inset-left) + 0.5rem) !important;
+    padding-right: calc(env(safe-area-inset-right) + 0.5rem) !important;
+  }
+
   [data-overlay-split] {
     display: flex !important;
     flex-direction: column !important;
   }
 
-  /* category list — full screen, cleared past the status bar AND the nav bar
-     (so the import/export/refresh footer doesn't sit under the nav buttons). */
+  /* category list — fills the (inset) card */
   [data-overlay-sidebar] {
     flex: 1 1 auto !important;
     max-height: none !important;
-    padding-top: calc(env(safe-area-inset-top) + 0.75rem) !important;
-    padding-bottom: calc(env(safe-area-inset-bottom) + 0.75rem) !important;
   }
 
   /* content hidden until a category is chosen */
@@ -133,7 +173,7 @@ body {
     display: none !important;
   }
 
-  /* drilled in: hide the list, show the page full screen (room for back btn) */
+  /* drilled in: hide the list, show the page full-card */
   [data-overlay-split][data-detail] [data-overlay-sidebar] {
     display: none !important;
   }
@@ -141,30 +181,37 @@ body {
     display: flex !important;
     flex: 1 1 auto !important;
     min-height: 0 !important;
-    padding-top: calc(env(safe-area-inset-top) + 3rem) !important;
-    padding-bottom: calc(env(safe-area-inset-bottom) + 1rem) !important;
   }
 }
 
 /* Back affordance for the overlay master-detail. Rendered always (portal); shown
    only while a detail page is open — and auto-hidden if the overlay is X-closed.
-   Left edge is aligned to the page content gutter (PAGE_INSET_X = clamp below) so
-   it reads as the page header instead of sticking out into the screen corner. */
+   Sits in the inset card's header row, mirroring the overlay's own ✕ on the right
+   (card is inset by env + 0.5rem; the ✕ sits ~0.75rem in from the card edge). */
 .mobile-overlay-back {
   position: fixed;
   z-index: 80;
-  top: calc(env(safe-area-inset-top) + 0.5rem);
-  left: calc(env(safe-area-inset-left) + clamp(1.25rem, 4vw, 4rem));
+  /* Mirror the overlay's own ✕ (top-right): same size/shape/ghost styling,
+     vertically centered on the card's titlebar row, 0.75rem in from the card's
+     left edge (card is inset by env + 0.5rem). */
+  top: calc(env(safe-area-inset-top) + 0.6875rem + (var(--titlebar-height, 2.125rem) - var(--titlebar-control-height)) / 2);
+  left: calc(env(safe-area-inset-left) + 1.25rem);
   display: none;
-  height: 2rem;
-  width: 2rem;
+  height: var(--titlebar-control-height);
+  width: var(--titlebar-control-size);
   align-items: center;
   justify-content: center;
-  border-radius: 0.5rem;
-  border: 1px solid var(--ui-stroke-tertiary, rgba(127, 127, 127, 0.3));
-  background: var(--ui-bg-tertiary, var(--ui-sidebar-surface-background, rgba(127, 127, 127, 0.12)));
-  color: var(--dt-foreground, currentColor);
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ui-text-tertiary, currentColor);
+  -webkit-tap-highlight-color: transparent;
 }
 body:has([data-overlay-split][data-detail]) .mobile-overlay-back {
   display: flex;
+}
+.mobile-overlay-back:hover,
+.mobile-overlay-back:active {
+  background: var(--chrome-action-hover);
+  color: var(--dt-foreground, currentColor);
 }

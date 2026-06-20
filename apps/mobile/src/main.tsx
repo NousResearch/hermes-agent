@@ -7,6 +7,10 @@ import '~bridge/boot'
 import './styles.css'
 import '~mobile/theme-fallback.css'
 
+// 2b) Mobile-only wording overrides (touch gestures vs mouse/keyboard). Side
+//     effect; must run before the I18nProvider reads the catalog.
+import '~mobile/i18n-overrides'
+
 // 3) Desktop side-effect: persisted translucency (native calls are optional-chained).
 import '@/store/translucency'
 

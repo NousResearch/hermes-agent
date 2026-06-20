@@ -116,6 +116,8 @@ class HonchoSessionManager:
         # one source of truth; see __init__.py _do_session_init for the prewarm.
         self._context_cache: dict[str, dict] = {}
         self._prefetch_cache_lock = threading.Lock()
+        self._context_prefetch_threads: list[threading.Thread] = []
+        self._context_prefetch_threads_lock = threading.Lock()
         self._dialectic_reasoning_level: str = (
             config.dialectic_reasoning_level if config else "low"
         )
@@ -546,7 +548,14 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread."""
+        """Gracefully shut down the async writer and context prefetch threads."""
+        with self._context_prefetch_threads_lock:
+            threads = list(self._context_prefetch_threads)
+            self._context_prefetch_threads = []
+        for t in threads:
+            if t.is_alive():
+                t.join(timeout=10)
+
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)
@@ -676,6 +685,9 @@ class HonchoSessionManager:
                 self.set_context_result(session_key, result)
 
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
+        with self._context_prefetch_threads_lock:
+            self._context_prefetch_threads = [x for x in self._context_prefetch_threads if x.is_alive()]
+            self._context_prefetch_threads.append(t)
         t.start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:

@@ -99,9 +99,13 @@ JUDGE_SYSTEM_PROMPT = (
     "the goal is fully satisfied based on that response.\n\n"
     "A goal is DONE only when:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
+    "- The response clearly shows the final deliverable was produced.\n\n"
+    "A goal is NOT done when the response says the work is partial, not 100% "
+    "complete, still has open items, or needs the agent to continue concrete "
+    "work. Listing remaining tasks/blockers is a progress report, not goal "
+    "completion. Only treat a blocker as terminal if the response clearly says "
+    "no further tool/action can make progress and asks the user for a specific "
+    "decision/approval/input.\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
     '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
@@ -277,6 +281,37 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+
+
+_EXPLICIT_INCOMPLETE_RE = re.compile(
+    r"(not\s+(?:yet\s+)?(?:100%|fully)\s+complete|not\s+complete|"
+    r"still\s+(?:short\s+of\s+)?(?:open|incomplete|not\s+done)|"
+    r"remaining\s+(?:open\s+)?items?|open\s+items?|"
+    r"phase\s+\d+[^\n.]{0,80}not\s+100%\s+complete)",
+    re.IGNORECASE,
+)
+
+_TERMINAL_BLOCKER_RE = re.compile(
+    r"(need(?:s)?\s+(?:user|human|your|shan)\s+(?:input|approval|decision)|"
+    r"blocked\s+until\s+(?:user|human|you|shan)|"
+    r"cannot\s+(?:continue|proceed|make\s+progress)\s+without\s+(?:user|human|your|shan))",
+    re.IGNORECASE,
+)
+
+
+def _response_reports_incomplete(last_response: str) -> bool:
+    """Return True when the agent explicitly says the goal is still partial.
+
+    The LLM judge is intentionally auxiliary, not authoritative. For broad
+    autonomy goals, a final response can include a clear progress report like
+    "Phase 0/1 are not 100% complete". That must force continuation unless the
+    same response is a true human-input blocker.
+    """
+    if not last_response:
+        return False
+    return bool(_EXPLICIT_INCOMPLETE_RE.search(last_response)) and not bool(
+        _TERMINAL_BLOCKER_RE.search(last_response)
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -458,6 +493,9 @@ def judge_goal(
         raw = ""
 
     done, reason, parse_failed = _parse_judge_response(raw)
+    if done and _response_reports_incomplete(last_response):
+        return "continue", "response explicitly reports incomplete work", False
+
     verdict = "done" if done else "continue"
     logger.info("goal judge: verdict=%s reason=%s", verdict, _truncate(reason, 120))
     return verdict, reason, parse_failed

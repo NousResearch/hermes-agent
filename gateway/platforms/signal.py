@@ -318,7 +318,10 @@ class SignalAdapter(BasePlatformAdapter):
         # Signal quote.id is the timestamp of the quoted message, so this lets
         # inbound replies identify that the user replied to a message sent by
         # this bot even after the self-sync echo was filtered above.
-        self._sent_message_timestamps: set[str] = set()
+        # OrderedDict (not set) so the cap evicts the OLDEST timestamp in FIFO
+        # order — a plain set.pop() removes an arbitrary element, which could
+        # drop a still-recent timestamp and miss a genuine reply-to-own-message.
+        self._sent_message_timestamps: "OrderedDict[str, None]" = OrderedDict()
         self._max_sent_message_timestamps = 500
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
@@ -807,9 +810,14 @@ class SignalAdapter(BasePlatformAdapter):
         """Keep a bounded cache of outbound Signal timestamps for quote matching."""
         if timestamp is None:
             return
-        self._sent_message_timestamps.add(str(timestamp))
-        if len(self._sent_message_timestamps) > self._max_sent_message_timestamps:
-            self._sent_message_timestamps.pop()
+        key = str(timestamp)
+        # Re-insert to mark most-recently-used so eviction drops genuinely old
+        # timestamps, not a recently re-seen one.
+        self._sent_message_timestamps.pop(key, None)
+        self._sent_message_timestamps[key] = None
+        # FIFO-evict the oldest entry once over the cap.
+        while len(self._sent_message_timestamps) > self._max_sent_message_timestamps:
+            self._sent_message_timestamps.popitem(last=False)
 
     def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
         """Best-effort extraction of a Signal service ID from listContacts output."""

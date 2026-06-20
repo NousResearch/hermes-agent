@@ -4335,10 +4335,12 @@ def _(rid, params: dict) -> dict:
         # ones not enumerated here), ACP adapter clients, webhook sessions,
         # custom `HERMES_SESSION_SOURCE` values, and older installs with
         # different source labels. We deny-list only the noisy internal
-        # sources (``tool`` sub-agent runs) rather than allow-listing a
-        # fixed set of platform names that goes stale whenever a new
-        # platform is added or a user names their own source.
-        deny = frozenset({"tool"})
+        # sources rather than allow-listing a fixed set of platform names
+        # that goes stale whenever a new platform is added or a user names
+        # their own source. The internal set mirrors
+        # tools/session_search_tool._HIDDEN_SESSION_SOURCES: ``tool``
+        # integrations and ``subagent`` delegate runs.
+        deny = frozenset({"subagent", "tool"})
 
         limit = int(params.get("limit", 200) or 200)
         # Over-fetch modestly so per-source filtering doesn't leave us
@@ -4389,7 +4391,8 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
-        deny = frozenset({"tool"})
+        # Mirror session.list / _HIDDEN_SESSION_SOURCES: hide tool + subagent.
+        deny = frozenset({"subagent", "tool"})
         # Over-fetch by a generous bounded amount so heavy sub-agent
         # users (lots of recent ``tool`` rows) don't get a false
         # "no eligible session" answer.  ``session.list`` uses a

@@ -2312,6 +2312,7 @@ DEFAULT_CONFIG = {
             "low_visible_message_limit": 15,
             "low_visible_tool_limit": 2,
             "max_low_visible_api_calls": 40,
+            "max_turns": 30,
             "fresh_share_min_api_calls": 20,
             "fresh_share_min_accounted_tokens": 2000000,
             "max_fresh_input_share_pct": 45,

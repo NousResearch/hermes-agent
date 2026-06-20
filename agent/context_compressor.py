@@ -1607,6 +1607,31 @@ This compaction should PRIORITISE preserving all information related to the focu
                 self._fallback_to_main_for_compression(e, _reason)
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
 
+            # Do not silently route explicitly-configured Codex/GPT-5.5
+            # compression through an unrelated provider/model. During the Jun
+            # 14 drain investigation this produced confusing Gemini 404s for a
+            # configured ``openai-codex/gpt-5.5`` compression path after the
+            # scoped Codex aux guard correctly refused the call. Keep the
+            # transcript intact and surface the real blocked-provider error.
+            _codex_aux_blocked = (
+                "auxiliary task" in str(e)
+                and "openai-codex/gpt-5.5" in str(e)
+                and "HERMES_ALLOW_CODEX_GPT55_AUX_TASKS" in str(e)
+            )
+            if _codex_aux_blocked:
+                err_text = str(e).strip() or e.__class__.__name__
+                if len(err_text) > 220:
+                    err_text = err_text[:217].rstrip() + "..."
+                self._last_summary_error = err_text
+                self._summary_failure_cooldown_reason = err_text
+                self._summary_failure_cooldown_until = time.monotonic() + 60
+                logger.warning(
+                    "Configured compression model was refused by Codex aux guard; "
+                    "not falling back to a different provider: %s",
+                    e,
+                )
+                return None
+
             # Unknown-error best-effort retry on main model.  Losing N turns of
             # context is almost always worse than one extra summary attempt, so
             # if we haven't already fallen back and the summary model differs

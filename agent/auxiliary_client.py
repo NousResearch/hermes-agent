@@ -5243,15 +5243,12 @@ def call_llm(
                 resolved_model,
                 task,
             )
-            if blocked and not resolved_base_url:
-                logger.info(
-                    "Auxiliary %s: %s; trying auto-detection chain instead",
-                    task or "call",
-                    blocked,
-                )
-                client, final_model = _get_cached_client(
-                    "auto", main_runtime=main_runtime, task=task
-                )
+            if blocked:
+                # Explicitly configured Codex/GPT-5.5 high-cost aux tasks must
+                # fail closed unless the operator scoped an opt-in. Falling
+                # through to auto here hides the real guard and can route
+                # compression to an unrelated provider/model.
+                raise RuntimeError(blocked)
         if client is None:
             # When the user explicitly chose a non-OpenRouter provider but no
             # credentials were found, fail fast instead of silently routing
@@ -5764,15 +5761,12 @@ async def async_call_llm(
                 resolved_model,
                 task,
             )
-            if blocked and not resolved_base_url:
-                logger.info(
-                    "Auxiliary %s (async): %s; trying auto-detection chain instead",
-                    task or "call",
-                    blocked,
-                )
-                client, final_model = _get_cached_client(
-                    "auto", async_mode=True, main_runtime=main_runtime, task=task
-                )
+            if blocked:
+                # Explicitly configured Codex/GPT-5.5 high-cost aux tasks must
+                # fail closed unless the operator scoped an opt-in. Falling
+                # through to auto here hides the real guard and can route
+                # compression to an unrelated provider/model.
+                raise RuntimeError(blocked)
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:

@@ -983,6 +983,39 @@ class TestCodexGpt55AuxCircuitBreaker:
         assert client is None
         assert model is None
 
+
+    def test_configured_codex_gpt55_compression_fails_closed_without_auto_fallback(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("openai-codex", "gpt-5.5", "", "", ""),
+        )
+        with (
+            patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)) as cached,
+            pytest.raises(RuntimeError, match="HERMES_ALLOW_CODEX_GPT55_AUX_TASKS"),
+        ):
+            call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}])
+
+        cached.assert_called_once()
+
+    def test_configured_codex_gpt55_async_compression_fails_closed_without_auto_fallback(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("openai-codex", "gpt-5.5", "", "", ""),
+        )
+
+        async def _run():
+            with (
+                patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)) as cached,
+                pytest.raises(RuntimeError, match="HERMES_ALLOW_CODEX_GPT55_AUX_TASKS"),
+            ):
+                await async_call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}])
+            cached.assert_called_once()
+
+        import asyncio
+        asyncio.run(_run())
+
     def test_foreground_or_explicit_opt_in_can_still_use_codex_gpt55(self, monkeypatch):
         fake_client = MagicMock()
 
@@ -3942,8 +3975,8 @@ class TestAuxUnhealthyCache:
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
 
-    def test_call_llm_explicit_codex_gpt55_aux_falls_through_to_auto(self, monkeypatch):
-        """Configured Codex/GPT-5.5 aux tasks should still try non-Codex auto fallback."""
+    def test_call_llm_explicit_codex_gpt55_aux_fails_closed_without_auto_fallback(self, monkeypatch):
+        """Configured Codex/GPT-5.5 aux tasks fail closed unless task-scoped opt-in is set."""
         monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
         monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX_TASKS", raising=False)
         fallback_client = MagicMock()
@@ -3965,18 +3998,18 @@ class TestAuxUnhealthyCache:
             ),
             patch("agent.auxiliary_client._get_cached_client", side_effect=fake_get_cached) as cached,
             patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            pytest.raises(RuntimeError, match="HERMES_ALLOW_CODEX_GPT55_AUX_TASKS"),
         ):
-            result = call_llm(
+            call_llm(
                 task="compression",
                 messages=[{"role": "user", "content": "compress me"}],
             )
 
-        assert result is fallback_resp
-        assert [call.args[0] for call in cached.call_args_list] == ["openai-codex", "auto"]
-        fallback_client.chat.completions.create.assert_called_once()
+        assert [call.args[0] for call in cached.call_args_list] == ["openai-codex"]
+        fallback_client.chat.completions.create.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_async_call_llm_explicit_codex_gpt55_aux_falls_through_to_auto(self, monkeypatch):
+    async def test_async_call_llm_explicit_codex_gpt55_aux_fails_closed_without_auto_fallback(self, monkeypatch):
         monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
         monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX_TASKS", raising=False)
         fallback_client = MagicMock()
@@ -3998,15 +4031,15 @@ class TestAuxUnhealthyCache:
             ),
             patch("agent.auxiliary_client._get_cached_client", side_effect=fake_get_cached) as cached,
             patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            pytest.raises(RuntimeError, match="HERMES_ALLOW_CODEX_GPT55_AUX_TASKS"),
         ):
-            result = await async_call_llm(
+            await async_call_llm(
                 task="session_search",
                 messages=[{"role": "user", "content": "find sessions"}],
             )
 
-        assert result is fallback_resp
-        assert [call.args[0] for call in cached.call_args_list] == ["openai-codex", "auto"]
-        fallback_client.chat.completions.create.assert_awaited_once()
+        assert [call.args[0] for call in cached.call_args_list] == ["openai-codex"]
+        fallback_client.chat.completions.create.assert_not_awaited()
 
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────

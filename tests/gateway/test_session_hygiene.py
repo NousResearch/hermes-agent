@@ -21,6 +21,7 @@ from agent.model_metadata import estimate_messages_tokens_rough
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
+from hermes_cli.config import DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -1068,8 +1069,173 @@ def test_codex_budget_reason_trips_for_high_fresh_input_share():
     assert reason == "fresh-input share 60.0% reached budget 45%"
 
 
+@pytest.mark.asyncio
+async def test_codex_fresh_input_budget_runs_hygiene_compression_before_stop(monkeypatch, tmp_path):
+    """High fresh-input pressure should trigger auto-compress, not block before it.
+
+    This is the Telegram symptom where the gateway said "Run /compress" even
+    though automatic compression had not been allowed to try.
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = "sess-compressed"
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            self.context_compressor = SimpleNamespace(
+                _last_compress_aborted=False,
+                _last_summary_error=None,
+                _last_aux_model_failure_model=None,
+            )
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return ([messages[0], {"role": "assistant", "content": "compressed summary"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: gpt-5.5\n"
+        "  provider: openai-codex\n"
+        "compression:\n"
+        "  enabled: true\n"
+        "  hygiene_hard_message_limit: 160\n"
+        "gateway:\n"
+        "  codex_budget:\n"
+        "    enabled: true\n"
+        "    platforms: [telegram]\n"
+        "    max_api_calls: 250\n"
+        "    max_accounted_tokens: 30000000\n"
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(60, content_size=40)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+    runner.session_store._save = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._resolve_session_agent_runtime = lambda **_kw: (
+        "gpt-5.5",
+        {"provider": "openai-codex", "api_key": "fake", "base_url": "https://chatgpt.com/backend-api/codex/"},
+    )
+    runner._sync_telegram_topic_binding = MagicMock()
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._run_agent = AsyncMock(return_value={"final_response": "ok after compression"})
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_codex_session_usage_snapshot", lambda _sid: {
+        "api_call_count": 25,
+        "message_count": 60,
+        "tool_call_count": 20,
+        "input_tokens": 1_800_000,
+        "cache_read_tokens": 1_100_000,
+        "output_tokens": 90_000,
+        "reasoning_tokens": 10_000,
+        "accounted_tokens": 3_000_000,
+    })
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 272_000,
+    )
+
+    event = MessageEvent(
+        text="continue after auto compression",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok after compression"
+    assert FakeCompressAgent.last_instance is not None
+    runner.session_store.rewrite_transcript.assert_called_once()
+    runner._run_agent.assert_awaited_once()
+    assert not any("Run /compress" in item["content"] for item in adapter.sent)
+
+
+
+
+
+def test_gateway_codex_gpt55_turn_cap_only_applies_to_configured_platform():
+    from gateway.run import _gateway_effective_max_iterations
+
+    cfg = {
+        "gateway": {
+            "codex_budget": {
+                "enabled": True,
+                "platforms": ["telegram"],
+                "max_turns": 30,
+            }
+        }
+    }
+
+    assert _gateway_effective_max_iterations(
+        model="gpt-5.5",
+        provider="openai-codex",
+        configured=90,
+        user_config=cfg,
+        platform_key="telegram",
+    ) == 30
+    assert _gateway_effective_max_iterations(
+        model="gpt-5.5",
+        provider="openai-codex",
+        configured=90,
+        user_config=cfg,
+        platform_key="local",
+    ) == 90
+    assert _gateway_effective_max_iterations(
+        model="claude-sonnet-4.6",
+        provider="anthropic",
+        configured=90,
+        user_config=cfg,
+        platform_key="telegram",
+    ) == 90
+
+
 def test_cost_saver_defaults_are_preserved_in_generated_config():
-    from hermes_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["agent"]["reasoning_effort"] == "medium"
     assert DEFAULT_CONFIG["compression"]["hygiene_hard_message_limit"] == 120
@@ -1078,5 +1244,6 @@ def test_cost_saver_defaults_are_preserved_in_generated_config():
     assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_api_calls"] == 250
     assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_accounted_tokens"] == 30_000_000
     assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_low_visible_api_calls"] == 40
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_turns"] == 30
     assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_fresh_input_share_pct"] == 45
 

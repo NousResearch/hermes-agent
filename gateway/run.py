@@ -133,11 +133,35 @@ def _codex_budget_config(user_config: Dict[str, Any], platform_key: str) -> Dict
         "low_visible_message_limit": _as_positive_int(cfg.get("low_visible_message_limit"), 15),
         "low_visible_tool_limit": _as_positive_int(cfg.get("low_visible_tool_limit"), 2),
         "max_low_visible_api_calls": _as_positive_int(cfg.get("max_low_visible_api_calls"), 40),
+        "max_turns": _as_positive_int(cfg.get("max_turns"), 30),
         "fresh_share_min_api_calls": _as_positive_int(cfg.get("fresh_share_min_api_calls"), 20),
         "fresh_share_min_accounted_tokens": _as_positive_int(cfg.get("fresh_share_min_accounted_tokens"), 2_000_000),
         "max_fresh_input_share_pct": _as_positive_int(cfg.get("max_fresh_input_share_pct"), 45),
     }
 
+
+
+def _gateway_effective_max_iterations(*, model: str, provider: str, configured: int, user_config: Dict[str, Any], platform_key: str) -> int:
+    """Return the per-turn gateway iteration cap after Codex safety limits.
+
+    ``agent.max_turns`` remains the global CLI/default budget. Long-lived
+    messaging sessions using Codex gpt-5.5 get a tighter foreground cap so a
+    low-visible loop cannot spend 90 API calls before the next pre-turn hygiene
+    check gets a chance to stop/compress the session. Operators can override via
+    ``gateway.codex_budget.max_turns``; /goal has its own budget.
+    """
+    try:
+        from agent.auxiliary_client import _is_codex_gpt55
+        is_codex = _is_codex_gpt55(model, provider)
+    except Exception:
+        is_codex = "gpt-5.5" in (model or "").lower() and "codex" in (provider or "").lower()
+    if not is_codex:
+        return configured
+    budget = _codex_budget_config(user_config, platform_key)
+    if not budget["enabled"] or not budget["platform_enabled"]:
+        return configured
+    cap = _as_positive_int(budget.get("max_turns"), 30)
+    return min(configured, cap)
 
 def _codex_session_usage_snapshot(session_id: str) -> Dict[str, int]:
     """Read current persisted usage counters for a session from state.db."""
@@ -8767,15 +8791,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or _budget_reason is not None
                 )
 
-                # Codex budget tripwires are hard stop signs, not just reasons
-                # to run another compression attempt and then continue. The
-                # Jun 14 regression produced low-visible/high-API sessions with
-                # almost no transcript to compress; treating that as ordinary
-                # hygiene let the gateway spend again immediately. Stop before
-                # the next foreground GPT-5.5 call and make the user choose a
-                # reset/compress/continue path. Normal high-message, cache-rich
-                # foreground GPT-5.5 sessions do not hit these anomaly guards.
-                if _budget_reason is not None:
+                # Codex budget tripwires should still allow the pre-agent
+                # hygiene compressor to run when there is real transcript to
+                # compact.  The previous fail-closed branch returned here for
+                # high fresh-input-share sessions, telling the user to run
+                # /compress even though this exact code path is the automatic
+                # compressor.  Keep the low-visible/high-API anomaly as a hard
+                # stop because there is little useful context to shrink, but
+                # let token/message/fresh-share pressure try one compression
+                # pass before deciding whether to stop.
+                _budget_is_low_visible = bool(
+                    _budget_reason
+                    and _budget_reason.startswith("low-visible session")
+                )
+                if _budget_reason is not None and _budget_is_low_visible:
                     _budget_msg = (
                         "⚠️ I stopped before making another GPT-5.5 call because "
                         f"this session tripped the Codex safety budget ({_budget_reason}). "
@@ -10654,7 +10683,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _configured_max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _platform_key = _platform_config_key(source.platform)
+            max_iterations = _gateway_effective_max_iterations(
+                model=model,
+                provider=(runtime_kwargs or {}).get("provider") or "",
+                configured=_configured_max_iterations,
+                user_config=user_config if isinstance(user_config, dict) else {},
+                platform_key=_platform_key,
+            )
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -14579,8 +14616,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            # Read from env var or use default (same as CLI), then apply
+            # gateway-only Codex/GPT-5.5 foreground cap.  The global default
+            # stays generous for CLI and explicit /goal work, but Telegram
+            # should not burn 90 calls inside one visible answer before the
+            # pre-turn budget guard can re-check usage.
+            _configured_max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = _gateway_effective_max_iterations(
+                model=model,
+                provider=(runtime_kwargs or {}).get("provider") or "",
+                configured=_configured_max_iterations,
+                user_config=user_config if isinstance(user_config, dict) else {},
+                platform_key=platform_key,
+            )
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.

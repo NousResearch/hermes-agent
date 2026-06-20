@@ -1767,7 +1767,6 @@
     const list = props.boardList || [];
     const current = list.find(function (b) { return b.slug === props.board; });
     const currentName = current && current.name ? current.name : props.board;
-    const currentTotal = current ? current.total : 0;
     const hasMultipleBoards = list.length > 1;
 
     // Hide entirely when only the default board exists AND it's empty —
@@ -1810,8 +1809,6 @@
                 return h(SelectOption, { key: b.slug, value: b.slug }, label);
               }),
             ),
-            h("span", { className: "text-xs text-muted-foreground" },
-              `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
           ),
         ),
         h("div", { className: "flex-1" }),

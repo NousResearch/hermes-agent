@@ -153,6 +153,31 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_board_list_counts_exclude_archived_tasks(client):
+    active = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "visible task"},
+    ).json()["task"]
+    archived = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "archived task"},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{archived['id']}",
+        json={"status": "archived"},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/plugins/kanban/boards")
+    assert r.status_code == 200
+    default_board = next(b for b in r.json()["boards"] if b["slug"] == "default")
+
+    assert default_board["total"] == 1
+    assert default_board["counts"] == {active["status"]: 1}
+    assert "archived" not in default_board["counts"]
+
+
 def test_board_query_param_default_overrides_current_board_pointer(client):
     """Dashboard ``?board=default`` must win even if the CLI's current-board
     pointer targets a non-default board.
@@ -245,6 +270,18 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert "if (!storedBoard && !board && data && data.current)" in js
     assert "setBoard(data.current);" in js
     assert 'readSelectedBoard() || "default"' not in js
+
+
+def test_dashboard_board_switcher_keeps_single_task_count():
+    """The selected board's task count should only appear in the dropdown label."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "? `${b.name || b.slug} · ${b.total}`" in js
+    assert "const currentTotal = current ? current.total : 0;" not in js
+    assert 'task${currentTotal === 1 ? "" : "s"}' not in js
 
 
 # ---------------------------------------------------------------------------

@@ -2001,7 +2001,8 @@ def _board_counts(slug: str) -> dict[str, int]:
         conn = kanban_db.connect(board=slug)
         try:
             rows = conn.execute(
-                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+                "SELECT status, COUNT(*) AS n "
+                "FROM tasks WHERE status != 'archived' GROUP BY status"
             ).fetchall()
             return {r["status"]: int(r["n"]) for r in rows}
         finally:

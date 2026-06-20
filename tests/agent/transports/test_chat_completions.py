@@ -104,6 +104,24 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_strips_timestamp(self, transport):
+        """Internal ``timestamp`` (set by ``_apply_persist_user_message_override``
+        to preserve platform event time for the session DB) is not part of the
+        OpenAI Chat Completions schema. Strict providers like opencode-go reject
+        it with HTTP 400 'Extra inputs are not permitted, field:
+        messages[N].timestamp'.
+        """
+        msgs = [
+            {"role": "user", "content": "hello", "timestamp": 1781980690},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "timestamp" not in result[0]
+        assert result[0]["content"] == "hello"
+        assert result[0]["role"] == "user"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[0]["timestamp"] == 1781980690
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 

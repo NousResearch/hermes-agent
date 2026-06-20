@@ -387,6 +387,30 @@ def _hermetic_environment(tmp_path, monkeypatch):
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
+
+    # 5b. Reset auxiliary_client module-level runtime caches. Under the
+    #     canonical per-file-subprocess runner these can't leak across
+    #     files, but a single-process multi-file run (e.g. ``pytest
+    #     tests/agent/``) shares one interpreter, and three caches here
+    #     otherwise carry state from one test into the next:
+    #       • the "recently 402'd" unhealthy-provider cache — a real
+    #         AIAgent construction in an earlier test marks nous/openrouter
+    #         unhealthy (600s TTL), making _resolve_auto skip a *mocked*
+    #         provider in a later test_auxiliary_main_first test (it returns
+    #         None and the assertion fails). This was a concrete 5-failure
+    #         cascade.
+    #       • the runtime-main override (set_runtime_main / clear_runtime_main).
+    #       • the resolved-client cache keyed by provider config.
+    #     Each ships its own reset entrypoint already (authored "for tests");
+    #     we just wire them in, same as the _plugin_manager reset above.
+    try:
+        import agent.auxiliary_client as _aux_mod
+        _aux_mod._reset_aux_unhealthy_cache()
+        _aux_mod.clear_runtime_main()
+        _aux_mod._client_cache.clear()
+    except Exception:
+        pass
+
     # Explicitly clear provider-specific base URL overrides that don't match
     # the generic credential-shaped env-var filter above.
     monkeypatch.delenv("GMI_API_KEY", raising=False)

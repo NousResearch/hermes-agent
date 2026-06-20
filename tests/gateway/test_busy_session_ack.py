@@ -266,6 +266,35 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_photo_followup_delegates_to_adapter_without_busy_ack(self):
+        """Photo follow-ups must use the adapter photo queue, not interrupt mode."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        base = _make_event(text="caption")
+        event = MessageEvent(
+            text="caption",
+            message_type=MessageType.PHOTO,
+            source=base.source,
+            message_id="photo1",
+            media_urls=["/tmp/photo.jpg"],
+            media_types=["image/jpeg"],
+        )
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is False
+        assert sk not in adapter._pending_messages
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
         """busy_input_mode='steer' injects via agent.steer() and skips queueing."""
         runner, sentinel = _make_runner()

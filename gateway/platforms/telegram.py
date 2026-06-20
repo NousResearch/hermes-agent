@@ -438,6 +438,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        self._media_group_inflight: Dict[str, int] = {}
         # Buffer rapid text messages so Telegram client-side splits of long
         # messages are aggregated into a single MessageEvent.  Lower defaults
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
@@ -2337,6 +2338,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
         self._media_group_tasks.clear()
         self._media_group_events.clear()
+        self._media_group_inflight.clear()
 
         if self._app:
             try:
@@ -6221,6 +6223,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # Download photo to local image cache so the vision tool can access it
         # even after Telegram's ephemeral file URLs expire (~1 hour).
         if msg.photo:
+            media_group_key = (
+                self._photo_batch_key(event, msg)
+                if getattr(msg, "media_group_id", None)
+                else None
+            )
+            if media_group_key:
+                self._begin_media_group_item(media_group_key)
             try:
                 # msg.photo is a list of PhotoSize sorted by size; take the largest
                 photo = msg.photo[-1]
@@ -6239,9 +6248,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = [f"image/{ext.lstrip('.')}" ]
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
-                media_group_id = getattr(msg, "media_group_id", None)
-                if media_group_id:
-                    await self._queue_media_group_event(str(media_group_id), event)
+                if media_group_key:
+                    await self._queue_media_group_event(media_group_key, event)
                 else:
                     batch_key = self._photo_batch_key(event, msg)
                     self._enqueue_photo_event(batch_key, event)
@@ -6249,6 +6257,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
+            finally:
+                if media_group_key:
+                    self._finish_media_group_item(media_group_key)
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
@@ -6339,32 +6350,50 @@ class TelegramAdapter(BasePlatformAdapter):
                 # payload is actually an image, route it through the image cache
                 # and batching path instead of rejecting it as a document.
                 if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
-                    file_obj = await doc.get_file()
-                    image_bytes = await file_obj.download_as_bytearray()
-                    image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                    media_group_key = (
+                        self._photo_batch_key(event, msg)
+                        if getattr(msg, "media_group_id", None)
+                        else None
+                    )
+                    if media_group_key:
+                        self._begin_media_group_item(media_group_key)
                     try:
-                        cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
-                    except ValueError as e:
-                        logger.warning("[Telegram] Failed to cache image document: %s", e, exc_info=True)
-                        event.text = (
-                            f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
-                            "could not be read as an image."
+                        file_obj = await doc.get_file()
+                        image_bytes = await file_obj.download_as_bytearray()
+                        image_ext = (
+                            ext
+                            if ext in _TELEGRAM_IMAGE_EXTENSIONS
+                            else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                         )
-                        await self.handle_message(event)
+                        try:
+                            cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+                        except ValueError as e:
+                            logger.warning("[Telegram] Failed to cache image document: %s", e, exc_info=True)
+                            event.text = (
+                                f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
+                                "could not be read as an image."
+                            )
+                            await self.handle_message(event)
+                            return
+
+                        event.message_type = MessageType.PHOTO
+                        event.media_urls = [cached_path]
+                        event.media_types = [
+                            doc_mime
+                            if doc_mime.startswith("image/")
+                            else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")
+                        ]
+                        logger.info("[Telegram] Cached user image-document at %s", cached_path)
+
+                        if media_group_key:
+                            await self._queue_media_group_event(media_group_key, event)
+                        else:
+                            batch_key = self._photo_batch_key(event, msg)
+                            self._enqueue_photo_event(batch_key, event)
                         return
-
-                    event.message_type = MessageType.PHOTO
-                    event.media_urls = [cached_path]
-                    event.media_types = [doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")]
-                    logger.info("[Telegram] Cached user image-document at %s", cached_path)
-
-                    media_group_id = getattr(msg, "media_group_id", None)
-                    if media_group_id:
-                        await self._queue_media_group_event(str(media_group_id), event)
-                    else:
-                        batch_key = self._photo_batch_key(event, msg)
-                        self._enqueue_photo_event(batch_key, event)
-                    return
+                    finally:
+                        if media_group_key:
+                            self._finish_media_group_item(media_group_key)
 
                 if not ext and doc.mime_type:
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
@@ -6439,12 +6468,38 @@ class TelegramAdapter(BasePlatformAdapter):
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
-            await self._queue_media_group_event(str(media_group_id), event)
+            await self._queue_media_group_event(self._photo_batch_key(event, msg), event)
             return
 
         await self.handle_message(event)
 
-    async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
+    def _schedule_media_group_flush(self, media_group_key: str) -> None:
+        prior_task = self._media_group_tasks.get(media_group_key)
+        if prior_task:
+            prior_task.cancel()
+
+        self._media_group_tasks[media_group_key] = asyncio.create_task(
+            self._flush_media_group_event(media_group_key)
+        )
+
+    def _begin_media_group_item(self, media_group_key: str) -> None:
+        self._media_group_inflight[media_group_key] = (
+            self._media_group_inflight.get(media_group_key, 0) + 1
+        )
+        prior_task = self._media_group_tasks.get(media_group_key)
+        if prior_task:
+            prior_task.cancel()
+
+    def _finish_media_group_item(self, media_group_key: str) -> None:
+        remaining = max(0, self._media_group_inflight.get(media_group_key, 0) - 1)
+        if remaining:
+            self._media_group_inflight[media_group_key] = remaining
+            return
+        self._media_group_inflight.pop(media_group_key, None)
+        if media_group_key in self._media_group_events:
+            self._schedule_media_group_flush(media_group_key)
+
+    async def _queue_media_group_event(self, media_group_key: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
 
         Telegram delivers albums as multiple updates with a shared media_group_id.
@@ -6452,33 +6507,33 @@ class TelegramAdapter(BasePlatformAdapter):
         new user message and interrupts the first. We debounce briefly and merge the
         attachments into a single MessageEvent.
         """
-        existing = self._media_group_events.get(media_group_id)
+        existing = self._media_group_events.get(media_group_key)
         if existing is None:
-            self._media_group_events[media_group_id] = event
+            self._media_group_events[media_group_key] = event
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
-        prior_task = self._media_group_tasks.get(media_group_id)
-        if prior_task:
-            prior_task.cancel()
+        if self._media_group_inflight.get(media_group_key, 0) <= 0:
+            self._schedule_media_group_flush(media_group_key)
 
-        self._media_group_tasks[media_group_id] = asyncio.create_task(
-            self._flush_media_group_event(media_group_id)
-        )
-
-    async def _flush_media_group_event(self, media_group_id: str) -> None:
+    async def _flush_media_group_event(self, media_group_key: str) -> None:
+        current_task = asyncio.current_task()
         try:
-            await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
-            event = self._media_group_events.pop(media_group_id, None)
+            await asyncio.sleep(self._media_batch_delay_seconds)
+            if self._media_group_inflight.get(media_group_key, 0) > 0:
+                self._schedule_media_group_flush(media_group_key)
+                return
+            event = self._media_group_events.pop(media_group_key, None)
             if event is not None:
                 await self.handle_message(event)
         except asyncio.CancelledError:
             return
         finally:
-            self._media_group_tasks.pop(media_group_id, None)
+            if self._media_group_tasks.get(media_group_key) is current_task:
+                self._media_group_tasks.pop(media_group_key, None)
 
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """

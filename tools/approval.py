@@ -543,18 +543,18 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
-    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
-    command = re.sub(r'\\([^\n])', r'\1', command)
-    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
-    command = re.sub(r"''|\"\"", '', command)
     # Fold the resolved absolute active-profile home path into the canonical
     # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
     # gateway deployments the agent often references the resolved absolute path
     # directly (e.g. `sed -i ... /home/hermes/.hermes/config.yaml`) rather than
-    # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
-    # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
-    # after this module is imported — as the hermetic test conftest does.
+    # ~, $HOME, or $HERMES_HOME. Done before stripping shell backslash escapes so
+    # Windows native paths like C:\Users\Rog\AppData\Local\hermes\config.yaml
+    # are still recognizable instead of being collapsed to C:UsersRog...
     command = _rewrite_resolved_hermes_home(command)
+    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
+    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
+    command = re.sub(r"''|\"\"", '', command)
     return command
 
 
@@ -577,17 +577,30 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         return command
     seen: set[str] = set()
     for path in candidates:
-        if not path or path in seen:
+        if not path:
             continue
-        seen.add(path)
-        # Guard against a degenerate HERMES_HOME (e.g. "/" or "") rewriting
-        # unrelated paths: require an absolute path with at least one non-root
-        # component. The active profile home is always a real directory like
-        # /home/hermes/.hermes or a per-test tempdir, never a bare root.
-        normalized = path.rstrip("/")
-        if not normalized.startswith("/") or normalized.count("/") < 2:
-            continue
-        command = command.replace(normalized + "/", "~/.hermes/")
+        # Match both native Windows separators (C:\Users\...) and slash-normalized
+        # forms (C:/Users/...). The command is still pre-backslash-stripping here,
+        # so either form may appear depending on the caller/tool backend.
+        variants = {
+            path.rstrip("/\\"),
+            path.replace("\\", "/").rstrip("/"),
+            path.replace("/", "\\").rstrip("\\"),
+        }
+        for normalized in variants:
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            # Guard against a degenerate HERMES_HOME (e.g. "/", "", or "C:\")
+            # rewriting unrelated paths: require a real absolute profile path.
+            # The active profile home is a directory like /home/hermes/.hermes,
+            # C:\Users\Rog\AppData\Local\hermes, or a per-test tempdir.
+            is_posix_abs = normalized.startswith("/") and normalized.count("/") >= 2
+            is_windows_abs = bool(re.match(r"^[a-z]:[\\/]", normalized, re.IGNORECASE))
+            if not (is_posix_abs or is_windows_abs):
+                continue
+            command = command.replace(normalized + "/", "~/.hermes/")
+            command = command.replace(normalized + "\\", "~/.hermes/")
     return command
 
 

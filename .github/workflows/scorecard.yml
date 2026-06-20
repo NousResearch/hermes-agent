@@ -1,0 +1,36 @@
+name: OpenSSF Scorecard
+
+# Repository security posture check. Runs on a schedule and on demand so it
+# provides maintainers with security telemetry without adding per-PR latency.
+# Results are uploaded as SARIF to GitHub code scanning.
+
+on:
+  schedule:
+    - cron: '45 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scorecard:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@c395761df6afe1a69e476bc60a013a94bcbc153f  # v5.5.0
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          publish_results: false
+
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@f443b600d91635bebf5b0d9ebc620189c0d6fba5  # v4.30.8
+        with:
+          sarif_file: scorecard-results.sarif

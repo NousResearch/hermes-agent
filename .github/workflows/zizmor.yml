@@ -1,0 +1,30 @@
+name: Zizmor
+
+# Advisory GitHub Actions static analysis. This complements the existing
+# supply-chain-audit.yml (PR diff payload scanning) by checking workflow files
+# themselves for dangerous patterns and privilege mistakes. It is scheduled and
+# manually runnable only until findings are tuned enough to gate PRs.
+
+on:
+  schedule:
+    - cron: '30 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: Analyze GitHub Actions workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Run zizmor
+        run: uvx zizmor .github/workflows

@@ -16519,9 +16519,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
-        _matrix_show_reasoning = bool(
-            resolve_display_setting(user_config, platform_key, "show_reasoning", False)
-        )
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]

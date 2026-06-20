@@ -856,6 +856,50 @@ class TelegramAdapter(BasePlatformAdapter):
         return isinstance(error, OSError)
 
     @staticmethod
+    def _looks_like_media_download_error(error: Exception) -> bool:
+        """Return True for transient Telegram media download failures."""
+        if isinstance(error, (TimeoutError, OSError)):
+            return True
+        try:
+            from telegram.error import NetworkError, TimedOut
+            if isinstance(error, (NetworkError, TimedOut)):
+                return True
+        except ImportError:
+            pass
+        name = error.__class__.__name__.lower()
+        text = str(error).lower()
+        return name in {"networkerror", "timedout"} or "timed out" in text
+
+    async def _download_telegram_media_bytes(
+        self,
+        get_file,
+        *,
+        label: str,
+        attempts: int = 3,
+    ) -> tuple[Any, bytearray]:
+        """Fetch a Telegram file and its bytes with bounded transient retries."""
+        last_error: Exception | None = None
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                file_obj = await get_file()
+                return file_obj, await file_obj.download_as_bytearray()
+            except Exception as exc:
+                last_error = exc
+                if attempt >= attempts or not self._looks_like_media_download_error(exc):
+                    raise
+                wait = min(0.25 * attempt, 1.0)
+                logger.warning(
+                    "[Telegram] %s download failed (attempt %d/%d), retrying in %.2fs: %s",
+                    label,
+                    attempt,
+                    attempts,
+                    wait,
+                    exc,
+                )
+                await asyncio.sleep(wait)
+        raise last_error or RuntimeError(f"{label} download failed")
+
+    @staticmethod
     def _looks_like_connect_timeout(error: Exception) -> bool:
         """Return True when a Telegram TimedOut wraps a connect-timeout.
 
@@ -6224,9 +6268,10 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 # msg.photo is a list of PhotoSize sorted by size; take the largest
                 photo = msg.photo[-1]
-                file_obj = await photo.get_file()
-                # Download the image bytes directly into memory
-                image_bytes = await file_obj.download_as_bytearray()
+                file_obj, image_bytes = await self._download_telegram_media_bytes(
+                    photo.get_file,
+                    label="photo",
+                )
                 # Determine extension from the file path if available
                 ext = ".jpg"
                 if file_obj.file_path:
@@ -6249,6 +6294,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
+                if self._looks_like_media_download_error(e):
+                    event.text = self._append_observed_note(
+                        event.text,
+                        "Telegram photo could not be downloaded after retries; image was not attached.",
+                    )
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:

@@ -546,6 +546,130 @@ class TelegramAdapter(BasePlatformAdapter):
             return {}
         return {"disable_notification": True}
 
+    @staticmethod
+    def _metadata_bool(metadata: Optional[Dict[str, Any]], key: str, default: bool) -> bool:
+        if not metadata or key not in metadata:
+            return default
+        value = metadata.get(key)
+        if isinstance(value, str):
+            return value.lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    def _resolve_secure_display_setting(self, setting: str, default: Any) -> Any:
+        """Resolve display.platforms.telegram secure-message settings.
+
+        Kept local to the Telegram adapter so non-Telegram platforms do not
+        learn Telegram-specific Bot API details. Fail-closed to defaults if
+        config cannot be loaded during tests or early startup.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+            from gateway.display_config import resolve_display_setting
+
+            return resolve_display_setting(_load_config(), "telegram", setting, default)
+        except Exception:
+            return default
+
+    def _telegram_secure_options(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        content: str,
+    ) -> Dict[str, Any]:
+        """Return secure-send options for this Telegram message."""
+        marker_enabled = "[[secure_message]]" in content or "[[secure]]" in content
+        enabled_default = bool(
+            self._resolve_secure_display_setting("secure_messages", False)
+        )
+        enabled = self._metadata_bool(metadata, "secure_message", enabled_default) or marker_enabled
+        if not enabled:
+            return {"enabled": False, "spoiler": False, "protect_content": False, "ttl_seconds": 0}
+
+        spoiler_default = bool(
+            self._resolve_secure_display_setting("secure_messages_spoiler", True)
+        )
+        protect_default = bool(
+            self._resolve_secure_display_setting("secure_messages_protect_content", True)
+        )
+        ttl_default = self._resolve_secure_display_setting("secure_messages_ttl_seconds", 0)
+        try:
+            ttl_default = max(0, int(ttl_default or 0))
+        except (TypeError, ValueError):
+            ttl_default = 0
+        try:
+            ttl = max(0, int((metadata or {}).get("secure_message_ttl_seconds", ttl_default) or 0))
+        except (TypeError, ValueError):
+            ttl = 0
+        return {
+            "enabled": True,
+            "marker_enabled": marker_enabled,
+            "spoiler": self._metadata_bool(metadata, "secure_message_spoiler", spoiler_default),
+            "protect_content": self._metadata_bool(
+                metadata, "secure_message_protect_content", protect_default
+            ),
+            "ttl_seconds": ttl,
+        }
+
+    @staticmethod
+    def _strip_secure_message_markers(content: str) -> str:
+        return (
+            content.replace("[[secure_message]]", "")
+            .replace("[[/secure_message]]", "")
+            .replace("[[secure]]", "")
+            .replace("[[/secure]]", "")
+        )
+
+    @staticmethod
+    def _secure_inner_spoiler_safe(text: str) -> str:
+        return text.replace("||", r"\|\|")
+
+    @classmethod
+    def _apply_secure_spoiler_chunks(cls, chunks: list[str]) -> list[str]:
+        return [f"||{cls._secure_inner_spoiler_safe(chunk)}||" if chunk else chunk for chunk in chunks]
+
+    def _secure_spoiler_text(self, text: str, *, already_formatted: bool = False) -> str:
+        body = text if already_formatted else self.format_message(text)
+        return self._apply_secure_spoiler_chunks([body])[0]
+
+    def _secure_plain_spoiler_text(self, text: str) -> str:
+        return self._apply_secure_spoiler_chunks([_escape_mdv2(_strip_mdv2(text))])[0]
+
+    @staticmethod
+    def _secure_send_kwargs(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if options and options.get("protect_content"):
+            return {"protect_content": True}
+        return {}
+
+    def _schedule_secure_deletes(
+        self,
+        chat_id: str,
+        message_ids: list[str],
+        options: Optional[Dict[str, Any]],
+    ) -> None:
+        ttl = int((options or {}).get("ttl_seconds") or 0)
+        if ttl <= 0:
+            return
+        for message_id in message_ids:
+            if message_id:
+                self._schedule_ephemeral_delete(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    ttl_seconds=ttl,
+                )
+
+    @staticmethod
+    def _metadata_with_secure_options(
+        metadata: Optional[Dict[str, Any]],
+        options: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not options or not options.get("enabled"):
+            return metadata
+        merged = dict(metadata or {})
+        merged["secure_message"] = True
+        merged["secure_message_spoiler"] = bool(options.get("spoiler"))
+        merged["secure_message_protect_content"] = bool(options.get("protect_content"))
+        merged["secure_message_ttl_seconds"] = int(options.get("ttl_seconds") or 0)
+        return merged
+
     def _is_callback_user_authorized(
         self,
         user_id: str,
@@ -2396,6 +2520,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
 
+        secure_options = self._telegram_secure_options(metadata, content)
+        content = self._strip_secure_message_markers(content)
+
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
@@ -2405,8 +2532,13 @@ class TelegramAdapter(BasePlatformAdapter):
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
-            # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            # on a transient failure (which must NOT be legacy-resent). Secure
+            # messages intentionally use the legacy sendMessage path because it
+            # exposes protect_content and per-message TTL handling.
+            if (
+                not secure_options.get("enabled")
+                and self._should_attempt_rich(content, metadata=metadata)
+            ):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -2419,8 +2551,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
+            chunk_limit = (
+                max(1, self.MAX_MESSAGE_LENGTH - 4)
+                if secure_options.get("spoiler")
+                else self.MAX_MESSAGE_LENGTH
+            )
             chunks = self.truncate_message(
-                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+                formatted, chunk_limit, len_fn=utf16_len,
             )
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix. Escape the
@@ -2430,6 +2567,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
                     for chunk in chunks
                 ]
+            if secure_options.get("spoiler"):
+                chunks = self._apply_secure_spoiler_chunks(chunks)
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
@@ -2507,20 +2646,26 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **self._secure_send_kwargs(secure_options),
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
+                                plain_parse_mode = None
+                                if secure_options.get("spoiler"):
+                                    plain_chunk = self._secure_plain_spoiler_text(plain_chunk)
+                                    plain_parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
-                                    parse_mode=None,
+                                    parse_mode=plain_parse_mode,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **self._secure_send_kwargs(secure_options),
                                 )
                             else:
                                 raise
@@ -2642,6 +2787,8 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass  # Typing failures are non-fatal
 
+            self._schedule_secure_deletes(chat_id, message_ids, secure_options)
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -2672,6 +2819,7 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
+            self._schedule_secure_deletes(chat_id, locals().get("message_ids", []), secure_options)
             return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or is_pool_timeout or not is_timeout))
 
     async def send_or_update_status(
@@ -2730,6 +2878,26 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        secure_options = self._telegram_secure_options(metadata, content)
+        if secure_options.get("protect_content"):
+            send_result = await self.send(chat_id, content, reply_to=None, metadata=metadata)
+            if send_result.success:
+                await self.delete_message(chat_id=chat_id, message_id=message_id)
+                raw_ids = []
+                if isinstance(send_result.raw_response, dict):
+                    raw_ids = [str(mid) for mid in send_result.raw_response.get("message_ids", []) if mid]
+                replacement_ids = tuple(raw_ids or ([str(send_result.message_id)] if send_result.message_id else []))
+                if replacement_ids:
+                    return SendResult(
+                        success=True,
+                        message_id=replacement_ids[-1],
+                        raw_response=send_result.raw_response,
+                        retryable=send_result.retryable,
+                        continuation_message_ids=replacement_ids,
+                    )
+            return send_result
+        content = self._strip_secure_message_markers(content)
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -2740,28 +2908,48 @@ class TelegramAdapter(BasePlatformAdapter):
         # table that exceeds the MarkdownV2 limit must not be split into legacy
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
+        if finalize and not secure_options.get("enabled") and self._rich_eligible(content):
             rich_result = await self._try_edit_rich(chat_id, message_id, content)
             if rich_result is not None:
                 return rich_result
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
-        # without round-tripping a doomed edit.
-        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+        # without round-tripping a doomed edit. Secure spoiler wrapping adds
+        # four MarkdownV2 delimiters, so reserve that budget up front.
+        edit_limit = (
+            max(1, self.MAX_MESSAGE_LENGTH - 4)
+            if secure_options.get("spoiler")
+            else self.MAX_MESSAGE_LENGTH
+        )
+        if utf16_len(content) > edit_limit:
             return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                chat_id,
+                message_id,
+                content,
+                finalize=finalize,
+                metadata=self._metadata_with_secure_options(metadata, secure_options),
             )
 
         try:
             if not finalize:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
+                preview_text = content
+                parse_mode = None
+                if secure_options.get("spoiler"):
+                    preview_text = self._secure_spoiler_text(content)
+                    parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
+                edit_kwargs = {
+                    "chat_id": int(chat_id),
+                    "message_id": int(message_id),
+                    "text": preview_text,
+                }
+                if parse_mode is not None:
+                    edit_kwargs["parse_mode"] = parse_mode
+                await self._bot.edit_message_text(**edit_kwargs)
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
+            if secure_options.get("spoiler"):
+                formatted = self._apply_secure_spoiler_chunks([formatted])[0]
             try:
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -2772,6 +2960,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
+                    self._schedule_secure_deletes(chat_id, [str(message_id)], secure_options)
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 logger.warning(
@@ -2780,16 +2969,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     fmt_err,
                 )
                 _plain = _strip_mdv2(content) if content else content
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=_plain,
-                )
+                _plain_parse_mode = None
+                if secure_options.get("spoiler") and _plain:
+                    _plain = self._secure_plain_spoiler_text(_plain)
+                    _plain_parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
+                fallback_kwargs = {
+                    "chat_id": int(chat_id),
+                    "message_id": int(message_id),
+                    "text": _plain,
+                }
+                if _plain_parse_mode is not None:
+                    fallback_kwargs["parse_mode"] = _plain_parse_mode
+                await self._bot.edit_message_text(**fallback_kwargs)
+            self._schedule_secure_deletes(chat_id, [str(message_id)], secure_options)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
+                self._schedule_secure_deletes(chat_id, [str(message_id)], secure_options)
                 return SendResult(success=True, message_id=message_id)
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
@@ -2800,7 +2998,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
                 return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                    chat_id,
+                    message_id,
+                    content,
+                    finalize=finalize,
+                    metadata=self._metadata_with_secure_options(metadata, secure_options),
                 )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
@@ -2816,11 +3018,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
+                    retry_text = content
+                    retry_parse_mode = None
+                    if secure_options.get("spoiler"):
+                        retry_text = self._secure_spoiler_text(content)
+                        retry_parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
                     await self._bot.edit_message_text(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
-                        text=content,
+                        text=retry_text,
+                        parse_mode=retry_parse_mode,
                     )
+                    self._schedule_secure_deletes(chat_id, [str(message_id)], secure_options)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     logger.error(
@@ -2887,13 +3096,27 @@ class TelegramAdapter(BasePlatformAdapter):
         Falls back to ``SendResult(success=False)`` only if even the first-
         chunk edit fails — that's a real adapter problem, not an overflow.
         """
+        secure_options = self._telegram_secure_options(metadata, content)
+        content = self._strip_secure_message_markers(content)
+        chunks_are_formatted = bool(secure_options.get("spoiler"))
+        chunk_source = self.format_message(content) if chunks_are_formatted else content
+        chunk_limit = (
+            max(1, self.MAX_MESSAGE_LENGTH - 4)
+            if chunks_are_formatted
+            else self.MAX_MESSAGE_LENGTH
+        )
         chunks = self.truncate_message(
-            content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+            chunk_source, chunk_limit, len_fn=utf16_len,
         )
         if len(chunks) <= 1:
             # Defensive: shouldn't happen given the caller's pre-flight, but
             # if truncate_message returned a single chunk just edit normally.
             chunks = [content]
+        elif chunks_are_formatted:
+            chunks = [
+                re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                for chunk in chunks
+            ]
 
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
@@ -2901,7 +3124,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if finalize:
                 # Use format_message + parse_mode for the final chunk;
                 # mirror edit_message's main happy-path.
-                formatted = self.format_message(first_chunk)
+                formatted = first_chunk if chunks_are_formatted else self.format_message(first_chunk)
+                if secure_options.get("spoiler"):
+                    formatted = self._secure_spoiler_text(formatted, already_formatted=True)
                 try:
                     await self._bot.edit_message_text(
                         chat_id=int(chat_id),
@@ -2916,16 +3141,31 @@ class TelegramAdapter(BasePlatformAdapter):
                             "failed, falling back to plain text: %s",
                             self.name, fmt_err,
                         )
+                        fallback_text = _strip_mdv2(first_chunk)
+                        fallback_parse_mode = None
+                        if secure_options.get("spoiler"):
+                            fallback_text = self._secure_plain_spoiler_text(fallback_text)
+                            fallback_parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
-                            text=_strip_mdv2(first_chunk),
+                            text=fallback_text,
+                            parse_mode=fallback_parse_mode,
                         )
             else:
+                first_text = first_chunk
+                first_parse_mode = None
+                if secure_options.get("spoiler"):
+                    first_text = self._secure_spoiler_text(
+                        first_chunk,
+                        already_formatted=chunks_are_formatted,
+                    )
+                    first_parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
-                    text=first_chunk,
+                    text=first_text,
+                    parse_mode=first_parse_mode,
                 )
         except Exception as e:
             err_str = str(e).lower()
@@ -2964,19 +3204,31 @@ class TelegramAdapter(BasePlatformAdapter):
                     if use_markdown:
                         text = self.format_message(chunk)
                     else:
-                        # Plain attempt: on finalize the MarkdownV2 attempt
-                        # failed, so degrade to clean stripped text, never
+                        # On finalize fallback to plain-ish text instead of
                         # the raw chunk (raw ** / ``` markers would render
                         # literally); streaming previews stay raw.
                         text = _strip_mdv2(chunk) if finalize else chunk
+                    parse_mode = (
+                        ParseMode.MARKDOWN_V2 if use_markdown and ParseMode else None
+                    )
+                    if secure_options.get("spoiler"):
+                        if use_markdown:
+                            text = self._secure_spoiler_text(
+                                chunk,
+                                already_formatted=chunks_are_formatted,
+                            )
+                        else:
+                            text = self._secure_plain_spoiler_text(text)
+                        parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
-                        parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
+                        parse_mode=parse_mode,
                         reply_to_message_id=reply_to_id,
                         **thread_kwargs,
                         **self._link_preview_kwargs(),
                         **self._notification_kwargs(metadata),
+                        **self._secure_send_kwargs(secure_options),
                     )
                     break
                 except Exception as send_err:
@@ -2992,12 +3244,19 @@ class TelegramAdapter(BasePlatformAdapter):
                             )
                         )
                         try:
+                            retry_text = _strip_mdv2(chunk) if finalize else chunk
+                            retry_parse_mode = None
+                            if secure_options.get("spoiler"):
+                                retry_text = self._secure_plain_spoiler_text(retry_text)
+                                retry_parse_mode = ParseMode.MARKDOWN_V2 if ParseMode else None
                             sent_msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
-                                text=_strip_mdv2(chunk) if finalize else chunk,
+                                text=retry_text,
+                                parse_mode=retry_parse_mode,
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **self._secure_send_kwargs(secure_options),
                             )
                             break
                         except Exception as _retry_err:
@@ -3031,6 +3290,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \(\d+/\d+\)$", "", delivered)
                     for delivered in delivered_chunks
                 )
+                self._schedule_secure_deletes(
+                    chat_id,
+                    [str(message_id), *continuation_ids],
+                    secure_options,
+                )
                 return SendResult(
                     success=False,
                     message_id=prev_id,
@@ -3055,6 +3319,11 @@ class TelegramAdapter(BasePlatformAdapter):
         logger.debug(
             "[%s] Overflow split delivered %d chunks; last_id=%s",
             self.name, 1 + len(continuation_ids), last_id,
+        )
+        self._schedule_secure_deletes(
+            chat_id,
+            [str(message_id), *continuation_ids],
+            secure_options,
         )
         return SendResult(
             success=True,

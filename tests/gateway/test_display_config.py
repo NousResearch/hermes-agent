@@ -452,6 +452,51 @@ class TestCleanupProgress:
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
 
 
+class TestSecureMessages:
+    """resolve_display_setting() for Telegram secure-message knobs."""
+
+    def test_secure_message_defaults_preserve_existing_behavior(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "secure_messages") is False
+        assert resolve_display_setting({}, "telegram", "secure_messages_spoiler") is True
+        assert resolve_display_setting({}, "telegram", "secure_messages_protect_content") is True
+        assert resolve_display_setting({}, "telegram", "secure_messages_ttl_seconds") == 0
+
+    def test_secure_message_overrides_normalise(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "secure_messages": "on",
+                        "secure_messages_spoiler": "off",
+                        "secure_messages_protect_content": "false",
+                        "secure_messages_ttl_seconds": "300",
+                    }
+                }
+            }
+        }
+
+        assert resolve_display_setting(config, "telegram", "secure_messages") is True
+        assert resolve_display_setting(config, "telegram", "secure_messages_spoiler") is False
+        assert (
+            resolve_display_setting(config, "telegram", "secure_messages_protect_content")
+            is False
+        )
+        assert resolve_display_setting(config, "telegram", "secure_messages_ttl_seconds") == 300
+
+    def test_secure_message_ttl_invalid_values_clamp(self):
+        from gateway.display_config import resolve_display_setting
+
+        negative = {"display": {"secure_messages_ttl_seconds": -5}}
+        invalid = {"display": {"secure_messages_ttl_seconds": "soon"}}
+
+        assert resolve_display_setting(negative, "telegram", "secure_messages_ttl_seconds") == 0
+        assert resolve_display_setting(invalid, "telegram", "secure_messages_ttl_seconds") == 0
+
+
 class TestToolProgressGrouping:
     """resolve_display_setting() for the tool_progress_grouping knob."""
 

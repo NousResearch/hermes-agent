@@ -47,6 +47,13 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Telegram-focused "sensible privacy" controls. Defaults preserve normal
+    # delivery; when enabled, Telegram can combine spoiler/tap-to-reveal text,
+    # Bot API protected content, and best-effort TTL deletion.
+    "secure_messages": False,
+    "secure_messages_spoiler": True,
+    "secure_messages_protect_content": True,
+    "secure_messages_ttl_seconds": 0,
 }
 
 # ---------------------------------------------------------------------------
@@ -231,6 +238,9 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "secure_messages",
+        "secure_messages_spoiler",
+        "secure_messages_protect_content",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
@@ -245,6 +255,11 @@ def _normalise(setting: str, value: Any) -> Any:
     if setting == "tool_preview_length":
         try:
             return int(value)
+        except (TypeError, ValueError):
+            return 0
+    if setting == "secure_messages_ttl_seconds":
+        try:
+            return max(0, int(value))
         except (TypeError, ValueError):
             return 0
     return value

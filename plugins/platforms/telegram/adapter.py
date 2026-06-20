@@ -530,6 +530,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Bot API 10.0 guest mode: chat_id → guest_query_id for answerGuestQuery
+        self._pending_guest_queries: Dict[str, str] = {}
+        # chat IDs that are guest-mode only (bot not a member)
+        self._guest_only_chats: set = set()
+        # accumulated send() content for guest chats; flushed via answerGuestQuery in on_processing_complete
+        self._guest_reply_buffer: Dict[str, str] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2115,7 +2121,16 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+            # Handle guest_message updates (Bot API 10.0 — not yet in PTB typed layer;
+            # the raw payload arrives in update.api_kwargs["guest_message"]).
+            try:
+                from telegram.ext import TypeHandler as _TypeHandler
+                self._app.add_handler(
+                    _TypeHandler(Update, self._handle_guest_message_update), group=1
+                )
+            except Exception as _th_err:
+                logger.warning("[%s] Could not register guest_message TypeHandler: %s", self.name, _th_err)
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -2401,6 +2416,43 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            # Bot API 10.0 guest reply: buffer content and return immediately.
+            # Must run before the rich/legacy send paths — both use sendMessage
+            # which Telegram rejects with Forbidden when the bot is not a member.
+            if self._pending_guest_queries.get(chat_id) is not None or chat_id in self._guest_only_chats:
+                # Tool-use progress blocks (💻 terminal etc.) come through
+                # send() from send_progress_messages().  The stream consumer
+                # always sets expect_edits=True on the first frame and
+                # notify=True on the fallback-final send; tool-progress calls
+                # have neither flag.  Drop anything that isn't from the stream
+                # consumer so the guest reply contains only the LLM response.
+                _is_stream_send = bool(
+                    metadata
+                    and (metadata.get("expect_edits") or metadata.get("notify"))
+                )
+                if not _is_stream_send:
+                    return SendResult(success=True, message_id=None)
+
+                # Strip the streaming cursor " ▉" before buffering so it is
+                # never embedded mid-word in the final reply.
+                _cursor = " ▉"
+                _clean = content
+                if _clean.endswith(_cursor):
+                    _clean = _clean[:-len(_cursor)]
+                elif _clean.endswith("▉"):
+                    _clean = _clean[:-1]
+
+                _existing = self._guest_reply_buffer.get(chat_id, "")
+                if _existing and _clean.startswith(_existing):
+                    # Cumulative streaming update: new content contains all
+                    # prior content as a prefix → replace so the last call wins.
+                    self._guest_reply_buffer[chat_id] = _clean
+                else:
+                    # Continuation or overflow chunk: content does NOT start
+                    # with what we already have → append.
+                    self._guest_reply_buffer[chat_id] = _existing + _clean
+                return SendResult(success=True, message_id=None)
+
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
@@ -2691,6 +2743,10 @@ class TelegramAdapter(BasePlatformAdapter):
         message in place. If the edit fails (message deleted, too old, etc.)
         we drop the cached id and send fresh.
         """
+        # Guest chats have no existing message to edit and status messages would
+        # consume the one-shot query_id before the real answer is ready.
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
         key = (str(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
@@ -3127,6 +3183,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="not_connected")
+
+        # Guest chats: draft streaming requires an existing message to animate;
+        # the bot is not a member, so suppress silently.
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
 
         # Rich draft fast-path (Bot API 10.1 sendRichMessageDraft): render the
         # streaming preview with the same raw markdown the final
@@ -4452,7 +4513,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
@@ -4679,6 +4743,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+
         try:
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
@@ -4773,6 +4840,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+
         try:
             if not os.path.exists(file_path):
                 return SendResult(success=False, error=self._missing_media_path_error("File", file_path))
@@ -4823,6 +4893,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+
         try:
             if not os.path.exists(video_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
@@ -4866,12 +4939,15 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Telegram photo.
-        
+
         Tries URL-based send first (fast, works for <5MB images).
         Falls back to downloading and uploading as file (supports up to 10MB).
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
 
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
@@ -5960,6 +6036,57 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _handle_guest_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle guest_message updates (Bot API 10.0 guest bot feature).
+
+        Telegram delivers @mentions from chats the bot hasn't joined via the
+        ``guest_message`` update field.  PTB doesn't know this field yet so it
+        lands in ``update.api_kwargs``.  We parse the raw payload, store the
+        ``guest_query_id`` so ``send()`` can call ``answerGuestQuery``, then
+        route the message through the normal text-processing pipeline.
+        """
+        if not self._telegram_guest_mode():
+            return
+        raw_gm = update.api_kwargs.get("guest_message") if update.api_kwargs else None
+        if not raw_gm or not isinstance(raw_gm, dict):
+            return
+        logger.info("[%s] guest_message update received (update_id=%s)", self.name, update.update_id)
+
+        guest_query_id = raw_gm.get("guest_query_id")
+        if not guest_query_id:
+            logger.warning("[%s] guest_message missing guest_query_id, skipping", self.name)
+            return
+
+        try:
+            msg = Message.de_json(raw_gm, self._bot)
+        except Exception as exc:
+            logger.warning("[%s] Failed to parse guest_message payload: %s", self.name, exc)
+            return
+        if not msg:
+            return
+
+        text = msg.text or getattr(msg, "caption", None) or ""
+        if not text.strip():
+            return
+
+        chat_id_str = str(msg.chat.id) if msg.chat else ""
+        if not chat_id_str:
+            return
+
+        # Store guest_query_id so send() uses answerGuestQuery for the reply.
+        self._pending_guest_queries[chat_id_str] = guest_query_id
+        self._guest_only_chats.add(chat_id_str)
+
+        if not self._should_process_message(msg):
+            self._pending_guest_queries.pop(chat_id_str, None)
+            self._guest_only_chats.discard(chat_id_str)
+            return
+
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(event.text)
+        event = self._apply_telegram_group_observe_attribution(event)
+        self._enqueue_text_event(event)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -6726,6 +6853,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
 
         # Build source
+        # When a user posts "as a channel" in a group, from_user is None but
+        # sender_chat carries the channel identity. Use sender_chat.id so the
+        # auth check can match it and the session key is stable across messages.
+        sender_chat = getattr(message, "sender_chat", None)
         source = self.build_source(
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
@@ -6733,15 +6864,23 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=(
                 str(user.id)
                 if user
-                else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+                else (
+                    str(sender_chat.id)
+                    if sender_chat
+                    else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+                )
             ),
             user_name=(
                 user.full_name
                 if user
                 else (
-                    chat.full_name
-                    if hasattr(chat, "full_name") and chat_type == "dm"
-                    else (chat.title if chat_type == "channel" else None)
+                    getattr(sender_chat, "title", None) or getattr(sender_chat, "username", None)
+                    if sender_chat
+                    else (
+                        chat.full_name
+                        if hasattr(chat, "full_name") and chat_type == "dm"
+                        else (chat.title if chat_type == "channel" else None)
+                    )
                 )
             ),
             thread_id=thread_id_str,
@@ -6872,6 +7011,36 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
+        # Flush buffered guest reply via answerGuestQuery (Bot API 10.0).
+        # All send() calls during processing were silently buffered; we fire a
+        # single answerGuestQuery here with the complete response so the user
+        # sees the full answer, not a status fragment.
+        _gc_id = str(getattr(event.source, "chat_id", None) or "")
+        if _gc_id:
+            _guest_qid = self._pending_guest_queries.pop(_gc_id, None)
+            _buffered = self._guest_reply_buffer.pop(_gc_id, "")
+            self._guest_only_chats.discard(_gc_id)
+            if _guest_qid and self._bot:
+                _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
+                _plain = _plain[:4096] or "​"  # zero-width space if somehow empty
+                _gq_result = {
+                    "type": "article",
+                    "id": "reply",
+                    "title": "Reply",
+                    "input_message_content": {"message_text": _plain},
+                }
+                try:
+                    await self._bot.do_api_request(
+                        "answerGuestQuery",
+                        api_kwargs={"guest_query_id": _guest_qid, "result": _gq_result},
+                    )
+                    logger.info("[%s] answerGuestQuery flushed (chat=%s)", self.name, _gc_id)
+                except Exception as _flush_err:
+                    logger.warning(
+                        "[%s] answerGuestQuery flush failed (chat=%s): %s",
+                        self.name, _gc_id, _flush_err,
+                    )
+
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)

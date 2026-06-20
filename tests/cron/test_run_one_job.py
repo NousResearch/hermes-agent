@@ -378,3 +378,53 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert ss.current_secret_scope() is None
 
 
+def test_run_one_job_contains_secondary_mark_failure(monkeypatch):
+    """PR #8290: when run_job fails AND the fallback mark_job_run() in the
+    except handler ALSO raises, the secondary error is contained — run_one_job
+    returns False instead of letting the exception escape and abort the
+    surrounding tick loop.
+    """
+    def boom_run(job, **kwargs):  # **kwargs: tolerate upstream run_job signature growth
+        raise RuntimeError("primary job failure")
+
+    def boom_mark(jid, ok, err=None, **kwargs):
+        raise RuntimeError("mark_job_run persistence failure")
+
+    monkeypatch.setattr(s, "run_job", boom_run)
+    monkeypatch.setattr(s, "mark_job_run", boom_mark)
+
+    # Must not raise despite BOTH the job and its failure-marking blowing up.
+    ok = s.run_one_job({"id": "j11", "name": "t"})
+
+    assert ok is False
+
+
+def test_tick_continues_when_mark_job_run_raises(monkeypatch):
+    """PR #8290: a secondary mark_job_run() failure must not abort tick's loop —
+    every due job is still attempted and tick returns normally.
+    """
+    processed = []
+
+    def boom_run(job, **kwargs):  # **kwargs: tolerate upstream run_job signature growth
+        processed.append(job["id"])
+        raise RuntimeError("primary job failure")
+
+    def boom_mark(jid, ok, err=None, **kwargs):
+        raise RuntimeError("mark_job_run persistence failure")
+
+    monkeypatch.setattr(s, "run_job", boom_run)
+    monkeypatch.setattr(s, "mark_job_run", boom_mark)
+    monkeypatch.setattr(
+        s, "get_due_jobs",
+        lambda: [{"id": "a", "name": "t"}, {"id": "b", "name": "t"}],
+    )
+    monkeypatch.setattr(s, "advance_next_runs", lambda jids: True)
+    # tick's _process_job takes the durable fire claim before run_one_job; without
+    # a stub the fake jobs never claim and run_job is never reached.
+    monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id, **_kwargs: True)
+
+    # tick must not raise even though both jobs and their failure-marking blow up.
+    count = s.tick(verbose=False, sync=True)
+
+    assert isinstance(count, int)
+    assert set(processed) == {"a", "b"}  # every due job was attempted

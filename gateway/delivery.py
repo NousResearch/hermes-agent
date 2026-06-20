@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PLATFORM_OUTPUT = 4000
 TRUNCATED_VISIBLE = 3800
+_COLON_CHAT_ID_PLATFORMS = frozenset({"matrix", "teams", "yuanbao"})
 
 # Matches strings that are *only* a "silence" narration with optional markdown
 # wrappers. Covers: *(silent)*, _silent_, `silent`, ~silent~, (silent), silent,
@@ -137,16 +138,31 @@ class DeliveryTarget:
         if target_lower == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id or platform:chat_id:thread_id format
-        # Use the original case for chat_id/thread_id to preserve case-sensitive IDs
+        # Check for platform:chat_id or platform:chat_id:thread_id format.
+        # Most platforms still use the legacy "first extra colon means thread"
+        # convention. Only a small set have chat IDs that naturally contain
+        # colons, so keep the special parser narrowly scoped to those.
         if ":" in target_stripped:
-            parts = target_stripped.split(":", 2)
-            platform_str = parts[0].lower()  # Platform names are case-insensitive
-            chat_id = parts[1] if len(parts) > 1 else None
-            thread_id = parts[2] if len(parts) > 2 else None
+            platform_str, target_ref = target_stripped.split(":", 1)
+            platform_str = platform_str.lower()  # Platform names are case-insensitive
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
+                if platform_str in _COLON_CHAT_ID_PLATFORMS:
+                    from tools.send_message_tool import _parse_target_ref
+
+                    chat_id, thread_id, is_explicit = _parse_target_ref(platform_str, target_ref)
+                    if not is_explicit:
+                        chat_id, thread_id = target_ref, None
+                else:
+                    parts = target_stripped.split(":", 2)
+                    chat_id = parts[1] if len(parts) > 1 else None
+                    thread_id = parts[2] if len(parts) > 2 else None
+                return cls(
+                    platform=platform,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    is_explicit=True,
+                )
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)

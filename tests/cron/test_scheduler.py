@@ -359,6 +359,17 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_explicit_teams_chat_id_with_colon_is_preserved(self):
+        """deliver: 'teams:19:...' should keep the full Teams conversation ID."""
+        job = {
+            "deliver": "teams:19:abcDEF@thread.skype",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "teams",
+            "chat_id": "19:abcDEF@thread.skype",
+            "thread_id": None,
+        }
+
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
 

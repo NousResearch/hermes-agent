@@ -1251,6 +1251,13 @@ class TestParseTargetRefMatrix:
         assert thread_id is None
         assert is_explicit is True
 
+    def test_teams_conversation_id_with_colon_is_explicit(self):
+        """Teams conversation IDs should bypass channel-name resolution."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("teams", "19:abcDEF@thread.skype")
+        assert chat_id == "19:abcDEF@thread.skype"
+        assert thread_id is None
+        assert is_explicit is True
+
     def test_matrix_alias_is_not_explicit(self):
         """Matrix room aliases (#) are NOT explicit — they need resolution."""
         chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "#general:matrix.org")

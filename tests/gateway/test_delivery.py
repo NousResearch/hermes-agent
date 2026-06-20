@@ -86,20 +86,18 @@ class TestCaseSensitiveChatIdParsing:
         assert target.thread_id == "thread123"
     
     def test_matrix_room_id_preserved(self):
-        """Matrix room IDs like !RoomABC:example.org should preserve case.
-        
-        Note: Matrix room IDs contain colons (e.g., !RoomABC:example.org).
-        Due to the platform:chat_id:thread_id format, these are parsed as
-        chat_id=!RoomABC and thread_id=example.org. This is a known limitation
-        of the current format. The fix preserves case but doesn't change the
-        parsing structure.
-        """
+        """Matrix room IDs like !RoomABC:example.org should stay intact."""
         target = DeliveryTarget.parse("matrix:!RoomABC:example.org")
         assert target.platform == Platform.MATRIX
-        # The room ID is split at the first colon after the platform prefix
-        # This is a format limitation - the case is preserved but the structure is split
-        assert target.chat_id == "!RoomABC"
-        assert target.thread_id == "example.org"
+        assert target.chat_id == "!RoomABC:example.org"
+        assert target.thread_id is None
+
+    def test_teams_chat_id_with_colon_is_preserved(self):
+        """Teams conversation IDs like 19:... should not be split as threads."""
+        target = DeliveryTarget.parse("teams:19:Meeting_ABC@thread.skype")
+        assert target.platform == Platform("teams")
+        assert target.chat_id == "19:Meeting_ABC@thread.skype"
+        assert target.thread_id is None
     
     def test_mixed_case_chat_id_roundtrip(self):
         """Mixed-case chat IDs should survive parse-to_string roundtrip."""
@@ -108,6 +106,14 @@ class TestCaseSensitiveChatIdParsing:
         s = target.to_string()
         reparsed = DeliveryTarget.parse(s)
         assert reparsed.chat_id == "ChatId123ABC"
+
+    def test_matrix_room_id_roundtrip(self):
+        """Matrix room IDs containing colons should survive roundtrip intact."""
+        original = "matrix:!RoomABC:example.org"
+        target = DeliveryTarget.parse(original)
+        reparsed = DeliveryTarget.parse(target.to_string())
+        assert reparsed.chat_id == "!RoomABC:example.org"
+        assert reparsed.thread_id is None
 
 
 class TestPlatformNameCaseInsensitivity:

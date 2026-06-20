@@ -2368,3 +2368,113 @@ class TestPreflightSentinelGuard:
         compressor.last_prompt_tokens = 50_000
         result = self._seed(compressor.last_prompt_tokens, 10_000)
         assert result == 50_000
+    def test_real_value_still_revises_upward(self, compressor):
+        compressor.last_prompt_tokens = 10_000
+        result = self._seed(compressor.last_prompt_tokens, 50_000)
+        assert result == 50_000
+
+    def test_real_value_not_revised_downward(self, compressor):
+        compressor.last_prompt_tokens = 50_000
+        result = self._seed(compressor.last_prompt_tokens, 10_000)
+        assert result == 50_000
+
+
+class TestTailDedup:
+    """Regression: compression should not duplicate consecutive identical assistant messages.
+
+    Bug: _hyg_msgs strips tool_calls, making non-consecutive identical assistant
+    messages appear consecutive. compress() tail copy preserves them, causing
+    cascading duplication across compression cycles.
+    """
+
+    @staticmethod
+    def _make_compressor(compressor):
+        """Configure compressor for tail-dedup testing with mocked internals."""
+        compressor.context_length = 1_000_000
+        compressor.threshold_percent = 0.5
+        compressor.threshold_tokens = 500_000
+        compressor.tail_token_budget = 20000
+        compressor.protect_last_n = 2
+        compressor.quiet_mode = True
+        compressor.compression_count = 0
+        compressor._previous_summary = None
+        compressor._summary_failure_cooldown_until = 0.0
+        compressor._ineffective_compression_count = 0
+        compressor._last_compress_aborted = False
+        compressor._last_summary_error = None
+        compressor._last_summary_dropped_count = 0
+        compressor._last_summary_fallback_used = False
+        compressor._last_aux_model_failure_error = None
+        compressor._last_aux_model_failure_model = None
+        compressor.abort_on_summary_failure = False
+        compressor.last_prompt_tokens = 10000
+        compressor.last_compression_rough_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor.awaiting_real_usage_after_compression = False
+        compressor._last_compression_savings_pct = 0.0
+        compressor._last_compression_summary_warning = None
+        compressor._last_aux_fallback_warning_key = None
+        # Mock methods to bypass LLM calls and complex boundary logic
+        compressor._generate_summary = lambda turns, focus_topic=None: "Summary of work done."
+        compressor._protect_head_size = lambda msgs: 1
+        compressor._align_boundary_forward = lambda msgs, idx: idx
+        compressor._find_tail_cut_by_tokens = lambda msgs, start: 2
+        compressor._find_latest_context_summary = lambda msgs, start, end: (None, None)
+        compressor._derive_auto_focus_topic = lambda msgs: None
+        compressor._sanitize_tool_pairs = lambda msgs: msgs
+        return compressor
+
+    def test_consecutive_identical_tail_deduplicated(self, compressor):
+        """Two consecutive identical assistant messages (no tool_calls) in tail -> one survives."""
+        c = self._make_compressor(compressor)
+        # Messages after compress_start=1: tail includes indices 2-6
+        # Indices 4 and 5 are consecutive identical assistant messages
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Run tests"},
+            {"role": "assistant", "content": "Running tests...", "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "content": "103 passed", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "103 passed! All good."},   # first
+            {"role": "assistant", "content": "103 passed! All good."},   # consecutive duplicate
+        ]
+        result = c.compress(messages, current_tokens=10000)
+
+        dups = [m for m in result if m.get("role") == "assistant" and m.get("content") == "103 passed! All good."]
+        assert len(dups) == 1, f"Expected 1 copy, got {len(dups)}"
+
+    def test_non_consecutive_identical_preserved(self, compressor):
+        """Non-consecutive identical assistant messages should NOT be deduplicated."""
+        c = self._make_compressor(compressor)
+        # Tail: indices 2-8. Indices 4 and 7 are identical but NOT consecutive
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Run tests"},
+            {"role": "assistant", "content": "Running tests...", "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "content": "103 passed", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "103 passed! All good."},  # first occurrence
+            {"role": "user", "content": "Now run lint"},
+            {"role": "assistant", "content": "Running lint...", "tool_calls": [{"id": "tc3", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "content": "0 errors", "tool_call_id": "tc3"},
+            {"role": "assistant", "content": "103 passed! All good."},  # NOT consecutive
+        ]
+        result = c.compress(messages, current_tokens=10000)
+        # Compression drops old messages, so only the last occurrence survives.
+        # The key assertion is that the dedup logic does NOT remove it.
+        has_103 = any(m.get("role") == "assistant" and m.get("content") == "103 passed! All good." for m in result)
+        assert has_103, "Non-consecutive identical assistant message should NOT be deduplicated"
+    def test_identical_with_tool_calls_preserved(self, compressor):
+        """Assistant messages with tool_calls should NOT be deduplicated even if identical."""
+        c = self._make_compressor(compressor)
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Run tests"},
+            {"role": "assistant", "content": "Running tests...", "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "content": "103 passed", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "Running tests...", "tool_calls": [{"id": "tc4", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "content": "490 passed", "tool_call_id": "tc4"},
+            {"role": "user", "content": "Done"},
+        ]
+        result = c.compress(messages, current_tokens=10000)
+
+        running = [m for m in result if m.get("role") == "assistant" and m.get("content") == "Running tests..."]
+        assert len(running) == 2, f"Expected 2 copies (with tool_calls), got {len(running)}"

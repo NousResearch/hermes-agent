@@ -167,7 +167,7 @@ export interface SessionInfo {
 }
 
 export interface Usage {
-  calls: number
+  calls?: number
   compressions?: number
   context_max?: number
   context_percent?: number
@@ -175,10 +175,70 @@ export interface Usage {
   cost_status?: string
   cost_usd?: number
   dev_credits_spent_micros?: number
-  input: number
-  output: number
+  input?: number
+  output?: number
   reasoning?: number
+  runtime?: RuntimeStatus
   total: number
+}
+
+export type RuntimeToolStatusValue = 'blocked' | 'error' | 'ok' | 'running'
+
+export interface RuntimeToolStatus {
+  duration_ms?: null | number
+  ended_at?: null | number
+  error_message?: string
+  name: string
+  preview?: string
+  started_at?: null | number
+  status: RuntimeToolStatusValue | string
+  tool_call_id?: string
+}
+
+export interface RuntimeSkillStatus {
+  event?: string
+  name: string
+  ts?: number
+}
+
+export interface RuntimeTaskStatus {
+  cancelled?: number
+  completed?: number
+  in_progress?: number
+  pending?: number
+  total?: number
+}
+
+export interface RuntimeBackgroundStatus {
+  running?: number
+}
+
+export interface RuntimeSubagentStatus {
+  id?: string
+  label?: string
+  last_tool?: string
+  status?: string
+  tool_count?: number
+}
+
+export interface RuntimeWaitStatus {
+  reason?: string
+  since?: null | number
+}
+
+export interface RuntimeStatus {
+  active_subagent?: null | RuntimeSubagentStatus
+  background_tasks?: RuntimeBackgroundStatus
+  main_agent?: string
+  phase?: string
+  recent_skill?: null | RuntimeSkillStatus
+  recent_skills?: RuntimeSkillStatus[]
+  recent_tool?: null | RuntimeToolStatus
+  recent_tools?: RuntimeToolStatus[]
+  run_mode?: string
+  target?: string
+  task?: null | RuntimeTaskStatus
+  wait?: RuntimeWaitStatus
 }
 
 export interface SudoReq {

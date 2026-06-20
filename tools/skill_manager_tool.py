@@ -1010,6 +1010,7 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -1086,6 +1087,11 @@ def skill_manage(
                 bump_patch(name)
             elif action == "delete":
                 forget(name)
+        except Exception:
+            pass
+        try:
+            from agent import runtime_status
+            runtime_status.record_skill(session_id or "", name, event=action)
         except Exception:
             pass
 
@@ -1228,6 +1234,7 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        session_id=kw.get("session_id") or kw.get("task_id")),
     emoji="📝",
 )

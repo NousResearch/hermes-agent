@@ -2536,6 +2536,29 @@ def _get_usage(agent) -> dict:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
             pass
+    try:
+        from agent import runtime_status
+        session_id = getattr(agent, "session_id", "") or ""
+        try:
+            from tools.process_registry import process_registry
+            runtime_status.record_background_process_count(session_id, process_registry.count_running())
+        except Exception:
+            pass
+        try:
+            if hasattr(agent, "get_activity_summary"):
+                runtime_status.record_activity_summary(session_id, agent.get_activity_summary())
+        except Exception:
+            pass
+        try:
+            from tools.delegate_tool import list_active_subagents
+            active_subagents = list_active_subagents()
+            if active_subagents:
+                runtime_status.record_active_subagents(session_id, active_subagents)
+        except Exception:
+            pass
+        usage["runtime"] = runtime_status.snapshot(session_id)
+    except Exception:
+        usage["runtime"] = {}
     return usage
 
 

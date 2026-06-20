@@ -179,7 +179,7 @@ export function transcriptGutterWidth(role: Role, userPrompt: string) {
 }
 
 export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false) {
-  const horizontalReserve = termuxMode ? 2 : 4
+  const horizontalReserve = termuxMode ? 2 : 3
   const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - horizontalReserve)
 
   if (termuxMode) {

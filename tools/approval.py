@@ -58,6 +58,16 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     pre_approval_request, post_approval_response.
     """
     try:
+        session_key = kwargs.get("session_key") or _approval_session_key.get()
+        if hook_name == "pre_approval_request":
+            from agent import runtime_status
+            runtime_status.record_wait(session_key, reason="approval")
+        elif hook_name == "post_approval_response":
+            from agent import runtime_status
+            runtime_status.record_wait(session_key, reason="none")
+    except Exception:
+        pass
+    try:
         from hermes_cli.plugins import invoke_hook
     except Exception:
         # Plugin system not available in this execution context

@@ -30,8 +30,11 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    session_id: str = "test-session",
+    activity_summary: dict | None = None,
 ):
     cli_obj.agent = SimpleNamespace(
+        session_id=session_id,
         model=cli_obj.model,
         provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
         base_url="",
@@ -43,6 +46,7 @@ def _attach_agent(
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
         session_api_calls=api_calls,
+        get_activity_summary=(lambda: activity_summary) if activity_summary is not None else (lambda: {}),
         get_rate_limit_state=lambda: None,
         context_compressor=SimpleNamespace(
             last_prompt_tokens=context_tokens,
@@ -81,6 +85,156 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_status_snapshot_includes_runtime_status(self):
+        from agent import runtime_status
+
+        runtime_status.clear_session("s-cli-status")
+        runtime_status.record_phase(
+            "s-cli-status",
+            phase="implement",
+            run_mode="implement",
+            target="claude-code",
+            main_agent="executor",
+        )
+        runtime_status.record_tool_completed("s-cli-status", "terminal", status="ok")
+        runtime_status.record_skill("s-cli-status", "spec-dev", event="use")
+        runtime_status.record_task_summary("s-cli-status", {"total": 7, "completed": 3})
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            session_id="s-cli-status",
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["runtime"]["run_mode"] == "implement"
+        assert snapshot["runtime"]["target"] == "claude-code"
+        assert snapshot["runtime"]["main_agent"] == "executor"
+        assert snapshot["runtime"]["recent_tool"]["name"] == "terminal"
+        assert snapshot["runtime"]["recent_skill"]["name"] == "spec-dev"
+        assert snapshot["runtime"]["task"]["completed"] == 3
+
+    def test_status_snapshot_updates_runtime_from_agent_activity_summary(self):
+        from agent import runtime_status
+
+        runtime_status.clear_session("s-cli-activity")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            session_id="s-cli-activity",
+            activity_summary={
+                "current_tool": None,
+                "last_activity_desc": "starting API call #2",
+                "budget_used": 2,
+                "budget_max": 6,
+            },
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["runtime"]["phase"] == "thinking"
+        assert snapshot["runtime"]["run_mode"] == "agent"
+        assert snapshot["runtime"]["wait"]["reason"] == "model"
+        assert snapshot["runtime"]["task"]["completed"] == 2
+        text = cli_obj._build_status_bar_text(width=180)
+        assert "run:agent" in text
+        assert "phase:thinking" in text
+        assert "wait:model" in text
+
+    def test_build_status_bar_text_renders_runtime_segments_wide(self):
+        from agent import runtime_status
+
+        runtime_status.clear_session("s-cli-render")
+        runtime_status.record_phase(
+            "s-cli-render",
+            phase="implement",
+            run_mode="implement",
+            target="claude-code",
+            main_agent="executor",
+        )
+        runtime_status.record_tool_completed("s-cli-render", "terminal", status="ok")
+        runtime_status.record_skill("s-cli-render", "spec-dev", event="use")
+        runtime_status.record_task_summary("s-cli-render", {"total": 7, "completed": 3})
+        runtime_status.record_active_subagents(
+            "s-cli-render",
+            [{"subagent_id": "sa-1", "goal": "verifier", "status": "running", "last_tool": "read_file"}],
+        )
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            session_id="s-cli-render",
+        )
+
+        text = cli_obj._build_status_bar_text(width=180)
+
+        assert "run:implement" in text
+        assert "target:claude-code" in text
+        assert "main:executor" in text
+        assert "tool:terminal✓" in text
+        assert "skill:spec-dev" in text
+        assert "sub:verifier" in text
+        assert "task:3/7" in text
+
+    def test_build_status_bar_text_renders_background_task_count(self, monkeypatch):
+        from tools.process_registry import process_registry
+
+        monkeypatch.setattr(process_registry, "count_running", lambda: 2)
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            session_id="s-cli-bg",
+        )
+
+        assert "bg:2" in cli_obj._build_status_bar_text(width=180)
+
+    def test_status_bar_fragments_render_runtime_segments_wide(self, monkeypatch):
+        from agent import runtime_status
+
+        runtime_status.clear_session("s-cli-frags")
+        runtime_status.record_phase("s-cli-frags", run_mode="implement")
+        runtime_status.record_tool_completed("s-cli-frags", "terminal", status="ok")
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            session_id="s-cli-frags",
+        )
+        cli_obj._status_bar_visible = True
+        monkeypatch.setattr(cli_obj, "_get_tui_terminal_width", lambda: 180)
+
+        plain = "".join(text for _, text in cli_obj._get_status_bar_fragments())
+
+        assert "run:implement" in plain
+        assert "tool:terminal✓" in plain
 
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1
@@ -155,6 +309,43 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
         assert "200K" not in text
+
+    def test_medium_status_bar_prioritizes_run_state_over_low_value_runtime_tail(self):
+        from agent import runtime_status
+
+        runtime_status.clear_session("s-cli-compact-priority")
+        runtime_status.record_phase("s-cli-compact-priority", run_mode="implement", phase="thinking", target="claude-code", main_agent="executor")
+        runtime_status.record_tool_completed("s-cli-compact-priority", "terminal", status="ok")
+        runtime_status.record_skill("s-cli-compact-priority", "hermes-agent")
+        runtime_status.record_active_subagents(
+            "s-cli-compact-priority",
+            [{"subagent_id": "sa-1", "goal": "verifier", "status": "running", "last_tool": "read_file"}],
+        )
+        runtime_status.record_task_summary("s-cli-compact-priority", {"total": 8, "completed": 3})
+        runtime_status.record_background_process_count("s-cli-compact-priority", 2)
+        runtime_status.record_wait("s-cli-compact-priority", reason="approval")
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+            session_id="s-cli-compact-priority",
+        )
+
+        text = cli_obj._build_status_bar_text(width=70)
+
+        assert "implement" in text
+        assert "waiting" in text
+        assert "terminal" not in text
+        assert "verifier" not in text
+        assert "hermes-agent" not in text
+        assert "3/8" not in text
+        assert "bg:2" not in text
+        assert "approval" not in text
 
     def test_build_status_bar_text_handles_missing_agent(self):
         cli_obj = _make_cli()

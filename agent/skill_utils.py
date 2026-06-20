@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -307,7 +308,7 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, str], Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -316,37 +317,46 @@ def _raw_config_cache_clear() -> None:
 
 
 def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with a shared mtime+size keyed cache.
+    """Read config.yaml with a shared stat+content keyed cache.
 
     This module intentionally avoids importing ``hermes_cli.config`` on the
     skill prompt/build path. A tiny local cache gives the same repeated-read
-    win without pulling the heavier CLI config stack into startup.
+    win without pulling the heavier CLI config stack into startup. Include a
+    short content digest as well as stat metadata so same-size rapid rewrites
+    on filesystems with coarse timestamp behavior still invalidate the cache.
     """
     config_path = get_config_path()
     if not config_path.exists():
         return {}
     try:
         stat = config_path.stat()
-        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        cache_key = None
+        raw = config_path.read_bytes()
+        digest = hashlib.blake2b(raw, digest_size=16).hexdigest()
+        cache_key = (
+            str(config_path),
+            stat.st_mtime_ns,
+            stat.st_size,
+            stat.st_ctime_ns,
+            digest,
+        )
+    except OSError as e:
+        logger.debug("Could not read skill config %s: %s", config_path, e)
+        return {}
 
-    if cache_key is not None:
-        cached = _RAW_CONFIG_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+    cached = _RAW_CONFIG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        parsed = yaml_load(raw.decode("utf-8"))
     except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
+        logger.debug("Could not parse skill config %s: %s", config_path, e)
         return {}
     if not isinstance(parsed, dict):
         return {}
 
-    if cache_key is not None:
-        _RAW_CONFIG_CACHE.clear()
-        _RAW_CONFIG_CACHE[cache_key] = parsed
+    _RAW_CONFIG_CACHE.clear()
+    _RAW_CONFIG_CACHE[cache_key] = parsed
     return parsed
 
 

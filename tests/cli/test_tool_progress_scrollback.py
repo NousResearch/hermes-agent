@@ -56,12 +56,31 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
         with patch.object(mod, "get_tool_definitions", return_value=[]), \
              patch.dict(mod.__dict__, {"CLI_CONFIG": _clean_config}):
             if verbose is _UNSET:
-                return mod.HermesCLI()
-            return mod.HermesCLI(verbose=verbose)
+                cli_obj = mod.HermesCLI()
+            else:
+                cli_obj = mod.HermesCLI(verbose=verbose)
+
+    # Leave the process-wide ``cli`` module backed by the real prompt_toolkit
+    # imports. Otherwise later tests that import ``cli`` get MagicMock-backed
+    # globals (notably _pt_print), making _cprint silently drop stdout.
+    # If the helper is the first importer of ``cli`` in this process,
+    # patch.dict restores sys.modules to a state with no ``cli`` entry after
+    # the stubbed import. Reinsert the module object before reloading it.
+    sys.modules["cli"] = mod
+    _cli_mod = importlib.reload(mod)
+    return cli_obj
 
 
 class TestToolProgressScrollback:
     """Stacked scrollback lines for 'all' and 'new' modes."""
+
+    def test_make_cli_does_not_leave_stubbed_cli_module_in_sys_modules(self):
+        """The helper reloads cli under prompt_toolkit stubs; it must restore the real module afterward."""
+        _make_cli(tool_progress="all")
+
+        import cli as leaked_cli
+
+        assert not isinstance(leaked_cli._pt_print, MagicMock)
 
     def test_all_mode_prints_scrollback_on_completed(self):
         """In 'all' mode, tool.completed prints a stacked line."""

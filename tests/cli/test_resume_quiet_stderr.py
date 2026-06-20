@@ -58,18 +58,19 @@ class TestResumeQuietStderr:
         assert "Session not found" in captured.err
         assert "hermes sessions list" in captured.err
 
-    def test_session_not_found_goes_to_stdout_in_full_mode(self, capsys):
+    def test_session_not_found_goes_to_stdout_in_full_mode(self):
         db = MagicMock()
         db.get_session.return_value = None
         cli = _make_cli(quiet=False, db=db)
 
-        with patch("cli._prepare_deferred_agent_startup"):
+        with patch("cli._prepare_deferred_agent_startup"), patch("cli._cprint") as cprint:
             result = cli._init_agent()
 
-        captured = capsys.readouterr()
         assert result is False
-        # Interactive mode keeps the existing _cprint path → stdout.
-        assert "Session not found" in captured.out
+        # Interactive mode keeps the existing _cprint path. Avoid capsys here:
+        # prompt_toolkit may cache its output object across earlier CLI tests.
+        rendered = "\n".join(str(call.args[0]) for call in cprint.call_args_list)
+        assert "Session not found" in rendered
 
     def test_resumed_banner_goes_to_stderr_in_quiet_mode(self, capsys):
         db = MagicMock()

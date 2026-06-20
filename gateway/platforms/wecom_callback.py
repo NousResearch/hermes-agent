@@ -26,7 +26,11 @@ try:
 
     DEFUSEDXML_AVAILABLE = True
 except ImportError:
-    ET = None  # type: ignore[assignment]
+    # Keep the adapter unavailable for live untrusted callbacks when
+    # defusedxml is missing, but allow local construction/parsing helpers to
+    # operate in tests and setup validation paths.
+    import xml.etree.ElementTree as ET
+
     DEFUSEDXML_AVAILABLE = False
 
 try:

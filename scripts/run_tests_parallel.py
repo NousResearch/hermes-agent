@@ -72,7 +72,7 @@ _SKIP_PARTS = {"integration", "e2e", "docker"}
 
 # Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
+_DEFAULT_FILE_TIMEOUT_SECONDS = 220.0 # set by observing the slowest file at commit time was ~175s locally/CI and adding leeway
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across

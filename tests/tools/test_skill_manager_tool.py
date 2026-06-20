@@ -563,6 +563,23 @@ class TestSkillManageDispatcher:
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
 
+    def test_skill_manage_records_runtime_skill_on_success(self, tmp_path):
+        from agent import runtime_status
+
+        runtime_status.clear_session("manage-session")
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create",
+                name="runtime-skill",
+                content=VALID_SKILL_CONTENT,
+                session_id="manage-session",
+            )
+
+        assert json.loads(raw)["success"] is True
+        recent_skill = runtime_status.snapshot("manage-session")["recent_skill"]
+        assert recent_skill["name"] == "runtime-skill"
+        assert recent_skill["event"] == "create"
+
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
         """Background-review fork creates ARE marked as agent-created."""
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW

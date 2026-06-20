@@ -63,21 +63,31 @@ The welcome banner shows your model, terminal backend, working directory, availa
 A persistent status bar sits above the input area, updating in real time:
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ⚕ claude-sonnet-4-20250514 │ run:agent │ phase:thinking │ tool:terminal✓ │ skill:hermes-agent │ task:3/8 │ wait:model │ 12.4K/200K │ [██████░░░░] 6% │ 15m
 ```
 
 | Element | Description |
 |---------|-------------|
 | Model name | Current model (truncated if longer than 26 chars) |
+| `run:<mode>` | High-level run mode, such as `run:agent` or workflow-specific modes like `run:implement` |
+| `phase:<phase>` | Transient runtime phase when it differs from the run mode, such as `phase:thinking`, `phase:tool`, or `phase:waiting` |
+| `target:<name>` | Current workflow target when one is known, for example `target:claude-code` |
+| `main:<agent>` | Main-agent role when it is more specific than the default `main`, for example `main:executor` |
+| `sub:<label>` | Active subagent summary, using the current subagent goal/name as the label |
+| `tool:<name>✓` / `tool:<name>✗` | Most recent tool and success/failure state; running tools omit the final glyph |
+| `skill:<name>` | Most recently loaded or modified skill |
+| `task:<done>/<total>` | Current todo/task progress from the active session runtime state |
+| `bg:N` | Running background process count from managed `terminal(background=true)` sessions |
+| `wait:<reason>` | Current blocker, such as `wait:model`, `wait:approval`, `wait:clarify`, `wait:retry_backoff`, or `wait:tool:<name>` |
 | Token count | Context tokens used / max context window |
 | Context bar | Visual fill indicator with color-coded thresholds |
-| Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
+| Cost | Estimated session cost when enabled (hidden by default) |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
-| ▶ N | **Active background tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
+| ▶ N | **Active `/background` tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | Duration | Elapsed session time |
 | ⚠ YOLO | **YOLO mode warning** — shown whenever `HERMES_YOLO_MODE` is on (either `hermes --yolo` at launch or `/yolo` toggled mid-session). Mirrors the banner-line warning so you can't forget you're in auto-approve mode. |
 
-The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52.
+The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52. Runtime fields are rendered from lightweight in-memory state and are dropped progressively on narrow terminals; the bar does not parse the transcript on each render.
 
 **Context color coding:**
 

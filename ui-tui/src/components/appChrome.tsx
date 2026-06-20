@@ -15,7 +15,7 @@ import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { Msg, RuntimeBackgroundStatus, RuntimeSkillStatus, RuntimeSubagentStatus, RuntimeTaskStatus, RuntimeToolStatus, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -377,6 +377,51 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+const runtimeToolLabel = (tool?: null | RuntimeToolStatus) => {
+  if (!tool?.name) return ''
+  const glyph = tool.status === 'error' ? '✗' : tool.status === 'blocked' ? '!' : tool.status === 'running' ? '…' : '✓'
+
+  return `tool:${tool.name}${glyph}`
+}
+
+const runtimeSkillLabel = (skill?: null | RuntimeSkillStatus) => (skill?.name ? `skill:${skill.name}` : '')
+
+const runtimeSubagentLabel = (subagent?: null | RuntimeSubagentStatus) => {
+  const label = String(subagent?.label ?? subagent?.id ?? '').trim()
+  if (!label) return ''
+
+  return `sub:${label}`
+}
+
+const runtimeTaskLabel = (task?: null | RuntimeTaskStatus) => {
+  const total = task?.total ?? 0
+  if (total <= 0) return ''
+
+  return `task:${task?.completed ?? 0}/${total}`
+}
+
+const runtimeBackgroundLabel = (background?: null | RuntimeBackgroundStatus) => {
+  const running = background?.running ?? 0
+  return running > 0 ? `bg:${running}` : ''
+}
+
+const runtimeWaitLabel = (reason?: string) => {
+  const value = String(reason ?? 'none')
+
+  return value && value !== 'none' ? `wait:${value}` : ''
+}
+
+const runtimeRunLabel = (runMode?: string) => {
+  const value = String(runMode ?? '').trim()
+  return value && value !== 'idle' ? `run:${value}` : ''
+}
+
+const runtimePhaseLabel = (phase?: string, runMode?: string) => {
+  const value = String(phase ?? '').trim()
+  const run = String(runMode ?? '').trim()
+  return value && value !== 'idle' && value !== run ? `phase:${value}` : ''
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -491,6 +536,14 @@ export function StatusRule({
   }
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const runtimeRunText = runtimeRunLabel(usage.runtime?.run_mode)
+  const runtimePhaseText = runtimePhaseLabel(usage.runtime?.phase, usage.runtime?.run_mode)
+  const runtimeToolText = runtimeToolLabel(usage.runtime?.recent_tool)
+  const runtimeSkillText = runtimeSkillLabel(usage.runtime?.recent_skill)
+  const runtimeSubagentText = runtimeSubagentLabel(usage.runtime?.active_subagent)
+  const runtimeTaskText = runtimeTaskLabel(usage.runtime?.task)
+  const runtimeBackgroundText = runtimeBackgroundLabel(usage.runtime?.background_tasks)
+  const runtimeWaitText = runtimeWaitLabel(usage.runtime?.wait?.reason)
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
   const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
@@ -503,6 +556,19 @@ export function StatusRule({
       : ''
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  const showRuntimeRun = !!runtimeRunText && fits(SEP + stringWidth(runtimeRunText))
+  const showRuntimePhase = !!runtimePhaseText && fits(SEP + stringWidth(runtimePhaseText))
+  const showRuntimeTool = !!runtimeToolText && fits(SEP + stringWidth(runtimeToolText))
+  const showRuntimeSubagent = !!runtimeSubagentText && fits(SEP + stringWidth(runtimeSubagentText))
+  const showRuntimeSkill = !!runtimeSkillText && fits(SEP + stringWidth(runtimeSkillText))
+  const showRuntimeTask = !!runtimeTaskText && fits(SEP + stringWidth(runtimeTaskText))
+  const showRuntimeBackground =
+    !!runtimeBackgroundText && (!runtimeTaskText || showRuntimeTask) && fits(SEP + stringWidth(runtimeBackgroundText))
+  const showRuntimeWait =
+    !!runtimeWaitText &&
+    (!runtimeTaskText || showRuntimeTask) &&
+    (!runtimeBackgroundText || showRuntimeBackground) &&
+    fits(SEP + stringWidth(runtimeWaitText))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
@@ -579,6 +645,57 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          </Text>
+        ) : null}
+        {showRuntimeRun ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {runtimeRunText}
+          </Text>
+        ) : null}
+        {showRuntimePhase ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {runtimePhaseText}
+          </Text>
+        ) : null}
+        {showRuntimeTool ? (
+          <Text
+            color={usage.runtime?.recent_tool?.status === 'error' ? t.color.error : usage.runtime?.recent_tool?.status === 'blocked' ? t.color.warn : t.color.muted}
+            wrap="truncate-end"
+          >
+            {' │ '}
+            {runtimeToolText}
+          </Text>
+        ) : null}
+        {showRuntimeSubagent ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {runtimeSubagentText}
+          </Text>
+        ) : null}
+        {showRuntimeSkill ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {runtimeSkillText}
+          </Text>
+        ) : null}
+        {showRuntimeTask ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {runtimeTaskText}
+          </Text>
+        ) : null}
+        {showRuntimeBackground ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {runtimeBackgroundText}
+          </Text>
+        ) : null}
+        {showRuntimeWait ? (
+          <Text color={t.color.warn} wrap="truncate-end">
+            {' │ '}
+            {runtimeWaitText}
           </Text>
         ) : null}
         {showDuration ? (

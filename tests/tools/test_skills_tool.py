@@ -373,6 +373,20 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_skill_view_handler_records_runtime_skill_on_success(self, tmp_path):
+        from agent import runtime_status
+        from tools.skills_tool import _skill_view_with_bump
+
+        runtime_status.clear_session("skill-session")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "my-skill")
+            raw = _skill_view_with_bump({"name": "my-skill"}, task_id="skill-session")
+
+        assert json.loads(raw)["success"] is True
+        recent_skill = runtime_status.snapshot("skill-session")["recent_skill"]
+        assert recent_skill["name"] == "my-skill"
+        assert recent_skill["event"] == "view"
+
     def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
         # The on-disk directory ("alias-dir") differs from the skill's
         # frontmatter name ("real-skill-name"). skills_list() exposes the

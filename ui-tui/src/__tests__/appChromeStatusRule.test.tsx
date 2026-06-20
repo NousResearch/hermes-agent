@@ -261,6 +261,114 @@ describe('StatusRule credits notice render priority', () => {
   })
 })
 
+describe('StatusRule runtime status segments', () => {
+  it('renders runtime tool, skill, and task on wide terminals', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 180,
+      usage: {
+        ...baseProps.usage,
+        runtime: {
+          phase: 'implement',
+          run_mode: 'implement',
+          target: 'tui',
+          main_agent: 'executor',
+          recent_tool: { name: 'terminal', status: 'ok', duration_ms: 17 },
+          recent_skill: { name: 'hermes-agent', event: 'view' },
+          active_subagent: { id: 'sa-1', label: 'verifier', status: 'running', last_tool: 'read_file', tool_count: 1 },
+          background_tasks: { running: 2 },
+          task: { total: 4, completed: 2, in_progress: 0, pending: 2, cancelled: 0 },
+          wait: { reason: 'none', since: null }
+        }
+      }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('tool:terminal✓')
+    expect(rendered).toContain('skill:hermes-agent')
+    expect(rendered).toContain('sub:verifier')
+    expect(rendered).toContain('task:2/4')
+    expect(rendered).toContain('bg:2')
+  })
+
+  it('renders distinct phase when activity phase differs from run mode', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 180,
+      usage: {
+        ...baseProps.usage,
+        runtime: {
+          phase: 'thinking',
+          run_mode: 'agent',
+          target: '',
+          main_agent: 'main',
+          wait: { reason: 'model', since: 123 }
+        }
+      }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('run:agent')
+    expect(rendered).toContain('phase:thinking')
+    expect(rendered).toContain('wait:model')
+  })
+
+  it('prioritizes run and phase before runtime tail on constrained terminals', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 96,
+      usage: {
+        ...baseProps.usage,
+        runtime: {
+          phase: 'waiting',
+          run_mode: 'implement',
+          target: 'claude-code',
+          main_agent: 'executor',
+          recent_tool: { name: 'terminal', status: 'ok' },
+          recent_skill: { name: 'hermes-agent', event: 'view' },
+          active_subagent: { id: 'sa-1', label: 'verifier', status: 'running', last_tool: 'read_file', tool_count: 1 },
+          background_tasks: { running: 2 },
+          task: { total: 8, completed: 3 },
+          wait: { reason: 'approval', since: 123 }
+        }
+      }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('run:implement')
+    expect(rendered).toContain('phase:waiting')
+    expect(rendered).not.toContain('tool:terminal')
+    expect(rendered).not.toContain('sub:verifier')
+    expect(rendered).not.toContain('skill:hermes-agent')
+    expect(rendered).not.toContain('task:3/8')
+    expect(rendered).not.toContain('bg:2')
+    expect(rendered).not.toContain('wait:approval')
+  })
+
+  it('renders error tool status with a failure glyph', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 180,
+      usage: {
+        ...baseProps.usage,
+        runtime: {
+          phase: 'implement',
+          run_mode: 'implement',
+          target: '',
+          main_agent: 'main',
+          recent_tool: { name: 'terminal', status: 'error', error_message: 'boom' },
+          wait: { reason: 'none', since: null }
+        }
+      }
+    })
+
+    expect(textContent(element)).toContain('tool:terminal✗')
+  })
+})
+
 describe('StatusRule idle-since read-out', () => {
   // The IdleSince component uses hooks, so it can't be invoked outside a
   // renderer — assert on the element tree instead (same reason the duration

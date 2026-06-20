@@ -4129,10 +4129,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # sessions tracked by tools.process_registry). Cheap O(1) read.
         try:
             from tools.process_registry import process_registry
-            snapshot["active_background_processes"] = process_registry.count_running()
+            active_background_processes = process_registry.count_running()
+            snapshot["active_background_processes"] = active_background_processes
         except Exception:
+            active_background_processes = 0
             pass
-
+        try:
+            from agent import runtime_status
+            session_id = (
+                getattr(agent, "session_id", None)
+                or getattr(self, "session_id", None)
+                or ""
+            )
+            try:
+                runtime_status.record_background_process_count(session_id, active_background_processes)
+            except Exception:
+                pass
+            try:
+                if agent and hasattr(agent, "get_activity_summary"):
+                    runtime_status.record_activity_summary(session_id, agent.get_activity_summary())
+            except Exception:
+                pass
+            try:
+                from tools.delegate_tool import list_active_subagents
+                active_subagents = list_active_subagents()
+                if active_subagents:
+                    runtime_status.record_active_subagents(session_id, active_subagents)
+            except Exception:
+                pass
+            snapshot["runtime"] = runtime_status.snapshot(session_id)
+        except Exception:
+            snapshot["runtime"] = {}
 
         if not agent:
             return snapshot
@@ -4357,6 +4384,97 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         cont = " | Continuous" if self._voice_continuous else ""
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
+    @staticmethod
+    def _format_runtime_tool_label(tool: Optional[Dict[str, Any]], *, compact: bool = False) -> str:
+        if not isinstance(tool, dict) or not tool.get("name"):
+            return ""
+        glyphs = {"ok": "✓", "error": "✗", "blocked": "!", "running": "…"}
+        name = str(tool.get("name") or "")
+        status = str(tool.get("status") or "ok")
+        glyph = glyphs.get(status, "?")
+        return f"{name}{glyph}" if compact else f"tool:{name}{glyph}"
+
+    @staticmethod
+    def _format_runtime_skill_label(skill: Optional[Dict[str, Any]], *, compact: bool = False) -> str:
+        if not isinstance(skill, dict) or not skill.get("name"):
+            return ""
+        name = str(skill.get("name") or "")
+        return name if compact else f"skill:{name}"
+
+    @staticmethod
+    def _format_runtime_subagent_label(subagent: Optional[Dict[str, Any]], *, compact: bool = False) -> str:
+        if not isinstance(subagent, dict):
+            return ""
+        label = str(subagent.get("label") or subagent.get("id") or "").strip()
+        if not label:
+            return ""
+        last_tool = str(subagent.get("last_tool") or "").strip()
+        if compact:
+            return f"sub:{last_tool or label}"
+        return f"sub:{label}"
+
+    @staticmethod
+    def _format_runtime_task_label(task: Optional[Dict[str, Any]], *, compact: bool = False) -> str:
+        if not isinstance(task, dict):
+            return ""
+        total = int(task.get("total") or 0)
+        if total <= 0:
+            return ""
+        completed = int(task.get("completed") or 0)
+        return f"{completed}/{total}" if compact else f"task:{completed}/{total}"
+
+    @staticmethod
+    def _format_runtime_background_label(background: Optional[Dict[str, Any]], *, compact: bool = False) -> str:
+        if not isinstance(background, dict):
+            return ""
+        running = int(background.get("running") or 0)
+        if running <= 0:
+            return ""
+        return f"bg:{running}"
+
+    def _runtime_status_bar_segments(self, snapshot: Dict[str, Any], *, compact: bool = False) -> List[str]:
+        runtime = snapshot.get("runtime") or {}
+        if not isinstance(runtime, dict):
+            return []
+        parts: List[str] = []
+        run_mode = str(runtime.get("run_mode") or runtime.get("phase") or "").strip()
+        phase = str(runtime.get("phase") or "").strip()
+        if run_mode and run_mode != "idle":
+            parts.append(run_mode if compact else f"run:{run_mode}")
+        if phase and phase not in {"idle", run_mode}:
+            parts.append(phase if compact else f"phase:{phase}")
+        if compact:
+            return parts
+        if not compact:
+            target = str(runtime.get("target") or "").strip()
+            if target:
+                parts.append(f"target:{target}")
+            main_agent = str(runtime.get("main_agent") or "").strip()
+            if main_agent and main_agent != "main":
+                parts.append(f"main:{main_agent}")
+        tool_label = self._format_runtime_tool_label(runtime.get("recent_tool"), compact=compact)
+        if tool_label:
+            parts.append(tool_label)
+        subagent_label = self._format_runtime_subagent_label(runtime.get("active_subagent"), compact=compact)
+        if subagent_label:
+            parts.append(subagent_label)
+        skill_label = self._format_runtime_skill_label(runtime.get("recent_skill"), compact=compact)
+        if skill_label:
+            parts.append(skill_label)
+        task_label = self._format_runtime_task_label(runtime.get("task"), compact=compact)
+        if task_label:
+            parts.append(task_label)
+        background_label = self._format_runtime_background_label(runtime.get("background_tasks"), compact=compact)
+        if background_label:
+            parts.append(background_label)
+        if not compact:
+            wait = runtime.get("wait") or {}
+            if isinstance(wait, dict):
+                reason = str(wait.get("reason") or "none")
+                if reason and reason != "none":
+                    parts.append(f"wait:{reason}")
+        return parts
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
         try:
@@ -4384,6 +4502,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 bg_proc_count = snapshot.get("active_background_processes", 0)
                 if bg_proc_count:
                     parts.append(f"⚙ {bg_proc_count}")
+                runtime_parts = self._runtime_status_bar_segments(snapshot, compact=True)
+                parts.extend(runtime_parts[:3])
                 parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
@@ -4397,7 +4517,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot['model_short']}"]
+            parts.extend(self._runtime_status_bar_segments(snapshot, compact=False))
+            parts.extend([context_label, percent_label])
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -4466,6 +4588,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                    runtime_parts = self._runtime_status_bar_segments(snapshot, compact=True)
+                    for label in runtime_parts[:3]:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", label))
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
@@ -4489,13 +4615,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    for label in self._runtime_status_bar_segments(snapshot, compact=False):
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", label))
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
-                    ]
+                    ])
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

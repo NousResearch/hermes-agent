@@ -118,6 +118,30 @@ class TestTodoToolFunction:
         result = json.loads(todo_tool())
         assert "error" in result
 
+    def test_records_runtime_task_summary_when_session_id_is_provided(self):
+        from agent import runtime_status
+
+        runtime_status.clear_session("s-todo")
+        store = TodoStore()
+
+        todo_tool(
+            todos=[
+                {"id": "1", "content": "Done", "status": "completed"},
+                {"id": "2", "content": "Doing", "status": "in_progress"},
+                {"id": "3", "content": "Next", "status": "pending"},
+            ],
+            store=store,
+            session_id="s-todo",
+        )
+
+        assert runtime_status.snapshot("s-todo")["task"] == {
+            "total": 3,
+            "pending": 1,
+            "in_progress": 1,
+            "completed": 1,
+            "cancelled": 0,
+        }
+
 
 class TestTodoStoreBounds:
     """Bounds on persisted todo state (GHSA-5g4g-6jrg-mw3g hardening).

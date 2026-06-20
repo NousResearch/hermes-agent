@@ -38,6 +38,21 @@ Wire protocol
         "extra":           {...}   # event-specific kwargs
     }
 
+The ``extra`` object carries the event-specific kwargs.  ``_serialize_payload``
+keeps only the top-level keys above and folds everything else into ``extra``,
+so the useful per-event fields live one level down.  Common keys by event:
+
+==================  ============================================================
+Event               ``extra`` keys
+==================  ============================================================
+``post_tool_call``  ``result``, ``status``, ``error_type``, ``error_message``,
+                    ``duration_ms``
+``subagent_stop``   ``child_session_id``, ``child_role``, ``child_summary``,
+                    ``child_status`` (top-level ``session_id`` is the *parent*)
+``on_session_end``  ``completed``, ``interrupted``
+``on_session_start``  ``model``, ``platform``
+==================  ============================================================
+
 **stdout** (JSON, optional — anything else is ignored)::
 
     # Block a pre_tool_call (either shape accepted; normalised internally):

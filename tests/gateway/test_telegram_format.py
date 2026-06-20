@@ -210,6 +210,20 @@ class TestFormatMessageBoldItalic:
         assert "*bold*" in result
         assert "_italic_" in result
 
+    def test_whitespace_flanked_asterisks_not_italicized(self, adapter):
+        # Multiplication / glob asterisks are flanked by whitespace, so they
+        # are NOT emphasis runs (CommonMark flanking rule). They must be
+        # escaped as literal \* rather than converted to italic markers.
+        result = adapter.format_message("Multiply: 2 * 3 * 4 = 24")
+        assert "_" not in result
+        assert "2 \\* 3 \\* 4" in result
+
+    def test_real_italic_still_works_with_flanking_guard(self, adapter):
+        # Regression guard: genuine *italic* (non-whitespace on both sides)
+        # still converts after the flanking fix.
+        assert "_italic_" in adapter.format_message("This is *italic* text")
+        assert "_hello\\.world_" in adapter.format_message("*hello.world*")
+
     def test_reload_mcp_summary_escapes_dynamic_server_names(self, adapter):
         content = (
             "🔄 **MCP Servers Reloaded**\n"

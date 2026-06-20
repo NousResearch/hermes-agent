@@ -5148,11 +5148,15 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
-        #    [^*\n]+ prevents matching across newlines (which would corrupt
-        #    bullet lists using * markers and multi-line content).
+        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic).
+        #    The flanking guard mirrors the Slack converter (slack.py):
+        #    an emphasis run must touch non-whitespace on both sides, so
+        #    whitespace-flanked literals like "2 * 3 * 4" or "apples * 5"
+        #    are NOT italicized (they fall through and are escaped as literal
+        #    \*). [^*\n] keeps the run on a single line so bullet lists using
+        #    * markers are not merged.
         text = re.sub(
-            r'\*([^*\n]+)\*',
+            r'(?<!\*)\*(\S(?:[^*\n]*?\S)?)\*(?!\*)',
             lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
             text,
         )

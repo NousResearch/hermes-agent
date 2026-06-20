@@ -962,7 +962,10 @@ export function ChatSidebar({
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn(
-                  'flex min-h-0 flex-1 flex-col pb-1.75',
+                  'flex flex-col pb-1.75',
+                  // 非虚拟化时给会话列表定高可滚(像消息/Cron 分区),这样它下面的「子agent」紧贴会话、
+                  // 不被 flex-1 撑满推到底部;虚拟化长列表(≥25)仍保留 flex-1 自管滚动。
+                  recentsVirtualizes ? 'min-h-0 flex-1' : 'max-h-[55vh]',
                   SCROLL_Y,
                   // Separate profile sections clearly in the ALL view; rows inside
                   // each group keep their own tight gap-px rhythm.
@@ -1031,7 +1034,9 @@ export function ChatSidebar({
                 open={agentsOpen}
                 pinned={false}
                 rootClassName={cn(
-                  'min-h-32 flex-1 overflow-hidden p-0',
+                  'overflow-hidden p-0',
+                  // 非虚拟化:内容自适应高度(折叠时紧贴,无 min-h 空隙);虚拟化:flex-1 撑满供虚拟滚动。
+                  recentsVirtualizes ? 'min-h-32 flex-1' : 'shrink-0',
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
                 )}
                 sessions={displayAgentSessions}
@@ -1040,6 +1045,8 @@ export function ChatSidebar({
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
+
+            {!trimmedQuery && <SidebarSubAgentsSection />}
 
             {!trimmedQuery &&
               messagingGroups.map(group => {
@@ -1098,8 +1105,6 @@ export function ChatSidebar({
                 open={cronOpen}
               />
             )}
-
-            {!trimmedQuery && <SidebarSubAgentsSection />}
           </div>
         )}
 

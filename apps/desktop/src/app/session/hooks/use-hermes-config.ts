@@ -112,7 +112,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         applyVoiceStopPhraseFromConfig(config)
         applyThinkingSoundFromConfig(config)
       } catch {
-        // Config is nice-to-have; chat still works without it.
+      // Config is nice-to-have; chat still works without it.
       }
     },
     [activeSessionIdRef]

@@ -57,9 +57,15 @@ _SECURITY_TOOLS = frozenset({
     "network_scan",
     "threat_intel",
     "vuln_triage",
-    "ir_playbook",
-    "ioc_extractor",
+    "extract_iocs",
+    "ir_incident",
 })
+_READ_ONLY_SECURITY_TOOLS = frozenset({
+    "extract_iocs",
+    "threat_intel",
+    "vuln_triage",
+})
+_LOCAL_INCIDENT_TOOLS = frozenset({"ir_incident"})
 _DESTRUCTIVE_RE = re.compile(
     r"\b(rm\s+-rf|mkfs|dd\s+if=|shred|wipe|format\s+disk|factory\s+reset|"
     r"delete\s+all|rotate\s+credentials?|password\s+reset|disable\s+account|"
@@ -292,8 +298,10 @@ def classify_tool_gate(tool_name: str, function_args: dict[str, Any], *, route: 
 
     if name in _READ_ONLY_TOOLS:
         return "S1", "read-only information retrieval", candidates
-    if name in {"ioc_extractor", "threat_intel", "vuln_triage", "ir_playbook"}:
+    if name in _READ_ONLY_SECURITY_TOOLS:
         return "S1", "read-only cyber analysis/intel helper", candidates
+    if name in _LOCAL_INCIDENT_TOOLS:
+        return "S3", "local incident-response state mutation", candidates
     if name == "network_scan" or _RECON_RE.search(arg_text):
         return "S2", "controlled reconnaissance/scanning", candidates
     if _DESTRUCTIVE_RE.search(arg_text) or route == "destructive_high_risk":

@@ -105,6 +105,23 @@ def test_execution_gate_blocks_destructive_s5_even_on_lab_assets():
     assert decision.allowed is False
 
 
+def test_registered_cyber_tools_have_intentional_gate_classification():
+    config = {"agent_cyber": {"include_builtin_bc_assets": True}}
+
+    assert evaluate_execution_gate("extract_iocs", {"text": "hash 0123456789abcdef"}, config=config).gate == "S1"
+    assert evaluate_execution_gate("vuln_triage", {"cve": "CVE-2024-1234"}, config=config).gate == "S1"
+    assert evaluate_execution_gate("threat_intel", {"query": "bde.it.com"}, config=config).gate == "S1"
+
+    incident = evaluate_execution_gate("ir_incident", {"action": "create", "title": "lab outage"}, config=config)
+    assert incident.gate == "S3"
+    assert incident.allowed is True
+    assert incident.asset_matches == ("local-system",)
+
+    scan = evaluate_execution_gate("network_scan", {"target": "192.168.1.120"}, config=config)
+    assert scan.gate == "S2"
+    assert scan.allowed is True
+
+
 def test_agentcyber_routing_blocks_sensitive_hosted_without_local_runtime():
     agent = SimpleNamespace(
         provider="openrouter",

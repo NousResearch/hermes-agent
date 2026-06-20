@@ -100,11 +100,14 @@ _BREAKGLASS_TERMS = (
     "can't access",
     "cant access",
     "get me back in",
+    "get back into",
     "emergency access",
     "incident response",
     "incident timeline",
     "access recovery",
+    "recover access",
     "restore access",
+    "restore vm",
 )
 _CREDENTIAL_TERMS = (
     "credential",

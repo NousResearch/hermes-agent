@@ -36,6 +36,18 @@ def test_break_glass_lockout_routes_to_incident_recovery():
     assert "lockout" in decision.reason
 
 
+def test_access_recovery_phrases_with_lab_hosts_are_breakglass():
+    for prompt in (
+        "recover access to VM 112",
+        "restore VM112 access",
+        "get back into the Proxmox host",
+    ):
+        decision = classify_cyber_route(prompt)
+        assert decision.route == CyberRoute.IR_BREAKGLASS
+        assert decision.provider_preference == ProviderPreference.LOCAL_OPEN_WEIGHT
+        assert decision.requires_hosted_secret_confirmation is True
+
+
 def test_malware_exploit_osint_and_destructive_routes_are_distinct():
     assert classify_cyber_route("Analyze this worm sample in the sandbox.").route == CyberRoute.MALWARE_RE
     assert classify_cyber_route("Test the exploit against owned lab VM 112.").route == CyberRoute.CYBER_LAB

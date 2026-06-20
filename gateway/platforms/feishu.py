@@ -1842,6 +1842,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
         try:
+            if self._streaming_card_enabled():
+                return await self._send_streaming_card(chat_id=chat_id, content=content, reply_to=message_id)
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
@@ -1862,6 +1864,25 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_streaming_card(self, *, chat_id: str, content: str, reply_to: Optional[str]) -> SendResult:
+        card = {
+            "config": {"wide_screen_mode": True},
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": content.strip() or "-",
+                }
+            ],
+        }
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=json.dumps(card, ensure_ascii=False),
+            reply_to=reply_to,
+            metadata=None,
+        )
+        return self._finalize_send_result(response, "streaming card send failed")
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -2945,6 +2966,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in {"false", "0", "no"}
+
+    def _streaming_card_enabled(self) -> bool:
+        return os.getenv("FEISHU_STREAMING_CARDKIT", "true").strip().lower() not in ("false", "0", "no")
 
     async def _add_reaction(self, message_id: str, emoji_type: str) -> Optional[str]:
         """Return the reaction_id on success, else None. The id is needed later for deletion."""

@@ -10,7 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from gateway.platforms.base import ProcessingOutcome
 
@@ -331,7 +331,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(sleeps, [1])
         self.assertEqual(fake_loop.calls, 2)
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {"FEISHU_STREAMING_CARDKIT": "false", "HERMES_HOME": ".hermes-test-home"}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -373,7 +373,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             json.dumps({"text": "📖 read_file: \"/tmp/image.png\""}, ensure_ascii=False),
         )
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {"FEISHU_STREAMING_CARDKIT": "false", "HERMES_HOME": ".hermes-test-home"}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -415,6 +415,43 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             captured["calls"][1].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
+
+    @patch.dict(os.environ, {"HERMES_HOME": ".hermes-test-home"}, clear=True)
+    def test_edit_message_uses_streaming_card_when_enabled(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(update=MagicMock()))))
+        captured = {}
+
+        async def _fake_send_with_retry(*, chat_id, msg_type, payload, reply_to, metadata):
+            captured["chat_id"] = chat_id
+            captured["msg_type"] = msg_type
+            captured["payload"] = payload
+            captured["reply_to"] = reply_to
+            captured["metadata"] = metadata
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_new"))
+
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=_fake_send_with_retry)
+
+        result = asyncio.run(
+            adapter.edit_message(
+                chat_id="oc_chat",
+                message_id="om_progress",
+                content="stream chunk",
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_new")
+        self.assertEqual(captured["chat_id"], "oc_chat")
+        self.assertEqual(captured["msg_type"], "interactive")
+        self.assertEqual(captured["reply_to"], "om_progress")
+        self.assertIsNone(captured["metadata"])
+        payload = json.loads(captured["payload"])
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["elements"][0]["content"], "stream chunk")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):

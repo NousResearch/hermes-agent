@@ -284,10 +284,10 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text and "ctx" in text
 
 
-def test_delegate_task_background_ignored_for_batch_runs_sync(monkeypatch):
-    """A multi-item tasks batch never goes async — even if background=True is
-    passed, it runs synchronously and returns its results together. The async
-    dispatcher must NOT be invoked for a batch."""
+def test_delegate_task_background_batch_dispatches_each_async(monkeypatch):
+    """A multi-item tasks batch with background=True dispatches EACH task as
+    its own async delegation and returns a combined handle block — N handles,
+    no synchronous run."""
     import json
     from unittest.mock import MagicMock, patch
     import tools.delegate_tool as dt
@@ -301,7 +301,11 @@ def test_delegate_task_background_ignored_for_batch_runs_sync(monkeypatch):
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
 
-    def sync_child(task_index, goal, child=None, parent_agent=None, **kw):
+    gate = threading.Event()
+
+    def _blocking_child(task_index, goal, child=None, parent_agent=None, **kw):
+        # Block so the children stay "running" while we assert active_count.
+        gate.wait(timeout=5)
         return {
             "task_index": task_index, "status": "completed",
             "summary": f"done: {goal}", "api_calls": 1,
@@ -313,30 +317,34 @@ def test_delegate_task_background_ignored_for_batch_runs_sync(monkeypatch):
         "api_mode": None, "command": None, "args": None,
     }
 
-    def _boom(*a, **k):
-        raise AssertionError("dispatch_async_delegation must not run for a batch")
-
     with patch.object(dt, "_build_child_agent", return_value=fake_child), \
-         patch.object(dt, "_run_single_child", side_effect=sync_child), \
-         patch.object(dt, "_resolve_delegation_credentials", return_value=creds), \
-         patch("tools.async_delegation.dispatch_async_delegation", side_effect=_boom):
+         patch.object(dt, "_run_single_child", side_effect=_blocking_child), \
+         patch.object(dt, "_resolve_delegation_credentials", return_value=creds):
         out = dt.delegate_task(
-            tasks=[{"goal": "a"}, {"goal": "b"}],
+            tasks=[{"goal": "a"}, {"goal": "b"}, {"goal": "c"}],
             background=True,
             parent_agent=parent,
         )
 
     parsed = json.loads(out)
-    # Synchronous batch returns results together, not an async handle.
-    assert parsed.get("mode") != "background"
-    assert parsed.get("status") != "dispatched"
+    assert parsed["status"] == "dispatched"
+    assert parsed["mode"] == "background"
+    assert parsed["count"] == 3
+    assert len(parsed["delegations"]) == 3
+    goals = {d["goal"] for d in parsed["delegations"]}
+    assert goals == {"a", "b", "c"}
+    # 3 children running in the background, none ran synchronously (the call
+    # returned while all three are still blocked on the gate).
+    assert ad.active_count() == 3
+    # Release the gate and let the daemon workers finish + drain.
+    gate.set()
 
 
-def test_model_dispatch_forces_background_for_single_task():
-    """The MODEL-facing dispatch path forces background=True for a top-level
-    single-task delegation, ignores it for a batch, and keeps it off for an
-    orchestrator subagent (depth > 0). Direct delegate_task() callers are
-    unaffected (they keep the synchronous default)."""
+def test_model_dispatch_forces_background():
+    """The MODEL-facing dispatch path forces background=True for any top-level
+    delegation (single task OR batch), and keeps it off for an orchestrator
+    subagent (depth > 0). Direct delegate_task() callers are unaffected (they
+    keep the synchronous default)."""
     import tools.delegate_tool as dt
     from unittest.mock import MagicMock
 
@@ -345,19 +353,23 @@ def test_model_dispatch_forces_background_for_single_task():
     sub = MagicMock()
     sub._delegate_depth = 1
 
-    # Registry-fallback helper.
+    # Registry-fallback helper: top-level always background, regardless of
+    # single vs batch; subagent never.
     assert dt._model_background_value({"goal": "x"}, top) is True
-    assert dt._model_background_value({"goal": "x"}, sub) is False
     assert dt._model_background_value(
         {"tasks": [{"goal": "a"}, {"goal": "b"}]}, top
-    ) is False
-    # A single-item tasks list is still a single task → background.
+    ) is True
     assert dt._model_background_value({"tasks": [{"goal": "a"}]}, top) is True
+    assert dt._model_background_value({"goal": "x"}, sub) is False
+    assert dt._model_background_value(
+        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, sub
+    ) is False
 
 
-def test_run_agent_dispatch_forces_background_for_single_task():
+def test_run_agent_dispatch_forces_background():
     """run_agent._dispatch_delegate_task — the live model path — forces
-    background on for a top-level single task and off for batch / subagent."""
+    background on for any top-level delegation (single OR batch) and off for a
+    subagent."""
     from unittest.mock import patch
     import run_agent
 
@@ -378,7 +390,7 @@ def test_run_agent_dispatch_forces_background_for_single_task():
         run_agent.AIAgent._dispatch_delegate_task(
             agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
         )
-        assert captured["background"] is False
+        assert captured["background"] is True
 
         sub = _FakeAgent()
         sub._delegate_depth = 1

@@ -422,9 +422,55 @@ Plain text messages (no markdown detected) are sent as the simple `text` message
 
 ## Processing Status Reactions
 
-While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
+While the agent is working, the bot adds a reaction emoji on your message to indicate processing status:
 
-Set `FEISHU_REACTIONS=false` to turn it off.
+| Stage | Default Emoji | Behavior |
+|-------|--------------|----------|
+| Processing | `Typing` 👆 | Added when the agent starts working |
+| Success | _(removed)_ | The `Typing` reaction is removed when the reply arrives — the reply itself is the success signal |
+| Failure | `CrossMark` ❌ | If processing fails, `Typing` is replaced with `CrossMark` |
+
+### Configuration
+
+All three aspects are configurable via `config.yaml` or environment variables:
+
+**Via `config.yaml`:**
+
+```yaml
+feishu:
+  reactions: true                         # Enable/disable reactions (default: true)
+  reactions_in_progress: "Typing"         # Emoji shown while processing
+  reactions_failure: "CrossMark"          # Emoji shown on failure
+```
+
+**Via environment variables (env vars take precedence):**
+
+```bash
+FEISHU_REACTIONS=true
+FEISHU_REACTION_IN_PROGRESS=Typing
+FEISHU_REACTION_FAILURE=CrossMark
+```
+
+Set `FEISHU_REACTIONS=false` (or `reactions: false`) to disable all status reactions.
+
+### Supported Emoji Types
+
+Feishu supports **200+ built-in reaction emoji types**. Below are some of the most commonly useful ones:
+
+```
+OK, THUMBSUP, MUSCLE, STRIVE, SMILE, LOVE, THINKING, ERROR, CLAP,
+LGTM, OnIt, Typing, CrossMark, CheckMark, MinusOne, Fire, BOMB,
+Trophy, HEART, ROSE, BEER, Coffee, REDPACKET, PARTY, XmasHat,
+FIRECRACKER, POOP, GeneralWorkFromHome, StatusReading, MoonRabbit
+```
+
+:::tip
+The full list of 200+ emoji types (with visual previews) is available in the [Feishu Open Platform documentation](https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce).
+:::
+
+:::note
+Feishu reactions render as prominent badges (unlike Discord/Telegram's small footer emoji), so adding a success badge on every message would add visual noise. That's why only start (processing) and failure reactions are shown — the reply itself is the success signal.
+:::
 
 ## Burst Protection and Batching
 
@@ -562,6 +608,9 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES` | — | `8` | Max messages merged per text batch |
 | `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | Max characters merged per text batch |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | Media burst debounce quiet period |
+| `FEISHU_REACTIONS` | — | `true` | Enable/disable processing status reactions |
+| `FEISHU_REACTION_IN_PROGRESS` | — | `Typing` | Emoji type shown while processing |
+| `FEISHU_REACTION_FAILURE` | — | `CrossMark` | Emoji type shown on processing failure |
 
 WebSocket and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [WebSocket Tuning](#websocket-tuning) and [Per-Group Access Control](#per-group-access-control) above).
 

@@ -1293,6 +1293,12 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(feishu_cfg, dict):
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+                if "reactions" in feishu_cfg and not os.getenv("FEISHU_REACTIONS"):
+                    os.environ["FEISHU_REACTIONS"] = str(feishu_cfg["reactions"]).lower()
+                if "reactions_in_progress" in feishu_cfg and not os.getenv("FEISHU_REACTION_IN_PROGRESS"):
+                    os.environ["FEISHU_REACTION_IN_PROGRESS"] = str(feishu_cfg["reactions_in_progress"])
+                if "reactions_failure" in feishu_cfg and not os.getenv("FEISHU_REACTION_FAILURE"):
+                    os.environ["FEISHU_REACTION_FAILURE"] = str(feishu_cfg["reactions_failure"])
 
     except Exception as e:
         logger.warning(

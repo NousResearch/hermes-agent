@@ -1,0 +1,29 @@
+# .github/workflows/mobile-ci.yml
+name: Mobile CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# apps/mobile reuses the desktop renderer by importing apps/desktop/src directly
+# (and apps/shared), so a desktop-side refactor can silently break the mobile
+# build with no error anywhere else. This job is the guard: typecheck + a real
+# Vite build of apps/mobile against the current source on every push/PR.
+#
+# Note: the native Android APK build (capacitor + gradle, compileSdk 36) is not
+# run here yet — it needs the Android SDK/JDK on the runner. Tracked as a
+# follow-up; until then build the APK locally (see apps/mobile/README).
+jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run --prefix apps/mobile typecheck
+      - run: npm run --prefix apps/mobile build

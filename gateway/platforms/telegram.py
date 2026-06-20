@@ -5121,7 +5121,22 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 3) Convert markdown links – escape the display text; inside the URL
+        # 2.5) Condense blank lines between consecutive list items
+        #      LLM-generated bullet/ordered lists often have blank lines between
+        #      items (standard Markdown), but Telegram MarkdownV2 renders those
+        #      as visible empty rows. Removing the blank lines between consecutive
+        #      list items produces compact Telegram-native lists.
+        #      Code blocks are already in placeholders at this point and won't
+        #      be touched.
+        #      Handles: multiline items, multiple blank lines, checkboxes.
+        text = re.sub(
+            r'(^[ \t]*(?:[-*+•‣▪▫◦‒–—]|\d+[.)])\s+(?:(?!\n[ \t]*\n)[\s\S])*?)\n[ \t]*\n+(?=\s*(?:[-*+•‣▪▫◦‒–—]|\d+[.)])\s)',
+            r'\1\n',
+            text,
+            flags=re.MULTILINE,
+        )
+
+        # 3) Convert markdown links
         #    only ')' and '\' need escaping per the MarkdownV2 spec.
         def _convert_link(m):
             display = _escape_mdv2(m.group(1))

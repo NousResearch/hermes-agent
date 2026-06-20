@@ -447,6 +447,104 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
         return {}, {"proxy": proxy_url}
 
 
+async def http_request(session, method: str, url: str, *, timeout: float = 30, **kwargs):
+    """Task-safe HTTP request using :func:`asyncio.wait_for`.
+
+    Replaces ``aiohttp.ClientTimeout`` to avoid ``"Timeout context manager
+    should be used inside a task"`` errors when invoked via
+    :func:`asyncio.run_coroutine_threadsafe` from cron jobs or
+    ``model_tools._run_async``.
+
+    The caller **must** enter the response as a context manager to manage
+    connection release::
+
+        resp = await http_request(session, "get", url)
+        async with resp:
+            return await resp.json()
+
+    Cross-loop handling
+    -------------------
+    If the session was created on a different running event loop than
+    the caller's loop, the request is scheduled on the session's loop
+    via :func:`asyncio.run_coroutine_threadsafe` and the response body
+    is read inside that loop.  aiohttp's ``TimerContext.__enter__``
+    calls ``asyncio.current_task(loop=session_loop)`` which returns
+    ``None`` (→ RuntimeError) when the caller's loop differs from the
+    session's loop.  Routing the entire request to the session's own
+    loop ensures ``TimerContext`` always finds a valid task.
+
+    Parameters
+    ----------
+    session
+        An ``aiohttp.ClientSession`` instance.
+    method
+        HTTP method (``"get"``, ``"post"``, ``"put"``, …).
+    url
+        Full URL to request.
+    timeout
+        Timeout in seconds (default 30).
+    **kwargs
+        Forwarded to ``session.request(method, url, **kwargs)``.
+    """
+    session_loop = getattr(session, "_loop", None) or getattr(session, "loop", None)
+    is_cross_loop = (
+        isinstance(session_loop, asyncio.AbstractEventLoop)
+        and session_loop is not asyncio.get_event_loop()
+        and session_loop.is_running()
+    )
+
+    if is_cross_loop:
+        # Schedule the full request on the session's own loop and
+        # read the body there, so TimerContext runs on a valid loop.
+        # The body is buffered into _RawResponse so the caller can
+        # read it from any loop without entering a context manager
+        # on the wrong loop.
+        async def _do():
+            async with getattr(session, method)(url, **kwargs) as resp:
+                body = await resp.read()
+                return _RawResponse(
+                    status=resp.status,
+                    headers=resp.headers,
+                    body=body,
+                    content_type=resp.content_type,
+                )
+
+        future = asyncio.run_coroutine_threadsafe(_do(), session_loop)
+        wrapped = asyncio.wrap_future(future)
+        return await asyncio.wait_for(wrapped, timeout=timeout)
+
+    async def _send():
+        return await getattr(session, method)(url, **kwargs)
+    return await asyncio.wait_for(_send(), timeout=timeout)
+
+
+class _RawResponse:
+    """Stand-in returned by :func:`http_request` on cross-loop sessions.
+
+    Carries the already-read body and metadata so callers can use the
+    response from any loop without entering a context manager on the
+    wrong loop (which would trigger aiohttp's TimerContext check).
+    """
+
+    __slots__ = ("status", "headers", "body", "content_type")
+
+    def __init__(self, status, headers, body, content_type):
+        self.status = status
+        self.headers = headers
+        self.body = body
+        self.content_type = content_type
+
+    async def json(self, **kw):
+        import json as _json
+        return _json.loads(self.body.decode()) if self.body else None
+
+    async def text(self):
+        return self.body.decode() if self.body else ""
+
+    async def read(self):
+        return self.body
+
+
 def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
     """Return True when ``hostname`` matches a ``NO_PROXY`` entry.
 

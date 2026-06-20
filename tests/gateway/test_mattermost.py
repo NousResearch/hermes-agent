@@ -2,6 +2,7 @@
 import json
 import os
 import time
+import aiohttp
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -282,7 +283,7 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
 
         result = await self.adapter.send("channel_1", "Hello!")
 
@@ -326,8 +327,8 @@ class TestMattermostSend:
         mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
         mock_get_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
-        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_get_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
 
@@ -347,7 +348,7 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
 
@@ -469,7 +470,7 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
 
         result = await self.adapter.send("channel_1", "Hello!")
 
@@ -748,7 +749,7 @@ class TestMattermostFileUpload:
         mock_post_resp.__aexit__ = AsyncMock(return_value=False)
 
         # Route calls: first GET (download), then POST (upload), then POST (create post)
-        self.adapter._session.get = MagicMock(return_value=mock_dl_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_dl_resp)
         post_call_count = 0
         original_post_returns = [mock_upload_resp, mock_post_resp]
 
@@ -758,7 +759,7 @@ class TestMattermostFileUpload:
             post_call_count += 1
             return resp
 
-        self.adapter._session.post = MagicMock(side_effect=post_side_effect)
+        self.adapter._session.post = AsyncMock(side_effect=post_side_effect)
 
         result = await self.adapter.send_image(
             "channel_1", "https://img.example.com/cat.png", caption="A cat"
@@ -918,7 +919,7 @@ class TestMattermostMediaTypes:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_resp)
 
         with patch("gateway.platforms.base.cache_image_from_bytes", return_value="/tmp/photo.png"):
             await self.adapter._handle_ws_event(self._make_event(["file1"]))
@@ -939,7 +940,7 @@ class TestMattermostMediaTypes:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_resp)
 
         with patch("gateway.platforms.base.cache_audio_from_bytes", return_value="/tmp/voice.ogg"), \
              patch("gateway.platforms.base.cache_image_from_bytes"), \
@@ -962,7 +963,7 @@ class TestMattermostMediaTypes:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_resp)
 
         with patch("gateway.platforms.base.cache_document_from_bytes", return_value="/tmp/report.pdf"), \
              patch("gateway.platforms.base.cache_image_from_bytes"):
@@ -973,6 +974,881 @@ class TestMattermostMediaTypes:
         assert not msg.media_types[0].startswith("image/")
         assert not msg.media_types[0].startswith("audio/")
 
+
+# ======================================================================
+# Sprint 6 — Interactive Approval Buttons Tests
+# ======================================================================
+
+
+class TestMattermostInteractionTokens:
+    """Sprint 6.1 — Token signing, creation, and verification."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._hmac_secret = "a" * 32
+        self.adapter._callback_base_url = "http://127.0.0.1:8391"
+
+    def test_sign_produces_consistent_output(self):
+        """Same payload → same hex digest."""
+        sig1 = self.adapter._sign_interaction_token("test:payload")
+        sig2 = self.adapter._sign_interaction_token("test:payload")
+        assert sig1 == sig2
+
+    def test_sign_different_payloads_different(self):
+        """Different payloads → different digests."""
+        sig1 = self.adapter._sign_interaction_token("foo:bar")
+        sig2 = self.adapter._sign_interaction_token("foo:baz")
+        assert sig1 != sig2
+
+    def test_make_token_three_parts(self):
+        """Format: <sig>.<rand_hex>.<ts>  (3 segments)."""
+        token = self.adapter._make_interaction_token("approval", "ref123", "once")
+        parts = token.rsplit(".", 2)
+        assert len(parts) == 3
+        sig, rand_hex, ts_str = parts
+        assert len(sig) == 64  # SHA-256 hex digest is 64 chars
+        int(rand_hex, 16)  # does not raise
+        int(ts_str)  # does not raise
+
+    def test_verify_accepts_valid_token(self):
+        """Freshly created token passes verification."""
+        kind, ref_id, choice = "approval", "ref123", "once"
+        token = self.adapter._make_interaction_token(kind, ref_id, choice)
+        assert self.adapter._verify_interaction_token(kind, ref_id, choice, token) is True
+
+    def test_verify_rejects_expired_token(self):
+        """Token past TTL window is rejected."""
+        kind, ref_id, choice = "approval", "ref123", "once"
+        with patch("time.time") as mock_time:
+            mock_time.return_value = 1000
+            token = self.adapter._make_interaction_token(kind, ref_id, choice)
+            mock_time.return_value = 1000 + self.adapter._INTERACTION_TOKEN_TTL + 1
+            assert self.adapter._verify_interaction_token(kind, ref_id, choice, token) is False
+
+    def test_verify_rejects_malformed_token(self):
+        """Wrong number of segments → False."""
+        assert self.adapter._verify_interaction_token("a", "b", "c", "no-dots") is False
+        assert self.adapter._verify_interaction_token("a", "b", "c", "one.two") is False
+
+    def test_verify_rejects_tampered_choice(self):
+        """Token signed for one choice fails for a different choice."""
+        kind, ref_id, choice = "approval", "ref123", "once"
+        token = self.adapter._make_interaction_token(kind, ref_id, choice)
+        assert self.adapter._verify_interaction_token(kind, ref_id, "session", token) is False
+
+    def test_verify_rejects_non_hex_rand(self):
+        """Non-hex characters in rand_hex → ValueError → False."""
+        kind, ref_id, choice = "approval", "ref123", "once"
+        token = self.adapter._make_interaction_token(kind, ref_id, choice)
+        parts = token.rsplit(".", 2)
+        sig, _, ts_str = parts
+        bad_token = f"{sig}.ZZZZZZZZZZZZZZZZ.{ts_str}"
+        assert self.adapter._verify_interaction_token(kind, ref_id, choice, bad_token) is False
+
+    def test_verify_rejects_invalid_hmac(self):
+        """Flipping the signature → HMAC mismatch → False."""
+        kind, ref_id, choice = "approval", "ref123", "once"
+        token = self.adapter._make_interaction_token(kind, ref_id, choice)
+        parts = token.rsplit(".", 2)
+        _, rand_hex, ts_str = parts
+        bad_sig = "0" * 64
+        bad_token = f"{bad_sig}.{rand_hex}.{ts_str}"
+        assert self.adapter._verify_interaction_token(kind, ref_id, choice, bad_token) is False
+
+
+class TestMattermostSendExecApproval:
+    """Sprint 6.2 — Approval button payload generation."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._hmac_secret = "b" * 32
+        self.adapter._callback_base_url = "http://127.0.0.1:8391"
+
+    @pytest.mark.asyncio
+    async def test_configured_sends_four_buttons(self):
+        """Payload contains 4 actions with correct types, styles, names."""
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_123"})
+
+        result = await self.adapter.send_exec_approval(
+            chat_id="chan_test",
+            command="dangerous command",
+            session_key="sess_abc",
+            description="testing",
+        )
+        assert result.success is True
+        assert result.message_id == "post_123"
+
+        payload = self.adapter._api_post.call_args[0][1]
+        assert payload["channel_id"] == "chan_test"
+
+        attachments = payload["props"]["attachments"]
+        assert len(attachments) == 1
+        assert "⚠️" in attachments[0]["pretext"]
+
+        actions = attachments[0]["actions"]
+        assert len(actions) == 4
+
+        # Check each button shape
+        expected = [
+            ("✅ Allow Once", "once", "primary"),
+            ("✅ Allow Session", "session", "default"),
+            ("✅ Always Allow", "always", "default"),
+            ("❌ Deny", "deny", "danger"),
+        ]
+        for action, (exp_name, exp_choice, exp_style) in zip(actions, expected):
+            assert action["name"] == exp_name
+            assert action["type"] == "button"
+            assert action["style"] == exp_style
+            assert action["integration"]["url"] == "http://127.0.0.1:8391/mattermost/interactions"
+            assert action["integration"]["context"]["kind"] == "approval"
+            assert action["integration"]["context"]["choice"] == exp_choice
+            assert "approval_id" in action["integration"]["context"]
+            assert "token" in action["integration"]["context"]
+
+    @pytest.mark.asyncio
+    async def test_not_configured_returns_failure(self):
+        """No callback URL → success=False."""
+        self.adapter._callback_base_url = ""
+        result = await self.adapter.send_exec_approval(
+            chat_id="chan_test",
+            command="test",
+            session_key="sess_abc",
+        )
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_sets_root_id(self):
+        """Threaded reply includes root_id in payload."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_123"})
+        self.adapter._resolve_root_id = AsyncMock(return_value="root_456")
+
+        result = await self.adapter.send_exec_approval(
+            chat_id="chan_test",
+            command="test",
+            session_key="sess_abc",
+            metadata={"reply_to_message_id": "parent_post"},
+        )
+        assert result.success is True
+        self.adapter._resolve_root_id.assert_called_once_with("parent_post")
+        payload = self.adapter._api_post.call_args[0][1]
+        assert payload["root_id"] == "root_456"
+
+    @pytest.mark.asyncio
+    async def test_flat_mode_omits_root_id(self):
+        """Flat mode → no root_id in payload."""
+        self.adapter._reply_mode = "off"
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_123"})
+
+        await self.adapter.send_exec_approval(
+            chat_id="chan_test",
+            command="test",
+            session_key="sess_abc",
+            metadata={"reply_to_message_id": "parent_post"},
+        )
+        payload = self.adapter._api_post.call_args[0][1]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_state_stored_correctly(self):
+        """After send, _approval_state has the right keys."""
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_456"})
+
+        await self.adapter.send_exec_approval(
+            chat_id="chan_test",
+            command="test",
+            session_key="sess_abc",
+        )
+
+        # There should be exactly one entry in _approval_state
+        assert len(self.adapter._approval_state) == 1
+        approval_id = next(iter(self.adapter._approval_state))
+        state = self.adapter._approval_state[approval_id]
+        assert state["session_key"] == "sess_abc"
+        assert state["chat_id"] == "chan_test"
+        assert state["message_id"] == "post_456"
+
+    @pytest.mark.asyncio
+    async def test_api_failure_returns_failure(self):
+        """Empty API response → success=False."""
+        self.adapter._api_post = AsyncMock(return_value={})
+        result = await self.adapter.send_exec_approval(
+            chat_id="chan_test",
+            command="test",
+            session_key="sess_abc",
+        )
+        assert result.success is False
+
+
+class TestMattermostSendSlashConfirm:
+    """Sprint 6.3 — Slash-confirm button payload generation."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._hmac_secret = "c" * 32
+        self.adapter._callback_base_url = "http://127.0.0.1:8391"
+
+    @pytest.mark.asyncio
+    async def test_configured_sends_three_buttons(self):
+        """Payload contains 3 actions with kind='confirm'."""
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_sc_123"})
+
+        result = await self.adapter.send_slash_confirm(
+            chat_id="chan_test",
+            title="Run command?",
+            message="This will delete all data.",
+            session_key="sess_abc",
+            confirm_id="confirm_001",
+        )
+        assert result.success is True
+        assert result.message_id == "post_sc_123"
+
+        payload = self.adapter._api_post.call_args[0][1]
+        assert payload["channel_id"] == "chan_test"
+        assert "Run command?" in payload["message"]
+
+        attachments = payload["props"]["attachments"]
+        assert len(attachments) == 1
+        actions = attachments[0]["actions"]
+        assert len(actions) == 3
+
+        expected = [
+            ("✅ Approve Once", "once", "primary"),
+            ("✅ Always Approve", "always", "default"),
+            ("❌ Cancel", "cancel", "danger"),
+        ]
+        for action, (exp_name, exp_choice, exp_style) in zip(actions, expected):
+            assert action["name"] == exp_name
+            assert action["type"] == "button"
+            assert action["style"] == exp_style
+            assert action["integration"]["context"]["kind"] == "confirm"
+            assert action["integration"]["context"]["choice"] == exp_choice
+            assert action["integration"]["context"]["confirm_id"] == "confirm_001"
+            assert "token" in action["integration"]["context"]
+
+    @pytest.mark.asyncio
+    async def test_not_configured_returns_failure(self):
+        """No callback URL → success=False."""
+        self.adapter._callback_base_url = ""
+        result = await self.adapter.send_slash_confirm(
+            chat_id="chan_test",
+            title="Test",
+            message="test",
+            session_key="sess_abc",
+            confirm_id="confirm_001",
+        )
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_sets_root_id(self):
+        """Threaded reply includes root_id."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_sc_123"})
+        self.adapter._resolve_root_id = AsyncMock(return_value="root_789")
+
+        result = await self.adapter.send_slash_confirm(
+            chat_id="chan_test",
+            title="Test",
+            message="test",
+            session_key="sess_abc",
+            confirm_id="confirm_001",
+            metadata={"reply_to_message_id": "parent_post"},
+        )
+        assert result.success is True
+        payload = self.adapter._api_post.call_args[0][1]
+        assert payload["root_id"] == "root_789"
+
+    @pytest.mark.asyncio
+    async def test_state_stored_correctly(self):
+        """_slash_confirm_state has correct mapping."""
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_sc_456"})
+
+        await self.adapter.send_slash_confirm(
+            chat_id="chan_test",
+            title="Test",
+            message="test",
+            session_key="sess_abc",
+            confirm_id="confirm_001",
+        )
+
+        assert "confirm_001" in self.adapter._slash_confirm_state
+        state = self.adapter._slash_confirm_state["confirm_001"]
+        assert state["session_key"] == "sess_abc"
+        assert state["chat_id"] == "chan_test"
+        assert state["message_id"] == "post_sc_456"
+
+
+class TestMattermostInteractionHandler:
+    """Sprint 6.4 — Inbound interaction handler logic."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._hmac_secret = "d" * 32
+        self.adapter._callback_base_url = "http://127.0.0.1:8391"
+        self.adapter._verify_interaction_token = MagicMock(return_value=True)
+        self.adapter._is_interactive_user_authorized = MagicMock(return_value=True)
+
+    def _make_mock_request(self, payload: dict) -> MagicMock:
+        """Build a mock aiohttp request that returns the given JSON payload."""
+        req = MagicMock()
+        req.read = AsyncMock(return_value=json.dumps(payload).encode())
+        return req
+
+    @pytest.mark.asyncio
+    async def test_valid_token_resolves_approval(self):
+        """Valid approval token → resolve_gateway_approval called."""
+        self.adapter._approval_state["appr_001"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+        }
+        req = self._make_mock_request({
+            "user_id": "user_1",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "appr_001",
+                    "choice": "once",
+                    "token": "dummy_token",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        # Returns an update message replacing the post
+        assert "update" in body
+        mock_resolve.assert_called_once_with("sess_abc", "once")
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_returns_error(self):
+        """Unauthorized user → 200 with 'not authorized', state preserved."""
+        self.adapter._is_interactive_user_authorized = MagicMock(return_value=False)
+        self.adapter._approval_state["appr_002"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+        }
+        req = self._make_mock_request({
+            "user_id": "unknown_user",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "appr_002",
+                    "choice": "once",
+                    "token": "dummy",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "not authorized" in body.get("text", "").lower()
+        mock_resolve.assert_not_called()
+        # State preserved — not popped
+        assert "appr_002" in self.adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_stale_approval_returns_already_resolved(self):
+        """No state for approval_id → 'already resolved'."""
+        req = self._make_mock_request({
+            "user_id": "user_1",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "stale_appr",
+                    "choice": "once",
+                    "token": "dummy",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "already been resolved" in body.get("text", "").lower()
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_channel_mismatch_preserves_state(self):
+        """Different chat_id in request vs state → state preserved, not resolved."""
+        self.adapter._approval_state["appr_003"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_original",
+            "message_id": "msg_123",
+        }
+        req = self._make_mock_request({
+            "user_id": "user_1",
+            "channel_id": "chan_different",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "appr_003",
+                    "choice": "once",
+                    "token": "dummy",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "channel mismatch" in body.get("text", "").lower()
+        mock_resolve.assert_not_called()
+        # State was put back
+        assert "appr_003" in self.adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_different_user_rejected(self):
+        """Button-clicker != requester → rejected, state preserved."""
+        self.adapter._approval_state["appr_usr"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+            "requester_user_id": "requester_1",
+        }
+        req = self._make_mock_request({
+            "user_id": "different_user",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "appr_usr",
+                    "choice": "once",
+                    "token": "dummy",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "Only the user who requested" in body.get("text", "")
+        mock_resolve.assert_not_called()
+        # State was put back
+        assert "appr_usr" in self.adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_same_user_allowed(self):
+        """Button-clicker == requester → approved, state consumed."""
+        self.adapter._approval_state["appr_same"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+            "requester_user_id": "user_1",
+        }
+        req = self._make_mock_request({
+            "user_id": "user_1",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "appr_same",
+                    "choice": "once",
+                    "token": "dummy",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "update" in body
+        mock_resolve.assert_called_once_with("sess_abc", "once")
+        assert "appr_same" not in self.adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_deny_choice_resolved_correctly(self):
+        """choice='deny' → resolve_gateway_approval called with 'deny'."""
+        self.adapter._approval_state["appr_004"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+        }
+        req = self._make_mock_request({
+            "user_id": "user_1",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "appr_004",
+                    "choice": "deny",
+                    "token": "dummy",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "❌" in body["update"]["message"]
+        mock_resolve.assert_called_once_with("sess_abc", "deny")
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_rejected(self):
+        """Expired/invalid token → 200 with error text, not resolved."""
+        self.adapter._verify_interaction_token = MagicMock(return_value=False)
+        self.adapter._approval_state["appr_005"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+        }
+        req = self._make_mock_request({
+            "user_id": "user_1",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "approval",
+                    "approval_id": "appr_005",
+                    "choice": "once",
+                    "token": "bad_token",
+                },
+            },
+        })
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        # The actual text says "expired or invalid" — match the full phrase
+        assert "expired" in body.get("text", "").lower() or "invalid" in body.get("text", "").lower()
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handler_routes_confirm_kind(self):
+        """kind='confirm' → slash-confirm resolver path."""
+        self.adapter._slash_confirm_state["confirm_001"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_confirm",
+        }
+        req = self._make_mock_request({
+            "user_id": "user_1",
+            "channel_id": "chan_test",
+            "data": {
+                "context": {
+                    "kind": "confirm",
+                    "confirm_id": "confirm_001",
+                    "choice": "once",
+                    "token": "dummy",
+                },
+            },
+        })
+
+        with patch("tools.slash_confirm.resolve", AsyncMock(return_value="ok")) as mock_resolve:
+            response = await self.adapter._handle_interaction_request(req)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "update" in body
+        mock_resolve.assert_called_once_with("sess_abc", "confirm_001", "once")
+
+
+class TestMattermostSlashConfirmResolution:
+    """Sprint 6.5 — Slash-confirm resolution from button clicks."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_valid_confirm_id_resolves(self):
+        """Existing confirm_id → tools.slash_confirm.resolve called."""
+        self.adapter._slash_confirm_state["confirm_001"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+        }
+        with patch("tools.slash_confirm.resolve", AsyncMock(return_value="done")) as mock_resolve:
+            response = await self.adapter._resolve_slash_confirm_interaction(
+                "confirm_001", "once", "user_1", "chan_test",
+            )
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "update" in body
+        assert "✅" in body["update"]["message"]
+        mock_resolve.assert_called_once_with("sess_abc", "confirm_001", "once")
+
+    @pytest.mark.asyncio
+    async def test_stale_confirm_id_returns_already_resolved(self):
+        """No state for confirm_id → 'already resolved'."""
+        response = await self.adapter._resolve_slash_confirm_interaction(
+            "nonexistent", "once", "user_1", "chan_test",
+        )
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert "already been resolved" in body.get("text", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_replay_rejected(self):
+        """Second click after pop → 'already resolved'."""
+        self.adapter._slash_confirm_state["confirm_002"] = {
+            "session_key": "sess_abc",
+            "chat_id": "chan_test",
+            "message_id": "msg_123",
+        }
+        with patch("tools.slash_confirm.resolve", AsyncMock(return_value="ok")):
+            await self.adapter._resolve_slash_confirm_interaction(
+                "confirm_002", "once", "user_1", "chan_test",
+            )
+
+        # State is now empty after pop. Second call should be rejected.
+        response = await self.adapter._resolve_slash_confirm_interaction(
+            "confirm_002", "once", "user_1", "chan_test",
+        )
+        body = json.loads(response.body)
+        assert "already been resolved" in body.get("text", "").lower()
+
+
+class TestMattermostInteractionConfigFlow:
+    """Sprint 6.6 — Config plumbing tests."""
+
+    def test_apply_yaml_config_returns_interactions_block(self):
+        """When interactions block present, _apply_yaml_config returns it."""
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        mattermost_cfg = {
+            "interactions": {
+                "callback_url": "https://example.com/callback",
+                "hmac_secret": "my-secret-key",
+                "listen_host": "0.0.0.0",
+                "listen_port": 9999,
+            },
+        }
+        result = _apply_yaml_config({}, mattermost_cfg)
+        assert result == {"interactions": mattermost_cfg["interactions"]}
+
+    def test_apply_yaml_config_returns_none_without_interactions(self):
+        """No interactions block → returns None."""
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        result = _apply_yaml_config({}, {"token": "abc"})
+        assert result is None
+
+    def test_apply_yaml_config_hmac_bridge_sets_env(self, monkeypatch):
+        """The HMAC secret is bridged into MATTERMOST_INTERACTIONS_HMAC_SECRET."""
+        monkeypatch.delenv("MATTERMOST_INTERACTIONS_HMAC_SECRET", raising=False)
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        mattermost_cfg = {
+            "interactions": {"hmac_secret": "my-secret"},
+        }
+        _apply_yaml_config({}, mattermost_cfg)
+        assert os.environ["MATTERMOST_INTERACTIONS_HMAC_SECRET"] == "my-secret"
+
+    def test_apply_yaml_config_env_takes_precedence(self, monkeypatch):
+        """Env var already set → YAML is NOT bridged (no override)."""
+        monkeypatch.setenv("MATTERMOST_INTERACTIONS_HMAC_SECRET", "env-var-value")
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        mattermost_cfg = {
+            "interactions": {"hmac_secret": "yaml-value"},
+        }
+        _apply_yaml_config({}, mattermost_cfg)
+        # Env still has the original value
+        assert os.environ["MATTERMOST_INTERACTIONS_HMAC_SECRET"] == "env-var-value"
+
+    @pytest.mark.asyncio
+    async def test_connect_reads_interaction_config(self):
+        """connect() reads interactions from config.extra and env."""
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={
+                "url": "https://mm.example.com",
+                "interactions": {
+                    "callback_url": "https://cb.example.com",
+                    "listen_host": "0.0.0.0",
+                    "listen_port": 9999,
+                },
+            },
+        )
+        # Must be ≥ 32 bytes or connect() will disable buttons
+        long_secret = "a" * 32
+        with patch.dict(
+            os.environ,
+            {
+                "MATTERMOST_INTERACTIONS_HMAC_SECRET": long_secret,
+            },
+            clear=False,
+        ):
+            adapter = MattermostAdapter(config)
+            # Mock _api_get and _start_interaction_server so connect doesn't
+            # make real network calls
+            adapter._start_interaction_server = AsyncMock()
+            adapter._api_get = AsyncMock(return_value={
+                "id": "bot_user_id",
+                "username": "hermes-bot",
+            })
+
+            result = await adapter.connect()
+
+        assert result is True
+        assert adapter._callback_base_url == "https://cb.example.com"
+        assert adapter._listen_host == "0.0.0.0"
+        assert adapter._listen_port == 9999
+        assert adapter._hmac_secret == long_secret
+        adapter._start_interaction_server.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_disabled_without_secret(self):
+        """No HMAC secret → interaction server not started."""
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={
+                "url": "https://mm.example.com",
+                "interactions": {
+                    "callback_url": "https://cb.example.com",
+                },
+            },
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_INTERACTIONS_HMAC_SECRET", None)
+            adapter = MattermostAdapter(config)
+            adapter._api_get = AsyncMock(return_value={
+                "id": "bot_user_id",
+                "username": "hermes-bot",
+            })
+            adapter._start_interaction_server = AsyncMock()
+
+            result = await adapter.connect()
+
+        assert result is True
+        assert adapter._callback_base_url == "https://cb.example.com"
+        assert adapter._hmac_secret == ""  # empty secret
+        adapter._start_interaction_server.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_disabled_with_short_secret(self):
+        """HMAC secret < 32 bytes → interaction server not started, warning logged."""
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={
+                "url": "https://mm.example.com",
+                "interactions": {
+                    "callback_url": "https://cb.example.com",
+                    "hmac_secret": "short",
+                },
+            },
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_INTERACTIONS_HMAC_SECRET", None)
+            adapter = MattermostAdapter(config)
+            adapter._api_get = AsyncMock(return_value={
+                "id": "bot_user_id",
+                "username": "hermes-bot",
+            })
+            adapter._start_interaction_server = AsyncMock()
+
+            result = await adapter.connect()
+
+        assert result is True
+        # callback_url is cleared because HMAC is too short
+        assert adapter._callback_base_url == ""
+        adapter._start_interaction_server.assert_not_called()
+
+
+class TestMattermostInteractionIntegration:
+    """Sprint 6.7 — End-to-end integration test with a real interaction server."""
+
+    @pytest.mark.asyncio
+    async def test_full_callback_flow(self):
+        """
+        Start interaction server → send approval → POST callback → verify resolution.
+        """
+        # Use a high port to avoid colliding with the default 8391
+        server_port = 18391
+
+        adapter = _make_adapter()
+        adapter._callback_base_url = f"http://127.0.0.1:{server_port}"
+        adapter._hmac_secret = "e" * 32
+        adapter._listen_host = "127.0.0.1"
+        adapter._listen_port = server_port
+        adapter._session = aiohttp.ClientSession()
+
+        # Start the interaction server
+        await adapter._start_interaction_server()
+        assert adapter._interaction_site is not None
+
+        try:
+            # Mock _api_post so send_exec_approval doesn't hit the real API
+            adapter._api_post = AsyncMock(return_value={"id": "post_approval_123"})
+
+            # Send an approval prompt
+            result = await adapter.send_exec_approval(
+                chat_id="chan_test",
+                command="dangerous command",
+                session_key="sess_abc",
+                description="test",
+            )
+            assert result.success is True
+
+            # Extract the button context from the API call payload
+            call_payload = adapter._api_post.call_args[0][1]
+            attachment = call_payload["props"]["attachments"][0]
+            first_action = attachment["actions"][0]
+            context = first_action["integration"]["context"]
+
+            # Simulate Mattermost sending a callback POST to our server
+            callback_payload = {
+                "user_id": "test_user",
+                "channel_id": "chan_test",
+                "data": {
+                    "context": context,
+                },
+            }
+
+            with patch(
+                "tools.approval.resolve_gateway_approval", return_value=1,
+            ) as mock_resolve:
+                async with aiohttp.ClientSession() as client:
+                    resp = await client.post(
+                        f"http://127.0.0.1:{server_port}/mattermost/interactions",
+                        json=callback_payload,
+                    )
+                    assert resp.status == 200
+                    resp_body = await resp.json()
+                    assert "update" in resp_body
+
+                # Verify the approval was resolved
+                mock_resolve.assert_called_once_with("sess_abc", "once")
+
+        finally:
+            # Clean up the interaction server
+            if adapter._interaction_site:
+                await adapter._interaction_site.stop()
+            if adapter._interaction_runner:
+                await adapter._interaction_runner.cleanup()
+            if adapter._session and not adapter._session.closed:
+                await adapter._session.close()
 
 
 @pytest.mark.asyncio

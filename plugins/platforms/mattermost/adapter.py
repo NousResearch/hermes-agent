@@ -14,10 +14,13 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import re
+import time
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,6 +31,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    http_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +100,27 @@ class MattermostAdapter(BasePlatformAdapter):
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
 
+        # Interaction callback server (Sprint 2)
+        self._interaction_app: Any = None
+        self._interaction_runner: Any = None
+        self._interaction_site: Any = None
+
+        # Interaction config
+        self._callback_base_url: str = ""
+        self._hmac_secret: str = ""
+        self._listen_host: str = "127.0.0.1"
+        self._listen_port: int = 8391
+
+        # Inbound approval state: approval_id -> {session_key, chat_id, message_id}
+        self._approval_state: Dict[str, dict] = {}
+        self._approval_counter: int = 0
+
+        # Slash-confirm state: confirm_id -> {session_key, chat_id, message_id}
+        self._slash_confirm_state: Dict[str, dict] = {}
+
+        # User info cache: user_id -> {username, display_name, first_name, last_name}
+        self._user_cache: Dict[str, dict] = {}
+
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
 
@@ -117,12 +142,16 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            resp = await http_request(self._session, "get", url, headers=self._headers())
+            async with resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logger.error("MM API GET %s timeout", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
             return {}
@@ -136,10 +165,8 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status = None
         self._last_post_error = ""
         try:
-            async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
+            resp = await http_request(self._session, "post", url, headers=self._headers(), json=payload)
+            async with resp:
                 self._last_post_status = resp.status
                 if resp.status >= 400:
                     body = await resp.text()
@@ -147,6 +174,9 @@ class MattermostAdapter(BasePlatformAdapter):
                     logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logger.error("MM API POST %s timeout", path)
+            return {}
         except aiohttp.ClientError as exc:
             self._last_post_error = str(exc)
             logger.error("MM API POST %s network error: %s", path, exc)
@@ -213,14 +243,16 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.put(
-                url, headers=self._headers(), json=payload
-            ) as resp:
+            resp = await http_request(self._session, "put", url, headers=self._headers(), json=payload)
+            async with resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logger.error("MM API PUT %s timeout", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
@@ -241,14 +273,19 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        try:
+            resp = await http_request(self._session, "post", url, headers=headers, data=form, timeout=60)
+            async with resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            logger.exception("MM file upload failed")
+            return None
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -263,9 +300,33 @@ class MattermostAdapter(BasePlatformAdapter):
             return False
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=None
         )
         self._closing = False
+
+        # Read interaction config
+        interactions_cfg = self.config.extra.get("interactions") or {}
+        self._callback_base_url = str(
+            interactions_cfg.get("callback_url", "")
+        ).rstrip("/")
+        self._listen_host = str(interactions_cfg.get("listen_host", "127.0.0.1"))
+        self._listen_port = int(interactions_cfg.get("listen_port", 8391))
+        self._hmac_secret = (
+            os.getenv("MATTERMOST_INTERACTIONS_HMAC_SECRET")
+            or str(interactions_cfg.get("hmac_secret", ""))
+        )
+
+        # Start the inbound interaction server
+        if self._callback_base_url and self._hmac_secret:
+            if len(self._hmac_secret.encode("utf-8")) < 32:
+                logger.warning(
+                    "Mattermost interaction HMAC secret is too short (%d bytes, "
+                    "minimum 32). Interactive buttons disabled.",
+                    len(self._hmac_secret.encode("utf-8")),
+                )
+                self._callback_base_url = ""
+            else:
+                await self._start_interaction_server()
 
         # Verify credentials and fetch bot identity.
         me = await self._api_get("users/me")
@@ -291,6 +352,20 @@ class MattermostAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Mattermost."""
         self._closing = True
+
+        # Stop the inbound interaction server.
+        if self._interaction_site:
+            try:
+                await self._interaction_site.stop()
+            except Exception as exc:
+                logger.debug("Mattermost interaction site stop failed: %s", exc)
+        if self._interaction_runner:
+            try:
+                await self._interaction_runner.cleanup()
+            except Exception as exc:
+                logger.debug("Mattermost interaction runner cleanup failed: %s", exc)
+        self._approval_state.clear()
+        self._slash_confirm_state.clear()
 
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
@@ -359,6 +434,375 @@ class MattermostAdapter(BasePlatformAdapter):
             last_id = data["id"]
 
         return SendResult(success=True, message_id=last_id)
+
+    # ------------------------------------------------------------------
+    # User info resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_user_info(self, user_id: str) -> dict:
+        """Fetch user info from the Mattermost API, caching the result.
+
+        Returns a dict with keys: username, display_name, first_name,
+        last_name, nickname.  Returns an empty dict on failure.
+        """
+        if not user_id or not self._session:
+            return {}
+        if user_id in self._user_cache:
+            return self._user_cache[user_id]
+        data = await self._api_get(f"users/{user_id}")
+        if not data or "id" not in data:
+            logger.debug("Mattermost: failed to resolve user info for %s", user_id)
+            return {}
+        info = {
+            "username": data.get("username", ""),
+            "first_name": data.get("first_name", ""),
+            "last_name": data.get("last_name", ""),
+            "nickname": data.get("nickname", ""),
+        }
+        # Build display name: nickname > first_name + last_name > username
+        nickname = info["nickname"].strip()
+        if nickname:
+            info["display_name"] = nickname
+        else:
+            first = info["first_name"].strip()
+            last = info["last_name"].strip()
+            if first or last:
+                info["display_name"] = f"{first} {last}".strip()
+            else:
+                info["display_name"] = info["username"]
+        self._user_cache[user_id] = info
+        return info
+
+    def _get_display_name_for_sender(
+        self,
+        sender_id: str,
+        sender_name: str,
+        user_info: dict,
+    ) -> str:
+        """Return the best available display name for a message sender.
+
+        Priority:
+        1. ``display_name`` from the resolved API user info (nickname,
+           first+last name, or username).
+        2. ``sender_name`` (the ``sender_name`` from the WebSocket event,
+           i.e. the Mattermost username).
+        3. ``sender_id`` (the raw user ID as a last resort).
+        """
+        if user_info:
+            dn = user_info.get("display_name", "").strip()
+            if dn:
+                return dn
+        if sender_name:
+            return sender_name
+        return sender_id
+
+    # ------------------------------------------------------------------
+    # Interaction token signing
+    # ------------------------------------------------------------------
+
+    _INTERACTION_TOKEN_TTL: int = 3600  # 1 hour
+
+    def _sign_interaction_token(self, payload: str) -> str:
+        """Sign *payload* with HMAC-SHA256 using ``_hmac_secret``."""
+        secret_bytes = self._hmac_secret.encode("utf-8")
+        return hmac.new(
+            secret_bytes,
+            payload.encode("utf-8"),
+            sha256,
+        ).hexdigest()
+
+    def _make_interaction_token(self, kind: str, ref_id: str, choice: str) -> str:
+        """Produce a signed interaction token.
+
+        Format: <sig>.<rand_hex>.<ts>
+        """
+        rand_hex = os.urandom(8).hex()
+        ts = str(int(time.time()))
+        canonical = f"{kind}:{ref_id}:{choice}:{rand_hex}:{ts}"
+        sig = self._sign_interaction_token(canonical)
+        return f"{sig}.{rand_hex}.{ts}"
+
+    def _verify_interaction_token(
+        self,
+        kind: str,
+        ref_id: str,
+        choice: str,
+        token: str,
+    ) -> bool:
+        """Validate an interaction token.
+
+        Returns True only when all checks pass.
+        """
+        parts = token.rsplit(".", 2)
+        if len(parts) != 3:
+            return False
+
+        sig, rand_hex, ts_str = parts
+
+        # Validate hex component
+        try:
+            int(rand_hex, 16)
+        except ValueError:
+            return False
+
+        # TTL check
+        try:
+            token_ts = int(ts_str)
+        except ValueError:
+            return False
+        if time.time() - token_ts > self._INTERACTION_TOKEN_TTL:
+            return False
+
+        # Constant-time HMAC compare
+        canonical = f"{kind}:{ref_id}:{choice}:{rand_hex}:{ts_str}"
+        expected_sig = self._sign_interaction_token(canonical)
+        return hmac.compare_digest(expected_sig, sig)
+
+    # ------------------------------------------------------------------
+    # Interaction HTTP server
+    # ------------------------------------------------------------------
+
+    def _is_interactive_user_authorized(
+        self,
+        user_id: str,
+        *,
+        channel_id: str = "",
+    ) -> bool:
+        """Return whether a Mattermost user may click approval buttons."""
+        if not user_id:
+            return False
+        if os.getenv("MATTERMOST_ALLOW_ALL_USERS", "").lower() in (
+            "true", "1", "yes",
+        ):
+            return True
+        allowed_raw = os.getenv("MATTERMOST_ALLOWED_USERS", "")
+        if not allowed_raw:
+            return True
+        allowed = {u.strip() for u in allowed_raw.split(",") if u.strip()}
+        return user_id in allowed
+
+    async def _start_interaction_server(self) -> None:
+        """Start the inbound interaction server."""
+        from aiohttp import web
+
+        self._interaction_app = web.Application(client_max_size=65536)
+        self._interaction_app.router.add_post(
+            "/mattermost/interactions", self._handle_interaction_request
+        )
+        self._interaction_runner = web.AppRunner(self._interaction_app)
+        await self._interaction_runner.setup()
+        self._interaction_site = web.TCPSite(
+            self._interaction_runner, self._listen_host, self._listen_port
+        )
+        try:
+            await self._interaction_site.start()
+            logger.info(
+                "Mattermost: interaction server started on %s:%d",
+                self._listen_host, self._listen_port,
+            )
+        except OSError as exc:
+            logger.warning(
+                "Mattermost interaction server failed to start on %s:%d (%s). "
+                "Falling back to text-based /approve.",
+                self._listen_host, self._listen_port, exc,
+            )
+            await self._interaction_runner.cleanup()
+            self._interaction_app = None
+            self._interaction_runner = None
+            self._interaction_site = None
+            self._callback_base_url = ""
+
+    async def _handle_interaction_request(
+        self, request: Any,
+    ) -> "web.Response":
+        """Handle a button-click callback from the Mattermost server."""
+        from aiohttp import web as _web
+
+        raw = await request.read()
+        if len(raw) > 65536:
+            return _web.Response(status=413)
+
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return _web.Response(status=400)
+
+        if not isinstance(payload, dict):
+            return _web.Response(status=400)
+
+        context = (
+            (payload.get("data") or {}).get("context")
+            or payload.get("context")
+            or {}
+        )
+        user_id = payload.get("user_id", "")
+        channel_id = payload.get("channel_id", "")
+
+        kind = context.get("kind", "")
+        ref_id = context.get("approval_id") or context.get("confirm_id") or ""
+        choice = context.get("choice", "")
+        token = context.get("token", "")
+
+        if not self._verify_interaction_token(
+            kind, ref_id, choice, token
+        ):
+            logger.warning(
+                "Mattermost interaction: invalid or expired token "
+                "(kind=%s, ref_id=%s)", kind, ref_id,
+            )
+            return _web.json_response(
+                {"text": "Request expired or invalid. Please resend the prompt."},
+                status=200,
+            )
+
+        if not self._is_interactive_user_authorized(user_id):
+            logger.warning(
+                "Mattermost interaction: unauthorized user %s for kind %s",
+                user_id, kind,
+            )
+            return _web.json_response(
+                {"text": "You are not authorized to approve commands."},
+                status=200,
+            )
+
+        if kind == "approval":
+            return await self._resolve_approval_interaction(
+                ref_id, choice, user_id, channel_id,
+            )
+        elif kind == "confirm":
+            return await self._resolve_slash_confirm_interaction(
+                ref_id, choice, user_id, channel_id,
+            )
+
+        return _web.Response(status=200)
+
+    async def _resolve_approval_interaction(
+        self,
+        approval_id: str,
+        choice: str,
+        user_id: str,
+        channel_id: str,
+    ) -> "web.Response":
+        """Resolve a pending approval from a button click."""
+        from aiohttp import web as _web
+
+        state = self._approval_state.pop(approval_id, None)
+        if not state:
+            logger.info(
+                "Mattermost: approval %s already resolved or unknown",
+                approval_id,
+            )
+            return _web.json_response(
+                {"text": "This approval has already been resolved."},
+                status=200,
+            )
+
+        if state.get("chat_id") and channel_id \
+                and state["chat_id"] != channel_id:
+            logger.warning(
+                "Mattermost: approval %s channel mismatch (expected=%s, got=%s)",
+                approval_id, state["chat_id"], channel_id,
+            )
+            self._approval_state[approval_id] = state
+            return _web.json_response(
+                {"text": "Channel mismatch — approval not resolved."},
+                status=200,
+            )
+
+        requester_user_id = state.get("requester_user_id", "") or ""
+        if requester_user_id and user_id and requester_user_id != user_id:
+            logger.warning(
+                "Mattermost: approval %s user mismatch", approval_id,
+            )
+            self._approval_state[approval_id] = state
+            return _web.json_response(
+                {
+                    "text": (
+                        "Only the user who requested this command can approve "
+                        "or deny it via the buttons. Use /approve or /deny in "
+                        "the chat instead."
+                    ),
+                },
+                status=200,
+            )
+
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(state["session_key"], choice)
+            logger.info(
+                "Mattermost button resolved %d approval(s) for session %s "
+                "(choice=%s, user=%s)",
+                count, state["session_key"], choice, user_id,
+            )
+        except Exception as exc:
+            logger.error("Mattermost: resolve_gateway_approval failed: %s", exc)
+            return _web.json_response(
+                {"text": "Internal error resolving approval. Please try /approve in text."},
+                status=200,
+            )
+
+        label = {
+            "once": "Allowed once",
+            "session": "Allowed for session",
+            "always": "Allowed permanently",
+            "deny": "Denied",
+        }
+        return _web.json_response(
+            {
+                "update": {
+                    "message": (
+                        f"{'✅' if choice != 'deny' else '❌'} {label.get(choice, choice)}"
+                    ),
+                },
+            },
+            status=200,
+        )
+
+    async def _resolve_slash_confirm_interaction(
+        self,
+        confirm_id: str,
+        choice: str,
+        user_id: str,
+        channel_id: str,
+    ) -> "web.Response":
+        """Resolve a pending slash-command confirmation from a button click."""
+        from aiohttp import web as _web
+
+        state = self._slash_confirm_state.pop(confirm_id, None)
+        if not state:
+            return _web.json_response(
+                {"text": "This confirmation has already been resolved."},
+                status=200,
+            )
+
+        try:
+            from tools.slash_confirm import resolve as resolve_slash_confirm
+            result = await resolve_slash_confirm(
+                state["session_key"], confirm_id, choice,
+            )
+            logger.info(
+                "Mattermost slash-confirm resolved for session %s (choice=%s, user=%s)",
+                state["session_key"], choice, user_id,
+            )
+        except Exception as exc:
+            logger.error("Mattermost: resolve_slash_confirm failed: %s", exc)
+            return _web.json_response(
+                {"text": "Internal error resolving confirmation."},
+                status=200,
+            )
+
+        label = {
+            "once": "Approved once",
+            "always": "Always approved",
+            "cancel": "Cancelled",
+        }
+        msg = f"{'✅' if choice != 'cancel' else '❌'} {label.get(choice, choice)}"
+        if result:
+            msg += f"\n{result}"
+        return _web.json_response(
+            {"update": {"message": msg}},
+            status=200,
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return channel name and type."""
@@ -462,6 +906,172 @@ class MattermostAdapter(BasePlatformAdapter):
             chat_id, video_path, caption, reply_to, metadata=metadata
         )
 
+    # ------------------------------------------------------------------
+    # Interactive approval / slash-confirm buttons
+    # ------------------------------------------------------------------
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive button approval prompt via Mattermost Post Actions."""
+        if not self._callback_base_url or not self._hmac_secret:
+            return SendResult(
+                success=False,
+                error="Interaction server not configured",
+            )
+
+        self._approval_counter += 1
+        approval_id = sha256(
+            f"{session_key}:{self._approval_counter}".encode()
+        ).hexdigest()[:12]
+
+        cmd_preview = (
+            command[:MAX_POST_LENGTH] + "..."
+            if len(command) > MAX_POST_LENGTH
+            else command
+        )
+        callback_url = f"{self._callback_base_url}/mattermost/interactions"
+
+        def _button(name: str, choice: str, style: str) -> dict:
+            action_id = f"appr{approval_id}{choice}"
+            token = self._make_interaction_token("approval", approval_id, choice)
+            return {
+                "id": action_id,
+                "name": name,
+                "type": "button",
+                "style": style,
+                "integration": {
+                    "url": callback_url,
+                    "context": {
+                        "kind": "approval",
+                        "approval_id": approval_id,
+                        "choice": choice,
+                        "token": token,
+                    },
+                },
+            }
+
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "props": {
+                "attachments": [
+                    {
+                        "pretext": "⚠️ **Command Approval Required**",
+                        "text": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "actions": [
+                            _button("✅ Allow Once", "once", "primary"),
+                            _button("✅ Allow Session", "session", "default"),
+                            _button("✅ Always Allow", "always", "default"),
+                            _button("❌ Deny", "deny", "danger"),
+                        ],
+                    }
+                ]
+            },
+        }
+
+        meta = metadata or {}
+        reply_to_mid = meta.get("reply_to_message_id") if meta else None
+        if self._reply_mode == "thread" and reply_to_mid:
+            root_id = await self._resolve_root_id(reply_to_mid)
+            if root_id:
+                payload["root_id"] = root_id
+
+        data = await self._api_post("posts", payload)
+        if not data or "id" not in data:
+            return SendResult(
+                success=False,
+                error="Failed to post approval prompt",
+            )
+
+        self._approval_state[approval_id] = {
+            "session_key": session_key,
+            "chat_id": chat_id,
+            "message_id": data["id"],
+            "requester_user_id": (metadata or {}).get("requester_user_id", ""),
+        }
+
+        return SendResult(success=True, message_id=data["id"])
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a 3-button slash-command confirmation prompt."""
+        if not self._callback_base_url or not self._hmac_secret:
+            return SendResult(
+                success=False,
+                error="Interaction server not configured",
+            )
+
+        callback_url = f"{self._callback_base_url}/mattermost/interactions"
+
+        def _button(name: str, choice: str, style: str) -> dict:
+            action_id = f"sc{confirm_id}{choice}"
+            token = self._make_interaction_token("confirm", confirm_id, choice)
+            return {
+                "id": action_id,
+                "name": name,
+                "type": "button",
+                "style": style,
+                "integration": {
+                    "url": callback_url,
+                    "context": {
+                        "kind": "confirm",
+                        "confirm_id": confirm_id,
+                        "choice": choice,
+                        "token": token,
+                    },
+                },
+            }
+
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "message": f"⚠️ {title}\n\n{message}",
+            "props": {
+                "attachments": [
+                    {
+                        "actions": [
+                            _button("✅ Approve Once", "once", "primary"),
+                            _button("✅ Always Approve", "always", "default"),
+                            _button("❌ Cancel", "cancel", "danger"),
+                        ],
+                    }
+                ]
+            },
+        }
+
+        meta = metadata or {}
+        reply_to_mid = meta.get("reply_to_message_id") if meta else None
+        if self._reply_mode == "thread" and reply_to_mid:
+            root_id = await self._resolve_root_id(reply_to_mid)
+            if root_id:
+                payload["root_id"] = root_id
+
+        data = await self._api_post("posts", payload)
+        if not data or "id" not in data:
+            return SendResult(
+                success=False,
+                error="Failed to post slash-confirm prompt",
+            )
+
+        self._slash_confirm_state[confirm_id] = {
+            "session_key": session_key,
+            "chat_id": chat_id,
+            "message_id": data["id"],
+        }
+
+        return SendResult(success=True, message_id=data["id"])
+
     def format_message(self, content: str) -> str:
         """Mattermost uses standard Markdown — mostly pass through.
 
@@ -499,19 +1109,21 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                resp = await http_request(self._session, "get", url)
+                async with resp:
                     if resp.status >= 500 or resp.status == 429:
                         if attempt < 2:
                             logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                          attempt + 1, url[:80], resp.status)
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
+                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
                     if resp.status >= 400:
                         return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
                     file_data = await resp.read()
                     ct = resp.content_type or "application/octet-stream"
                     break
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
@@ -632,9 +1244,8 @@ class MattermostAdapter(BasePlatformAdapter):
                             logger.warning("Mattermost: blocked unsafe image URL in batch")
                             continue
                         try:
-                            async with self._session.get(
-                                image_url, timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
+                            resp = await http_request(self._session, "get", image_url)
+                            async with resp:
                                 if resp.status >= 400:
                                     logger.warning(
                                         "Mattermost: failed to download image (HTTP %d): %s",
@@ -851,7 +1462,20 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")
-        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
+        sender_name = data.get("sender_name", "").lstrip("@")
+
+        # When the WebSocket event includes sender_name (or it's empty),
+        # resolve the sender's display name from the API.  This ensures
+        # the user's display name (nickname / first+last / username) is
+        # preferred over the raw username when available.
+        user_info = {}
+        if sender_id:
+            user_info = await self._resolve_user_info(sender_id)
+            sender_name = self._get_display_name_for_sender(
+                sender_id, sender_name, user_info,
+            )
+        else:
+            sender_name = sender_name or ""
 
         # Thread support: if the post is in a thread, use root_id. In
         # thread mode, top-level channel posts are valid roots for progress.
@@ -883,11 +1507,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
                 import aiohttp
                 dl_url = f"{self._base_url}/api/v4/files/{fid}"
-                async with self._session.get(
-                    dl_url,
+                resp = await http_request(
+                    self._session, "get", dl_url,
                     headers={"Authorization": f"Bearer {self._token}"},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
+                )
+                async with resp:
                     if resp.status < 400:
                         file_data = await resp.read()
                         from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
@@ -1153,7 +1777,92 @@ def interactive_setup() -> None:
     home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
-    print_info("   Open config in your editor:  hermes config edit")
+
+    # ------------------------------------------------------------------
+    # Interactive Approvals (optional — button-based /approve)
+    # ------------------------------------------------------------------
+
+    print()
+    print_header("Interactive Approvals — (optional — button-based /approve)")
+    print_info("Requires a URL that your Mattermost server can reach.")
+    print_info(
+        "   For self-hosted Mattermost behind a firewall, add the callback host"
+    )
+    print_info(
+        "   to ServiceSettings.AllowedUntrustedInternalConnections in config.xml."
+    )
+    if not prompt_yes_no("Enable interactive approval buttons?", False):
+        print_info("Text-based /approve will be used instead.")
+        return
+
+    callback_url = prompt(
+        "Interaction callback URL (e.g. https://gateway.example.com:8391)"
+    )
+    if not callback_url:
+        print_info("No callback URL set — text-based /approve will be used.")
+        _no_url_port = prompt("Listen port [8391]", default="8391")
+        try:
+            _no_url_port_int = int(_no_url_port or "8391")
+        except ValueError:
+            print_info(f"Invalid port '{_no_url_port}', using 8391")
+            _no_url_port_int = 8391
+        _write_interactions_config(
+            "",
+            prompt("Listen host [127.0.0.1]", default="127.0.0.1"),
+            _no_url_port_int,
+            "",
+        )
+        return
+
+    listen_host = prompt("Listen host", default="127.0.0.1")
+    if not listen_host:
+        listen_host = "127.0.0.1"
+    listen_port_str = prompt("Listen port", default="8391")
+    try:
+        listen_port = int(listen_port_str or "8391")
+    except ValueError:
+        print_info(f"Invalid port '{listen_port_str}', using 8391")
+        listen_port = 8391
+
+    hmac_secret = prompt("HMAC secret (openssl rand -hex 32)", password=True)
+    if not hmac_secret or len(hmac_secret) < 32:
+        print_info(
+            "⚠️  HMAC secret must be ≥32 bytes. Skipping interactive buttons —"
+        )
+        print_info("   text-based /approve will still work.")
+
+    _write_interactions_config(callback_url, listen_host, listen_port, hmac_secret)
+
+
+def _write_interactions_config(
+    callback_url: str,
+    listen_host: str,
+    listen_port: int,
+    hmac_secret: str,
+) -> None:
+    """Write interaction config to .env (secret) and config.yaml (operational)."""
+    from hermes_cli.config import save_env_value
+    from hermes_cli.cli_output import print_success
+    from cli import save_config_value
+
+    if hmac_secret and len(hmac_secret) >= 32:
+        save_env_value("MATTERMOST_INTERACTIONS_HMAC_SECRET", hmac_secret)
+        print_success("HMAC secret saved to .env")
+
+    if callback_url or listen_host != "127.0.0.1" or listen_port != 8391:
+        save_config_value(
+            "mattermost.interactions.callback_url",
+            callback_url.rstrip("/") if isinstance(callback_url, str) else "",
+        )
+        save_config_value(
+            "mattermost.interactions.listen_host", listen_host
+        )
+        save_config_value(
+            "mattermost.interactions.listen_port", listen_port
+        )
+        print_success(
+            f"Interaction config saved: {callback_url} on {listen_host}:{listen_port}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1194,7 +1903,15 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+
+    # Interactive approvals — HMAC secret bridge + extras return.
+    interactions = mattermost_cfg.get("interactions")
+    if interactions and not os.getenv("MATTERMOST_INTERACTIONS_HMAC_SECRET"):
+        hmac_secret = interactions.get("hmac_secret", "")
+        if hmac_secret:
+            os.environ["MATTERMOST_INTERACTIONS_HMAC_SECRET"] = str(hmac_secret)
+
+    return {"interactions": interactions} if interactions else None
 
 
 # ---------------------------------------------------------------------------

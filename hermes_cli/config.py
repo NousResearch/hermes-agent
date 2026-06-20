@@ -2152,6 +2152,15 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        # Interactive approval buttons — HMAC-signed tokens gate button clicks.
+        # The interaction server listens on listen_host:listen_port and POSTs
+        # callbacks to callback_url.  Requires ≥32-byte hmac_secret.
+        "interactions": {
+            "callback_url": "",           # Outbound URL for button-click callbacks (e.g. https://example.com/mattermost/interactions)
+            "hmac_secret": "",             # ≥32-byte secret used to sign interaction tokens
+            "listen_host": "127.0.0.1",
+            "listen_port": 8391,
+        },
     },
 
     # Matrix platform settings (gateway mode)
@@ -3536,6 +3545,13 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Free-response channel IDs (comma-separated)",
         "url": None,
         "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_INTERACTIONS_HMAC_SECRET": {
+        "description": "≥32-byte secret used to sign Mattermost interactive button-click tokens (HMAC-SHA256). Required for approval buttons.",
+        "prompt": "Interaction HMAC secret (≥32 bytes)",
+        "url": None,
+        "password": True,
         "category": "messaging",
     },
     "MATRIX_HOMESERVER": {

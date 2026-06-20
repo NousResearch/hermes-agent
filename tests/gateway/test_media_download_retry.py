@@ -862,7 +862,7 @@ class TestMattermostSendUrlAsFile:
         """200 on first attempt → file uploaded and post created."""
         adapter = _make_mm_adapter()
         resp = _make_aiohttp_resp(200)
-        adapter._session.get = MagicMock(return_value=resp)
+        adapter._session.get = AsyncMock(return_value=resp)
 
         async def run():
             with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -881,7 +881,7 @@ class TestMattermostSendUrlAsFile:
 
         resp_429 = _make_aiohttp_resp(429)
         resp_200 = _make_aiohttp_resp(200)
-        adapter._session.get = MagicMock(side_effect=[resp_429, resp_200])
+        adapter._session.get = AsyncMock(side_effect=[resp_429, resp_200])
 
         mock_sleep = AsyncMock()
 
@@ -902,7 +902,7 @@ class TestMattermostSendUrlAsFile:
 
         resp_500 = _make_aiohttp_resp(500)
         resp_200 = _make_aiohttp_resp(200)
-        adapter._session.get = MagicMock(side_effect=[resp_500, resp_200])
+        adapter._session.get = AsyncMock(side_effect=[resp_500, resp_200])
 
         async def run():
             with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -919,7 +919,7 @@ class TestMattermostSendUrlAsFile:
         adapter = _make_mm_adapter()
 
         resp_500 = _make_aiohttp_resp(500)
-        adapter._session.get = MagicMock(return_value=resp_500)
+        adapter._session.get = AsyncMock(return_value=resp_500)
 
         async def run():
             with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -944,7 +944,7 @@ class TestMattermostSendUrlAsFile:
             side_effect=aiohttp.ClientConnectionError("connection refused")
         )
         error_resp.__aexit__ = AsyncMock(return_value=False)
-        adapter._session.get = MagicMock(return_value=error_resp)
+        adapter._session.get = AsyncMock(return_value=error_resp)
 
         async def run():
             with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -963,7 +963,7 @@ class TestMattermostSendUrlAsFile:
         adapter = _make_mm_adapter()
 
         resp_404 = _make_aiohttp_resp(404)
-        adapter._session.get = MagicMock(return_value=resp_404)
+        adapter._session.get = AsyncMock(return_value=resp_404)
 
         mock_sleep = AsyncMock()
 

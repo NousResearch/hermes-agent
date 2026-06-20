@@ -19,6 +19,10 @@ requires_env:
     prompt: "Mattermost bot token"
     password: true
 optional_env:
+  - name: MATTERMOST_INTERACTIONS_HMAC_SECRET
+    description: "≥32-byte secret used to sign interaction button-click tokens (HMAC-SHA256). Required for interactive approval buttons."
+    prompt: "Interaction HMAC secret (≥32 bytes, random)"
+    password: true
   - name: MATTERMOST_ALLOWED_USERS
     description: "Comma-separated Mattermost user IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

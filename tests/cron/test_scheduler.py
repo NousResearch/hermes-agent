@@ -12,6 +12,32 @@ from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
 
+def _clear_cron_home_env(monkeypatch):
+    """Remove every built-in/plugin cron home-target env var from a test.
+
+    Cron delivery routing accepts plugin platforms via the platform registry,
+    so tests must not hand-maintain a partial list of ``*_HOME_CHANNEL`` vars.
+    A developer machine with Photon/iMessage configured can otherwise leak
+    ``PHOTON_HOME_CHANNEL`` into ``deliver='all'`` expectations.
+    """
+    from cron import scheduler
+
+    env_vars = set(scheduler._HOME_TARGET_ENV_VARS.values())
+    env_vars.update(scheduler._LEGACY_HOME_TARGET_ENV_VARS.keys())
+    env_vars.update(scheduler._LEGACY_HOME_TARGET_ENV_VARS.values())
+    env_vars.add("MATRIX_HOME_CHANNEL")  # legacy alias from older tests/configs
+
+    for platform_name in scheduler._iter_home_target_platforms():
+        env_var = scheduler._resolve_home_env_var(platform_name)
+        if env_var:
+            env_vars.add(env_var)
+
+    for env_var in env_vars:
+        monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.delenv(f"{env_var}_THREAD_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_CRON_THREAD_ID", raising=False)
+
+
 class TestResolveOrigin:
     def test_full_origin(self):
         job = {
@@ -105,29 +131,53 @@ class TestResolveDeliveryTarget:
     def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
         self, monkeypatch, platform, env_var, chat_id
     ):
-        for fallback_env in (
-            "MATRIX_HOME_ROOM",
-            "MATRIX_HOME_CHANNEL",
-            "TELEGRAM_HOME_CHANNEL",
-            "DISCORD_HOME_CHANNEL",
-            "SLACK_HOME_CHANNEL",
-            "SIGNAL_HOME_CHANNEL",
-            "MATTERMOST_HOME_CHANNEL",
-            "SMS_HOME_CHANNEL",
-            "EMAIL_HOME_ADDRESS",
-            "DINGTALK_HOME_CHANNEL",
-            "BLUEBUBBLES_HOME_CHANNEL",
-            "FEISHU_HOME_CHANNEL",
-            "WECOM_HOME_CHANNEL",
-            "WEIXIN_HOME_CHANNEL",
-            "QQ_HOME_CHANNEL",
-        ):
-            monkeypatch.delenv(fallback_env, raising=False)
+        _clear_cron_home_env(monkeypatch)
         monkeypatch.setenv(env_var, chat_id)
 
         assert _resolve_delivery_target({"deliver": "origin"}) == {
             "platform": platform,
             "chat_id": chat_id,
+            "thread_id": None,
+        }
+
+    def test_origin_delivery_with_webui_origin_falls_back_to_home_channel(self, monkeypatch):
+        """WebUI sessions are not async messaging targets for cron delivery."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "441846490")
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "webui",
+                "chat_id": "762f0218cca7",
+                "thread_id": None,
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "441846490",
+            "thread_id": None,
+        }
+
+    def test_origin_delivery_primes_gateway_config_env_before_home_fallback(self, monkeypatch):
+        """Cron delivery must load gateway config before resolving origin fallback.
+
+        LaunchAgent scheduler processes can start with only HERMES_HOME in the
+        environment.  load_gateway_config() then injects TELEGRAM_HOME_CHANNEL
+        from config/.env; resolving before that leaves deliver=origin jobs with
+        no target.
+        """
+        _clear_cron_home_env(monkeypatch)
+        monkeypatch.setattr("cron.scheduler._gateway_delivery_env_loaded", False)
+
+        def fake_load_gateway_config():
+            monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "441846490")
+            return object()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_gateway_config)
+
+        assert _resolve_delivery_target({"deliver": "origin", "origin": None}) == {
+            "platform": "telegram",
+            "chat_id": "441846490",
             "thread_id": None,
         }
 
@@ -400,6 +450,13 @@ class TestResolveDeliveryTarget:
 
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cron_home_env(self, monkeypatch):
+        # Routing-intent unit tests own their env explicitly.  Do not let the
+        # operator's real gateway/plugin config (e.g. PHOTON_HOME_CHANNEL) leak in.
+        monkeypatch.setattr("cron.scheduler._gateway_delivery_env_loaded", True)
+        _clear_cron_home_env(monkeypatch)
 
     def test_all_expands_to_every_connected_home_channel(self, monkeypatch):
         """deliver='all' fans out to every platform with a configured home channel."""

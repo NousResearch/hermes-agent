@@ -203,6 +203,8 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
+_gateway_delivery_env_loaded = False
+
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -487,14 +489,16 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         return None
 
     if deliver_value == "origin":
-        if origin:
+        if origin and _is_known_delivery_platform(origin.get("platform", "")):
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
+        # Origin missing or its platform is not a real messaging target
+        # (e.g. WebUI, CLI) — the scheduler has no live adapter to push
+        # messages back to that surface.  Fall back to the first configured
+        # home channel instead of logging a hard failure.
         for platform_name in _iter_home_target_platforms():
             chat_id = _get_home_target_chat_id(platform_name)
             if chat_id:
@@ -564,6 +568,27 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     }
 
 
+def _ensure_gateway_delivery_env_loaded() -> None:
+    """Load gateway config once before resolving cron delivery targets.
+
+    Gateway config loading applies platform/home-channel values from config.yaml
+    and ~/.hermes/.env into os.environ.  Cron target resolution historically
+    read TELEGRAM_HOME_CHANNEL/TELEGRAM_PROXY directly, so a scheduler process
+    that had not loaded gateway config yet could fail to resolve deliver=origin
+    and then fall back to a direct Telegram path later.
+    """
+    global _gateway_delivery_env_loaded
+    if _gateway_delivery_env_loaded:
+        return
+    try:
+        from gateway.config import load_gateway_config
+        load_gateway_config()
+    except Exception:
+        logger.debug("cron delivery: gateway config unavailable while priming env", exc_info=True)
+    finally:
+        _gateway_delivery_env_loaded = True
+
+
 def _normalize_deliver_value(deliver) -> str:
     """Normalize a stored/submitted ``deliver`` value to its canonical string form.
 
@@ -619,6 +644,7 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
     existing dedup pass.
     """
+    _ensure_gateway_delivery_env_loaded()
     deliver = _normalize_deliver_value(job.get("deliver", "local"))
     if deliver == "local":
         return []

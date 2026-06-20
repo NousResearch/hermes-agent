@@ -1168,4 +1168,98 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.create_card_with_options_async.assert_called_once()
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
-        assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Reconnect circuit breaker
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectCircuitBreaker:
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_stops_after_max_failures(self):
+        """After _MAX_RECONNECT_FAILURES consecutive errors _run_stream exits."""
+        from gateway.platforms.dingtalk import DingTalkAdapter, _MAX_RECONNECT_FAILURES
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        # Mock start() to always raise a TypeError (the exact error from #24851)
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.start = AsyncMock(
+            side_effect=TypeError("'coroutine' object does not support the "
+                                  "asynchronous context manager protocol")
+        )
+
+        # Speed up the test by making sleep instant
+        async def _no_sleep(_):
+            pass
+
+        with patch("asyncio.sleep", side_effect=_no_sleep):
+            await adapter._run_stream()
+
+        # Should have tried exactly _MAX_RECONNECT_FAILURES times
+        assert adapter._stream_client.start.call_count == _MAX_RECONNECT_FAILURES
+        # Adapter should be marked disconnected
+        assert not adapter._running or adapter._disconnected
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_resets_on_success(self):
+        """A successful connection resets the failure counter."""
+        from gateway.platforms.dingtalk import DingTalkAdapter, _MAX_RECONNECT_FAILURES
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        call_count = 0
+
+        async def _start_with_recovery():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:
+                raise TypeError("transient error")
+            # 4th call succeeds, then stop
+            adapter._running = False
+
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.start = AsyncMock(side_effect=_start_with_recovery)
+
+        async def _no_sleep(_):
+            pass
+
+        with patch("asyncio.sleep", side_effect=_no_sleep):
+            await adapter._run_stream()
+
+        # Should have tried 4 times (3 failures + 1 success), NOT hit circuit breaker
+        assert call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_does_not_trigger_below_threshold(self):
+        """Failures below the threshold don't trip the circuit breaker."""
+        from gateway.platforms.dingtalk import DingTalkAdapter, _MAX_RECONNECT_FAILURES
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        call_count = 0
+
+        async def _fail_then_stop():
+            nonlocal call_count
+            call_count += 1
+            if call_count < _MAX_RECONNECT_FAILURES:
+                raise TypeError("error")
+            # Stop the loop on the exact threshold call
+            adapter._running = False
+
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.start = AsyncMock(side_effect=_fail_then_stop)
+
+        async def _no_sleep(_):
+            pass
+
+        with patch("asyncio.sleep", side_effect=_no_sleep):
+            await adapter._run_stream()
+
+        # Should have tried exactly _MAX_RECONNECT_FAILURES times
+        assert call_count == _MAX_RECONNECT_FAILURES

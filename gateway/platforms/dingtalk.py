@@ -100,6 +100,7 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+_MAX_RECONNECT_FAILURES = 5  # circuit breaker: stop after N consecutive failures
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 
@@ -299,18 +300,42 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the async stream client with auto-reconnection."""
+        """Run the async stream client with auto-reconnection.
+
+        A circuit breaker stops retries after ``_MAX_RECONNECT_FAILURES``
+        consecutive errors, preventing log explosion and CPU waste when the
+        underlying SDK is broken (e.g. a ``TypeError`` from an incompatible
+        ``dingtalk-stream`` version).  The adapter is marked as permanently
+        failed and requires a manual gateway restart to recover.
+        """
         backoff_idx = 0
+        consecutive_failures = 0
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
                 await self._stream_client.start()
+                # Successful connection — reset failure counter.
+                consecutive_failures = 0
+                backoff_idx = 0
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 if not self._running:
                     return
-                logger.warning("[%s] Stream client error: %s", self.name, e)
+                consecutive_failures += 1
+                logger.warning(
+                    "[%s] Stream client error (%d/%d): %s",
+                    self.name, consecutive_failures, _MAX_RECONNECT_FAILURES, e,
+                )
+                if consecutive_failures >= _MAX_RECONNECT_FAILURES:
+                    logger.critical(
+                        "[%s] DingTalk stream reconnect circuit breaker tripped "
+                        "after %d consecutive failures. The adapter will NOT "
+                        "retry automatically — restart the gateway to recover.",
+                        self.name, consecutive_failures,
+                    )
+                    self._mark_disconnected()
+                    return
 
             if not self._running:
                 return

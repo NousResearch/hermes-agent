@@ -1,9 +1,16 @@
 """Tests for gateway session management."""
 import json
+from datetime import timedelta
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.config import (
+    Platform,
+    HomeChannel,
+    GatewayConfig,
+    PlatformConfig,
+    SessionResetPolicy,
+)
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
@@ -1044,6 +1051,58 @@ class TestWhatsAppIdentifierPublicHelpers:
     def test_canonical_empty_input(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert canonical_whatsapp_identifier("") == ""
+
+
+class TestThreadSessionResetPolicy:
+    """Thread sessions should stay attached unless explicitly overridden."""
+
+    def test_discord_threads_do_not_auto_reset_under_default_policy(self, tmp_path):
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="both", at_hour=4, idle_minutes=60)
+        )
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+        )
+        entry = store.get_or_create_session(source)
+
+        after_daily_and_idle_deadlines = entry.updated_at + timedelta(hours=8)
+        with patch("gateway.session._now", return_value=after_daily_and_idle_deadlines):
+            resumed = store.get_or_create_session(source)
+
+        assert resumed.session_id == entry.session_id
+        assert resumed.was_auto_reset is False
+
+    def test_explicit_thread_reset_override_still_resets(self, tmp_path):
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="none"),
+            reset_by_type={"thread": SessionResetPolicy(mode="idle", idle_minutes=30)},
+        )
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+        )
+        entry = store.get_or_create_session(source)
+
+        after_idle_deadline = entry.updated_at + timedelta(minutes=31)
+        with patch("gateway.session._now", return_value=after_idle_deadline):
+            reset = store.get_or_create_session(source)
+
+        assert reset.session_id != entry.session_id
+        assert reset.was_auto_reset is True
+        assert reset.auto_reset_reason == "idle"
 
 
 class TestSessionStoreEntriesAttribute:

@@ -620,7 +620,9 @@ class GatewayConfig:
         """
         Get the appropriate reset policy for a session.
         
-        Priority: platform override > type override > default
+        Priority: platform override > type override > built-in thread default > default.
+        Threaded conversations are expected to stay attached to their active
+        Hermes session unless the operator explicitly opts into thread resets.
         """
         # Platform-specific override takes precedence
         if platform and platform in self.reset_by_platform:
@@ -629,6 +631,9 @@ class GatewayConfig:
         # Type-specific override (dm, group, thread)
         if session_type and session_type in self.reset_by_type:
             return self.reset_by_type[session_type]
+
+        if session_type == "thread":
+            return SessionResetPolicy(mode="none")
         
         return self.default_reset_policy
     

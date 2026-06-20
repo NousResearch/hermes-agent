@@ -17045,6 +17045,44 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
+def _start_runtime_memory_monitoring() -> None:
+    """Start the periodic ``[MEMORY]`` heartbeat from the gateway runtime.
+
+    ``gateway/memory_monitor.py`` provides ``start_memory_monitoring()`` but
+    nothing in the runtime invoked it (issue #49773), so no heartbeat appeared
+    in ``gateway.log`` and external log-freshness watchdogs false-triggered on
+    healthy idle gateways.  This reads ``logging.memory_monitor`` from
+    ``config.yaml`` (``enabled`` defaults to True, ``interval_seconds`` to 300)
+    and is a no-op when disabled or when RSS introspection is unavailable.
+    Must never raise — a monitoring nicety must not gate gateway startup.
+    """
+    try:
+        from gateway.memory_monitor import start_memory_monitoring
+
+        _gw_cfg = _load_gateway_config()
+        _mm_cfg = (_gw_cfg.get("logging", {}) or {}).get("memory_monitor", {}) or {}
+        if not _mm_cfg.get("enabled", True):
+            return
+        _interval = float(_mm_cfg.get("interval_seconds", 300))
+        start_memory_monitoring(interval_seconds=_interval)
+    except Exception:
+        logger.debug("Memory monitoring failed to start", exc_info=True)
+
+
+def _stop_runtime_memory_monitoring() -> None:
+    """Stop the periodic ``[MEMORY]`` heartbeat and log a final snapshot.
+
+    Safe to call even when ``_start_runtime_memory_monitoring`` was never
+    invoked or the monitor never started.
+    """
+    try:
+        from gateway.memory_monitor import stop_memory_monitoring
+
+        stop_memory_monitoring()
+    except Exception:
+        pass
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -17437,7 +17475,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         return True
-    
+
+    # Start the periodic [MEMORY] heartbeat so external watchdogs can confirm
+    # the gateway is alive during idle periods (issue #49773).
+    _start_runtime_memory_monitoring()
+
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the
     # historical in-process 60s ticker; an external provider (e.g. chronos)
@@ -17487,6 +17529,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()
     _planned_stop_watcher_thread.join(timeout=2)
+
+    # Stop the periodic [MEMORY] heartbeat (logs a final snapshot).
+    _stop_runtime_memory_monitoring()
 
     # Close MCP server connections
     try:

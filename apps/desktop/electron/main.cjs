@@ -34,6 +34,7 @@ const {
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
@@ -149,6 +150,8 @@ if (REMOTE_DISPLAY_REASON) {
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
 }
+
+ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
 // Keep the renderer running at full speed while the window is in the background
 // or occluded. The chat transcript streams to screen through a
@@ -2978,20 +2981,7 @@ function runRenderTitleJob(rawUrl) {
     }
 
     try {
-      window = new BrowserWindow({
-        show: false,
-        width: 1280,
-        height: 800,
-        webPreferences: {
-          backgroundThrottling: false,
-          contextIsolation: true,
-          javascript: true,
-          nodeIntegration: false,
-          sandbox: true,
-          session: partitionSession,
-          webSecurity: true
-        }
-      })
+      window = createLinkTitleWindow(BrowserWindow, partitionSession)
     } catch {
       return finish('')
     }

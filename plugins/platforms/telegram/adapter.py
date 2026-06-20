@@ -82,12 +82,12 @@ from gateway.platforms.base import (
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
 )
-from gateway.platforms.telegram_network import (
+from plugins.platforms.telegram.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
-from utils import atomic_replace
+from utils import atomic_replace, env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -433,7 +433,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._rich_draft_disabled: bool = False
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
-        self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
+        self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
@@ -2153,7 +2153,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # inject forged updates as if from Telegram. Refuse to
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
-                webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
+                webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
@@ -6886,3 +6886,232 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id,
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
             )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the Telegram adapter (+ its telegram_network satellite) moved from
+# gateway/platforms/ into this bundled plugin. Mirrors the Discord (#24356) /
+# Slack migrations: a register(ctx) entry point plus hook implementations that
+# replace the per-platform core touchpoints (the Platform.TELEGRAM branch in
+# gateway/run.py, the telegram_cfg YAML→env/extra block in gateway/config.py,
+# the _setup_telegram wizard + _PLATFORMS["telegram"] static dict in
+# hermes_cli/{setup,gateway}.py, and the _send_telegram dispatch in
+# tools/send_message_tool.py).  Telegram uses the generic token connected
+# check, so no is_connected override is needed.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_notifications_mode() -> str:
+    """Resolve the Telegram notification mode (all/important) from env or
+    config.yaml display.platforms.telegram.notifications, defaulting to
+    'important'.  Mirrors the post-construction logic that used to live in
+    gateway/run.py::_create_adapter()."""
+    mode = os.getenv("HERMES_TELEGRAM_NOTIFICATIONS", "")
+    if not mode:
+        try:
+            from gateway.config import load_gateway_config
+            from gateway.run import cfg_get
+            _gw_cfg = load_gateway_config()
+            _raw = cfg_get(_gw_cfg, "display", "platforms", "telegram", "notifications")
+            if _raw not in {None, ""}:
+                mode = str(_raw).strip().lower()
+        except Exception:
+            pass
+    mode = mode or "important"
+    if mode not in {"all", "important"}:
+        logger.warning(
+            "Unknown telegram notifications mode '%s', defaulting to 'important' "
+            "(valid: all, important)", mode,
+        )
+        mode = "important"
+    return mode
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs TelegramAdapter and applies the
+    notification mode (preserving the gateway/run.py post-construction step)."""
+    adapter = TelegramAdapter(config)
+    try:
+        adapter._notifications_mode = _resolve_notifications_mode()
+    except Exception:
+        adapter._notifications_mode = "important"
+    return adapter
+
+
+def _is_connected(config) -> bool:
+    """Telegram is connected when a bot token is configured.
+
+    check_telegram_requirements() only verifies the python-telegram-bot SDK is
+    importable, NOT that a token is set — so without this is_connected the
+    registry-driven plugin-enable pass in gateway/config.py would enable
+    Telegram on any machine that merely has the SDK installed. Gate on the
+    token (env or PlatformConfig.token), matching the generic token check
+    Telegram had as a built-in.
+    """
+    token = getattr(config, "token", None)
+    if not token:
+        import hermes_cli.gateway as gateway_mod
+        token = gateway_mod.get_env_value("TELEGRAM_BOT_TOKEN") or ""
+    return bool(str(token).strip())
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process Telegram delivery. Delegates to the standalone
+    ``_send_telegram`` REST sender in tools/send_message_tool.py (which already
+    handles chunking-agnostic single sends, threads, media, retries, and
+    parse-mode fallback). Implements the standalone_sender_fn contract so
+    deliver=telegram cron jobs succeed when cron runs separately from the
+    gateway."""
+    token = getattr(pconfig, "token", None) or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    disable_link_previews = bool(
+        getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")
+    )
+    from tools.send_message_tool import _send_telegram
+    return await _send_telegram(
+        token,
+        chat_id,
+        message,
+        media_files=media_files,
+        thread_id=thread_id,
+        disable_link_previews=disable_link_previews,
+        force_document=force_document,
+    )
+
+
+def interactive_setup() -> None:
+    """Configure Telegram bot credentials and allowlist.
+
+    Delegates to the existing CLI setup helpers (managed-bot QR onboarding,
+    token validation, allowlist capture) via lazy import so the full wizard
+    behavior is preserved without duplicating ~150 lines. Replaces the
+    _PLATFORMS["telegram"] static dict dispatch in hermes_cli/gateway.py.
+    """
+    from hermes_cli import setup as _setup_mod
+    _setup_mod._setup_telegram()
+
+
+def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
+    """Translate config.yaml telegram: keys into TELEGRAM_* env vars and
+    PlatformConfig.extra entries.
+
+    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
+    telegram_cfg block from gateway/config.py::load_gateway_config(). Env vars
+    take precedence over YAML. Returns a dict of extras to merge into
+    PlatformConfig.extra (disable_topic_auto_rename + runtime flags), or None.
+    """
+    import json as _json
+    extras: dict = {}
+
+    if "disable_topic_auto_rename" in telegram_cfg:
+        extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
+
+    _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
+    if _effective_rm is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+        os.environ["TELEGRAM_REQUIRE_MENTION"] = str(_effective_rm).lower()
+    if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
+        os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
+    if "exclusive_bot_mentions" in telegram_cfg and not os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS"):
+        os.environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] = str(telegram_cfg["exclusive_bot_mentions"]).lower()
+    if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
+        os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
+    if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+        os.environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(telegram_cfg["observe_unmentioned_group_messages"]).lower()
+    frc = telegram_cfg.get("free_response_chats")
+    if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
+        if isinstance(frc, list):
+            frc = ",".join(str(v) for v in frc)
+        os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+    ac = telegram_cfg.get("allowed_chats")
+    if ac is not None and not os.getenv("TELEGRAM_ALLOWED_CHATS"):
+        if isinstance(ac, list):
+            ac = ",".join(str(v) for v in ac)
+        os.environ["TELEGRAM_ALLOWED_CHATS"] = str(ac)
+    allowed_topics = telegram_cfg.get("allowed_topics")
+    if allowed_topics is not None and not os.getenv("TELEGRAM_ALLOWED_TOPICS"):
+        if isinstance(allowed_topics, list):
+            allowed_topics = ",".join(str(v) for v in allowed_topics)
+        os.environ["TELEGRAM_ALLOWED_TOPICS"] = str(allowed_topics)
+    ignored_threads = telegram_cfg.get("ignored_threads")
+    if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
+        if isinstance(ignored_threads, list):
+            ignored_threads = ",".join(str(v) for v in ignored_threads)
+        os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
+    if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
+        os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+    if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
+        os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
+    _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
+    _telegram_rtm = (
+        telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg
+        else _telegram_extra.get("reply_to_mode")
+    )
+    if _telegram_rtm is not None and not os.getenv("TELEGRAM_REPLY_TO_MODE"):
+        _rtm_str = "off" if _telegram_rtm is False else str(_telegram_rtm).lower()
+        os.environ["TELEGRAM_REPLY_TO_MODE"] = _rtm_str
+    allowed_users = telegram_cfg.get("allow_from")
+    if allowed_users is not None and not os.getenv("TELEGRAM_ALLOWED_USERS"):
+        if isinstance(allowed_users, list):
+            allowed_users = ",".join(str(v) for v in allowed_users)
+        os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
+    group_allowed_users = telegram_cfg.get("group_allow_from")
+    if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
+        if isinstance(group_allowed_users, list):
+            group_allowed_users = ",".join(str(v) for v in group_allowed_users)
+        os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
+    group_allowed_chats = telegram_cfg.get("group_allowed_chats")
+    if group_allowed_chats is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
+        if isinstance(group_allowed_chats, list):
+            group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
+        os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+        if _key in telegram_cfg:
+            extras.setdefault(_key, telegram_cfg[_key])
+    # Pass through telegram-specific extra keys (e.g. base_url proxy override),
+    # but EXCLUDE the generic shared-config keys that _merge_platform_map in
+    # gateway/config.py already merges with correct top-level-over-nested
+    # precedence. The apply_yaml_config_fn dispatch merges our return via
+    # dict.update() (clobber), so re-emitting those generic keys here would
+    # undo that precedence (top-level losing to a nested-fallback block).
+    _GENERIC_MERGE_KEYS = {
+        "reply_prefix", "reply_in_thread", "reply_to_mode",
+        "unauthorized_dm_behavior", "notice_delivery", "require_mention",
+        "channel_skill_bindings", "channel_prompts", "gateway_restart_notification",
+        "allow_from", "allow_admin_from", "dm_policy", "group_policy",
+    }
+    for _k, _v in _telegram_extra.items():
+        if _k not in _GENERIC_MERGE_KEYS:
+            extras.setdefault(_k, _v)
+
+    return extras or None
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="telegram",
+        label="Telegram",
+        adapter_factory=_build_adapter,
+        check_fn=check_telegram_requirements,
+        is_connected=_is_connected,
+        required_env=["TELEGRAM_BOT_TOKEN"],
+        install_hint="pip install 'hermes-agent[telegram]'",
+        setup_fn=interactive_setup,
+        apply_yaml_config_fn=_apply_yaml_config,
+        allowed_users_env="TELEGRAM_ALLOWED_USERS",
+        allow_all_env="TELEGRAM_ALLOW_ALL_USERS",
+        cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=4096,
+        emoji="✈️",
+        allow_update_command=True,
+    )

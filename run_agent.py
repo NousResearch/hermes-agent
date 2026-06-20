@@ -209,7 +209,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, is_truthy_value, model_forces_max_completion_tokens
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
 
 
 
@@ -1109,7 +1109,7 @@ class AIAgent:
         cfg = get_provider_request_timeout(self.provider, self.model)
         if cfg is not None:
             return cfg
-        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        return env_float("HERMES_API_TIMEOUT", 1800.0)
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.
@@ -1528,7 +1528,7 @@ class AIAgent:
         a raw ``tool`` message and the next user turn lands as
         ``...tool, user, user`` — a protocol-invalid sequence that most
         providers silently reject (returns empty content), causing the
-        empty-retry loop to fire forever. See #<TBD>.
+        empty-retry loop to fire forever. (issue number to be backfilled once filed)
         """
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
@@ -3034,8 +3034,8 @@ class AIAgent:
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
@@ -3839,7 +3839,7 @@ class AIAgent:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
                 force_refresh=force,
             )
         except Exception as exc:
@@ -5197,6 +5197,18 @@ class AIAgent:
         invocation paths (concurrent, sequential, inline).
         """
         from tools.delegate_tool import delegate_task as _delegate_task
+        # Delegations from the top-level MODEL always run in the background —
+        # the model does not get to choose. delegate_task returns immediately
+        # with a handle (one per task) and each subagent's result re-enters the
+        # conversation as a new message when it finishes. This applies to BOTH
+        # a single task and a fan-out batch (each task becomes its own
+        # independent background subagent). The one exception:
+        #   - A delegation from an ORCHESTRATOR SUBAGENT (depth > 0) stays
+        #     synchronous: the orchestrator needs its workers' results within
+        #     its own turn to compose a summary, and a subagent doesn't own the
+        #     gateway session the async result would route back to.
+        # The schema-level `background` param is intentionally ignored here.
+        _is_subagent = getattr(self, "_delegate_depth", 0) > 0
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
@@ -5206,7 +5218,7 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
-            background=function_args.get("background"),
+            background=(not _is_subagent),
             parent_agent=self,
         )
 

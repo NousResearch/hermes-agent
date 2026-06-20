@@ -1287,6 +1287,22 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "in_place": False,            # When True, compaction rewrites the message
+                                      # list and rebuilds the system prompt WITHOUT
+                                      # rotating the session id — the conversation
+                                      # keeps one durable id for its whole life
+                                      # (no parent_session_id chain, no `name #N`
+                                      # renumbering). Eliminates the session-rotation
+                                      # bug cluster (#33618 /goal loss, #14238 lost
+                                      # response, #33907 orphans, #45117 search gaps,
+                                      # #42228 null cwd) — see #38763. Non-destructive:
+                                      # the live context is compacted (lossy for what
+                                      # the model reloads), but the pre-compaction
+                                      # turns are soft-archived under the same id
+                                      # (active=0, compacted=1) — still searchable via
+                                      # session_search and recoverable, not deleted.
+                                      # Default False during rollout; will flip on
+                                      # after live validation.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
@@ -1438,6 +1454,7 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
             "extra_body": {},
+            "language": "",
         },
         "tts_audio_tags": {
             "provider": "auto",
@@ -3912,6 +3929,30 @@ def _set_nested(config, dotted_key: str, value):
         current[int(last)] = value
     else:
         current[last] = value
+
+
+def clear_model_endpoint_credentials(
+    model_cfg: Dict[str, Any],
+    *,
+    clear_api_key: bool = True,
+    clear_api_mode: bool = True,
+) -> Dict[str, Any]:
+    """Remove stale inline endpoint credentials from a model config.
+
+    ``model.api_key`` is valid only for explicit custom endpoint assignments.
+    Built-in providers resolve credentials from env vars, auth.json, or the
+    credential pool. When switching away from a custom endpoint, leaving these
+    fields behind keeps secrets in config.yaml and can contaminate later custom
+    resolution paths.
+    """
+    if not isinstance(model_cfg, dict):
+        return model_cfg
+    if clear_api_key:
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api", None)
+    if clear_api_mode:
+        model_cfg.pop("api_mode", None)
+    return model_cfg
 
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:

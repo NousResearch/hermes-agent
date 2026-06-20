@@ -4230,6 +4230,121 @@ def request_review(
     return True
 
 
+def request_changes(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    expected_run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str]]:
+    """Transition ``running → ready`` after a reviewer rejects the work.
+
+    Looks up the most recent ``review_requested`` event to find the
+    original implementer and reassigns the task back to them.  Closes
+    the reviewer's run with outcome ``changes_requested`` and emits a
+    ``changes_requested`` event carrying the reviewer's reason.
+
+    Returns ``(True, implementer)`` on success and ``(False, reason)``
+    on failure (task not running, no prior review, etc.).
+    """
+    # Find the implementer from the most recent review_requested event.
+    ev_row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not ev_row:
+        return False, "no prior review_requested event for this task"
+
+    implementer: Optional[str] = None
+    try:
+        payload = json.loads(ev_row["payload"]) if ev_row["payload"] else {}
+        implementer = payload.get("implementer")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    with write_txn(conn):
+        # Transition running → ready.  Reassign to the implementer if
+        # we found one; otherwise keep the current assignee (same-profile
+        # self-review case).
+        if implementer:
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           assignee     = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                    """,
+                    (implementer, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           assignee     = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                       AND current_run_id = ?
+                    """,
+                    (implementer, task_id, int(expected_run_id)),
+                )
+        else:
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                    """,
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                       AND current_run_id = ?
+                    """,
+                    (task_id, int(expected_run_id)),
+                )
+        if cur.rowcount != 1:
+            return False, "task is not running (or run_id mismatch)"
+
+        # Close the reviewer's run.
+        run_id = _end_run(
+            conn, task_id,
+            outcome="changes_requested", status="ready",
+            summary=reason,
+        )
+        _append_event(
+            conn, task_id, "changes_requested",
+            {"reason": reason, "implementer": implementer},
+            run_id=run_id,
+        )
+    # Wipe the failure counter so the respawned implementer starts fresh.
+    _clear_failure_counter(conn, task_id)
+    return True, implementer
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,

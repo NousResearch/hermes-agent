@@ -155,6 +155,104 @@ class TestRequestReviewEdgeCases:
             assert task.status == "running"
 
 
+class TestRequestChangesFromReview:
+    """Reviewer rejects work — running → ready + reassign to implementer."""
+
+    def test_changes_transitions_to_ready(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            kb.request_review(conn, tid, reviewer="bob", summary="Review please")
+            # Now a reviewer (bob) is running the task
+            kb.recompute_ready(conn)
+            # Simulate: bob's task is in review, dispatcher claims it
+            claimed = kb.claim_review_task(conn, tid, ttl_seconds=300)
+            assert claimed is not None
+            ok, impl = kb.request_changes(
+                conn, tid, reason="Fix the null handling",
+            )
+            assert ok is True
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready"
+
+    def test_reassigns_to_implementer(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            kb.request_review(conn, tid, reviewer="bob", summary="Review please")
+            kb.recompute_ready(conn)
+            kb.claim_review_task(conn, tid, ttl_seconds=300)
+            ok, impl = kb.request_changes(
+                conn, tid, reason="Fix the null handling",
+            )
+            assert ok is True
+            assert impl == "alice"
+            task = kb.get_task(conn, tid)
+            assert task.assignee == "alice"
+
+    def test_keeps_same_assignee_when_no_reviewer(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            kb.request_review(conn, tid, summary="Self-review")
+            kb.recompute_ready(conn)
+            kb.claim_review_task(conn, tid, ttl_seconds=300)
+            ok, impl = kb.request_changes(
+                conn, tid, reason="Fix it",
+            )
+            assert ok is True
+            assert impl is None  # no implementer in event
+            task = kb.get_task(conn, tid)
+            assert task.assignee == "alice"
+
+    def test_run_closed_with_changes_outcome(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            kb.request_review(conn, tid, reviewer="bob", summary="Review please")
+            kb.recompute_ready(conn)
+            kb.claim_review_task(conn, tid, ttl_seconds=300)
+            kb.request_changes(conn, tid, reason="Fix the null handling")
+            runs = kb.list_runs(conn, tid)
+            closed = [r for r in runs if r.outcome == "changes_requested"]
+            assert len(closed) >= 1
+
+    def test_event_emitted(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            kb.request_review(conn, tid, reviewer="bob", summary="Review please")
+            kb.recompute_ready(conn)
+            kb.claim_review_task(conn, tid, ttl_seconds=300)
+            kb.request_changes(conn, tid, reason="Fix the null handling")
+            events = kb.list_events(conn, tid)
+            change_events = [e for e in events if e.kind == "changes_requested"]
+            assert len(change_events) == 1
+            assert "Fix the null handling" in change_events[0].payload.get("reason", "")
+
+    def test_claim_released(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            kb.request_review(conn, tid, reviewer="bob", summary="Review please")
+            kb.recompute_ready(conn)
+            kb.claim_review_task(conn, tid, ttl_seconds=300)
+            kb.request_changes(conn, tid, reason="Fix it")
+            task = kb.get_task(conn, tid)
+            assert task.claim_lock is None
+            assert task.worker_pid is None
+
+    def test_no_prior_review_rejected(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            # No request_review called first
+            ok, reason = kb.request_changes(conn, tid, reason="Fix it")
+            assert ok is False
+            assert "no prior review" in (reason or "").lower()
+
+    def test_non_running_rejected(self, kanban_home):
+        with kb.connect() as conn:
+            tid = _make_running_task(conn, assignee="alice")
+            kb.request_review(conn, tid, reviewer="bob", summary="Review")
+            # Task is in review, not running — can't request changes
+            ok, reason = kb.request_changes(conn, tid, reason="Fix it")
+            assert ok is False
+
+
 class TestReviewDispatchable:
     """The dispatcher should see review tasks as spawnable."""
 

@@ -87,16 +87,18 @@ This transitions ``review → done``. The task is complete.
 ### ❌ Request changes → back to implementer
 
 The work needs fixes before it can be approved. Write a detailed comment
-explaining exactly what needs to change, then block the task:
+explaining exactly what needs to change, then call:
 
 ```
 kanban_comment("Changes requested:\n1. <specific issue>\n2. <specific issue>")
-kanban_block(reason="changes-requested: <one-line summary>")
+kanban_request_changes(reason="Changes requested: <one-line summary of issues>")
 ```
 
-This transitions ``review → blocked``. A human or orchestrator unblocks and
-the dispatcher respawns the implementer to fix the issues. When the implementer
-re-submits, you'll be spawned again to re-review.
+This transitions ``running → ready``, reassigns the task back to the
+original implementer (looked up from the review event), and lets the
+dispatcher respawn them automatically. No human intervention needed —
+the loop closes itself. When the implementer re-submits for review,
+you'll be spawned again to re-review.
 
 **Be specific** in your change requests. Don't write "the code needs work" —
 write "the `_AlnavBookmarkTile` widget doesn't handle null `message.subject`,

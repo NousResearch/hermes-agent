@@ -155,6 +155,7 @@ AUTHOR_MAP = {
     "copii.list@gmail.com": "stremtec",
     "solaiagent@gmail.com": "solaitken",
     "cryptoworlldz@gmail.com": "worlldz",
+    "martin.alca@gmail.com": "draix",
     "prostoandrei9@gmail.com": "vladkvlchk",
     "116314616+ThyFriendlyFox@users.noreply.github.com": "ThyFriendlyFox",
     "liliangjya@gmail.com": "truenorth-lj",

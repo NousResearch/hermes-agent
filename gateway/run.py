@@ -1115,6 +1115,58 @@ def _collect_auto_append_media_tags(
 
     return media_tags, has_voice_directive
 
+
+def _collect_history_media_paths(history: List[Dict[str, Any]]) -> set:
+    """Collect MEDIA: paths already delivered in prior turns.
+
+    Scans producer-tool results (role ``tool``/``function``) AND ``assistant``
+    messages. The model can surface a MEDIA: path directly in an assistant
+    reply (it was delivered then); the earlier tool-only scan missed those, so
+    when the model re-emitted the same path on a later turn it was delivered a
+    second time. Including the assistant role closes that duplicate-send gap.
+
+    Reuses the module-level ``_TOOL_MEDIA_RE`` (the old inline copy recompiled
+    it on every history message) and guards against non-string content so a
+    multimodal content list (blocks) is skipped instead of raising.
+    """
+    history_media_paths: set = set()
+    for msg in history or []:
+        if msg.get("role") not in {"tool", "function", "assistant"}:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or "MEDIA:" not in content:
+            continue
+        for match in _TOOL_MEDIA_RE.finditer(content):
+            path = match.group(1).strip().rstrip('",}')
+            if path:
+                history_media_paths.add(path)
+    return history_media_paths
+
+
+def _strip_already_delivered_media(
+    final_response: str,
+    history_media_paths: set,
+) -> str:
+    """Drop MEDIA:<path> tags the model re-emitted whose path was already
+    delivered in a prior turn, so the adapter's ``extract_media()`` does not
+    send the same artifact twice.
+
+    Only tags whose path is in ``history_media_paths`` are removed; genuinely
+    new MEDIA: paths are preserved verbatim. When stripping removes every tag
+    the caller's auto-append path still runs and surfaces this turn's real
+    tool media as usual.
+    """
+    if not history_media_paths or "MEDIA:" not in final_response:
+        return final_response
+
+    def _drop_if_old(match: "re.Match") -> str:
+        path = match.group(1).strip().rstrip('",}')
+        if path in history_media_paths:
+            return ""  # already delivered earlier — strip the whole tag
+        return match.group(0)  # new path — leave untouched
+
+    return _TOOL_MEDIA_RE.sub(_drop_if_old, final_response)
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -15499,25 +15551,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 inject_timestamps=_message_timestamps_enabled(_load_gateway_config()),
             )
             
-            # Collect MEDIA paths already in history so we can exclude them
-            # from the current turn's extraction. This is compression-safe:
-            # even if the message list shrinks, we know which paths are old.
-            _history_media_paths: set = set()
-            for _hm in agent_history:
-                if _hm.get("role") in {"tool", "function"}:
-                    _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
-                        for _match in _TOOL_MEDIA_RE.finditer(_hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+            # Collect MEDIA paths already delivered in prior turns (tool results
+            # AND assistant replies) so we can exclude them from this turn's
+            # extraction. Compression-safe: path-based, independent of how the
+            # message list is later sliced or shrunk.
+            _history_media_paths = _collect_history_media_paths(agent_history)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -15917,6 +15955,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # also the sole guard on the fallback branch taken when mid-run
             # context compression shrinks the message list below the original
             # history length, preserving the compression-safe behaviour of #160.
+            #
+            # The model also sometimes echoes a MEDIA: path that was already
+            # delivered in a prior turn back into its final text. Strip those
+            # first so the adapter's extract_media() does not re-deliver them;
+            # genuinely new paths are kept. If stripping clears every tag, the
+            # auto-append below still runs to surface this turn's real media.
+            final_response = _strip_already_delivered_media(
+                final_response, _history_media_paths
+            )
+
             if "MEDIA:" not in final_response:
                 media_tags, has_voice_directive = _collect_auto_append_media_tags(
                     result.get("messages", []),

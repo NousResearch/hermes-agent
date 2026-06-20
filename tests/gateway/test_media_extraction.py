@@ -470,5 +470,104 @@ class TestStaleToolMediaLeak:
         )
 
 
+class TestHistoryMediaPathCollection:
+    """Regression tests for the real ``_collect_history_media_paths`` helper.
+
+    Issue 1: the prior inline history scan only looked at ``tool``/``function``
+    roles, so a MEDIA: path the model surfaced in an *assistant* reply was never
+    recorded as already-delivered. When the model re-emitted that path on a
+    later turn it was delivered a second time. These exercise the real helper.
+    """
+
+    def test_collects_from_tool_role(self):
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {"role": "user", "content": "say hi"},
+            {"role": "tool", "tool_call_id": "1",
+             "content": "MEDIA:/tmp/hi.ogg"},
+        ]
+        assert _collect_history_media_paths(history) == {"/tmp/hi.ogg"}
+
+    def test_collects_from_assistant_role(self):
+        """The Issue 1 fix: assistant-emitted MEDIA paths are now captured."""
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {"role": "user", "content": "show me the chart"},
+            {"role": "assistant",
+             "content": "Here it is:\nMEDIA:/tmp/chart.png"},
+        ]
+        assert _collect_history_media_paths(history) == {"/tmp/chart.png"}
+
+    def test_ignores_user_role(self):
+        """A MEDIA: token in a user message is not a delivered artifact."""
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {"role": "user", "content": "what about MEDIA:/tmp/user_typed.png ?"},
+        ]
+        assert _collect_history_media_paths(history) == set()
+
+    def test_ignores_non_string_content(self):
+        """Multimodal (list) content must be skipped, not raise."""
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "MEDIA:/tmp/in_block.png"},
+                {"type": "image_url", "image_url": {"url": "http://x/y.png"}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "MEDIA:/tmp/real.mp3"},
+        ]
+        # The list-content message is skipped; only the string tool result counts.
+        assert _collect_history_media_paths(history) == {"/tmp/real.mp3"}
+
+    def test_ignores_bare_media_without_deliverable_extension(self):
+        """A bare ``MEDIA:`` token in prose (no media extension) is ignored."""
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {"role": "assistant",
+             "content": "The format is MEDIA:<path>, e.g. MEDIA:/notes.unknownext"},
+        ]
+        assert _collect_history_media_paths(history) == set()
+
+
+class TestStripAlreadyDeliveredMedia:
+    """Regression tests for the real ``_strip_already_delivered_media`` helper.
+
+    Issue 2: when the model echoes a MEDIA: path already delivered in a prior
+    turn into its final reply, the adapter would deliver it again. The helper
+    strips only already-delivered paths and preserves genuinely new ones.
+    """
+
+    def test_strips_already_delivered_path(self):
+        from gateway.run import _strip_already_delivered_media
+
+        out = _strip_already_delivered_media(
+            "Here it is again: MEDIA:/tmp/old.png",
+            {"/tmp/old.png"},
+        )
+        assert "MEDIA:/tmp/old.png" not in out
+        assert "Here it is again:" in out
+
+    def test_preserves_new_path(self):
+        from gateway.run import _strip_already_delivered_media
+
+        text = "Fresh render: MEDIA:/tmp/new.png"
+        out = _strip_already_delivered_media(text, {"/tmp/old.png"})
+        assert out == text  # untouched — path not in history
+
+    def test_mixed_strips_old_keeps_new(self):
+        """Old path stripped, new path kept (so auto-append still sees MEDIA:)."""
+        from gateway.run import _strip_already_delivered_media
+
+        text = "MEDIA:/tmp/old.png and MEDIA:/tmp/new.png"
+        out = _strip_already_delivered_media(text, {"/tmp/old.png"})
+        assert "MEDIA:/tmp/old.png" not in out
+        assert "MEDIA:/tmp/new.png" in out
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

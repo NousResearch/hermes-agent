@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
@@ -1436,6 +1437,48 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {e}")
 
 
+def _check_email_recipient_allowed(chat_id: str) -> bool:
+    """Check if the email recipient (chat_id) is allowed by EMAIL_ALLOWED_RECIPIENTS.
+
+    Reads ``EMAIL_ALLOWED_RECIPIENTS`` from the environment — a comma-separated
+    list of allowed recipient patterns.  Defaults to allowing all recipients
+    (equivalent to ``["*"]``).
+
+    Supported patterns:
+      - ``*``        — allow all recipients
+      - ``user@dom`` — exact match
+      - ``*@dom.com`` — domain wildcard: any address ending in ``@dom.com``
+
+    Returns ``True`` if the recipient may be emailed, ``False`` otherwise.
+    """
+    allowed_raw = os.getenv("EMAIL_ALLOWED_RECIPIENTS", "").strip()
+    if not allowed_raw:
+        return True  # default: allow all
+
+    allowed = [r.strip() for r in allowed_raw.split(",") if r.strip()]
+    if not allowed:
+        return True
+
+    # "*" wildcard → allow all
+    if "*" in allowed:
+        return True
+
+    # Check each pattern
+    for pattern in allowed:
+        if pattern == chat_id:
+            return True
+        # Domain wildcard: *@example.com → match any address ending in @example.com
+        if pattern.startswith("*@"):
+            domain = pattern[2:]  # strip the "*@" prefix
+            if chat_id.lower().endswith("@" + domain.lower()):
+                return True
+        # Fallback: use fnmatch for other patterns (e.g. "user@*")
+        if fnmatch.fnmatch(chat_id, pattern):
+            return True
+
+    return False
+
+
 async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
     import smtplib
@@ -1451,6 +1494,10 @@ async def _send_email(extra, chat_id, message):
 
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+
+    # Check recipient whitelist
+    if not _check_email_recipient_allowed(chat_id):
+        return {"error": f"Recipient {chat_id} is not in the allowed recipient list"}
 
     try:
         msg = MIMEText(message, "plain", "utf-8")

@@ -142,6 +142,8 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 ## Access Control
 
+### Incoming (who can email the agent)
+
 Email access follows the same pattern as all other Hermes platforms:
 
 1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed
@@ -150,6 +152,30 @@ Email access follows the same pattern as all other Hermes platforms:
 
 :::warning
 **Always configure `EMAIL_ALLOWED_USERS`.** Without it, anyone who knows the agent's email address could send commands. The agent has terminal access by default.
+:::
+
+### Outgoing (who the agent can email)
+
+When the agent sends emails (e.g., via `send_message` tool), you can restrict which recipients are allowed using the `EMAIL_ALLOWED_RECIPIENTS` environment variable.
+
+```bash
+# .env
+EMAIL_ALLOWED_RECIPIENTS=admin@example.com,*@company.com,user@personal.org
+```
+
+**Supported patterns:**
+
+| Pattern | Meaning | Example |
+|---------|---------|---------|
+| `*` | Allow all recipients | `*` |
+| `exact@addr` | Exact address match | `alice@example.com` |
+| `*@domain.com` | Any address in that domain | `*@company.com` |
+| `user@*` | fnmatch wildcard | `admin@*` |
+
+**Defaults:** If `EMAIL_ALLOWED_RECIPIENTS` is empty or unset, all recipients are allowed (equivalent to `*`).
+
+:::note
+This variable applies **only** to outgoing emails sent via the `send_message` tool. It does not affect incoming mail processing.
 :::
 
 ---
@@ -195,3 +221,4 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_ALLOWED_RECIPIENTS` | No | (allow all) | Comma-separated allowed outgoing recipient patterns. Supports `*`, `*@domain.com`, and fnmatch wildcards. |

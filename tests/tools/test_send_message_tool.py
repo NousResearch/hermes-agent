@@ -2820,6 +2820,81 @@ class TestSendViaAdapterStandaloneFallback:
 
 
 # ---------------------------------------------------------------------------
+# Email recipient whitelist — sibling domain bypass fix
+# ---------------------------------------------------------------------------
+
+import fnmatch as fnmatch_mod
+
+
+class TestEmailRecipientWhitelist:
+    """Tests for _check_email_recipient_allowed in send_message_tool.py."""
+
+    def _import_fn(self):
+        from tools.send_message_tool import _check_email_recipient_allowed
+        return _check_email_recipient_allowed
+
+    def test_allow_all(self):
+        """EMAIL_ALLOWED_RECIPIENTS=* should allow all recipients."""
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = "*"
+        assert check("anyone@example.com") is True
+
+    def test_empty_env_allows_all(self):
+        """Unset or empty EMAIL_ALLOWED_RECIPIENTS should allow all."""
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = ""
+        assert check("anyone@example.com") is True
+
+    def test_exact_match(self):
+        """Exact address match should work."""
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = "admin@example.com"
+        assert check("admin@example.com") is True
+
+    def test_exact_reject(self):
+        """Non-matching exact address should be rejected."""
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = "admin@example.com"
+        assert check("other@example.com") is False
+
+    def test_domain_wildcard_match(self):
+        """*@domain.com should match any address in that domain."""
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = "*@example.com"
+        assert check("admin@example.com") is True
+        assert check("user123@example.com") is True
+        assert check("a+b@example.com") is True
+
+    def test_domain_wildcard_case_insensitive(self):
+        """Domain wildcard should be case-insensitive."""
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = "*@EXAMPLE.COM"
+        assert check("user@example.com") is True
+        assert check("User@Example.Com") is True
+
+    def test_subdomain_not_bypassed(self):
+        """evil@subdom.com must NOT match *@dom.com.
+
+        Regression: endswith() without @ boundary allowed sibling domain bypass.
+        """
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = "*@dom.com"
+        assert check("user@dom.com") is True
+        assert check("evil@subdom.com") is False
+        assert check("evil@notcompanydom.com") is False
+        assert check("evil@sub.subdom.com") is False
+
+    def test_multiple_patterns(self):
+        """Multiple comma-separated patterns should all be checked."""
+        check = self._import_fn()
+        os.environ["EMAIL_ALLOWED_RECIPIENTS"] = "admin@company.com,*@example.com"
+        assert check("admin@company.com") is True
+        assert check("user@example.com") is True
+        assert check("user@company.com") is False
+        assert check("evil@subdom.com") is False
+
+
+# ---------------------------------------------------------------------------
 # _check_send_message — availability gating
 # ---------------------------------------------------------------------------
 

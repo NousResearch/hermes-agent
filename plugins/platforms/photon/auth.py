@@ -862,7 +862,11 @@ def refresh_user_numbers(
     if user:
         user_id = user.get("id")
         dashboard_phone = _normalize_phone(str(user.get("phoneNumber") or ""))
-        if E164_RE.match(dashboard_phone):
+        # Don't overwrite a stored full number with a masked API value.
+        # The Photon API returns masked numbers (e.g. +861****2796) which
+        # _normalize_phone strips to valid E.164, but we must not replace
+        # the real number with the masked version.
+        if E164_RE.match(dashboard_phone) and "*" not in (user.get("phoneNumber") or ""):
             phone = dashboard_phone
         assigned = user_assigned_line(user)
 

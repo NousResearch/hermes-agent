@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -108,6 +109,798 @@ DINGTALK_TYPE_MAPPING = {
     "picture": "image",
     "voice": "audio",
 }
+
+
+_DINGTALK_OAUTH_TOKEN_URL = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
+_DINGTALK_OAPI_TOKEN_URL = "https://oapi.dingtalk.com/gettoken"  # legacy, for /media/upload
+_DINGTALK_OAPI_MEDIA_UPLOAD_URL = "https://oapi.dingtalk.com/media/upload"
+_DINGTALK_OTO_BATCH_SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+_DINGTALK_GROUP_SEND_URL = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+
+# Process-wide access token cache: (client_id) -> (token, expires_at_ts).
+# Tokens are valid for ~2h; we refresh with a 5-minute safety margin so parallel
+# sends share one round-trip.  Two caches because /media/upload needs the
+# legacy OAPI token (different endpoint, different token) — matches the
+# reference connector's getAccessToken / getOapiAccessToken split.
+_DINGTALK_TOKEN_CACHE: Dict[str, tuple[str, float]] = {}
+_DINGTALK_OAPI_TOKEN_CACHE: Dict[str, tuple[str, float]] = {}
+_DINGTALK_TOKEN_LOCK = asyncio.Lock()
+_DINGTALK_OAPI_TOKEN_LOCK = asyncio.Lock()
+_DINGTALK_TOKEN_SAFETY_MARGIN = 300.0  # refresh 5 min before expiry
+
+# Media upload limits.  DingTalk /media/upload caps at 20 MB per file.
+_DINGTALK_MEDIA_MAX_SIZE = 20 * 1024 * 1024
+# File-extension → (media_type, msg_key) routing for /media/upload.
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"})
+_VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})
+_VOICE_EXTS = frozenset({".amr", ".mp3", ".wav", ".aac", ".m4a", ".ogg"})
+
+# LWCP-encoded sender_id (opaque DingTalk-internal form).  Treated as OTO but
+# the OpenAPI will reject it as ``staffId.notExisted`` unless the caller has
+# resolved it to a real staffId via the contact APIs first.
+_LWCP_SENDER_RE = re.compile(r'^\$:LWCP_')
+# Real openConversationId (group chat): ``cid...==`` base64-padded form.
+_OPEN_CONVERSATION_RE = re.compile(r'^cid[A-Za-z0-9+/_\-]+={0,2}$')
+
+# DingTalk message type → runtime content type
+DINGTALK_TYPE_MAPPING = {
+    "picture": "image",
+    "voice": "audio",
+}
+
+# ---------------------------------------------------------------------------
+# File content auto-parsing (ported from dingtalk-openclaw-connector
+# core/message-handler.ts:700-956)
+# ---------------------------------------------------------------------------
+
+# Extensions that can be parsed as plain text and injected into agent context.
+_TEXT_FILE_EXTS = frozenset({
+    ".txt", ".md", ".json", ".xml", ".yaml", ".yml", ".csv", ".log",
+    ".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".sh", ".bat",
+    ".html", ".css", ".sql", ".rb", ".go", ".rs", ".toml", ".ini", ".cfg",
+})
+_DOCX_EXTS = frozenset({".docx", ".doc"})
+_PDF_EXTS = frozenset({".pdf"})
+_EXCEL_EXTS = frozenset({".xlsx", ".xls", ".xlsm"})
+# All parseable extensions (text + docx + pdf + excel).
+_PARSEABLE_FILE_EXTS = _TEXT_FILE_EXTS | _DOCX_EXTS | _PDF_EXTS | _EXCEL_EXTS
+
+
+def _file_type_label(ext: str) -> str:
+    """Return a human-readable Chinese label for a file extension."""
+    if ext in _TEXT_FILE_EXTS:
+        return "文本文件"
+    if ext in _DOCX_EXTS:
+        return "Word 文档"
+    if ext in _PDF_EXTS:
+        return "PDF 文档"
+    if ext in {".xlsx", ".xls"}:
+        return "Excel 表格"
+    if ext in {".pptx", ".ppt"}:
+        return "PPT 演示文稿"
+    if ext in {".zip", ".rar", ".7z", ".tar", ".gz"}:
+        return "压缩包"
+    if ext in _IMAGE_EXTS:
+        return "图片"
+    if ext in _VIDEO_EXTS:
+        return "视频"
+    if ext in _VOICE_EXTS:
+        return "音频"
+    return "文件"
+
+
+def _parse_text_file(file_path: str) -> Optional[str]:
+    """Read a plain-text file and return its content."""
+    try:
+        text = Path(file_path).read_text(encoding="utf-8", errors="replace").strip()
+        return text if text else None
+    except Exception as exc:
+        logger.warning("Failed to read text file %s: %s", file_path, exc)
+        return None
+
+
+def _parse_docx_file(file_path: str) -> Optional[str]:
+    """Extract raw text from a .docx file using python-docx."""
+    try:
+        import docx  # python-docx
+    except ImportError:
+        logger.warning(
+            "python-docx not installed, cannot parse .docx. "
+            "Install with: pip install python-docx"
+        )
+        return None
+    try:
+        doc = docx.Document(file_path)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        text = "\n".join(paragraphs).strip()
+        return text if text else None
+    except Exception as exc:
+        logger.warning("Failed to parse docx %s: %s", file_path, exc)
+        return None
+
+
+def _parse_pdf_file(file_path: str) -> Optional[str]:
+    """Extract text from a PDF file.
+
+    Tries pdfplumber first (better table / layout handling), then falls back
+    to PyPDF2.
+    """
+    # Try pdfplumber
+    try:
+        import pdfplumber
+        with pdfplumber.open(file_path) as pdf:
+            pages_text = [p.extract_text() or "" for p in pdf.pages]
+        text = "\n".join(pages_text).strip()
+        if text:
+            return text
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("pdfplumber failed for %s: %s", file_path, exc)
+
+    # Fallback to PyPDF2
+    try:
+        from PyPDF2 import PdfReader
+        reader = PdfReader(file_path)
+        pages_text = [page.extract_text() or "" for page in reader.pages]
+        text = "\n".join(pages_text).strip()
+        return text if text else None
+    except ImportError:
+        logger.warning(
+            "Neither pdfplumber nor PyPDF2 installed, cannot parse PDF. "
+            "Install with: pip install pdfplumber  or  pip install PyPDF2"
+        )
+        return None
+    except Exception as exc:
+        logger.warning("PyPDF2 failed for %s: %s", file_path, exc)
+        return None
+
+
+def _parse_excel_file(file_path: str) -> Optional[str]:
+    """Extract text representation from an Excel (.xlsx/.xls/.xlsm) file.
+
+    Tries openpyxl first (modern xlsx), then falls back to xlrd (legacy xls).
+    Converts each sheet into a Markdown-style table so the LLM can reason
+    over the data directly.
+    """
+    # -- Try openpyxl (xlsx / xlsm) --
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        sheets_text: List[str] = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows: List[List[str]] = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) if c is not None else "" for c in row]
+                rows.append(cells)
+            if not rows:
+                continue
+            # Build markdown table
+            header = "| " + " | ".join(rows[0]) + " |"
+            sep = "| " + " | ".join(["---"] * len(rows[0])) + " |"
+            body_lines = []
+            for r in rows[1:]:
+                # Pad or truncate to header length
+                padded = r + [""] * (len(rows[0]) - len(r))
+                body_lines.append("| " + " | ".join(padded[:len(rows[0])]) + " |")
+            table = "\n".join([header, sep] + body_lines)
+            sheets_text.append(f"### Sheet: {sheet_name}\n\n{table}")
+        wb.close()
+        text = "\n\n".join(sheets_text).strip()
+        if text:
+            return text
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("openpyxl failed for %s: %s", file_path, exc)
+
+    # -- Fallback: pandas (handles both xlsx and xls) --
+    try:
+        import pandas as pd
+        xls = pd.ExcelFile(file_path)
+        sheets_text = []
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            md_table = df.to_markdown(index=False)
+            if md_table:
+                sheets_text.append(f"### Sheet: {sheet_name}\n\n{md_table}")
+        text = "\n\n".join(sheets_text).strip()
+        return text if text else None
+    except ImportError:
+        logger.warning(
+            "Neither openpyxl nor pandas installed, cannot parse Excel. "
+            "Install with: pip install openpyxl  or  pip install pandas"
+        )
+        return None
+    except Exception as exc:
+        logger.warning("pandas Excel parse failed for %s: %s", file_path, exc)
+        return None
+
+
+def _parse_file_content(file_path: str, file_name: str) -> Optional[str]:
+    """Dispatch to the correct parser based on file extension.
+
+    Returns the extracted text, or None if unparseable / binary.
+    """
+    ext = os.path.splitext(file_name)[1].lower()
+    if ext in _TEXT_FILE_EXTS:
+        return _parse_text_file(file_path)
+    if ext in _DOCX_EXTS:
+        return _parse_docx_file(file_path)
+    if ext in _PDF_EXTS:
+        return _parse_pdf_file(file_path)
+    if ext in _EXCEL_EXTS:
+        return _parse_excel_file(file_path)
+    return None
+
+
+# Persistent inbound-media storage.  Files live here so agent tools
+# (vision_analyze / transcribe_audio / read_file …) can reopen them after
+# ``_on_message`` returns.  Cleanup on adapter connect ages out files
+# older than 24 h so the directory doesn't grow unboundedly.
+
+def _inbound_media_dir() -> str:
+    base = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    path = os.path.join(base, "inbound_media")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _cleanup_inbound_media(older_than_seconds: int = 24 * 3600) -> int:
+    """Delete inbox files older than the cutoff.  Returns the count removed."""
+    removed = 0
+    try:
+        dir_path = _inbound_media_dir()
+        now = time.time()
+        for name in os.listdir(dir_path):
+            full = os.path.join(dir_path, name)
+            try:
+                if os.path.isfile(full) and (now - os.path.getmtime(full)) > older_than_seconds:
+                    os.unlink(full)
+                    removed += 1
+            except OSError:
+                continue
+    except Exception:
+        logger.debug("inbound media cleanup failed", exc_info=True)
+    return removed
+
+
+async def _download_file_to_inbox(
+    url: str, file_name: str, *, msg_id: str = "", timeout: float = 60.0,
+) -> Optional[str]:
+    """Download *url* into the persistent inbox; agent tools can reopen it.
+
+    ``msg_id`` is hashed into the output filename so concurrent messages
+    don't clobber each other.
+    """
+    if not HTTPX_AVAILABLE:
+        return None
+    try:
+        ext = os.path.splitext(file_name)[1] or ""
+        base = re.sub(r'[^\w.-]', '_', os.path.splitext(file_name)[0])[:80] or "file"
+        slug = re.sub(r'[^\w]', '', msg_id)[:16] if msg_id else uuid.uuid4().hex[:12]
+        out_path = os.path.join(_inbound_media_dir(), f"{slug}_{base}{ext}")
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        with open(out_path, "wb") as fh:
+            fh.write(resp.content)
+        logger.info(
+            "Downloaded inbound media %s (%d bytes) -> %s",
+            file_name, len(resp.content), out_path,
+        )
+        return out_path
+    except Exception as exc:
+        logger.warning("Failed to download inbound media %s: %s", file_name, exc)
+        return None
+
+
+# Extension → MIME type used when we hand a local inbound file off to the
+# agent via ``event.media_urls`` / ``media_types``.
+_EXT_TO_MIME = {
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav",
+    ".ogg": "audio/ogg", ".amr": "audio/amr", ".aac": "audio/aac",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+    ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".pdf": "application/pdf", ".md": "text/markdown", ".txt": "text/plain",
+    ".csv": "text/csv", ".json": "application/json",
+    ".zip": "application/zip", ".tar": "application/x-tar", ".gz": "application/gzip",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+def _mime_for_file(file_name: str) -> str:
+    ext = os.path.splitext(file_name)[1].lower()
+    return _EXT_TO_MIME.get(ext, "application/octet-stream")
+
+
+async def _dingtalk_fetch_access_token(
+    client_id: str, client_secret: str
+) -> str:
+    """Return a cached DingTalk accessToken, refreshing if near expiry.
+
+    Uses ``/v1.0/oauth2/accessToken`` directly (no SDK dependency) so the
+    ``send_message`` tool can call this without opening a Stream WebSocket
+    that would conflict with the running gateway's exclusive connection.
+    """
+    if not HTTPX_AVAILABLE:
+        raise RuntimeError("httpx not installed")
+
+    now = datetime.now(tz=timezone.utc).timestamp()
+    cached = _DINGTALK_TOKEN_CACHE.get(client_id)
+    if cached and cached[1] - _DINGTALK_TOKEN_SAFETY_MARGIN > now:
+        return cached[0]
+
+    async with _DINGTALK_TOKEN_LOCK:
+        cached = _DINGTALK_TOKEN_CACHE.get(client_id)
+        if cached and cached[1] - _DINGTALK_TOKEN_SAFETY_MARGIN > now:
+            return cached[0]
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                _DINGTALK_OAUTH_TOKEN_URL,
+                json={"appKey": client_id, "appSecret": client_secret},
+            )
+        resp.raise_for_status()
+        body = resp.json()
+        token = body.get("accessToken") or ""
+        expires_in = body.get("expireIn") or body.get("expires_in") or 7200
+        if not token:
+            raise RuntimeError(
+                f"DingTalk accessToken response missing token: {body}"
+            )
+        _DINGTALK_TOKEN_CACHE[client_id] = (
+            token, now + float(expires_in),
+        )
+        return token
+
+
+async def _dingtalk_fetch_oapi_token(
+    client_id: str, client_secret: str,
+) -> Optional[str]:
+    """Fetch the legacy OAPI accessToken (for /media/upload).
+
+    DingTalk has two parallel token systems:
+      - ``/v1.0/oauth2/accessToken``  — new, for message OpenAPI
+      - ``/gettoken``                 — legacy OAPI, for /media/upload
+    Cached separately because they're different endpoints returning
+    different tokens.  Returns None on any failure (non-fatal —
+    callers should fall back to text-only).
+    """
+    if not HTTPX_AVAILABLE:
+        return None
+    now = datetime.now(tz=timezone.utc).timestamp()
+    cached = _DINGTALK_OAPI_TOKEN_CACHE.get(client_id)
+    if cached and cached[1] - _DINGTALK_TOKEN_SAFETY_MARGIN > now:
+        return cached[0]
+
+    async with _DINGTALK_OAPI_TOKEN_LOCK:
+        cached = _DINGTALK_OAPI_TOKEN_CACHE.get(client_id)
+        if cached and cached[1] - _DINGTALK_TOKEN_SAFETY_MARGIN > now:
+            return cached[0]
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    _DINGTALK_OAPI_TOKEN_URL,
+                    params={"appkey": client_id, "appsecret": client_secret},
+                )
+            body = resp.json()
+            if body.get("errcode") != 0 or not body.get("access_token"):
+                return None
+            token = str(body["access_token"])
+            expires_in = float(body.get("expires_in") or 7200)
+            _DINGTALK_OAPI_TOKEN_CACHE[client_id] = (
+                token, now + expires_in,
+            )
+            return token
+        except Exception:
+            return None
+
+
+def _classify_media_kind(path: str) -> str:
+    """Return one of 'image' / 'voice' / 'video' / 'file' for a local path."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _IMAGE_EXTS:
+        return "image"
+    if ext in _VOICE_EXTS:
+        return "voice"
+    if ext in _VIDEO_EXTS:
+        return "video"
+    return "file"
+
+
+async def _dingtalk_upload_media(
+    *,
+    oapi_token: str,
+    file_path: str,
+    media_kind: str,
+) -> Optional[str]:
+    """Upload a local file to DingTalk /media/upload.
+
+    Returns the raw ``media_id`` on success (preserving the leading ``@``
+    when present), or None on failure.
+
+    Caller is responsible for shaping the id per msgKey:
+      - ``sampleImageMsg.photoURL``   → ``@<raw>``  (raw mediaId, NOT the
+        CDN download URL — the CDN URL renders as a white placeholder in
+        the DingTalk client; reference messaging.ts:714-719)
+      - ``sampleFile.mediaId``        → ``@<raw>``
+      - ``sampleAudio.mediaId``       → ``@<raw>``
+      - ``sampleVideo.videoMediaId``  → ``@<raw>``
+
+    Matches the reference connector's ``uploadMediaToDingTalk``
+    (media/common.ts:65).  Large-file chunked upload (>20MB) not yet
+    ported — callers should pre-split or downscale.
+    """
+    if not HTTPX_AVAILABLE:
+        return None
+    if not os.path.exists(file_path):
+        return None
+    size = os.path.getsize(file_path)
+    if size > _DINGTALK_MEDIA_MAX_SIZE:
+        logger.warning(
+            "[dingtalk] media file %s is %d bytes, exceeds 20MB limit",
+            file_path, size,
+        )
+        return None
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if media_kind == "image":
+        content_type = "image/png" if ext == ".png" else "image/jpeg"
+    elif media_kind == "video":
+        content_type = "video/mp4" if ext == ".mp4" else "video/quicktime"
+    elif media_kind == "voice":
+        content_type = "audio/mpeg" if ext == ".mp3" else "audio/amr"
+    else:
+        content_type = "application/octet-stream"
+
+    # DingTalk OAPI quirk: videos must be uploaded with type=file
+    # (reference: media/common.ts:141).
+    upload_type = "file" if media_kind == "video" else media_kind
+
+    try:
+        with open(file_path, "rb") as fh:
+            files = {
+                "media": (
+                    os.path.basename(file_path),
+                    fh,
+                    content_type,
+                ),
+            }
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    _DINGTALK_OAPI_MEDIA_UPLOAD_URL,
+                    params={"access_token": oapi_token, "type": upload_type},
+                    files=files,
+                )
+        body = resp.json()
+        if body.get("errcode") != 0:
+            logger.warning(
+                "[dingtalk] /media/upload errcode=%s errmsg=%s",
+                body.get("errcode"), body.get("errmsg"),
+            )
+            return None
+        media_id = body.get("media_id") or ""
+        return media_id or None
+    except Exception as e:
+        logger.warning("[dingtalk] /media/upload failed: %s", e)
+        return None
+
+
+def _dingtalk_classify_chat_id(chat_id: str) -> tuple[str, str]:
+    """Classify a DingTalk chat_id into (bucket, resolved_id).
+
+    Accepts the same target-prefix convention the dingtalk-openclaw-connector
+    reference uses (``src/services/messaging.ts:sendTextToDingTalk``):
+
+    - ``"group:<openConversationId>"`` → group
+    - ``"user:<staffId>"``              → oto
+    - ``"cid...=="``                    → group (auto-detect)
+    - ``"$:LWCP_..."``                  → lwcp (fast-fail, needs contact perms)
+    - anything else                     → oto (assume staffId)
+
+    Returns ``(bucket, id)`` where ``id`` is the stripped value to put into
+    the OpenAPI payload.
+    """
+    if not chat_id:
+        return "oto", ""
+    if chat_id.startswith("group:"):
+        return "group", chat_id[6:]
+    if chat_id.startswith("user:"):
+        return "oto", chat_id[5:]
+    if _LWCP_SENDER_RE.match(chat_id):
+        return "lwcp", chat_id
+    if _OPEN_CONVERSATION_RE.match(chat_id):
+        return "group", chat_id
+    return "oto", chat_id
+
+
+# Smart markdown detection — content contains any of these characters/leading
+# markers, assume markdown and upgrade msgKey to sampleMarkdown (reference:
+# messaging.ts:820-826).  Plain-text prose uses sampleText so DingTalk's
+# client renders it without extra padding/heading inference.
+_MARKDOWN_LEADING_RE = re.compile(r'^[#*>\-]')
+_MARKDOWN_INLINE_RE = re.compile(r'[*_`#\[\]]')
+
+
+def _looks_like_markdown(content: str) -> bool:
+    if not content:
+        return False
+    first_line = content.lstrip().split("\n", 1)[0]
+    if _MARKDOWN_LEADING_RE.match(first_line):
+        return True
+    if _MARKDOWN_INLINE_RE.search(content):
+        return True
+    if "\n" in content:  # multi-line prose renders better as markdown
+        return True
+    return False
+
+
+def _dingtalk_build_msg_param(
+    content: str,
+    *,
+    title: str = "Hermes",
+    msg_type: Optional[str] = None,
+) -> tuple[str, str]:
+    """Return (msgKey, JSON-encoded msgParam).
+
+    ``msg_type`` overrides auto-detection:
+      - "text"      → sampleText
+      - "markdown"  → sampleMarkdown
+      - "image"     → sampleImageMsg (content = mediaId or photoURL)
+      - "file"      → sampleFile (content = mediaId)
+      - "voice"     → sampleAudio (content = mediaId; duration=0 per reference)
+      - "video"     → sampleVideo (content = mediaId)
+    If None, chooses sampleMarkdown vs sampleText via
+    ``_looks_like_markdown``.  Matches the reference's ``buildMsgPayload``
+    (messaging.ts:150+).
+    """
+    truncated = content[:MAX_MESSAGE_LENGTH]
+
+    if msg_type == "image":
+        # sampleImageMsg.photoURL accepts the raw media_id with the leading
+        # ``@`` preserved — DingTalk's server-side resolves this to the
+        # tenant-internal image store.  Reference (messaging.ts:714-719 +
+        # messaging.ts:188-192): `photoURL: uploadResult.mediaId` with the
+        # inline comment "使用原始 mediaId（带 @）".
+        #
+        # Earlier iterations passed `https://down.dingtalk.com/media/<clean>`
+        # here.  The API accepted it, but DingTalk clients rendered a blank
+        # (white) image because the CDN URL requires a tenant-scoped auth
+        # handshake that the client doesn't perform during `sampleImageMsg`
+        # rendering.  Only keep the URL passthrough for already-public http(s)
+        # URLs the caller provides directly.
+        if truncated.startswith(("http://", "https://")):
+            photo_url = truncated
+        else:
+            photo_url = truncated if truncated.startswith("@") else f"@{truncated}"
+        return "sampleImageMsg", json.dumps(
+            {"photoURL": photo_url}, ensure_ascii=False,
+        )
+    if msg_type == "file":
+        # sampleFile / sampleAudio / sampleVideo take the raw media_id with
+        # leading ``@`` preserved (reference: media.ts:680+ & :876).
+        media_id = truncated if truncated.startswith("@") else f"@{truncated}"
+        return "sampleFile", json.dumps(
+            {"mediaId": media_id, "fileName": title, "fileType": "file"},
+            ensure_ascii=False,
+        )
+    if msg_type == "voice":
+        media_id = truncated if truncated.startswith("@") else f"@{truncated}"
+        return "sampleAudio", json.dumps(
+            {"mediaId": media_id, "duration": "0"}, ensure_ascii=False,
+        )
+    if msg_type == "video":
+        media_id = truncated if truncated.startswith("@") else f"@{truncated}"
+        return "sampleVideo", json.dumps(
+            {"videoMediaId": media_id, "videoType": "mp4",
+             "picMediaId": "", "duration": "0"},
+            ensure_ascii=False,
+        )
+    if msg_type == "text":
+        return "sampleText", json.dumps(
+            {"content": truncated}, ensure_ascii=False,
+        )
+    if msg_type == "markdown" or _looks_like_markdown(truncated):
+        return "sampleMarkdown", json.dumps(
+            {"title": title, "text": truncated}, ensure_ascii=False,
+        )
+    return "sampleText", json.dumps(
+        {"content": truncated}, ensure_ascii=False,
+    )
+
+
+async def _dingtalk_post_one(
+    *,
+    token: str,
+    robot_code: str,
+    bucket: str,
+    target_id: str,
+    msg_key: str,
+    msg_param: str,
+) -> Dict[str, Any]:
+    """POST a single already-built message to the correct Robot OpenAPI endpoint."""
+    if bucket == "group":
+        url = _DINGTALK_GROUP_SEND_URL
+        payload = {
+            "robotCode": robot_code,
+            "openConversationId": target_id,
+            "msgKey": msg_key,
+            "msgParam": msg_param,
+        }
+    else:
+        url = _DINGTALK_OTO_BATCH_SEND_URL
+        payload = {
+            "robotCode": robot_code,
+            "userIds": [target_id],
+            "msgKey": msg_key,
+            "msgParam": msg_param,
+        }
+
+    headers = {
+        "x-acs-dingtalk-access-token": token,
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+    except Exception as e:
+        return {"error": f"DingTalk OpenAPI request failed: {e}"}
+
+    if resp.status_code >= 300:
+        return {
+            "error": f"DingTalk OpenAPI HTTP {resp.status_code}: {resp.text[:300]}"
+        }
+
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+    # Robot OpenAPI returns ``processQueryKey`` on success (reference:
+    # openclaw-connector messaging.ts:254,331,999).  Fallback to requestId.
+    request_id = body.get("processQueryKey") or body.get("requestId") or ""
+    return {"success": True, "request_id": request_id}
+
+
+async def dingtalk_send_proactive(
+    *,
+    client_id: str,
+    client_secret: str,
+    robot_code: str,
+    chat_id: str,
+    content: str,
+    media_files: Optional[List[tuple[str, bool]]] = None,
+    title: str = "Hermes",
+) -> Dict[str, Any]:
+    """Send a message via DingTalk Robot OpenAPI without Stream Mode.
+
+    Proactive-send counterpart to ``DingTalkAdapter.send()``'s
+    session_webhook path.  Authenticates with AppKey/Secret, routes by
+    ``chat_id`` shape (group / oto / lwcp), and optionally uploads+sends
+    media attachments as additional messages.
+
+    ``media_files`` is a list of ``(local_path, is_voice_hint)`` tuples.
+    Each file gets uploaded to /media/upload, then sent as a dedicated
+    message (sampleImageMsg / sampleAudio / sampleVideo / sampleFile).
+    Text is sent first (if non-empty), then each media in order.  Mirrors
+    Feishu's approach of emitting separate messages per attachment.
+
+    ``title`` is used for sampleMarkdown headings when content auto-upgrades.
+
+    Returns ``{"success": True, "request_id": ..., "route": ...}`` on success
+    of the primary (text or first) message.  ``media_results`` lists each
+    media attempt with its outcome.
+    """
+    if not HTTPX_AVAILABLE:
+        return {"error": "httpx not installed"}
+    if not client_id or not client_secret:
+        return {"error": "DingTalk proactive send requires client_id + client_secret"}
+    if not robot_code:
+        return {"error": "DingTalk proactive send requires robot_code (defaults to client_id)"}
+    if not chat_id:
+        return {"error": "DingTalk proactive send requires chat_id"}
+
+    # Classify FIRST so LWCP fast-fails with zero network roundtrip.
+    bucket, target_id = _dingtalk_classify_chat_id(chat_id)
+    if bucket == "lwcp":
+        return {
+            "error": (
+                "DingTalk chat_id is LWCP-encoded sender_id (%s…): cannot be routed "
+                "directly by Robot OpenAPI. Grant the app 'qyapi_get_department_list' "
+                "+ 'qyapi_get_department_member' permissions at open-dev.dingtalk.com "
+                "and resolve to plain staffId before calling proactive send."
+            ) % target_id[:16]
+        }
+
+    try:
+        token = await _dingtalk_fetch_access_token(client_id, client_secret)
+    except Exception as e:
+        return {"error": f"DingTalk accessToken fetch failed: {e}"}
+
+    results: List[Dict[str, Any]] = []
+    primary_request_id = ""
+
+    # 1. Text first (if non-empty).  Smart markdown detection applied here.
+    if content and content.strip():
+        msg_key, msg_param = _dingtalk_build_msg_param(content, title=title)
+        text_result = await _dingtalk_post_one(
+            token=token, robot_code=robot_code, bucket=bucket,
+            target_id=target_id, msg_key=msg_key, msg_param=msg_param,
+        )
+        if text_result.get("error"):
+            return text_result
+        primary_request_id = text_result.get("request_id", "")
+
+    # 2. Media (one message per file).  Non-fatal per file — we collect
+    # per-file results and let the caller decide what to surface.
+    if media_files:
+        oapi_token = await _dingtalk_fetch_oapi_token(client_id, client_secret)
+        if not oapi_token:
+            results.append({
+                "error": (
+                    "Could not obtain OAPI token for /media/upload — verify the "
+                    "app has ServerAPI permissions (qyapi_media) and retry."
+                ),
+            })
+            # Keep the text result if we had one.
+            if primary_request_id:
+                return {
+                    "success": True,
+                    "request_id": primary_request_id,
+                    "chat_id": target_id,
+                    "route": bucket,
+                    "media_results": results,
+                }
+            return results[-1]
+
+        for raw_path, is_voice_hint in media_files:
+            media_kind = (
+                "voice" if is_voice_hint and _classify_media_kind(raw_path) in ("voice", "file")
+                else _classify_media_kind(raw_path)
+            )
+            media_id = await _dingtalk_upload_media(
+                oapi_token=oapi_token,
+                file_path=raw_path,
+                media_kind=media_kind,
+            )
+            if not media_id:
+                results.append({
+                    "error": f"upload failed for {os.path.basename(raw_path)}",
+                    "path": raw_path,
+                })
+                continue
+            m_msg_key, m_msg_param = _dingtalk_build_msg_param(
+                media_id,
+                msg_type=media_kind,
+                title=os.path.basename(raw_path),
+            )
+            m_result = await _dingtalk_post_one(
+                token=token, robot_code=robot_code, bucket=bucket,
+                target_id=target_id, msg_key=m_msg_key, msg_param=m_msg_param,
+            )
+            m_result["kind"] = media_kind
+            m_result["path"] = raw_path
+            results.append(m_result)
+            if not primary_request_id and m_result.get("success"):
+                primary_request_id = m_result.get("request_id", "")
+
+    if not primary_request_id and not content.strip():
+        # Nothing delivered (empty text, all media failed).
+        return {
+            "error": "Nothing delivered: empty text and all media uploads failed",
+            "media_results": results,
+        }
+
+    return {
+        "success": True,
+        "request_id": primary_request_id,
+        "chat_id": target_id,
+        "route": bucket,
+        **({"media_results": results} if results else {}),
+    }
 
 
 def check_dingtalk_requirements() -> bool:
@@ -838,16 +1631,32 @@ class DingTalkAdapter(BasePlatformAdapter):
         session_webhook = metadata.get("session_webhook")
         if not session_webhook:
             webhook_info = self._get_valid_webhook(chat_id)
-            if not webhook_info:
-                logger.warning(
-                    "[%s] No valid session_webhook for chat_id=%s",
+            if webhook_info:
+                session_webhook, _ = webhook_info
+            else:
+                # No reply webhook for this chat — this is a proactive send
+                # (no preceding inbound message in cache).  Fall back to
+                # Robot OpenAPI using AppKey/Secret, same pattern Feishu uses
+                # for proactive ``im.v1.message.create`` calls.
+                logger.debug(
+                    "[%s] No session_webhook for chat_id=%s; routing via Robot OpenAPI",
                     self.name, chat_id,
                 )
-                return SendResult(
-                    success=False,
-                    error="No valid session_webhook available. Reply must follow an incoming message.",
+                result = await dingtalk_send_proactive(
+                    client_id=self._client_id,
+                    client_secret=self._client_secret,
+                    robot_code=self._robot_code,
+                    chat_id=chat_id,
+                    content=content,
                 )
-            session_webhook, _ = webhook_info
+                if result.get("success"):
+                    return SendResult(
+                        success=True,
+                        message_id=result.get("request_id") or uuid.uuid4().hex[:12],
+                    )
+                return SendResult(
+                    success=False, error=result.get("error", "unknown"),
+                )
 
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")

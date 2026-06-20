@@ -80,6 +80,10 @@ def _load_config() -> dict:
         "ca_bundle": os.environ.get("MEM0_CA_BUNDLE", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
+        # Default-off safety gate for single-user fleets that want one shared
+        # user memory scope across Discord/Telegram/CLI sender ids. When false,
+        # gateway-provided user_id continues to win exactly as today.
+        "pin_user_id": False,
         "rerank": True,
         "keyword_search": False,
     }
@@ -472,15 +476,47 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._consecutive_failures, _BREAKER_COOLDOWN_SECS,
             )
 
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def _resolve_orig_lane(kwargs: Dict[str, Any]) -> str:
+        """Best-effort lane/source label for pin-window provenance.
+
+        Gateway sessions pass platform (discord/telegram/etc.). CLI/cron/subagent
+        paths may not have a raw sender id, so lane is required for reversible
+        provenance of pin-on writes where orig_sender_id is absent.
+        """
+        for key in ("platform", "source", "agent_context"):
+            value = str(kwargs.get(key) or "").strip()
+            if value:
+                return value
+        return "unknown"
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
         self._host = str(self._config.get("host", "") or "").strip().rstrip("/")
         self._admin_api_key = str(self._config.get("admin_api_key", "") or "").strip()
         self._ca_bundle = str(self._config.get("ca_bundle", "") or "").strip()
-        # Prefer gateway-provided user_id for per-user memory scoping;
-        # fall back to config/env default for CLI (single-user) sessions.
-        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
+        self._pin_user_id = self._truthy(self._config.get("pin_user_id", False))
+        raw_gateway_user_id = kwargs.get("user_id")
+        configured_user_id = str(self._config.get("user_id") or "").strip()
+        if self._pin_user_id:
+            # Fail closed: pin mode exists to prevent platform-id fragmentation, so
+            # silently falling back to the gateway sender id would defeat the gate.
+            if not configured_user_id:
+                raise RuntimeError("mem0 pin_user_id=true but no canonical user_id is configured")
+            self._user_id = configured_user_id
+            self._orig_sender_id = raw_gateway_user_id
+            self._orig_lane = self._resolve_orig_lane(kwargs)
+        else:
+            # Existing behavior: gateway-provided user_id wins; config/env is only
+            # a fallback for CLI/single-user sessions.
+            self._user_id = raw_gateway_user_id or configured_user_id or "hermes-user"
+            self._orig_sender_id = None
+            self._orig_lane = None
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
         # Capture mode: "auto" (default) syncs every completed turn to Mem0 for
@@ -514,8 +550,21 @@ class Mem0MemoryProvider(MemoryProvider):
         return {"user_id": self._user_id}
 
     def _write_filters(self) -> Dict[str, Any]:
-        """Filters for add — scoped to user + agent for attribution."""
-        return {"user_id": self._user_id, "agent_id": self._agent_id}
+        """Filters for add — scoped to user + agent for attribution.
+
+        When pin_user_id is enabled, new writes also carry audit-only provenance
+        so rows written during the pin window can be restored to their platform
+        bucket if the feature is rolled back. Historical backfill MUST NOT stamp
+        these keys; it rewrites only user_id and is guarded by payload hashes.
+        """
+        filters: Dict[str, Any] = {"user_id": self._user_id, "agent_id": self._agent_id}
+        if getattr(self, "_pin_user_id", False):
+            metadata: Dict[str, Any] = {"orig_lane": getattr(self, "_orig_lane", "unknown") or "unknown"}
+            orig_sender = getattr(self, "_orig_sender_id", None)
+            if orig_sender is not None and str(orig_sender) != "":
+                metadata["orig_sender_id"] = str(orig_sender)
+            filters["metadata"] = metadata
+        return filters
 
     @staticmethod
     def _unwrap_results(response: Any) -> list:

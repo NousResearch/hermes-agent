@@ -222,6 +222,84 @@ class TestMem0UserIdScoping:
         assert p2._user_id == "bob_456"
         assert p1._user_id != p2._user_id
 
+    def test_pin_user_id_flag_off_preserves_gateway_wins_behavior(self):
+        """Default/flag-off behavior stays byte-equivalent: gateway user_id wins."""
+        from plugins.memory.mem0 import Mem0MemoryProvider
+
+        provider = Mem0MemoryProvider()
+        with patch("plugins.memory.mem0._load_config", return_value={
+            "api_key": "test-key",
+            "user_id": "ace",
+            "agent_id": "apollo",
+            "pin_user_id": False,
+            "rerank": True,
+        }):
+            provider.initialize(session_id="test-sess", user_id="discord_user", platform="discord")
+
+        assert provider._user_id == "discord_user"
+        assert provider._write_filters() == {"user_id": "discord_user", "agent_id": "apollo"}
+
+    def test_pin_user_id_flag_on_configured_user_wins_and_stamps_provenance(self):
+        """Pin mode unifies writes under configured user_id and records raw lane provenance."""
+        from plugins.memory.mem0 import Mem0MemoryProvider
+
+        provider = Mem0MemoryProvider()
+        with patch("plugins.memory.mem0._load_config", return_value={
+            "api_key": "test-key",
+            "user_id": "ace",
+            "agent_id": "apollo",
+            "pin_user_id": True,
+            "rerank": True,
+        }):
+            provider.initialize(session_id="test-sess", user_id="117431298246705156", platform="discord")
+
+        assert provider._user_id == "ace"
+        assert provider._write_filters() == {
+            "user_id": "ace",
+            "agent_id": "apollo",
+            "metadata": {
+                "orig_sender_id": "117431298246705156",
+                "orig_lane": "discord",
+            },
+        }
+
+    def test_pin_user_id_fails_closed_without_canonical_user_id(self):
+        """Pin mode must not silently fall back to the gateway/platform id."""
+        from plugins.memory.mem0 import Mem0MemoryProvider
+
+        provider = Mem0MemoryProvider()
+        with patch("plugins.memory.mem0._load_config", return_value={
+            "api_key": "test-key",
+            "user_id": "",
+            "agent_id": "apollo",
+            "pin_user_id": True,
+            "rerank": True,
+        }):
+            import pytest
+            with pytest.raises(RuntimeError, match="pin_user_id=true"):
+                provider.initialize(session_id="test-sess", user_id="discord_user", platform="discord")
+
+    def test_pin_user_id_records_lane_even_without_raw_sender_id(self):
+        """CLI/cron pin-window rows have no platform sender id, so lane provenance is required."""
+        from plugins.memory.mem0 import Mem0MemoryProvider
+
+        provider = Mem0MemoryProvider()
+        with patch("plugins.memory.mem0._load_config", return_value={
+            "api_key": "test-key",
+            "user_id": "ace",
+            "agent_id": "apollo",
+            "pin_user_id": True,
+            "rerank": True,
+        }):
+            provider.initialize(session_id="test-sess", platform="cron")
+
+        assert provider._user_id == "ace"
+        assert provider._write_filters() == {
+            "user_id": "ace",
+            "agent_id": "apollo",
+            "metadata": {"orig_lane": "cron"},
+        }
+
 
 # ---------------------------------------------------------------------------
 # Honcho provider user_id tests

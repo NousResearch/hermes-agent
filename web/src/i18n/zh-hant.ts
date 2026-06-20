@@ -158,6 +158,7 @@ export const zhHant: Translations = {
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
+    newChat: "新對話",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {

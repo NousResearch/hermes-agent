@@ -9838,6 +9838,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                    # The normal post-turn /goal hook lives in the caller and
+                    # only sees this method's return value.  For streamed turns
+                    # we return None below to avoid duplicate delivery, so run
+                    # the hook here while the final response text is still
+                    # available.  Without this, streamed gateway sessions keep
+                    # showing an active goal at 0/N turns but never enqueue the
+                    # next continuation.
+                    try:
+                        await self._post_turn_goal_continuation(
+                            session_entry=session_entry,
+                            source=source,
+                            final_response=response,
+                        )
+                    except Exception as _goal_exc:
+                        logger.debug("goal continuation hook failed after streamed delivery: %s", _goal_exc)
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.

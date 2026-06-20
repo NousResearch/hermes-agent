@@ -1322,8 +1322,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("[Feishu] WS client start() exited with error: %s", exc, exc_info=True)
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
@@ -1645,6 +1645,16 @@ class FeishuAdapter(BasePlatformAdapter):
         if not FEISHU_AVAILABLE:
             logger.error("[Feishu] lark-oapi not installed")
             return False
+
+        # Route the Lark SDK's internal logger ("Lark") through the Hermes
+        # logging system so its messages appear in agent.log alongside
+        # gateway logs.  Without this, SDK-level errors/debug only go to
+        # stdout and are invisible to ``hermes logs -f``.
+        _lark_logger = logging.getLogger("Lark")
+        _lark_logger.propagate = True
+        for _h in list(_lark_logger.handlers):
+            _lark_logger.removeHandler(_h)
+
         if not self._app_id or not self._app_secret:
             logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
             return False
@@ -4286,7 +4296,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             request = self._build_get_application_request(app_id=self._app_id, lang="en_us")
-            response = await asyncio.to_thread(self._client.application.v6.application.get, request)
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self._client.application.v6.application.get, request),
+                timeout=15,
+            )
             if not response or not response.success():
                 code = getattr(response, "code", None)
                 if code == 99991672:
@@ -4300,6 +4313,8 @@ class FeishuAdapter(BasePlatformAdapter):
             app_name = (getattr(app, "app_name", None) or "").strip()
             if app_name and not self._bot_name:
                 self._bot_name = app_name
+        except asyncio.TimeoutError:
+            logger.warning("[Feishu] Hydrate bot identity timed out after 15s, skipping (non-critical)")
         except Exception:
             logger.debug("[Feishu] Failed to hydrate bot name from application info", exc_info=True)
 

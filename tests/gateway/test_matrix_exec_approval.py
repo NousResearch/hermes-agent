@@ -34,7 +34,7 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_hides_always_text_when_permanent_approval_disallowed(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
-        from gateway.platforms.matrix import MatrixAdapter
+        from plugins.platforms.matrix.adapter import MatrixAdapter
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         adapter._client = types.SimpleNamespace()

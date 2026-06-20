@@ -107,7 +107,7 @@ class TestTelegramExecApproval:
 
     @pytest.mark.asyncio
     async def test_hides_always_button_when_permanent_approval_disallowed(self, monkeypatch):
-        import gateway.platforms.telegram as telegram_module
+        import plugins.platforms.telegram.adapter as telegram_module
 
         class FakeButton:
             def __init__(self, text, callback_data):

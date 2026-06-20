@@ -9,6 +9,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -29,6 +30,8 @@ from openai.types.chat.chat_completion_message_tool_call import (
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
+
+logger = logging.getLogger(__name__)
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -419,6 +422,7 @@ class CopilotACPClient:
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None
         self._active_process_lock = threading.Lock()
+        self._permission_denied_count = 0
 
     def close(self) -> None:
         proc: subprocess.Popen[str] | None
@@ -695,6 +699,25 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
+            # The ACP agent (e.g. the Claude/Copilot SDK) is asking permission to
+            # run one of its OWN tools. Hermes denies these by design — it drives
+            # tools itself via the tool-call markers it injects, not the agent's
+            # native toolset. But if the agent is launched in a permission mode
+            # that ROUTES every tool through this path (e.g. Claude SDK
+            # "dontAsk"/"default", or Copilot CLI without bypass), denial here
+            # leaves the agent unable to run ANY tool — a silent, do-nothing
+            # session. Surface it once so the cause is diagnosable instead of
+            # mysterious. The fix is on the agent side: launch it in a
+            # bypass/auto-approve permission mode so it self-executes its tools.
+            self._permission_denied_count += 1
+            if self._permission_denied_count == 1:
+                logger.warning(
+                    "ACP agent requested tool permission; Hermes denies native "
+                    "ACP tool permissions by design. If this agent cannot run "
+                    "tools, launch it in a bypass/auto-approve permission mode "
+                    "(e.g. Claude Agent SDK permissionMode=bypassPermissions, or "
+                    "Copilot CLI with --allow-all-tools) so it self-executes."
+                )
             response = _permission_denied(message_id)
         elif method == "fs/read_text_file":
             try:

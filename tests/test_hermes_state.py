@@ -2065,6 +2065,89 @@ class TestSessionTitle:
         assert session["ended_at"] is not None
 
 
+class TestSessionTitleLineage:
+    """Renaming a compression continuation back to its base title must succeed
+    by transferring the title off the ended, hidden predecessor.
+
+    After a context compaction the original session is ended and projected
+    behind its live tip in the session list (list_sessions_rich), so the user
+    cannot see or free it. Without lineage-aware handling, renaming the visible
+    tip back to the base name dead-ends with "already in use by <session they
+    can't find>".
+    """
+
+    def _make_compression_chain(self, db, t0, *, root="root", tip="tip"):
+        db.create_session(root, "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, root))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, root),
+        )
+        db.create_session(tip, "cli", parent_session_id=root)
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 200, tip))
+        db._conn.commit()
+
+    def test_rename_continuation_back_to_base_transfers_title(self, db):
+        import time as _time
+        self._make_compression_chain(db, _time.time() - 3600)
+        db.set_session_title("root", "fingerprint-scanner")
+        db.set_session_title("tip", "fingerprint-scanner #2")
+
+        # User renames the visible tip back to the base name — must succeed.
+        assert db.set_session_title("tip", "fingerprint-scanner") is True
+        assert db.get_session("tip")["title"] == "fingerprint-scanner"
+        # Title transferred off the hidden ancestor — no duplicate titles.
+        assert db.get_session("root")["title"] is None
+
+    def test_transfer_walks_multi_level_chain(self, db):
+        import time as _time
+        t0 = _time.time() - 7200
+        # root (compression) -> mid (compression) -> tip
+        self._make_compression_chain(db, t0, root="root", tip="mid")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 300, "mid"),
+        )
+        db.create_session("tip", "cli", parent_session_id="mid")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 400, "tip"))
+        db._conn.commit()
+
+        db.set_session_title("root", "deep-dive")
+        assert db.set_session_title("tip", "deep-dive") is True
+        assert db.get_session("tip")["title"] == "deep-dive"
+        assert db.get_session("root")["title"] is None
+
+    def test_unrelated_session_still_conflicts(self, db):
+        db.create_session("a", "cli")
+        db.create_session("b", "cli")
+        db.set_session_title("a", "shared")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("b", "shared")
+        # The unrelated holder keeps its title.
+        assert db.get_session("a")["title"] == "shared"
+
+    def test_non_compression_child_still_conflicts(self, db):
+        """A child whose parent did NOT end via compression (delegate/branch
+        spawned while the parent was live) is not a continuation, so renaming it
+        to the parent's title must still raise."""
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("parent", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "parent"))
+        db.create_session("child", "cli", parent_session_id="parent")
+        # Child started BEFORE parent ended, and parent ended for a non-
+        # compression reason — not a continuation edge.
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "child"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='user_exit' WHERE id=?",
+            (t0 + 100, "parent"),
+        )
+        db._conn.commit()
+        db.set_session_title("parent", "shared")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("child", "shared")
+
+
 class TestSanitizeTitle:
     """Tests for SessionDB.sanitize_title() validation and cleaning."""
 

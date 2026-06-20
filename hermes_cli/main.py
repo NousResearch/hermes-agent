@@ -531,6 +531,16 @@ try:
     if _cfg_path.exists():
         with open(_cfg_path, encoding="utf-8") as _f:
             _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        # Managed scope: overlay administrator-pinned values so a managed
+        # security.redact_secrets / network.force_ipv4 wins here too. This early
+        # bridge reads config.yaml directly (before load_config is usable), so
+        # without the overlay a managed redact_secrets toggle would be ignored.
+        # Fail-open via the shared helper.
+        try:
+            from hermes_cli import managed_scope
+            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
+        except Exception:
+            pass
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -2412,6 +2422,7 @@ def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
+    from hermes_constants import find_node_executable, with_hermes_node_path
 
     print()
     print("⚕ WhatsApp Setup")
@@ -2526,7 +2537,7 @@ def cmd_whatsapp(args):
         print(
             "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
         )
-        npm = shutil.which("npm")
+        npm = find_node_executable("npm")
         if not npm:
             print("  ✗ npm not found on PATH — install Node.js first")
             return
@@ -2539,6 +2550,7 @@ def cmd_whatsapp(args):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=with_hermes_node_path(),
             )
         except KeyboardInterrupt:
             print("\n  ✗ Install cancelled")
@@ -2595,8 +2607,15 @@ def cmd_whatsapp(args):
 
     try:
         subprocess.run(
-            ["node", str(bridge_script), "--pair-only", "--session", str(session_dir)],
+            [
+                find_node_executable("node") or "node",
+                str(bridge_script),
+                "--pair-only",
+                "--session",
+                str(session_dir),
+            ],
             cwd=str(bridge_dir),
+            env=with_hermes_node_path(),
         )
     except KeyboardInterrupt:
         pass
@@ -4586,6 +4605,7 @@ def _run_with_idle_timeout(
     *,
     idle_timeout_seconds: int = 180,
     indent: str = "    ",
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess that streams output, with an idle-output timeout.
 
@@ -4620,6 +4640,7 @@ def _run_with_idle_timeout(
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=env,
         )
     except OSError as exc:
         # E.g. npm not on PATH between the which() check and now.
@@ -4811,12 +4832,15 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
-    npm = shutil.which("npm")
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    npm = find_node_executable("npm")
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
             _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
+    build_env = with_hermes_node_path()
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:
@@ -4848,6 +4872,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         npm,
         npm_cwd,
         extra_args=(*npm_workspace_args, "--include=dev", "--silent"),
+        env=build_env,
     )
     if r1.returncode != 0:
         _say(
@@ -4863,13 +4888,13 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # users react by rebooting, which leaves the editable install in a
     # half-state. Streaming + idle-kill makes failures observable AND
     # recoverable (the stale-dist fallback below handles the kill path).
-    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
     if r2.returncode != 0:
         # Retry once after a short delay — covers boot-time races on Windows
         # (antivirus scanning Node.js binaries, npm cache not ready, transient
         # I/O when launched via Scheduled Task at logon). See issue #23817.
         _time.sleep(3)
-        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers
@@ -5248,7 +5273,9 @@ def _redownload_electron_dist(
     installer = electron_dir / "install.js"
     if not installer.is_file():
         return False
-    node = shutil.which("node")
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    node = find_node_executable("node")
     if not node:
         return False
 
@@ -5259,7 +5286,7 @@ def _redownload_electron_dist(
     except OSError:
         pass
 
-    dl_env = dict(env)
+    dl_env = with_hermes_node_path(env)
     if mirror:
         dl_env["ELECTRON_MIRROR"] = mirror
     try:
@@ -5439,7 +5466,10 @@ def cmd_gui(args: argparse.Namespace):
     except Exception:
         pass
 
-    env = os.environ.copy()
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    # with_hermes_node_path() copies os.environ when called with no arg.
+    env = with_hermes_node_path()
     if getattr(args, "fake_boot", False):
         env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
     if getattr(args, "ignore_existing", False):
@@ -5456,7 +5486,7 @@ def cmd_gui(args: argparse.Namespace):
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
-        npm = shutil.which("npm")
+        npm = find_node_executable("npm")
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
             print("Install Node.js, then run:  hermes gui")
@@ -7814,7 +7844,9 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
 
 def _update_node_dependencies() -> None:
-    npm = shutil.which("npm")
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    npm = find_node_executable("npm")
     if not npm:
         return
 
@@ -7831,7 +7863,7 @@ def _update_node_dependencies() -> None:
     print("→ Updating Node.js dependencies...")
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
 
-    nixos_env = _nixos_build_env()
+    nixos_env = with_hermes_node_path(_nixos_build_env())
 
     # Step 1: root install (no workspace recursion).
     root_args = [*extra_args, "--workspaces=false"]
@@ -9232,7 +9264,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
+        from hermes_constants import find_node_executable
+
+        if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise

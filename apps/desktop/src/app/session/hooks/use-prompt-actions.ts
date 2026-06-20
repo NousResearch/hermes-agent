@@ -32,6 +32,7 @@ import {
   clearComposerAttachments,
   type ComposerAttachment,
   setComposerAttachmentUploadState,
+  setComposerDraft,
   terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
@@ -914,31 +915,7 @@ export function usePromptActions({
           return
         }
 
-        try {
-          const result = await requestGateway<SlashExecResponse>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
-
-          const body = result?.output || `/${name}: no output`
-          renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
-
-          return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
-        }
-
-        try {
-          const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
-          )
-
-          if (!dispatch) {
-            renderSlashOutput('error: invalid response: command.dispatch')
-
-            return
-          }
-
+        const handleDispatch = async (dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
             renderSlashOutput(dispatch.output ?? '(no output)')
 
@@ -951,7 +928,25 @@ export function usePromptActions({
             return
           }
 
+          // send / prefill carry an optional `notice` (e.g. "⊙ Goal set …")
+          // that the backend wants shown as a system line before the message
+          // is acted on. Mirrors the TUI's createSlashHandler — without it a
+          // `/goal <text>` looked like it did nothing.
+          if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
+            renderSlashOutput(dispatch.notice.trim())
+          }
+
           const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
+
+          // /undo returns a prefill directive: drop the backed-up message into
+          // the composer for editing instead of submitting it immediately.
+          if (dispatch.type === 'prefill') {
+            if (message) {
+              setComposerDraft(message)
+            }
+
+            return
+          }
 
           if (!message) {
             renderSlashOutput(
@@ -972,6 +967,43 @@ export function usePromptActions({
           }
 
           await submitPromptText(message)
+        }
+
+        try {
+          const result = await requestGateway<unknown>('slash.exec', {
+            session_id: sessionId,
+            command: command.replace(/^\/+/, '')
+          })
+
+          const dispatch = parseCommandDispatch(result)
+
+          if (dispatch) {
+            await handleDispatch(dispatch)
+
+            return
+          }
+
+          const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
+          const body = output?.output || `/${name}: no output`
+          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+
+          return
+        } catch {
+          // Fall back to command.dispatch for skill/send/alias directives.
+        }
+
+        try {
+          const dispatch = parseCommandDispatch(
+            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+          )
+
+          if (!dispatch) {
+            renderSlashOutput('error: invalid response: command.dispatch')
+
+            return
+          }
+
+          await handleDispatch(dispatch)
         } catch (err) {
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
         }

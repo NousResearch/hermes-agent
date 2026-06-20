@@ -223,7 +223,10 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # save_config() + migrate_config() write via atomic_yaml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
+# merged_value) — the managed-file signature is folded in so editing the
+# managed-scope config.yaml invalidates the cache (see managed_scope).
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any]]] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -1214,6 +1217,21 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
+    # Seconds to wait at agent-build time for in-flight MCP server discovery
+    # to finish before the agent snapshots its tool list.  MCP discovery runs
+    # in a background thread so a slow/dead server can't freeze startup; this
+    # bounds how long the first agent build blocks on it.  The wait returns
+    # the INSTANT discovery completes, so users with no MCP servers (the common
+    # case) or fast servers pay ~0s regardless of this value — the bound is
+    # only reached when a server is genuinely still connecting.  The old 0.75s
+    # default was a touch short for HTTP/OAuth servers on a cold connect; a
+    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
+    # only a turn-1 latency/UX knob: a server that misses this window is still
+    # picked up automatically on the next turn by the between-turns refresh
+    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
+    # small so a slow/dead server adds little to first-response latency.
+    "mcp_discovery_timeout": 1.5,
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -1285,6 +1303,22 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "in_place": False,            # When True, compaction rewrites the message
+                                      # list and rebuilds the system prompt WITHOUT
+                                      # rotating the session id — the conversation
+                                      # keeps one durable id for its whole life
+                                      # (no parent_session_id chain, no `name #N`
+                                      # renumbering). Eliminates the session-rotation
+                                      # bug cluster (#33618 /goal loss, #14238 lost
+                                      # response, #33907 orphans, #45117 search gaps,
+                                      # #42228 null cwd) — see #38763. Non-destructive:
+                                      # the live context is compacted (lossy for what
+                                      # the model reloads), but the pre-compaction
+                                      # turns are soft-archived under the same id
+                                      # (active=0, compacted=1) — still searchable via
+                                      # session_search and recoverable, not deleted.
+                                      # Default False during rollout; will flip on
+                                      # after live validation.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
@@ -1436,6 +1470,7 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
             "extra_body": {},
+            "language": "",
         },
         "tts_audio_tags": {
             "provider": "auto",
@@ -1597,6 +1632,14 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Seconds between prompt_toolkit redraws in the classic CLI when idle.
+        # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
+        # last-turn) ticking and keeps the bottom chrome alive during idle —
+        # without it prompt_toolkit stops repainting the status bar after a
+        # turn and it can go stale/disappear (#45592).
+        # Set 0 to disable the background refresh if it fights terminal
+        # auto-scroll in non-fullscreen mode on some emulators (#48309).
+        "cli_refresh_interval": 1.0,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,
@@ -2252,6 +2295,33 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Active cron SCHEDULER provider (Axis B — the trigger that decides
+        # WHEN a due job fires). Empty string = the built-in in-process 60s
+        # ticker (default). Name an installed provider (plugins/cron/<name>/ or
+        # $HERMES_HOME/plugins/<name>/) to relocate the trigger — e.g. "chronos",
+        # the NAS-mediated managed-cron provider for scale-to-zero deployments.
+        # An unknown or unavailable provider falls back to the built-in, so cron
+        # never loses its trigger.
+        "provider": "",
+        # Chronos (NAS-mediated managed cron) settings. Only consulted when
+        # provider == "chronos". All non-secret (URLs + the JWT audience): the
+        # agent holds NO external-scheduler credentials. For hosted agents, NAS
+        # sets these at provision time. The outbound provision call reuses the
+        # agent's existing Nous Portal token — there is no token key here.
+        "chronos": {
+            # NAS / portal base URL the agent calls to arm/cancel one-shots
+            # and that mints the inbound fire JWT (used as the expected issuer).
+            "portal_url": "https://portal.nousresearch.com",
+            # The agent's OWN publicly-reachable base URL for NAS→agent fires
+            # (NAS POSTs {callback_url}/api/cron/fire). Empty → Chronos is
+            # unavailable and the resolver falls back to the built-in ticker.
+            "callback_url": "",
+            # This agent's expected JWT audience (e.g. "agent:{instance_id}").
+            "expected_audience": "",
+            # NAS JWKS URL for verifying the inbound fire JWT's signature.
+            # Empty → the fire endpoint refuses all tokens (no unsigned decode).
+            "nas_jwks_url": "",
+        },
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
@@ -3442,6 +3512,7 @@ OPTIONAL_ENV_VARS = {
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
                        "im:history, im:read, im:write, users:read, files:read, files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
+        "help": "In your Slack app, add the required bot scopes, install the app to the workspace, then copy OAuth & Permissions > Bot User OAuth Token.",
         "url": "https://api.slack.com/apps",
         "password": True,
         "category": "messaging",
@@ -3451,8 +3522,17 @@ OPTIONAL_ENV_VARS = {
                        "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
                        "message.channels, message.groups, app_mention",
         "prompt": "Slack App Token (xapp-...)",
+        "help": "In your Slack app, enable Socket Mode, then create Basic Information > App-Level Tokens with the connections:write scope.",
         "url": "https://api.slack.com/apps",
         "password": True,
+        "category": "messaging",
+    },
+    "SLACK_ALLOWED_USERS": {
+        "description": "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.",
+        "prompt": "Allowed Slack member IDs",
+        "help": "In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.",
+        "url": "https://api.slack.com/apps",
+        "password": False,
         "category": "messaging",
     },
     "MATTERMOST_URL": {
@@ -3865,6 +3945,30 @@ def _set_nested(config, dotted_key: str, value):
         current[int(last)] = value
     else:
         current[last] = value
+
+
+def clear_model_endpoint_credentials(
+    model_cfg: Dict[str, Any],
+    *,
+    clear_api_key: bool = True,
+    clear_api_mode: bool = True,
+) -> Dict[str, Any]:
+    """Remove stale inline endpoint credentials from a model config.
+
+    ``model.api_key`` is valid only for explicit custom endpoint assignments.
+    Built-in providers resolve credentials from env vars, auth.json, or the
+    credential pool. When switching away from a custom endpoint, leaving these
+    fields behind keeps secrets in config.yaml and can contaminate later custom
+    resolution paths.
+    """
+    if not isinstance(model_cfg, dict):
+        return model_cfg
+    if clear_api_key:
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api", None)
+    if clear_api_mode:
+        model_cfg.pop("api_mode", None)
+    return model_cfg
 
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:
@@ -5227,6 +5331,29 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
+    """Remove the given dotted leaf keys from a nested config dict.
+
+    Returns ``(pruned_cfg, set_of_stripped_keys_that_were_present)``. Used by
+    ``save_config`` to drop managed-scope leaves before persisting, so a bulk
+    write never writes a user value that would lose to the managed layer on the
+    next load. Only keys actually present in ``cfg`` are reported as stripped.
+    """
+    stripped: set = set()
+    for dotted in dotted_keys:
+        parts = dotted.split(".")
+        node = cfg
+        for p in parts[:-1]:
+            if not isinstance(node, dict) or p not in node:
+                node = None
+                break
+            node = node[p]
+        if isinstance(node, dict) and parts[-1] in node:
+            del node[parts[-1]]
+            stripped.add(dotted)
+    return cfg, stripped
+
+
 def _expand_env_vars(obj):
     """Recursively expand ``${VAR}`` references in config values.
 
@@ -5593,17 +5720,44 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         try:
             st = config_path.stat()
-            cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+            user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
         except FileNotFoundError:
-            cache_key = None
+            user_sig = None
+
+        # Managed scope: fold the managed config file's (mtime, size) into the
+        # cache signature so editing /etc/hermes/config.yaml invalidates the
+        # cached merged result. (0, 0) means "no managed config file".
+        from hermes_cli import managed_scope
+
+        managed_dir = managed_scope.get_managed_dir()
+        managed_cfg_path = (managed_dir / "config.yaml") if managed_dir else None
+        try:
+            mst = managed_cfg_path.stat() if managed_cfg_path else None
+            managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
+        except OSError:
+            managed_sig = (0, 0)
+
+        # Combined cache signature: user file + managed file. None only when the
+        # user config is absent AND no managed file exists (nothing to cache on).
+        if user_sig is not None:
+            cache_sig: Optional[Tuple[int, int, int, int]] = (
+                user_sig[0],
+                user_sig[1],
+                managed_sig[0],
+                managed_sig[1],
+            )
+        elif managed_sig != (0, 0):
+            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
+        else:
+            cache_sig = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_key is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
+        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+            return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if cache_key is not None:
+        if user_sig is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
@@ -5621,14 +5775,24 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
+        # Managed scope wins at the leaf. Applied AFTER user expansion so a user
+        # ${VAR} cannot shadow a managed literal: managed values are expanded only
+        # against the process environment, never against user-config-defined refs.
+        # This deliberately inverts the usual env-over-config precedence for the
+        # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
+        managed_config = managed_scope.load_managed_config()
+        if managed_config:
+            managed_expanded = _expand_env_vars(managed_config)
+            expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
-        if cache_key is not None:
+        if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
             # (deepcopy=True) callers can mutate freely without affecting the
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
-            # callers all see the same stable cached object.
+            # callers all see the same stable cached object. The cached tuple is
+            # (user_mtime, user_size, managed_mtime, managed_size, value).
             cached_copy = copy.deepcopy(expanded)
-            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.
@@ -5725,6 +5889,22 @@ def save_config(config: Dict[str, Any]):
         if is_managed():
             managed_error("save configuration")
             return
+        # Managed scope: strip any leaf the managed layer pins, so a bulk write
+        # (wizard / programmatic save) never persists a user value that would
+        # silently lose to managed on the next load. Single-key `config set`
+        # hard-rejects (see set_config_value); this is the mechanical safety net
+        # for bulk writes so the unmanaged remainder still lands.
+        from hermes_cli import managed_scope
+
+        managed_keys = managed_scope.managed_config_keys()
+        if managed_keys:
+            config, _stripped = _strip_dotted_keys(copy.deepcopy(config), managed_keys)
+            if _stripped:
+                print(
+                    f"Note: {len(_stripped)} managed setting(s) were not saved "
+                    f"(managed by your administrator): {', '.join(sorted(_stripped))}",
+                    file=sys.stderr,
+                )
         from utils import atomic_yaml_write
 
         ensure_hermes_home()
@@ -5991,6 +6171,19 @@ def save_env_value(key: str, value: str):
     if is_managed():
         managed_error(f"set {key}")
         return
+    # Managed scope guard: a managed env key can't be set by the user — the
+    # managed .env wins at load anyway. Distinct from is_managed() above.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_env_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / ".env") if managed_dir else "the managed scope"
+        print(
+            f"Cannot set {key}: it is managed by your administrator ({src}) "
+            f"and cannot be changed.",
+            file=sys.stderr,
+        )
+        return
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
@@ -6067,6 +6260,18 @@ def remove_env_value(key: str) -> bool:
     """
     if is_managed():
         managed_error(f"remove {key}")
+        return False
+    # Managed scope guard: a managed env key can't be removed by the user.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_env_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / ".env") if managed_dir else "the managed scope"
+        print(
+            f"Cannot remove {key}: it is managed by your administrator ({src}) "
+            f"and cannot be changed.",
+            file=sys.stderr,
+        )
         return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
@@ -6202,12 +6407,38 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
+    # Managed scope: surface that some settings are administrator-pinned so the
+    # user understands why their config.yaml value may not be the effective one.
+    from hermes_cli import managed_scope
+
+    _managed_keys = managed_scope.managed_config_keys()
+    _managed_env = managed_scope.load_managed_env()
+    if _managed_keys or _managed_env:
+        _managed_dir = managed_scope.get_managed_dir()
+        print()
+        print(color(
+            f"  ⚷ Some settings are managed by your administrator ({_managed_dir}) "
+            f"and cannot be changed",
+            Colors.YELLOW,
+            Colors.BOLD,
+        ))
+        if _managed_keys:
+            print(color(
+                f"    Managed config keys: {', '.join(sorted(_managed_keys))}",
+                Colors.YELLOW,
+            ))
+        if _managed_env:
+            print(color(
+                f"    Managed env keys: {', '.join(sorted(_managed_env))}",
+                Colors.YELLOW,
+            ))
+
     # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
@@ -6425,6 +6656,22 @@ def set_config_value(key: str, value: str):
     if is_managed():
         managed_error("set configuration values")
         return
+    # Managed scope guard (D2): a key pinned by the managed layer cannot be set by
+    # the user — the next load would override it anyway. Hard-reject and name the
+    # source. Distinct from is_managed() above (the package-manager write-lock).
+    # Env-shaped keys (API keys / tokens) route to save_env_value below, which has
+    # its own managed-env-key guard; this catches the config.yaml keys.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_key_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
+        print(
+            f"Cannot set '{key}': it is managed by your administrator ({src}) "
+            f"and cannot be changed. Contact your administrator to modify it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',

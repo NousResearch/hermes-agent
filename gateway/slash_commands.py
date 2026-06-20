@@ -34,7 +34,7 @@ from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
     atomic_yaml_write,
@@ -1030,12 +1030,13 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model command — switch model for this session.
+        """Handle /model command — switch model.
 
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
-          /model <name>                       — switch for this session only
-          /model <name> --global              — switch and persist to config.yaml
+          /model <name>                       — switch model (persists by default)
+          /model <name> --session             — switch for this session only
+          /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
@@ -1043,6 +1044,7 @@ class GatewaySlashCommandsMixin:
         import yaml
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_flags,
+            resolve_persist_behavior,
             list_authenticated_providers,
             list_picker_providers,
         )
@@ -1050,8 +1052,15 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
 
-        # Parse --provider, --global, and --refresh flags
-        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+        # Parse --provider, --global, --session, and --refresh flags
+        (
+            model_input,
+            explicit_provider,
+            is_global_flag,
+            force_refresh,
+            is_session,
+        ) = parse_model_flags(raw_args)
+        persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1143,7 +1152,7 @@ class GatewaySlashCommandsMixin:
                             current_model=_cur_model,
                             current_base_url=_cur_base_url,
                             current_api_key=_cur_api_key,
-                            is_global=False,
+                            is_global=persist_global,
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
@@ -1207,6 +1216,36 @@ class GatewaySlashCommandsMixin:
                         # stale cache signature to trigger a rebuild.
                         _self._evict_cached_agent(_session_key)
 
+                        # Persist to config (default) unless --session opted out,
+                        # mirroring the text /model command path above so a picked
+                        # model survives across sessions like a typed one (#49066).
+                        if persist_global:
+                            try:
+                                if config_path.exists():
+                                    with open(config_path, encoding="utf-8") as f:
+                                        _persist_cfg = yaml.safe_load(f) or {}
+                                else:
+                                    _persist_cfg = {}
+                                _raw_model = _persist_cfg.get("model")
+                                if isinstance(_raw_model, dict):
+                                    _persist_model_cfg = _raw_model
+                                elif isinstance(_raw_model, str) and _raw_model.strip():
+                                    _persist_model_cfg = {"default": _raw_model.strip()}
+                                    _persist_cfg["model"] = _persist_model_cfg
+                                else:
+                                    _persist_model_cfg = {}
+                                    _persist_cfg["model"] = _persist_model_cfg
+                                _persist_model_cfg["default"] = result.new_model
+                                _persist_model_cfg["provider"] = result.target_provider
+                                if result.base_url:
+                                    _persist_model_cfg["base_url"] = result.base_url
+                                if str(result.target_provider or "").strip().lower() != "custom":
+                                    clear_model_endpoint_credentials(_persist_model_cfg)
+                                from hermes_cli.config import save_config
+                                save_config(_persist_cfg)
+                            except Exception as e:
+                                logger.warning("Failed to persist model switch: %s", e)
+
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [t("gateway.model.switched", model=result.new_model)]
@@ -1240,7 +1279,10 @@ class GatewaySlashCommandsMixin:
                             if mi.has_cost_data():
                                 lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
                             lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
-                        lines.append(t("gateway.model.session_only_hint"))
+                        if persist_global:
+                            lines.append(t("gateway.model.saved_global"))
+                        else:
+                            lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -1362,7 +1404,7 @@ class GatewaySlashCommandsMixin:
             # override rather than relying on cache signature mismatch detection.
             self._evict_cached_agent(session_key)
 
-            # Persist to config if --global
+            # Persist to config (default) unless --session opted out
             if persist_global:
                 try:
                     if config_path.exists():
@@ -1389,6 +1431,8 @@ class GatewaySlashCommandsMixin:
                     model_cfg["provider"] = result.target_provider
                     if result.base_url:
                         model_cfg["base_url"] = result.base_url
+                    if str(result.target_provider or "").strip().lower() != "custom":
+                        clear_model_endpoint_credentials(model_cfg)
                     from hermes_cli.config import save_config
                     save_config(cfg)
                 except Exception as e:
@@ -2593,12 +2637,14 @@ class GatewaySlashCommandsMixin:
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
 
-                # _compress_context already calls end_session() on the old session
-                # (preserving its full transcript in SQLite) and creates a new
-                # session_id for the continuation.  Write the compressed messages
-                # into the NEW session so the original history stays searchable.
+                # _compress_context either rotated (legacy: ended the old
+                # session, created a continuation id — write compressed messages
+                # into the NEW session so the original stays searchable) or
+                # compacted in place (compression.in_place / #38763: same id,
+                # transcript replaced with the compacted set).
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
+                _in_place = bool(getattr(tmp_agent, "compression_in_place", False))
                 if rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
@@ -2606,20 +2652,27 @@ class GatewaySlashCommandsMixin:
                         source, session_entry, reason="compress-command",
                     )
 
-                # Only rewrite the transcript when rotation actually produced a
-                # NEW session id. If _compress_context could not rotate (e.g.
-                # _session_db unavailable, or the DB split raised), session_id
-                # is unchanged and rewrite_transcript() would DELETE the
-                # original messages and replace them with only the compressed
-                # summary — permanent data loss (#44794, #39704). In that case
-                # leave the original transcript intact.
-                if rotated:
-                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Rewrite the transcript when EITHER rotation produced a new id
+                # OR in-place compaction succeeded. The danger this guards
+                # against is the THIRD case: _compress_context could NOT rotate
+                # AND was not in-place (e.g. legacy mode but _session_db
+                # unavailable / the DB split raised) — there session_id is
+                # unchanged for a FAILURE reason, and rewrite_transcript() would
+                # DELETE the original messages and replace them with only the
+                # compressed summary (permanent data loss #44794, #39704). In
+                # in-place mode the unchanged id is SUCCESS, so the rewrite is
+                # exactly right (and is the durable write when the throwaway
+                # /compress agent has no _session_db of its own).
+                if rotated or _in_place:
+                    self.session_store.rewrite_transcript(
+                        new_session_id, compressed
+                    )
                 else:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "
-                        "(session_id unchanged) — preserving original transcript "
-                        "instead of overwriting it (#44794)."
+                        "(session_id unchanged) and in-place mode is off — "
+                        "preserving original transcript instead of overwriting "
+                        "it (#44794)."
                     )
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
@@ -2804,6 +2857,22 @@ class GatewaySlashCommandsMixin:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Propagate the user-chosen title to the visible Telegram
+                    # forum topic name too. Auto-generated titles already rename
+                    # the topic; without this, /title only updated the DB title
+                    # and the topic kept its auto-assigned name. No-ops off
+                    # Telegram topic lanes and when auto-rename is disabled.
+                    schedule_rename = getattr(
+                        self, "_schedule_telegram_topic_title_rename", None
+                    )
+                    if callable(schedule_rename):
+                        try:
+                            schedule_rename(source, session_id, sanitized)
+                        except Exception:
+                            logger.debug(
+                                "Failed to rename Telegram topic from /title",
+                                exc_info=True,
+                            )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")

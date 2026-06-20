@@ -366,6 +366,110 @@ class TestSummaryFailureCooldown:
         assert mock_call.call_count == 1
 
 
+class TestAuthFailureAborts:
+    """A 401/403 on the summary call must ABORT compression (preserve the
+    session unchanged) instead of rotating into a degraded child session
+    with a placeholder summary — regardless of abort_on_summary_failure.
+
+    Real incident: a nous token pointed at a stale staging inference URL
+    401'd on every compression attempt, and because abort_on_summary_failure
+    defaults False the session rotated anyway (messages N->N), stranding the
+    user on a fresh-but-broken session that kept failing the same way.
+    """
+
+    def _msgs(self, n=10):
+        return [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(n)
+        ]
+
+    def _auth_err(self, status=401):
+        err = Exception(
+            f"Error code: {status} - "
+            "{'status': 401, 'message': 'Your API key is invalid, blocked or out of funds.'}"
+        )
+        err.status_code = status
+        return err
+
+    def test_generate_summary_flags_auth_failure(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch("agent.context_compressor.call_llm", side_effect=self._auth_err(401)):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        assert c._last_summary_auth_failure is True
+
+    def test_403_also_flags_auth_failure(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch("agent.context_compressor.call_llm", side_effect=self._auth_err(403)):
+            c._generate_summary(self._msgs())
+        assert c._last_summary_auth_failure is True
+
+    def test_compress_aborts_on_auth_failure_despite_flag_false(self):
+        """abort_on_summary_failure=False (the default), but a 401 must still
+        abort: messages returned unchanged, _last_compress_aborted=True."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch("agent.context_compressor.call_llm", side_effect=self._auth_err(401)):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        # Session must NOT be compressed/rotated — same messages back.
+        assert result == msgs
+        assert len(result) == len(msgs)
+        assert c._last_compress_aborted is True
+        assert c._last_summary_auth_failure is True
+        # Did NOT fall through to the static-fallback (drop-the-middle) path.
+        assert c._last_summary_fallback_used is False
+
+    def test_non_auth_failure_still_uses_fallback_path(self):
+        """A generic (non-auth) failure with abort_on_summary_failure=False
+        keeps the historical behavior: insert a static fallback + drop the
+        middle window (does NOT abort)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("boom 500")):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        assert c._last_summary_auth_failure is False
+        assert c._last_compress_aborted is False
+        assert len(result) < len(msgs)  # middle window dropped
+
+    def test_aux_model_auth_failure_recovers_on_main_no_abort(self):
+        """A 401 from a DISTINCT auxiliary summary_model retries on the main
+        model; if main succeeds, the auth flag is cleared and compression is
+        NOT aborted (the aux creds were the only broken thing)."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[self._auth_err(401), mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+        assert mock_call.call_count == 2
+        assert isinstance(result, str)
+        assert c._last_summary_auth_failure is False  # cleared on success
+
+
 class TestSummaryFallbackToMainModel:
     """When ``summary_model`` differs from the main model and the summary LLM
     call fails, the compressor should retry once on the main model before

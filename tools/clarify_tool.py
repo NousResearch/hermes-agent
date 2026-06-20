@@ -12,7 +12,7 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
-from typing import Any, List, Optional, Callable
+from typing import List, Optional, Callable
 
 
 # Maximum number of predefined choices the agent can offer.
@@ -20,9 +20,42 @@ from typing import Any, List, Optional, Callable
 MAX_CHOICES = 4
 
 
+def _flatten_choice(c) -> str:
+    """Coerce a single choice into its user-facing display string.
+
+    The schema declares choices as bare strings, but LLMs sometimes emit
+    dict-shaped choices like ``[{"description": "..."}]``. A naive ``str(c)``
+    turns the whole dict into its Python repr — ``{'description': '...'}`` —
+    which then leaks onto every surface that renders the choice (CLI panel,
+    Discord buttons, Telegram numbered list) AND is returned verbatim as the
+    user's answer. Normalising here, at the one platform-agnostic entry point,
+    fixes the whole class in one place instead of per-adapter.
+
+    Dict unwrap order is the canonical LLM tool-call user-facing keys:
+    ``label`` → ``description`` → ``text`` → ``title``. ``name`` and ``value``
+    are deliberately excluded — they're component-shaped fields that could
+    carry raw enum values or short identifiers, not human-readable labels. A
+    dict with none of the canonical keys is dropped (returns ""), since a
+    garbage label is worse than no choice at all.
+    """
+    if c is None:
+        return ""
+    if isinstance(c, str):
+        return c.strip()
+    if isinstance(c, dict):
+        for key in ("label", "description", "text", "title"):
+            v = c.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    if isinstance(c, (list, tuple)):
+        return " ".join(_flatten_choice(x) for x in c).strip()
+    return str(c).strip()
+
+
 def clarify_tool(
     question: str,
-    choices: Optional[List[Any]] = None,
+    choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
 ) -> str:
     """
@@ -44,25 +77,26 @@ def clarify_tool(
 
     question = question.strip()
 
-    # Validate and trim choices. Choices may be plain strings or objects like
-    # {"label": "Fast", "description": "Shortest path", "value": "fast"}.
+    # Validate and trim choices. Choices may be plain strings or structured
+    # objects like {"label": "Fast", "description": "Shortest path", "value": "fast"}.
+    # Structured objects with a "label" key are preserved for platforms that
+    # render rich buttons (Telegram, Discord). Dicts without "label" are
+    # flattened to plain text via _flatten_choice so no dict repr leaks.
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings or choice objects.")
         normalized_choices = []
         for choice in choices:
-            if isinstance(choice, dict):
-                label = str(choice.get("label") or choice.get("title") or choice.get("value") or "").strip()
-                description = str(choice.get("description") or choice.get("subtext") or choice.get("details") or "").strip()
-                value = str(choice.get("value") or label).strip()
+            if isinstance(choice, dict) and "label" in choice:
+                label = str(choice.get("label") or "").strip()
                 if label:
                     normalized_choices.append({
                         "label": label,
-                        "description": description,
-                        "value": value,
+                        "description": str(choice.get("description") or choice.get("subtext") or "").strip(),
+                        "value": str(choice.get("value") or label).strip(),
                     })
             else:
-                text = str(choice).strip()
+                text = _flatten_choice(choice)
                 if text:
                     normalized_choices.append(text)
         choices = normalized_choices[:MAX_CHOICES]
@@ -108,6 +142,12 @@ CLARIFY_SCHEMA = {
         "or types their own answer via a 5th 'Other' option.\n"
         "2. **Open-ended** — omit choices entirely. The user types a free-form "
         "response.\n\n"
+        "CRITICAL: when you are offering options, put each option ONLY in the "
+        "`choices` array — NEVER enumerate the options inside the `question` "
+        "text. The UI renders `choices` as selectable rows; options written "
+        "into the question string render as dead prose the user can't pick. "
+        "Right: question='Which deployment target?', choices=['staging', "
+        "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
@@ -122,29 +162,22 @@ CLARIFY_SCHEMA = {
         "properties": {
             "question": {
                 "type": "string",
-                "description": "The question to present to the user.",
+                "description": (
+                    "The question itself, and ONLY the question (e.g. 'Which "
+                    "deployment target?'). Do NOT embed the answer options here "
+                    "— pass them as separate elements in `choices`."
+                ),
             },
             "choices": {
                 "type": "array",
-                "items": {
-                    "anyOf": [
-                        {"type": "string"},
-                        {
-                            "type": "object",
-                            "properties": {
-                                "label": {"type": "string"},
-                                "description": {"type": "string"},
-                                "value": {"type": "string"},
-                            },
-                            "required": ["label"],
-                        },
-                    ]
-                },
+                "items": {"type": "string"},
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "Up to 4 answer choices, either strings or {label, description, value} objects. Omit this parameter entirely to "
-                    "ask an open-ended question. When provided, the UI "
-                    "automatically appends an 'Other (type your answer)' option."
+                    "REQUIRED whenever you are presenting selectable options: "
+                    "each distinct option is its own array element (up to 4). "
+                    "The UI renders these as pickable rows and auto-appends an "
+                    "'Other (type your answer)' option. Omit this parameter "
+                    "entirely ONLY for a genuinely open-ended free-text question."
                 ),
             },
         },

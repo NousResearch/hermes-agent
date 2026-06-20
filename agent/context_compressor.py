@@ -901,6 +901,45 @@ class ContextCompressor(ContextEngine):
             return False
         return True
 
+    def record_compaction_effectiveness(
+        self, pre_request_tokens: int, post_request_tokens: int,
+    ) -> None:
+        """Single authoritative verdict on whether a compaction was effective,
+        measured at the REQUEST level (system prompt + messages + tool schemas),
+        the same level that ``should_compress`` uses to decide re-trigger.
+
+        This corrects the 2026-06-19 compaction-thrash root cause: ``compress()``
+        compared a request-level PRE value (``display_tokens``) against a
+        MESSAGES-ONLY post estimate, so the ~30K of tool-schema overhead made
+        every pass look like a >=10% saving and reset the anti-thrash counter,
+        even when the real request stayed over the trigger and immediately
+        re-fired (the ``205,072 -> 297,723`` "tokens went UP" case).
+
+        A pass is INEFFECTIVE when the post-compaction request estimate did not
+        get below the trigger AND it did not shed at least 10% of the request.
+        Both arms matter: a huge transcript that drops 60% but is still over
+        threshold is making real progress (effective); a pass that "saved" a few
+        percent and is still over threshold is thrash (ineffective).
+
+        This is the SINGLE owner of the counter's increment/reset for the normal
+        compaction path — ``compress()`` no longer independently mutates it from
+        its messages-only verdict (it still increments for the structural
+        "nothing to compress" no-window case, which is request-independent).
+        Called exactly once per completed compaction by the done-site, so a
+        single ineffective pass increments by exactly 1.
+        """
+        if pre_request_tokens > 0:
+            saved_pct = (pre_request_tokens - post_request_tokens) / pre_request_tokens * 100
+        else:
+            saved_pct = 0.0
+        self._last_compression_savings_pct = saved_pct
+        still_over_threshold = post_request_tokens >= self.threshold_tokens
+        if still_over_threshold and saved_pct < 10:
+            self._ineffective_compression_count += 1
+        else:
+            self._ineffective_compression_count = 0
+
+
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
     # ------------------------------------------------------------------
@@ -2472,17 +2511,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         new_estimate = estimate_messages_tokens_rough(compressed)
         saved_estimate = display_tokens - new_estimate
 
-        # Anti-thrashing: track compression effectiveness
+        # NOTE: the anti-thrash effectiveness verdict is NOT decided here.
+        # ``display_tokens`` is a REQUEST-level pre value but ``new_estimate`` is
+        # MESSAGES-ONLY, so this comparison is inflated by the ~30K of tool-schema
+        # overhead and historically reset the counter on every pass (the
+        # 2026-06-19 compaction-thrash root cause). The authoritative,
+        # apples-to-apples REQUEST-level verdict is recorded by the done-site via
+        # ``record_compaction_effectiveness`` (see conversation_compression).
+        # ``saved_estimate`` / ``savings_pct`` below remain for human-readable
+        # logging only.
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
-        self._last_compression_savings_pct = savings_pct
-        if savings_pct < 10:
-            self._ineffective_compression_count += 1
-        else:
-            self._ineffective_compression_count = 0
 
         if not self.quiet_mode:
             logger.info(
-                "Compressed: %d -> %d messages (~%d tokens saved, %.0f%%)",
+                "Compressed: %d -> %d messages (~%d tokens saved, %.0f%% messages-only)",
                 n_messages,
                 len(compressed),
                 saved_estimate,

@@ -611,6 +611,30 @@ def compress_context(
         system_prompt=new_system_prompt or "",
         tools=agent.tools or None,
     )
+
+    # Record the anti-thrash effectiveness verdict at the REQUEST level (the
+    # same level should_compress uses), apples-to-apples: pre = the request-level
+    # estimate of the messages that triggered this compaction, post =
+    # _compressed_est. This is the SINGLE owner of the counter for the normal
+    # compaction path and fixes the 2026-06-19 thrash where compress()'s
+    # messages-only verdict reset the counter on every pass (the
+    # 205,072 -> 297,723 "tokens went UP" case). Use the pre-compaction request
+    # estimate of the ORIGINAL messages so a failed/placeholder summary that
+    # leaves the request over threshold is correctly counted as ineffective.
+    try:
+        _pre_request_est = estimate_request_tokens_rough(
+            messages,
+            system_prompt=system_message or "",
+            tools=agent.tools or None,
+        )
+        if hasattr(agent.context_compressor, "record_compaction_effectiveness"):
+            agent.context_compressor.record_compaction_effectiveness(
+                pre_request_tokens=_pre_request_est,
+                post_request_tokens=_compressed_est,
+            )
+    except Exception as _eff_err:
+        logger.debug("record_compaction_effectiveness failed: %s", _eff_err)
+
     agent.context_compressor.last_compression_rough_tokens = _compressed_est
     agent.context_compressor.last_prompt_tokens = -1
     agent.context_compressor.last_completion_tokens = 0

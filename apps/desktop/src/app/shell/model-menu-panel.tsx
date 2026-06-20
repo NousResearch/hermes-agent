@@ -207,7 +207,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
           {copy.noModels}
         </DropdownMenuItem>
       ) : (
-        <div className="max-h-80 overflow-y-auto py-0.5">
+        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5">
           {groups.map(group => (
             <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{group.provider.name}</DropdownMenuLabel>
@@ -310,7 +310,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
           void refreshModels()
         }}
       >
-        <Codicon className={cn('mr-1.5', refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+        <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
         {copy.refreshModels}
       </DropdownMenuItem>
 
@@ -318,6 +318,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
       >
+        <Codicon name="settings-gear" size="0.75rem" />
         {copy.editModels}
       </DropdownMenuItem>
     </>

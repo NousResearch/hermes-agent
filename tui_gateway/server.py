@@ -2434,6 +2434,80 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
         logger.debug("failed to persist live session system prompt", exc_info=True)
 
 
+def _history_has_real_activity(history: list | None) -> bool:
+    """Return True once a transcript has user-visible conversation content.
+
+    System-only entries (for example a model-switch metadata marker) must not
+    materialize an abandoned draft in state.db.  A row becomes user-facing only
+    after a user/assistant/tool turn exists.
+    """
+    for msg in history or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        if role not in {"user", "assistant", "tool"}:
+            continue
+        if msg.get("tool_calls"):
+            return True
+        content = msg.get("content")
+        if role == "tool":
+            return True
+        if isinstance(content, str):
+            if content.strip():
+                return True
+        elif content:
+            return True
+    return False
+
+
+def _db_session_exists(db, session_key: str) -> bool | None:
+    if not hasattr(db, "get_session"):
+        return None
+    try:
+        return bool(db.get_session(session_key))
+    except Exception:
+        logger.debug("failed to check session row existence", exc_info=True)
+        return None
+
+
+def _db_session_has_real_activity(db, session_key: str) -> bool:
+    if not hasattr(db, "get_messages_as_conversation"):
+        return False
+    return _history_has_real_activity(db.get_messages_as_conversation(session_key) or [])
+
+
+def _session_row_is_user_facing(db, row: dict) -> bool:
+    """Filter out system-only metadata shells from desktop session pickers."""
+    # Most rows have a first-user preview. Keep those fast-path visible.
+    if (row.get("preview") or "").strip():
+        return True
+    try:
+        message_count = int(row.get("message_count") or 0)
+    except (TypeError, ValueError):
+        return True
+    # Avoid changing legacy behavior for truly empty rows here; the bug this
+    # guards is a non-empty row whose only messages are system metadata. A title
+    # must not make such a shell user-facing: tests and failed metadata writes
+    # can stamp titles like "Partial Answer Complete" onto rows that still have
+    # no user/assistant/tool activity.
+    if message_count <= 0:
+        return True
+    session_id = str(row.get("id") or "").strip()
+    if not session_id:
+        return False
+    activity_ids: list[str] = []
+    root_id = str(row.get("_lineage_root_id") or "").strip()
+    if root_id and root_id != session_id:
+        # ``list_sessions_rich(project_compression_tips=True)`` surfaces the
+        # compression continuation tip but annotates the original root.  The tip
+        # can briefly contain only system metadata (e.g. a model switch) while
+        # the root holds the real user conversation; keep that conversation
+        # visible instead of treating the projected tip as a standalone shell.
+        activity_ids.append(root_id)
+    activity_ids.append(session_id)
+    return any(_db_session_has_real_activity(db, sid) for sid in activity_ids)
+
+
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
     """Record a real system-history pivot after a live model switch."""
     if not session:
@@ -2463,19 +2537,34 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         session.setdefault("history", []).append(entry)
         session["history_version"] = int(session.get("history_version", 0)) + 1
 
+    # Do not let this system-only metadata row create an "Untitled Session" in
+    # the sidebar.  A freshly opened draft can build an agent and switch models
+    # before the user sends anything; persisting the marker there violates the
+    # lazy DB-row contract from session.create.
+    in_memory_real_activity = _history_has_real_activity(session.get("history"))
+
+    def _persist_if_user_facing(db) -> bool:
+        if db is None:
+            return False
+        exists = _db_session_exists(db, session_key)
+        if exists is False and not in_memory_real_activity:
+            return True
+        if exists is False:
+            _ensure_session_db_row(session)
+            exists = _db_session_exists(db, session_key)
+            if exists is False:
+                return True
+        db.append_message(session_id=session_key, role="user", content=marker)
+        return True
+
     try:
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
-        if db is not None:
-            db.append_message(session_id=session_key, role="user", content=marker)
+        if _persist_if_user_facing(db):
             return
 
-        _ensure_session_db_row(session)
         with _session_db(session) as scoped_db:
-            if scoped_db is not None:
-                scoped_db.append_message(
-                    session_id=session_key, role="user", content=marker
-                )
+            _persist_if_user_facing(scoped_db)
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
 
@@ -5357,15 +5446,31 @@ def _(rid, params: dict) -> dict:
         deny = frozenset({"tool"})
 
         limit = int(params.get("limit", 200) or 200)
-        # Over-fetch modestly so per-source filtering doesn't leave us
-        # short; the compression-tip projection in ``list_sessions_rich``
-        # can also merge rows.
-        fetch_limit = max(limit * 2, 200)
-        rows = [
-            s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_last_active=True, compact_rows=True)
-            if (s.get("source") or "").strip().lower() not in deny
-        ][:limit]
+        # Keep paging until we fill the requested window or exhaust the DB. A
+        # single over-fetch can still be starved by a burst of recent phantom
+        # metadata shells, so filtering must not stop at the first page.
+        page_size = max(limit * 2, 200)
+        rows = []
+        offset = 0
+        while len(rows) < limit:
+            page = db.list_sessions_rich(
+                source=None,  # type: ignore[arg-type]
+                limit=page_size,
+                offset=offset,
+            )
+            if not page:
+                break
+            for s in page:
+                if (s.get("source") or "").strip().lower() in deny:
+                    continue
+                if not _session_row_is_user_facing(db, s):
+                    continue
+                rows.append(s)
+                if len(rows) >= limit:
+                    break
+            if len(page) < page_size:
+                break
+            offset += len(page)
         return _ok(
             rid,
             {
@@ -5406,24 +5511,32 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
     try:
         deny = frozenset({"tool"})
-        # Over-fetch by a generous bounded amount so heavy sub-agent
-        # users (lots of recent ``tool`` rows) don't get a false
-        # "no eligible session" answer.  ``session.list`` uses a
-        # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200, order_by_last_active=True, compact_rows=True)
-        for row in rows:
-            src = (row.get("source") or "").strip().lower()
-            if src in deny:
-                continue
-            return _ok(
-                rid,
-                {
-                    "session_id": row.get("id"),
-                    "title": row.get("title") or "",
-                    "started_at": row.get("started_at") or 0,
-                    "source": row.get("source") or "",
-                },
+        page_size = 200
+        offset = 0
+        while True:
+            page = db.list_sessions_rich(
+                source=None,  # type: ignore[arg-type]
+                limit=page_size,
+                offset=offset,
             )
+            if not page:
+                break
+            for row in page:
+                src = (row.get("source") or "").strip().lower()
+                if src in deny or not _session_row_is_user_facing(db, row):
+                    continue
+                return _ok(
+                    rid,
+                    {
+                        "session_id": row.get("id"),
+                        "title": row.get("title") or "",
+                        "started_at": row.get("started_at") or 0,
+                        "source": row.get("source") or "",
+                    },
+                )
+            if len(page) < page_size:
+                break
+            offset += len(page)
         return _ok(rid, {"session_id": None})
     except Exception:
         logger.exception("session.most_recent failed")

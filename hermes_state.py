@@ -2605,9 +2605,18 @@ class SessionDB:
             now_ts = time.time()
             total_messages = 0
             total_tool_calls = 0
+            _prev_dedup_content = None
             for msg in messages:
                 role = msg.get("role", "unknown")
                 tool_calls = msg.get("tool_calls")
+                # Defense-in-depth: skip consecutive identical assistant messages
+                # that slipped through upstream dedup (context_compressor.py).
+                _msg_content = msg.get("content")
+                if (role == "assistant"
+                        and _msg_content == _prev_dedup_content
+                        and not tool_calls):
+                    continue
+                _prev_dedup_content = _msg_content
                 message_timestamp = now_ts
                 if msg.get("timestamp") is not None:
                     try:

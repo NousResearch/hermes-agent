@@ -245,3 +245,53 @@ fi
 | Credentials not persisting | Check `git config --global credential.helper` — must be `store` or `cache` |
 | Multiple GitHub accounts | Use SSH with different keys per host alias in `~/.ssh/config`, or per-repo credential URLs |
 | `gh: command not found` + no sudo | Use git-only Method 1 above — no installation needed |
+| gh install succeeds but `which gh` finds nothing | npm installed the wrong `gh` package (the npm registry lib, not GitHub CLI) — npm global installs land in a path that may not be on the default PATH. Use the zip extraction method below instead. |
+| `winget install` fails with "not recognized" | winget may not be in the PATH. Try direct download + extraction (see below). |
+| MSI install via `msiexec /i ... /quiet` returns exit code 83 | "This installation package could not be opened." The MSI download may be corrupt or the path may have spaces. Try downloading to a path with no spaces and re-run. |
+
+### gh CLI Installation in WSL (No sudo, no package manager)
+
+When `gh` is not installed and package managers aren't available or fail, install it directly from the GitHub releases:
+
+**Step 1: Download the zip**
+
+```bash
+curl -L https://github.com/cli/cli/releases/download/v2.63.2/gh_2.63.2_windows_amd64.zip \
+  -o /tmp/gh.zip
+```
+
+**Step 2: Extract (no `unzip` needed — use PowerShell)**
+
+```powershell
+# PowerShell can extract zip natively
+powershell.exe -Command "Expand-Archive -Path 'C:\path\to\gh.zip' -DestinationPath 'C:\path\to\gh_extracted' -Force"
+```
+
+**Step 3: Copy gh.exe to a permanent location**
+
+```bash
+cp /mnt/c/path/to/gh_extracted/bin/gh.exe /mnt/c/Users/<username>/gh.exe
+```
+
+**Step 4: Verify**
+
+```bash
+/mnt/c/Users/<username>/gh.exe --version
+# gh version 2.63.2 (2024-12-05)
+```
+
+**Step 5: Authenticate (headless token-based)**
+
+```bash
+# Tell the user to generate a PAT at https://github.com/settings/tokens
+# Scopes needed: repo (full), delete_repo (to delete repos)
+# Then:
+/mnt/c/Users/<username>/gh.exe auth login --with-token <<< "$TOKEN"
+/mnt/c/Users/<username>/gh.exe auth setup-git
+```
+
+**Known pitfalls for this method:**
+- Do NOT use `npm install -g gh` — that installs the npm registry package, not the GitHub CLI
+- The extracted folder structure varies by release: check `gh_extracted/bin/` for the actual `gh.exe`
+- After install, gh lives at a Windows path — use the full absolute path when invoking from WSL
+- Windows Task Scheduler or other Windows automation that calls `gh` needs the full path like `C:\Users\<username>\gh.exe`

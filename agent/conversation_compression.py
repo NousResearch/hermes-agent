@@ -50,6 +50,225 @@ COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
 
+# ── Compaction completion announce (engine-aware) ──────────────────────────
+# Spec: ~/.hermes/plans/2026-06-20_compaction-announce-with-context-reference.md
+# A persistent, in-chat marker emitted when context is actually compacted, for
+# BOTH the built-in ContextCompressor (lossy, session-rotating) and the LCM/DAG
+# engine (lossless raw store + lcm_grep/lcm_expand recovery). Additive to the
+# fallback announce (never a replacement). Emitted out-of-band via _emit_status,
+# never injected into model history.
+
+# Markers stripped from a summary snippet before display.
+_COMPACTION_SUMMARY_MARKERS = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY]",
+    "[CONTEXT COMPACTION - REFERENCE ONLY]",
+    "[CONTEXT COMPACTION]",
+)
+
+# Allow-list gating (Invariant I8 / §5.5). Statuses that ALWAYS represent a real
+# context reduction → announce unconditionally.
+_ANNOUNCE_STATUS_UNCONDITIONAL = frozenset(
+    {"compacted", "overflow_recovery", "degraded_fallback_compressed"}
+)
+# Statuses that announce ONLY when context tokens actually dropped (token
+# reduction is monotonic across LCM node reassignment; message count is not).
+_ANNOUNCE_STATUS_CONDITIONAL = frozenset({"degraded_fail_open", "sanitized"})
+# Statuses carrying a degraded-summary caveat.
+_DEGRADED_STATUSES = frozenset({"degraded_fallback_compressed", "degraded_fail_open"})
+
+
+def _compaction_window_label(tokens: "int | None") -> str:
+    """Compact human label for a context window: 1M, 272K, 128K (mirror of
+    chat_completion_helpers._format_context_window; kept local to avoid a
+    cross-module import cycle)."""
+    if not tokens or tokens <= 0:
+        return ""
+    if tokens >= 1_000_000:
+        whole = tokens / 1_000_000
+        return f"{whole:.0f}M" if whole == int(whole) else f"{whole:.1f}M"
+    if tokens >= 1_000:
+        return f"{tokens // 1000}K"
+    return str(tokens)
+
+
+def _abbrev_tokens(tokens: "int | None") -> str:
+    """~323K / ~15K / ~1.2M style for the token-delta display."""
+    if tokens is None or tokens <= 0:
+        return "?"
+    if tokens >= 1_000_000:
+        whole = tokens / 1_000_000
+        return f"~{whole:.0f}M" if whole == int(whole) else f"~{whole:.1f}M"
+    if tokens >= 1_000:
+        return f"~{tokens // 1000}K"
+    return f"~{tokens}"
+
+
+def _msg_text(content: Any) -> str:
+    """Flatten a message ``content`` (str or list-of-blocks) to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                t = block.get("text") or block.get("content")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return ""
+
+
+def _extract_compaction_summary_snippet(
+    compressed_messages: list, *, max_chars: int = 160
+) -> "str | None":
+    """Deterministically pull a one-line snippet of what was summarised.
+
+    Scans for the first message carrying a compaction summary marker, strips the
+    marker boilerplate, collapses whitespace, and truncates at a word boundary.
+    Returns ``None`` when no usable summary text exists (e.g. a placeholder-only
+    marker). Not an LLM call.
+    """
+    if not compressed_messages:
+        return None
+    for msg in compressed_messages:
+        if not isinstance(msg, dict):
+            continue
+        text = _msg_text(msg.get("content"))
+        if not text:
+            continue
+        if not any(m in text for m in _COMPACTION_SUMMARY_MARKERS):
+            continue
+        for m in _COMPACTION_SUMMARY_MARKERS:
+            text = text.replace(m, " ")
+        # collapse all whitespace runs to single spaces
+        cleaned = " ".join(text.split())
+        if not cleaned:
+            return None
+        if len(cleaned) <= max_chars:
+            return cleaned
+        # truncate at a word boundary, then append an ellipsis
+        cut = cleaned[:max_chars].rsplit(" ", 1)[0].rstrip()
+        if not cut:
+            cut = cleaned[:max_chars].rstrip()
+        return cut + "…"
+    return None
+
+
+def _format_compaction_announce(
+    engine_name: "str | None",
+    status: "str | None",
+    *,
+    old_session_id: "str | None",
+    new_session_id: "str | None",
+    old_messages: int,
+    new_messages: int,
+    pre_tokens: "int | None",
+    post_tokens: "int | None",
+    model: "str | None",
+    provider: "str | None",
+    window_from: "int | None" = None,
+    window_to: "int | None" = None,
+    summary_snippet: "str | None" = None,
+    raw_store_count: "int | None" = None,
+    after_fallback: bool = False,
+) -> "str | None":
+    """Build the engine-aware announce line, or ``None`` if gating says skip.
+
+    Gating (§5.5, Invariant I8):
+    - LCM (``engine_name == "lcm"``): allow-list on ``status`` — unconditional
+      set always announces; conditional set announces only on a real token drop;
+      everything else (incl. unknown/future) is silent.
+    - Built-in (no engine name / no status): announce only when a real rotation
+      happened (``old_session_id != new_session_id``).
+    """
+    is_lcm = engine_name == "lcm"
+
+    if is_lcm:
+        if status in _ANNOUNCE_STATUS_UNCONDITIONAL:
+            pass
+        elif status in _ANNOUNCE_STATUS_CONDITIONAL:
+            if not (pre_tokens and post_tokens and post_tokens < pre_tokens):
+                return None
+        else:
+            return None  # default-deny: noop/idle/running/bypassed/unknown
+    else:
+        # built-in compressor: a real compaction rotates the session id
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return None
+
+    degraded = status in _DEGRADED_STATUSES
+    head = "🗜️ Context compacted"
+    if after_fallback:
+        head += " after model fallback"
+    if degraded:
+        head += " (degraded)"
+
+    parts = [f"{head}: {old_messages}→{new_messages} messages"]
+    parts.append(f"{_abbrev_tokens(pre_tokens)}→{_abbrev_tokens(post_tokens)} tokens")
+
+    if model:
+        parts.append(f"{provider}/{model}" if provider else str(model))
+
+    if after_fallback:
+        wf, wt = _compaction_window_label(window_from), _compaction_window_label(window_to)
+        if wf and wt and wf != wt:
+            parts.append(f"window {wf}→{wt}")
+
+    if is_lcm:
+        parts.append("engine: lcm")
+
+    line = " · ".join(parts)
+
+    # Recovery reference (engine-correct).
+    if is_lcm:
+        if raw_store_count and raw_store_count > 0:
+            ref = (
+                f"↩ nothing lost — {raw_store_count:,} raw turns from this session "
+                "preserved in lcm.db · recover with lcm_grep / lcm_expand"
+            )
+        else:
+            ref = (
+                "↩ nothing lost — raw turns preserved in lcm.db · "
+                "recover with lcm_grep / lcm_expand"
+            )
+    else:
+        ref = f"↩ previous: {old_session_id} → current: {new_session_id}"
+    line += "\n" + ref
+
+    if summary_snippet:
+        line += f"\nSummary: {summary_snippet}"
+    elif degraded:
+        line += "\nSummary: unavailable — summarizer degraded this pass; raw store is intact."
+
+    return line
+
+
+def _emit_compaction_announce(agent: Any, *, dedupe_key, **fmt_kwargs) -> None:
+    """Emit the compaction announce once per real compaction boundary.
+
+    Dedupe: ``agent._last_compaction_announced`` holds an engine-namespaced
+    ``dedupe_key``; a repeat key is skipped. The key is set ONLY after a
+    successful emit (D7), so a swallowed emit failure does not suppress the next
+    real compaction's announce. The caller holds the compression lock, so the
+    read-then-write is serialized per session.
+    """
+    line = _format_compaction_announce(**fmt_kwargs)
+    if line is None:
+        return  # gating skip — do not advance the key
+    if getattr(agent, "_last_compaction_announced", None) == dedupe_key:
+        return  # already announced this boundary
+    emit = getattr(agent, "_emit_status", None)
+    if not callable(emit):
+        return
+    try:
+        emit(line)
+    except Exception:
+        logger.debug("compaction announce emit failed", exc_info=True)
+        return  # key NOT advanced — next real compaction can still announce
+    agent._last_compaction_announced = dedupe_key
+
 
 def _compression_lock_holder(agent: Any) -> str:
     """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.

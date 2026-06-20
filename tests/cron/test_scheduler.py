@@ -912,6 +912,43 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
+        # The cron session's first message is the injected "[IMPORTANT: …]"
+        # hint, which used to surface as the sidebar/history row label. run_job
+        # must title the session from the job (name → short prompt → id).
+        job = {
+            "id": "test-job",
+            "name": "Morning digest",
+            "prompt": "summarize my inbox",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+
+        fake_db.set_session_title.assert_called_once()
+        sid, title = fake_db.set_session_title.call_args[0]
+        assert sid.startswith("cron_test-job_")
+        assert "IMPORTANT" not in title
+        assert title.startswith("Morning digest")
+
     def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
         # Regression: if ``run_conversation`` raises, the ephemeral cron
         # agent was previously leaked — over days of ticks this accumulated
@@ -1450,7 +1487,7 @@ class TestRunJobConfigLogging:
         }
 
         # Mock heavy post-yaml work so the test only exercises the warning
-        # path. Without these mocks, _run_job_impl continues into provider
+        # path. Without these mocks, run_job continues into provider
         # resolution and MCP discovery, both of which can spawn subprocesses
         # / hit the network and have caused this test to time out on CI
         # (>30s wall clock) under load. See PR #33661 follow-up.
@@ -2699,3 +2736,26 @@ class TestCronDeliveryTargets:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
+
+
+class TestHomeTargetEnvVarRegistry:
+    """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
+    platform that supports cron-driven outbound delivery. Missing an
+    entry means ``hermes cron create --deliver=<platform>`` silently
+    fails to route through the platform's home channel."""
+
+    def test_whatsapp_cloud_registered(self):
+        """``deliver=whatsapp_cloud`` routes through
+        WHATSAPP_CLOUD_HOME_CHANNEL — added alongside the existing
+        ``whatsapp`` Baileys entry."""
+        from cron.scheduler import _HOME_TARGET_ENV_VARS
+
+        assert "whatsapp_cloud" in _HOME_TARGET_ENV_VARS
+        assert _HOME_TARGET_ENV_VARS["whatsapp_cloud"] == "WHATSAPP_CLOUD_HOME_CHANNEL"
+
+    def test_baileys_whatsapp_still_registered(self):
+        """Sanity guard: the Cloud addition didn't disturb Baileys
+        whatsapp routing."""
+        from cron.scheduler import _HOME_TARGET_ENV_VARS
+
+        assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"

@@ -27,12 +27,43 @@ Session context:
     that thread will include ``[session_id]`` for filtering/correlation.
 """
 
+import io
 import logging
 import os
+import sys
 import threading
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
+
+# On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
+# ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
+# another process holds an append-mode handle on ``agent.log`` — which is
+# essentially always in Hermes (TUI, gateway, ``hy_memory`` server, MCP
+# servers, and on-demand CLI commands all log from separate processes),
+# pinning ``agent.log`` at the 5 MiB threshold and spamming stderr with
+# a traceback on every emit. ``concurrent-log-handler`` wraps the rename in a
+# cross-process file lock (via ``portalocker``: pywin32 on Windows) so only
+# one process rotates at a time and the others wait their turn.
+#
+# This swap is Windows-ONLY and deliberately so:
+#   * The bug (WinError 32 on rename-while-open) is specific to Windows file
+#     locking semantics — POSIX renames an open file fine, so stdlib already
+#     works correctly on Linux/macOS.
+#   * On POSIX, managed-mode (NixOS) relies on the exact ``_open()`` /
+#     ``doRollover()`` lifecycle of stdlib ``RotatingFileHandler`` (the
+#     ``_ManagedRotatingFileHandler`` subclass chmods 0660 after each). CLH
+#     opens lazily and rotates differently, which breaks the group-writable
+#     guarantee and the eager file-creation those paths depend on.
+# Aliasing keeps every existing ``RotatingFileHandler`` reference in this
+# module (class declaration, ``isinstance`` checks, docstring) working
+# unchanged. See #44873.
+if sys.platform == "win32":
+    from concurrent_log_handler import (  # noqa: E402
+        ConcurrentRotatingFileHandler as RotatingFileHandler,
+    )
+else:
+    from logging.handlers import RotatingFileHandler  # noqa: E402
+
 
 from hermes_constants import get_config_path, get_hermes_home
 
@@ -49,6 +80,40 @@ _session_context = threading.local()
 # exist on every LogRecord via _install_session_record_factory() below.
 _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
+
+
+def _safe_stderr():  # type: ignore[return]
+    """Return a stderr stream that tolerates Unicode on all platforms.
+
+    On Windows the console encoding is often a legacy MBCS codec
+    (cp949, cp1252, …) that raises ``UnicodeEncodeError`` for characters
+    like the em-dash (U+2014).  We wrap ``sys.stderr`` in a
+    ``TextIOWrapper`` with ``errors='replace'`` so log lines are never
+    lost — un-encodable characters are replaced with ``?`` instead of
+    crashing the process.
+    """
+    stream = sys.stderr
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    # Already UTF-8 or surrogate-aware — no wrapping needed.
+    if encoding.lower().replace("-", "") in ("utf8", "utf8surrogateescape"):
+        return stream
+    try:
+        buf = getattr(stream, "buffer", None)
+        if buf is not None:
+            wrapped = io.TextIOWrapper(
+                buf,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=True,
+            )
+            # Prevent the wrapper from closing the underlying buffer
+            # when it is garbage-collected.
+            wrapped.close = lambda: None  # type: ignore[assignment]
+            return wrapped
+    except Exception:
+        pass
+    # Best-effort: if wrapping fails, return the original stream.
+    return stream
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
@@ -145,7 +210,11 @@ class _ComponentFilter(logging.Filter):
 # Logger name prefixes that belong to each component.
 # Used by _ComponentFilter and exposed for ``hermes logs --component``.
 COMPONENT_PREFIXES = {
-    "gateway": ("gateway", "hermes_plugins"),
+    # ``plugins.platforms`` covers messaging-platform adapters that migrated
+    # out of ``gateway/platforms/`` into bundled plugins (#41112) — they are
+    # still gateway components and their logs belong in gateway.log / match
+    # ``hermes logs --component gateway``.
+    "gateway": ("gateway", "hermes_plugins", "plugins.platforms"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
@@ -298,7 +367,7 @@ def setup_verbose_logging() -> None:
             if getattr(h, "_hermes_verbose", False):
                 return
 
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(_safe_stderr())
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
     handler._hermes_verbose = True  # type: ignore[attr-defined]
@@ -488,6 +557,13 @@ def _read_logging_config():
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
+            # Managed scope: an administrator can pin logging.* too. Overlay via
+            # the shared helper (fail-open) since this reads config.yaml directly.
+            try:
+                from hermes_cli import managed_scope
+                cfg = managed_scope.apply_managed_overlay(cfg)
+            except Exception:
+                pass
             log_cfg = cfg.get("logging", {})
             if isinstance(log_cfg, dict):
                 return (

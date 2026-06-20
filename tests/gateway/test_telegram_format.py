@@ -35,7 +35,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import (  # noqa: E402
+from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
     _strip_mdv2,
@@ -835,7 +835,7 @@ class TestEditMessageStreamingSafety:
         assert second_call == {
             "chat_id": 123,
             "message_id": 456,
-            "text": "final **bold**",
+            "text": "final bold",
         }
 
     @pytest.mark.asyncio

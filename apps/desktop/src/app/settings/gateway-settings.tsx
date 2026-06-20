@@ -535,13 +535,13 @@ export function GatewaySettings() {
                     <Check className="size-3" /> {g.signedIn}
                   </Pill>
                   <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
-                    {signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {signingIn ? <Loader2 className="animate-spin" /> : null}
                     {g.signOut}
                   </Button>
                 </div>
               ) : (
                 <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
-                  {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                  {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                   {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                 </Button>
               )
@@ -591,14 +591,14 @@ export function GatewaySettings() {
           size="sm"
           variant="text"
         >
-          {testing ? <Loader2 className="size-4 animate-spin" /> : null}
+          {testing ? <Loader2 className="animate-spin" /> : null}
           {g.testRemote}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(false)} size="sm" variant="textStrong">
           {g.saveForRestart}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
-          {saving ? <Loader2 className="size-4 animate-spin" /> : null}
+          {saving ? <Loader2 className="animate-spin" /> : null}
           {g.saveAndReconnect}
         </Button>
       </div>
@@ -607,7 +607,7 @@ export function GatewaySettings() {
         <ListRow
           action={
             <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
-              <FileText className="size-4" />
+              <FileText />
               {g.openLogs}
             </Button>
           }

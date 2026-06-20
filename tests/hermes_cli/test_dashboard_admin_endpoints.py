@@ -94,9 +94,31 @@ class TestMcpEndpoints:
         body = r.json()
         assert "entries" in body and "diagnostics" in body
         # The shipped optional-mcps/ catalog has at least one entry; each must
-        # carry the install/enabled status fields the UI relies on.
+        # carry the install/enabled status fields plus the inspection detail
+        # the dashboard renders (transport target, install source, guidance) so
+        # users can vet an entry before installing.
         for e in body["entries"]:
-            assert {"name", "transport", "installed", "enabled", "needs_install"} <= set(e)
+            assert {
+                "name",
+                "transport",
+                "auth_type",
+                "installed",
+                "enabled",
+                "needs_install",
+                "command",
+                "args",
+                "url",
+                "install_url",
+                "install_ref",
+                "bootstrap",
+                "default_enabled",
+                "post_install",
+            } <= set(e)
+            # http entries expose a url; stdio entries expose a command.
+            if e["transport"] == "http":
+                assert e["url"]
+            elif e["transport"] == "stdio":
+                assert e["command"]
 
     def test_catalog_install_unknown_404(self):
         r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})
@@ -200,6 +222,91 @@ class TestWebhookEndpoints:
         assert data["enabled"] is False
         r = self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"})
         assert r.status_code == 400
+
+    def test_enable_platform_starts_gateway_restart(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+        restart_calls = []
+
+        class FakeRestartProc:
+            pid = 4242
+
+        def fake_spawn_action(subcommand, name):
+            restart_calls.append((subcommand, name))
+            return FakeRestartProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post("/api/webhooks/enable")
+
+        assert r.status_code == 200
+        assert r.json() == {
+            "ok": True,
+            "platform": "webhook",
+            "enabled": True,
+            "needs_restart": False,
+            "restart_started": True,
+            "restart_action": "gateway-restart",
+            "restart_pid": 4242,
+        }
+        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        assert load_config()["platforms"]["webhook"]["enabled"] is True
+        assert self.client.get("/api/webhooks").json()["enabled"] is True
+
+    def test_enable_platform_reports_restart_failure_after_save(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+
+        def fail_spawn_action(subcommand, name):
+            assert subcommand == ["gateway", "restart"]
+            assert name == "gateway-restart"
+            raise RuntimeError("supervisor unavailable")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+
+        r = self.client.post("/api/webhooks/enable")
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["platform"] == "webhook"
+        assert data["enabled"] is True
+        assert data["needs_restart"] is True
+        assert data["restart_started"] is False
+        assert "supervisor unavailable" in data["restart_error"]
+        assert load_config()["platforms"]["webhook"]["enabled"] is True
+
+    def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+
+        class FakeRunningProc:
+            pid = 5151
+
+            def poll(self):
+                return None
+
+        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
+
+        def fail_spawn_action(subcommand, name):
+            raise AssertionError("must not spawn a second concurrent restart")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+
+        r = self.client.post("/api/webhooks/enable")
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["needs_restart"] is False
+        assert data["restart_started"] is True
+        assert data["restart_pid"] == 5151
+        assert load_config()["platforms"]["webhook"]["enabled"] is True
 
 
 class TestOpsEndpoints:
@@ -659,6 +766,10 @@ class TestAdminEndpointsAuthGate:
         resp = self.client.get(path)
         assert resp.status_code in (401, 403)
 
+    def test_webhooks_enable_post_gated(self):
+        resp = self.client.post("/api/webhooks/enable")
+        assert resp.status_code in (401, 403)
+
 
 class TestUpdateCheckEndpoint:
     """``GET /api/hermes/update/check`` reports availability without applying.
@@ -720,6 +831,25 @@ class TestUpdateCheckEndpoint:
         assert body["message"]
         assert body["behind"] is None
 
+    def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_dashboard_local_update_managed_externally", lambda: True)
+        monkeypatch.setattr(
+            ws,
+            "detect_install_method",
+            lambda *a, **k: pytest.fail(
+                "managed runtime update check should not probe install method"
+            ),
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["install_method"] == "managed-runtime"
+        assert body["can_apply"] is False
+        assert body["update_available"] is False
+        assert body["behind"] is None
+        assert "managed outside this dashboard" in body["message"]
+
     def test_check_failure_is_soft(self, monkeypatch):
         import hermes_cli.web_server as ws
         import hermes_cli.banner as banner
@@ -737,6 +867,37 @@ class TestUpdateCheckEndpoint:
         assert body["behind"] is None
         assert body["update_available"] is False
         assert body["message"]
+
+    def test_git_behind_includes_commits(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 3)
+        monkeypatch.setattr(
+            ws,
+            "_recent_upstream_commits",
+            lambda n=20: [
+                {"sha": "abc1234", "summary": "feat: x", "author": "a", "at": 1},
+            ],
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        # The desktop overlay renders this as the "what's changed" list.
+        assert isinstance(body["commits"], list)
+        assert body["commits"][0]["sha"] == "abc1234"
+        assert body["commits"][0]["summary"] == "feat: x"
+
+    def test_up_to_date_omits_commits(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
+
+        body = self.client.get("/api/hermes/update/check").json()
+        # No commits list when there's nothing to show (additive, non-breaking).
+        assert body.get("commits", []) == []
 
 
 class TestDebugShareEndpoint:
@@ -959,4 +1120,3 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
-

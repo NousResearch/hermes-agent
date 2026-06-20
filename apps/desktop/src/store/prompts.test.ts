@@ -53,6 +53,12 @@ describe('approval prompt store', () => {
 
     expect($approvalRequest.get()).toBeNull()
   })
+
+  it('carries allowPermanent so the bar can hide "Always allow"', () => {
+    setApprovalRequest({ allowPermanent: false, command: 'curl x | bash', description: 'content-security', sessionId: 's1' })
+
+    expect($approvalRequest.get()?.allowPermanent).toBe(false)
+  })
 })
 
 describe('sudo prompt store', () => {

@@ -3958,6 +3958,74 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
+        # --- Secure credential broker callbacks (cred:a:<request_id>:<code> | cred:d:<request_id>) ---
+        # These buttons are sent by the profile-local secure_credential_broker.py via
+        # Telegram's Bot API, so the gateway has to handle the callback even though
+        # it did not create the original message object itself.
+        if data.startswith("cred:"):
+            parts = data.split(":")
+            action = parts[1] if len(parts) > 1 else ""
+            request_id = parts[2] if len(parts) > 2 else ""
+            code = parts[3] if len(parts) > 3 else ""
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to approve credentials.")
+                return
+
+            from hermes_constants import get_hermes_home
+
+            broker = get_hermes_home() / "scripts" / "secure_credential_broker.py"
+            if action == "a" and request_id and code:
+                cmd = [sys.executable, str(broker), "approve", request_id, code]
+                label = "✅ Credential approved"
+            elif action == "d" and request_id:
+                cmd = [sys.executable, str(broker), "deny", request_id]
+                label = "❌ Credential denied"
+            else:
+                await query.answer(text="Invalid credential approval data.", show_alert=True)
+                return
+
+            try:
+                import subprocess
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    text=True,
+                    capture_output=True,
+                    timeout=20,
+                    check=False,
+                )
+            except Exception as exc:
+                logger.warning("[%s] credential approval callback failed: %s", self.name, exc)
+                await query.answer(text="Credential approval failed.", show_alert=True)
+                return
+
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "approval failed").strip().splitlines()
+                msg = detail[-1][:180] if detail else "approval failed"
+                await query.answer(text=f"Credential approval failed: {msg}", show_alert=True)
+                return
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            await query.answer(text=label)
+            try:
+                parse_mode = getattr(ParseMode, "MARKDOWN_V2", None)
+                await query.edit_message_text(
+                    text=self.format_message(f"{label} by {user_display}"),
+                    parse_mode=parse_mode,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            return
+
         # --- Gmail-triage callbacks (gt:verb:arg) ---
         if data.startswith("gt:"):
             await self._handle_gmail_triage_callback(

@@ -4,12 +4,12 @@ The _is_callback_user_authorized fallback must deny users by default
 when TELEGRAM_ALLOWED_USERS is empty, instead of allowing everyone.
 """
 
+import asyncio
 import sys
 import types
 from types import SimpleNamespace
 
 import pytest
-
 from gateway.config import PlatformConfig, Platform
 
 
@@ -106,3 +106,80 @@ class TestCallbackAuthFailClosed:
         adapter = _make_adapter()
         adapter._message_handler = None
         assert adapter._is_callback_user_authorized("12345") is True
+
+    def test_credential_callback_approves_broker_request(self, monkeypatch, tmp_path):
+        """cred:a callbacks should invoke the profile-local secure credential broker."""
+        adapter = _make_adapter()
+        adapter._is_callback_user_authorized = lambda *a, **kw: True
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        class Query:
+            data = "cred:a:cr_test123:654321"
+            from_user = SimpleNamespace(id="12345", first_name="Stavros")
+            message = SimpleNamespace(
+                chat_id=42,
+                chat=SimpleNamespace(type="private"),
+                message_thread_id=None,
+            )
+
+            def __init__(self):
+                self.answers = []
+                self.edits = []
+
+            async def answer(self, **kwargs):
+                self.answers.append(kwargs)
+
+            async def edit_message_text(self, **kwargs):
+                self.edits.append(kwargs)
+
+        query = Query()
+        update = SimpleNamespace(callback_query=query)
+
+        asyncio.run(adapter._handle_callback_query(update, SimpleNamespace()))
+
+        assert calls
+        assert calls[0][0][1] == str(tmp_path / "scripts" / "secure_credential_broker.py")
+        assert calls[0][0][-3:] == ["approve", "cr_test123", "654321"]
+        assert query.answers == [{"text": "✅ Credential approved"}]
+        assert query.edits[0]["reply_markup"] is None
+
+    def test_credential_callback_rejects_unauthorized_user(self, monkeypatch):
+        """Unauthorized cred callbacks must not invoke the broker."""
+        adapter = _make_adapter()
+        adapter._is_callback_user_authorized = lambda *a, **kw: False
+
+        calls = []
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: calls.append((a, kw)))
+
+        class Query:
+            data = "cred:a:cr_test123:654321"
+            from_user = SimpleNamespace(id="99999", first_name="Mallory")
+            message = SimpleNamespace(
+                chat_id=42,
+                chat=SimpleNamespace(type="private"),
+                message_thread_id=None,
+            )
+
+            def __init__(self):
+                self.answers = []
+
+            async def answer(self, **kwargs):
+                self.answers.append(kwargs)
+
+        query = Query()
+        update = SimpleNamespace(callback_query=query)
+
+        asyncio.run(adapter._handle_callback_query(update, SimpleNamespace()))
+
+        assert calls == []
+        assert query.answers == [
+            {"text": "⛔ You are not authorized to approve credentials."}
+        ]

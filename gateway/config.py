@@ -469,7 +469,11 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
     Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
-    Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
+    Platform.SMS: lambda cfg: bool(
+        os.getenv("TWILIO_ACCOUNT_SID")
+        or os.getenv("SMS_GATEWAY_URL")
+        or cfg.extra.get("gateway_url")
+    ),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(
@@ -1660,13 +1664,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             thread_id=os.getenv("EMAIL_HOME_ADDRESS_THREAD_ID") or None,
         )
 
-    # SMS (Twilio)
+    # SMS (Twilio or outbound-only custom webhook)
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    if twilio_sid:
+    sms_gateway_url = os.getenv("SMS_GATEWAY_URL")
+    if twilio_sid or sms_gateway_url:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True
         config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
+        if sms_gateway_url:
+            config.platforms[Platform.SMS].extra["backend"] = os.getenv("SMS_BACKEND", "webhook")
+            config.platforms[Platform.SMS].extra["gateway_url"] = sms_gateway_url
     sms_home = os.getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
         config.platforms[Platform.SMS].home_channel = HomeChannel(

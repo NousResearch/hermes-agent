@@ -1,7 +1,7 @@
-"""SMS (Twilio) platform adapter.
+"""SMS platform adapter.
 
-Connects to the Twilio REST API for outbound SMS and runs an aiohttp
-webhook server to receive inbound messages.
+Connects to the Twilio REST API for full inbound/outbound SMS, or to a
+custom outbound webhook for send-only SMS delivery.
 
 Shares credentials with the optional telephony skill — same env vars:
   - TWILIO_ACCOUNT_SID
@@ -16,6 +16,10 @@ Gateway-specific env vars:
   - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
   - SMS_ALLOW_ALL_USERS  (true/false)
   - SMS_HOME_CHANNEL     (phone number for cron delivery)
+  - SMS_BACKEND          (twilio/webhook/auto; auto selects webhook when
+                          SMS_GATEWAY_URL is set and Twilio creds are absent)
+  - SMS_GATEWAY_URL      (custom outbound webhook accepting JSON {to,message})
+  - SMS_GATEWAY_TIMEOUT  (default 20 seconds)
 """
 
 import asyncio
@@ -50,24 +54,35 @@ def check_sms_requirements() -> bool:
         import aiohttp  # noqa: F401
     except ImportError:
         return False
-    return bool(os.getenv("TWILIO_ACCOUNT_SID") and os.getenv("TWILIO_AUTH_TOKEN"))
+    twilio_ready = bool(os.getenv("TWILIO_ACCOUNT_SID") and os.getenv("TWILIO_AUTH_TOKEN"))
+    webhook_ready = bool(os.getenv("SMS_GATEWAY_URL"))
+    return twilio_ready or webhook_ready
 
 
 class SmsAdapter(BasePlatformAdapter):
     """
-    Twilio SMS <-> Hermes gateway adapter.
+    SMS <-> Hermes gateway adapter.
 
-    Each inbound phone number gets its own Hermes session (multi-tenant).
-    Replies are always sent from the configured TWILIO_PHONE_NUMBER.
+    Twilio mode supports inbound and outbound SMS. Webhook mode is outbound-only
+    and exists for custom SMS gateways that accept ``{"to", "message"}`` JSON.
     """
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
-        self._account_sid: str = os.environ["TWILIO_ACCOUNT_SID"]
-        self._auth_token: str = os.environ["TWILIO_AUTH_TOKEN"]
+        requested_backend = (
+            os.getenv("SMS_BACKEND")
+            or str(config.extra.get("backend") or "auto")
+        ).strip().lower() or "auto"
+        if requested_backend == "auto":
+            requested_backend = "webhook" if (os.getenv("SMS_GATEWAY_URL") or config.extra.get("gateway_url")) and not os.getenv("TWILIO_ACCOUNT_SID") else "twilio"
+        self._backend: str = requested_backend
+        self._account_sid: str = os.getenv("TWILIO_ACCOUNT_SID", "")
+        self._auth_token: str = os.getenv("TWILIO_AUTH_TOKEN", "") or (config.api_key or "")
         self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
+        self._gateway_url: str = (os.getenv("SMS_GATEWAY_URL") or str(config.extra.get("gateway_url") or "")).strip()
+        self._gateway_timeout: float = float(os.getenv("SMS_GATEWAY_TIMEOUT", "20") or 20)
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
@@ -89,6 +104,23 @@ class SmsAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         import aiohttp
         from aiohttp import web
+
+        if self._backend == "webhook":
+            if not self._gateway_url:
+                msg = "[sms] SMS_BACKEND=webhook but SMS_GATEWAY_URL is not set"
+                logger.error(msg)
+                self._set_fatal_error("sms_missing_gateway_url", msg, retryable=False)
+                return False
+            self._http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self._gateway_timeout),
+                trust_env=True,
+            )
+            self._running = True
+            logger.info(
+                "[sms] webhook backend ready (outbound only), home: %s",
+                redact_phone(os.getenv("SMS_HOME_CHANNEL", "")),
+            )
+            return True
 
         if not self._from_number:
             msg = "[sms] TWILIO_PHONE_NUMBER not set — cannot send replies"
@@ -163,6 +195,9 @@ class SmsAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted)
         last_result = SendResult(success=True)
 
+        if self._backend == "webhook":
+            return await self._send_via_webhook(chat_id, chunks)
+
         url = f"{TWILIO_API_BASE}/{self._account_sid}/Messages.json"
         headers = {
             "Authorization": self._basic_auth_header(),
@@ -205,6 +240,53 @@ class SmsAdapter(BasePlatformAdapter):
                 await session.close()
 
         return last_result
+
+    async def _send_via_webhook(self, chat_id: str, chunks: list[str]) -> SendResult:
+        """Send SMS chunks through a custom outbound webhook backend."""
+        import aiohttp
+
+        if not self._gateway_url:
+            return SendResult(success=False, error="SMS_GATEWAY_URL is not set")
+
+        session = self._http_session or aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=self._gateway_timeout),
+            trust_env=True,
+        )
+        last_response: Any = None
+        try:
+            for chunk in chunks:
+                payload = {"to": chat_id, "message": chunk}
+                try:
+                    async with session.post(self._gateway_url, json=payload) as resp:
+                        text = await resp.text()
+                        try:
+                            body: Any = await resp.json(content_type=None)
+                        except Exception:
+                            body = text
+                        last_response = body
+                        if resp.status >= 400:
+                            logger.error(
+                                "[sms] webhook send failed to %s: %s %s",
+                                redact_phone(chat_id),
+                                resp.status,
+                                str(body)[:300],
+                            )
+                            return SendResult(success=False, error=f"webhook {resp.status}: {str(body)[:300]}", raw_response=body)
+                        if isinstance(body, dict):
+                            failed = int(body.get("failed") or 0)
+                            errors = body.get("errors") or []
+                            if failed or errors:
+                                return SendResult(success=False, error=f"webhook failed={failed} errors={errors}", raw_response=body)
+                except Exception as e:
+                    logger.error("[sms] webhook send error to %s: %s", redact_phone(chat_id), e)
+                    return SendResult(success=False, error=str(e))
+        finally:
+            if not self._http_session and session:
+                await session.close()
+        message_id = ""
+        if isinstance(last_response, dict):
+            message_id = str(last_response.get("message_id") or last_response.get("id") or "")
+        return SendResult(success=True, message_id=message_id, raw_response=last_response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm"}

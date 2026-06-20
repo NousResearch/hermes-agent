@@ -49,11 +49,29 @@ class TestSmsConfigLoading:
             config = load_gateway_config()
             hc = config.platforms[Platform.SMS].home_channel
             assert hc is not None
-            assert hc.chat_id == "+15559876543"
+            assert hc.chat_id == env["SMS_HOME_CHANNEL"]
             assert hc.name == "My Phone"
             assert hc.platform == Platform.SMS
 
-# ── Format / truncate ───────────────────────────────────────────────
+    def test_env_overrides_create_webhook_sms_config(self):
+        from gateway.config import load_gateway_config
+
+        env = {
+            "SMS_BACKEND": "webhook",
+            "SMS_GATEWAY_URL": "https://sms.example/send",
+            "SMS_HOME_CHANNEL": "+155****6543",
+            "SMS_HOME_CHANNEL_NAME": "My Phone",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS in config.platforms
+            pc = config.platforms[Platform.SMS]
+            assert pc.enabled is True
+            assert pc.extra["backend"] == "webhook"
+            assert pc.home_channel is not None
+            assert pc.home_channel.chat_id == env["SMS_HOME_CHANNEL"]
+
+# ── Format / truncate
 
 class TestSmsFormatAndTruncate:
     """Test SmsAdapter.format_message strips markdown."""
@@ -161,6 +179,18 @@ class TestSmsRequirements:
             except ImportError:
                 assert result is False
 
+    def test_check_sms_requirements_webhook_url(self):
+        from gateway.platforms.sms import check_sms_requirements
+
+        env = {"SMS_GATEWAY_URL": "https://sms.example/send"}
+        with patch.dict(os.environ, env, clear=True):
+            result = check_sms_requirements()
+            try:
+                import aiohttp  # noqa: F401
+                assert result is True
+            except ImportError:
+                assert result is False
+
 
 # ── Toolset verification ───────────────────────────────────────────
 
@@ -227,7 +257,9 @@ class TestStartupGuard:
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
             "TWILIO_AUTH_TOKEN": "tok",
-            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "TWILIO_PHONE_NUMBER": "+155****1111",
+            "SMS_BACKEND": "twilio",
+            "SMS_GATEWAY_URL": "",
         }
         if extra_env:
             env.update(extra_env)
@@ -313,6 +345,26 @@ class TestStartupGuard:
             )
             result = await adapter.connect()
             assert result is True
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_custom_webhook_backend_allows_outbound_only_start(self):
+        from gateway.platforms.sms import SmsAdapter
+
+        mock_session = AsyncMock()
+        env = {
+            "SMS_BACKEND": "webhook",
+            "SMS_GATEWAY_URL": "https://sms.example/send",
+            "SMS_HOME_CHANNEL": "+155****6543",
+        }
+        with patch.dict(os.environ, env, clear=True), \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            pc = PlatformConfig(enabled=True)
+            adapter = SmsAdapter(pc)
+            result = await adapter.connect()
+            assert result is True
+            assert adapter._backend == "webhook"
+            assert adapter._running is True
             await adapter.disconnect()
 
 

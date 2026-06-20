@@ -70,6 +70,36 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
                 })
 
 
+def _inject_configured_home_channels(platforms: Dict[str, Any]) -> None:
+    """Expose configured home channels even before a live adapter discovers them."""
+    try:
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+    except Exception:
+        return
+
+    for platform, pconfig in getattr(config, "platforms", {}).items():
+        try:
+            plat_name = platform.value
+        except Exception:
+            plat_name = str(platform)
+        home = getattr(pconfig, "home_channel", None)
+        if not home or not getattr(home, "chat_id", None):
+            continue
+        entries = platforms.setdefault(plat_name, [])
+        if not isinstance(entries, list):
+            continue
+        chat_id = str(home.chat_id)
+        if any(isinstance(e, dict) and e.get("id") == chat_id for e in entries):
+            continue
+        entries.append({
+            "id": chat_id,
+            "name": getattr(home, "name", None) or f"{plat_name.title()} Home",
+            "type": "dm",
+            "thread_id": getattr(home, "thread_id", None),
+        })
+
+
 def _normalize_channel_query(value: str) -> str:
     return value.lstrip("#").strip().lower()
 
@@ -302,17 +332,20 @@ def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
     if not DIRECTORY_PATH.exists():
         base = {"updated_at": None, "platforms": {}}
+        _inject_configured_home_channels(base["platforms"])
         _apply_channel_aliases(base["platforms"])
         return base
     try:
         with open(DIRECTORY_PATH, encoding="utf-8") as f:
             data = json.load(f)
+        _inject_configured_home_channels(data.setdefault("platforms", {}))
         # Re-apply aliases on read so friendly names take effect immediately,
         # even between timed rebuilds and for brand-new alias entries.
         _apply_channel_aliases(data.setdefault("platforms", {}))
         return data
     except Exception:
         base = {"updated_at": None, "platforms": {}}
+        _inject_configured_home_channels(base["platforms"])
         _apply_channel_aliases(base["platforms"])
         return base
 

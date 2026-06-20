@@ -444,6 +444,8 @@ def show_status(args):
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
+        if name == "SMS":
+            has_token = bool(os.getenv("TWILIO_ACCOUNT_SID") or os.getenv("SMS_GATEWAY_URL"))
         
         home_channel = ""
         if home_var:

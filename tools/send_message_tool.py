@@ -922,7 +922,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
-            result = await _send_sms(pconfig.api_key, chat_id, chunk)
+            result = await _send_sms(pconfig.api_key, chat_id, chunk, pconfig.extra)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
@@ -1469,10 +1469,12 @@ async def _send_email(extra, chat_id, message):
         return _error(f"Email send failed: {e}")
 
 
-async def _send_sms(auth_token, chat_id, message):
-    """Send a single SMS via Twilio REST API.
+async def _send_sms(auth_token, chat_id, message, extra=None):
+    """Send a single SMS via Twilio REST API or custom outbound webhook.
 
     Uses HTTP Basic auth (Account SID : Auth Token) and form-encoded POST.
+    If SMS_BACKEND=webhook or SMS_GATEWAY_URL is configured without Twilio
+    credentials, posts JSON {to,message} to the configured webhook instead.
     Chunking is handled by _send_to_platform() before this is called.
     """
     try:
@@ -1482,10 +1484,7 @@ async def _send_sms(auth_token, chat_id, message):
 
     import base64
 
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
-    if not account_sid or not auth_token or not from_number:
-        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+    extra = extra or {}
 
     # Strip markdown — SMS renders it as literal characters
     message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
@@ -1498,6 +1497,37 @@ async def _send_sms(auth_token, chat_id, message):
     message = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", message)
     message = re.sub(r"\n{3,}", "\n\n", message)
     message = message.strip()
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    gateway_url = (os.getenv("SMS_GATEWAY_URL") or str(extra.get("gateway_url") or "")).strip()
+    backend = (os.getenv("SMS_BACKEND") or str(extra.get("backend") or "auto")).strip().lower() or "auto"
+    use_webhook = bool(gateway_url) and (backend == "webhook" or not (account_sid and auth_token and from_number))
+
+    if use_webhook:
+        try:
+            timeout = float(os.getenv("SMS_GATEWAY_TIMEOUT", "20") or 20)
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout), trust_env=True) as session:
+                async with session.post(gateway_url, json={"to": chat_id, "message": message}) as resp:
+                    text = await resp.text()
+                    try:
+                        body = await resp.json(content_type=None)
+                    except Exception:
+                        body = text
+                    if resp.status >= 400:
+                        return _error(f"SMS webhook error ({resp.status}): {str(body)[:300]}")
+                    if isinstance(body, dict):
+                        failed = int(body.get("failed") or 0)
+                        errors = body.get("errors") or []
+                        if failed or errors:
+                            return _error(f"SMS webhook failed={failed} errors={errors}")
+                    message_id = body.get("message_id") or body.get("id") or "" if isinstance(body, dict) else ""
+                    return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": str(message_id), "raw_response": body}
+        except Exception as e:
+            return _error(f"SMS webhook send failed: {e}")
+
+    if not account_sid or not auth_token or not from_number:
+        return {"error": "SMS not configured (Twilio credentials or SMS_GATEWAY_URL required)"}
 
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp

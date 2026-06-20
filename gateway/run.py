@@ -3321,9 +3321,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
+        try:
+            from hermes_cli.clio_profile import apply_clio_anthropic_model_override
+
+            model, _clio_model_notice = apply_clio_anthropic_model_override(
+                model,
+                runtime_kwargs.get("provider"),
+                user_config or _load_gateway_runtime_config(),
+            )
+            if _clio_model_notice:
+                logger.info(_clio_model_notice)
+        except Exception:
+            logger.debug("Clio execution profile model override skipped", exc_info=True)
+
         # Final safety net (#35314): if resolution still produced an empty
-        # model — e.g. a transient config-cache miss during a post-interrupt
-        # recovery turn returned an empty user_config — reuse the last model we
+        # model, for example a transient config-cache miss during a post-interrupt
+        # recovery turn returned an empty user_config, reuse the last model we
         # successfully resolved for this session (or, failing that, the most
         # recent one resolved process-wide). Building an agent with model=""
         # makes every API call fail HTTP 400 "No models provided" and the
@@ -3335,7 +3348,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _recovered = _last_good.get(resolved_session_key or "") or _last_good.get("*")
                 if _recovered:
                     logger.warning(
-                        "Empty model resolved for session=%s — recovering "
+                        "Empty model resolved for session=%s, recovering "
                         "last-known-good model %s (config read likely returned "
                         "empty; see #35314)",
                         resolved_session_key or "", _recovered,
@@ -3746,10 +3759,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent.system_prompt in ~/.hermes/config.yaml.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
-        if prompt:
-            return prompt
         cfg = _load_gateway_runtime_config()
-        return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+        if not prompt:
+            prompt = str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+        try:
+            from hermes_cli.clio_profile import append_clio_execution_profile
+
+            return append_clio_execution_profile(prompt, cfg)
+        except Exception:
+            logger.debug("Clio execution profile prompt append skipped", exc_info=True)
+            return prompt
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:

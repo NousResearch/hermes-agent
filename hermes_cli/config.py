@@ -916,6 +916,9 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
+        # Optional execution profile name. Clio's Buidl MVP execution mode uses
+        # clio-mvp-execution-v1 and is loaded as an appended ephemeral prompt.
+        "execution_profile": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false

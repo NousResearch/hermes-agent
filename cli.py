@@ -424,6 +424,7 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
+            "execution_profile": "",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -3415,6 +3416,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
+        try:
+            from hermes_cli.clio_profile import apply_clio_anthropic_model_override
+
+            self.model, _clio_model_notice = apply_clio_anthropic_model_override(
+                self.model,
+                self.requested_provider,
+                CLI_CONFIG,
+            )
+            if _clio_model_notice:
+                logger.info(_clio_model_notice)
+        except Exception:
+            logger.debug("Clio execution profile model override skipped", exc_info=True)
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
@@ -3475,11 +3488,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
         
-        # Ephemeral system prompt: env var takes precedence, then config
+        # Ephemeral system prompt: env var takes precedence, then config. An
+        # optional execution profile appends scoped operating rules without
+        # replacing the user's existing prompt/context files.
         self.system_prompt = (
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
+        try:
+            from hermes_cli.clio_profile import append_clio_execution_profile
+
+            self.system_prompt = append_clio_execution_profile(self.system_prompt, CLI_CONFIG)
+        except Exception:
+            logger.debug("Clio execution profile prompt append skipped", exc_info=True)
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
         
         # Ephemeral prefill messages (few-shot priming, never persisted)

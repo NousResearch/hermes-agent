@@ -704,8 +704,16 @@ def init_agent(
 
                 if is_token_provider(effective_key):
                     print("🔑 Using credentials: Microsoft Entra ID")
-                elif isinstance(effective_key, str) and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                else:
+                    try:
+                        from hermes_cli.clio_profile import is_clio_mvp_execution_enabled
+                        from hermes_cli.config import load_config as _load_clio_cfg
+
+                        _clio_no_token_preview = is_clio_mvp_execution_enabled(_load_clio_cfg())
+                    except Exception:
+                        _clio_no_token_preview = False
+                    if isinstance(effective_key, str) and len(effective_key) > 12 and not _clio_no_token_preview:
+                        print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.

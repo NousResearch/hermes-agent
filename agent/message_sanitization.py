@@ -39,6 +39,86 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
+_HIGH_SURROGATE_MIN = 0xD800
+_HIGH_SURROGATE_MAX = 0xDBFF
+_LOW_SURROGATE_MIN = 0xDC00
+_LOW_SURROGATE_MAX = 0xDFFF
+
+
+def _is_high_surrogate(ch: str) -> bool:
+    return len(ch) == 1 and _HIGH_SURROGATE_MIN <= ord(ch) <= _HIGH_SURROGATE_MAX
+
+
+def _is_low_surrogate(ch: str) -> bool:
+    return len(ch) == 1 and _LOW_SURROGATE_MIN <= ord(ch) <= _LOW_SURROGATE_MAX
+
+
+def _combine_surrogate_pair(high: str, low: str) -> str:
+    """Actively recombine a UTF-16 surrogate pair into one Unicode scalar."""
+    return (high + low).encode("utf-16-le", "surrogatepass").decode("utf-16-le")
+
+
+class _SurrogateSplicer:
+    """Recombine UTF-16 surrogate pairs split across streaming deltas.
+
+    Some providers JSON-decode ``"\\ud83d"`` and ``"\\ude00"`` in separate
+    stream deltas. Python stores those as two invalid surrogate code points;
+    concatenation alone does not turn them into 😀, and a later UTF-8 encode
+    crashes. This stateful helper carries one trailing high surrogate across
+    deltas, actively recombines valid high+low pairs, and floors orphaned
+    surrogates to U+FFFD.
+    """
+
+    def __init__(self) -> None:
+        self._pending_high: str = ""
+
+    def feed(self, text: str) -> str:
+        if not isinstance(text, str) or not text:
+            return ""
+
+        if self._pending_high:
+            text = self._pending_high + text
+            self._pending_high = ""
+
+        out: list[str] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if _is_high_surrogate(ch):
+                if i + 1 >= n:
+                    self._pending_high = ch
+                    i += 1
+                    continue
+                nxt = text[i + 1]
+                if _is_low_surrogate(nxt):
+                    out.append(_combine_surrogate_pair(ch, nxt))
+                    i += 2
+                    continue
+                out.append("\ufffd")
+                i += 1
+                continue
+            if _is_low_surrogate(ch):
+                out.append("\ufffd")
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+
+    def flush(self) -> str:
+        if self._pending_high:
+            self._pending_high = ""
+            return "\ufffd"
+        return ""
+
+
+def _splice_surrogates(text: str) -> str:
+    """Recombine adjacent surrogate pairs in one string and floor orphans."""
+    splicer = _SurrogateSplicer()
+    return splicer.feed(text) + splicer.flush()
+
+
 def _sanitize_structure_surrogates(payload: Any) -> bool:
     """Replace surrogate code points in nested dict/list payloads in-place.
 
@@ -432,6 +512,8 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 __all__ = [
     "_SURROGATE_RE",
     "_sanitize_surrogates",
+    "_SurrogateSplicer",
+    "_splice_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",
     "_escape_invalid_chars_in_json_strings",

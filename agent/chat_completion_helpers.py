@@ -31,12 +31,52 @@ from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint, _ceil_chars_to_tokens
 from agent.message_sanitization import (
     _sanitize_surrogates,
+    _SurrogateSplicer,
+    _splice_surrogates,
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_int
 
 logger = logging.getLogger(__name__)
+
+
+def _repair_anthropic_message_surrogates(message: Any) -> Any:
+    """Repair surrogate-pair artifacts in the native Anthropic final message.
+
+    The live stream callback path splices deltas before display, but the
+    Anthropic SDK returns its own accumulated ``Message`` object.  If an SDK or
+    compatible proxy preserves adjacent surrogate halves in that final object,
+    downstream validation/history can still inherit invalid UTF-8.  Repair known
+    text-bearing fields in place while preserving the SDK object shape.
+    """
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return message
+
+    for block in content:
+        for attr in ("text", "thinking"):
+            if isinstance(block, dict):
+                value = block.get(attr)
+                if isinstance(value, str):
+                    block[attr] = _splice_surrogates(value)
+                continue
+            value = getattr(block, attr, None)
+            if isinstance(value, str):
+                fixed = _splice_surrogates(value)
+                if fixed != value:
+                    try:
+                        setattr(block, attr, fixed)
+                    except Exception:
+                        try:
+                            object.__setattr__(block, attr, fixed)
+                        except Exception:
+                            logger.debug(
+                                "Unable to repair Anthropic stream surrogate field %s",
+                                attr,
+                                exc_info=True,
+                            )
+    return message
 
 
 def _ra():
@@ -2169,6 +2209,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         agent._check_openrouter_cache_status(getattr(stream, "response", None))
 
         content_parts: list = []
+        content_splicer = _SurrogateSplicer()
+        reasoning_splicer = _SurrogateSplicer()
         tool_calls_acc: dict = {}
         tool_gen_notified: set = set()
         # Ollama-compatible endpoints reuse index 0 for every tool call
@@ -2222,34 +2264,38 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Accumulate reasoning content
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
+                reasoning_text = reasoning_splicer.feed(reasoning_text)
+            if reasoning_text:
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
-                content_parts.append(delta.content)
-                if not tool_calls_acc:
-                    _fire_first_delta()
-                    agent._fire_stream_delta(delta.content)
-                    deltas_were_sent["yes"] = True
-                # Tool calls suppress regular content streaming (avoids
-                # displaying chatty "I'll use the tool..." text alongside
-                # tool calls).  But reasoning tags embedded in suppressed
-                # content should still reach the display — otherwise the
-                # reasoning box only appears as a post-response fallback,
-                # rendering it confusingly after the already-streamed
-                # response.  Route suppressed content through the stream
-                # delta callback so its tag extraction can fire the
-                # reasoning display.  Non-reasoning text is harmlessly
-                # suppressed by the CLI's _stream_delta when the stream
-                # box is already closed (tool boundary flush).
-                elif agent.stream_delta_callback:
-                    try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
-                    except Exception:
-                        pass
+                content_delta = content_splicer.feed(delta.content)
+                if content_delta:
+                    content_parts.append(content_delta)
+                    if not tool_calls_acc:
+                        _fire_first_delta()
+                        agent._fire_stream_delta(content_delta)
+                        deltas_were_sent["yes"] = True
+                    # Tool calls suppress regular content streaming (avoids
+                    # displaying chatty "I'll use the tool..." text alongside
+                    # tool calls).  But reasoning tags embedded in suppressed
+                    # content should still reach the display — otherwise the
+                    # reasoning box only appears as a post-response fallback,
+                    # rendering it confusingly after the already-streamed
+                    # response.  Route suppressed content through the stream
+                    # delta callback so its tag extraction can fire the
+                    # reasoning display.  Non-reasoning text is harmlessly
+                    # suppressed by the CLI's _stream_delta when the stream
+                    # box is already closed (tool boundary flush).
+                    elif agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(content_delta)
+                            agent._record_streamed_assistant_text(content_delta)
+                        except Exception:
+                            pass
 
             # Accumulate tool call deltas — notify display on first name
             if delta and delta.tool_calls:
@@ -2323,6 +2369,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Usage in the final chunk
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+
+        reasoning_tail = reasoning_splicer.flush()
+        if reasoning_tail:
+            reasoning_parts.append(reasoning_tail)
+            _fire_first_delta()
+            agent._fire_reasoning_delta(reasoning_tail)
+
+        content_tail = content_splicer.flush()
+        if content_tail:
+            content_parts.append(content_tail)
+            if not tool_calls_acc:
+                _fire_first_delta()
+                agent._fire_stream_delta(content_tail)
+                deltas_were_sent["yes"] = True
+            elif agent.stream_delta_callback:
+                try:
+                    agent.stream_delta_callback(content_tail)
+                    agent._record_streamed_assistant_text(content_tail)
+                except Exception:
+                    pass
 
         # Build mock response matching non-streaming shape
         full_content = "".join(content_parts) or None
@@ -2460,6 +2526,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         works unchanged.
         """
         has_tool_use = False
+        text_splicer = _SurrogateSplicer()
+        thinking_splicer = _SurrogateSplicer()
 
         # Reset stale-stream timer for this attempt
         last_chunk_time["t"] = time.time()
@@ -2528,6 +2596,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         delta_type = getattr(delta, "type", None)
                         if delta_type == "text_delta":
                             text = getattr(delta, "text", "")
+                            if text:
+                                text = text_splicer.feed(text)
                             if text and not has_tool_use:
                                 _fire_first_delta()
                                 agent._fire_stream_delta(text)
@@ -2535,11 +2605,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         elif delta_type == "thinking_delta":
                             thinking_text = getattr(delta, "thinking", "")
                             if thinking_text:
+                                thinking_text = thinking_splicer.feed(thinking_text)
+                            if thinking_text:
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
 
+            text_tail = text_splicer.flush()
+            if text_tail and not has_tool_use:
+                _fire_first_delta()
+                agent._fire_stream_delta(text_tail)
+                deltas_were_sent["yes"] = True
+
+            thinking_tail = thinking_splicer.flush()
+            if thinking_tail:
+                _fire_first_delta()
+                agent._fire_reasoning_delta(thinking_tail)
+
             # Return the native Anthropic Message for downstream processing
-            return stream.get_final_message()
+            return _repair_anthropic_message_surrogates(stream.get_final_message())
 
     def _call():
         import httpx as _httpx

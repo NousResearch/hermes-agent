@@ -976,7 +976,13 @@ class AIAgent:
             return False
         if not isinstance(error, ValueError):
             return False
-        if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):
+        if isinstance(error, UnicodeEncodeError):
+            obj = getattr(error, "object", "")
+            if isinstance(obj, str):
+                segment = obj[getattr(error, "start", 0):getattr(error, "end", len(obj))]
+                return bool(_SURROGATE_RE.search(segment))
+            return False
+        if isinstance(error, json.JSONDecodeError):
             return False
         message = str(error).strip().lower()
         return "expected ident at line" in message
@@ -4189,6 +4195,10 @@ class AIAgent:
                 self, "_current_streamed_assistant_text", ""
             ):
                 text = text.lstrip("\n")
+            # Final safety floor before any callback sees the delta.  A lone
+            # surrogate here crashes gateway/CLI UTF-8 writes before the
+            # accumulator can sanitize it.
+            text = _sanitize_surrogates(text)
         if not text:
             return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
@@ -4204,6 +4214,8 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
+        if isinstance(text, str):
+            text = _sanitize_surrogates(text)
         cb = self.reasoning_callback
         if cb is not None:
             try:

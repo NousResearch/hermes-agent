@@ -189,10 +189,6 @@ from agent.tool_guardrails import (
     append_toolguard_guidance,
     toolguard_synthetic_result,
 )
-from agent.tool_result_classification import (
-    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
-    file_mutation_result_landed,
-)
 from agent.trajectory import (
     convert_scratchpad_to_think,
     save_trajectory as _save_trajectory_to_file,
@@ -205,9 +201,12 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
+<<<<<<< HEAD
     _extract_file_mutation_targets,
     _extract_landed_file_mutation_paths,
     _extract_error_preview,
+=======
+>>>>>>> 59fb14bd1 (fix: address final code review comments (remove unused RL keys and dead verifier methods, fix Windows path test))
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
@@ -2991,7 +2990,6 @@ class AIAgent:
         # already backticked above; the lookbehind keeps it from being
         # double-wrapped).
         return cls._neutralize_footer_paths("\n".join(lines))
-
     def _turn_completion_explainer_enabled(self) -> bool:
         """Check whether the end-of-turn completion explainer footer is on.
 

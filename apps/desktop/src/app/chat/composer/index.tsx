@@ -40,6 +40,7 @@ import {
   isBrowsingHistory,
   resetBrowseState
 } from '@/store/composer-input-history'
+import { $composerPopoutPosition, $composerPoppedOut, setComposerPoppedOut } from '@/store/composer-popout'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
@@ -55,6 +56,7 @@ import { $statusItemsBySession } from '@/store/composer-status'
 import { notify } from '@/store/notifications'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
@@ -73,6 +75,7 @@ import {
 } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
@@ -185,6 +188,13 @@ export function ChatBar({
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
+  // tiny window, subagent watch windows) always start docked and can't pop out:
+  // a floating composer makes no sense in a single-session side window, and it
+  // would otherwise write the shared atom and yank the main window's composer out.
+  const popoutAllowed = !isSecondaryWindow()
+  const poppedOut = useStore($composerPoppedOut) && popoutAllowed
+  const popoutPosition = useStore($composerPopoutPosition)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   const queuedPrompts = useMemo(
@@ -206,6 +216,32 @@ export function ChatBar({
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
+
+  const handleComposerPopOut = useCallback(() => {
+    triggerHaptic('open')
+    setComposerPoppedOut(true)
+  }, [])
+
+  const handleComposerDock = useCallback(() => {
+    triggerHaptic('success')
+    setComposerPoppedOut(false)
+  }, [])
+
+  // Double-click the grab area toggles dock/float. Undocking restores the last
+  // position (the persisted atom is never cleared on dock).
+  const handleComposerToggle = useCallback(() => {
+    poppedOut ? handleComposerDock() : handleComposerPopOut()
+  }, [handleComposerDock, handleComposerPopOut, poppedOut])
+
+  const { dockProximity, dragging, onPointerDown: onComposerGesturePointerDown } =
+    useComposerPopoutGestures({
+      composerRef,
+      onDock: handleComposerDock,
+      onPopOut: handleComposerPopOut,
+      poppedOut,
+      position: popoutPosition
+    })
+
   const draftRef = useRef(draft)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
@@ -428,6 +464,20 @@ export function ChatBar({
       return
     }
 
+    // Floating composer is out of the thread's flow — it must not reserve any
+    // bottom clearance. Zero the measured vars so the thread reclaims the space.
+    // (Read globals here so the callback stays stable; mirror the popoutAllowed
+    // gate since secondary windows are forced docked.)
+    if ($composerPoppedOut.get() && !isSecondaryWindow()) {
+      const root = document.documentElement
+      lastBucketedHeightRef.current = 0
+      lastBucketedSurfaceHeightRef.current = 0
+      root.style.setProperty('--composer-measured-height', '0px')
+      root.style.setProperty('--composer-surface-measured-height', '0px')
+
+      return
+    }
+
     const { height, width } = composer.getBoundingClientRect()
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
     const root = document.documentElement
@@ -473,6 +523,14 @@ export function ChatBar({
   }, [])
 
   useResizeObserver(syncComposerMetrics, composerRef, composerSurfaceRef, editorRef)
+
+  // Toggling pop-out changes whether the composer reserves thread clearance.
+  // The ResizeObserver may not fire (the box can keep the same box size), so
+  // re-sync explicitly: docked republishes the measured height, floating zeroes
+  // it so the thread reclaims the bottom space.
+  useEffect(() => {
+    syncComposerMetrics()
+  }, [poppedOut, syncComposerMetrics])
 
   useEffect(() => {
     return () => {
@@ -1720,6 +1778,7 @@ export function ChatBar({
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
+      compactModelPill={poppedOut}
       conversation={{
         active: voiceConversationActive,
         level: conversation.level,
@@ -1750,7 +1809,7 @@ export function ChatBar({
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
-          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
+          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
@@ -1819,10 +1878,34 @@ export function ChatBar({
 
   return (
     <>
+      {dragging && poppedOut && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-x-0 bottom-0 z-20 h-32"
+          style={{
+            // A bottom-centered radial glow — soft on every side by construction,
+            // so it reads as the dock target without any hard band edges. Its
+            // intensity tracks how close the composer is to the dock (1 = peak).
+            background:
+              'radial-gradient(64% 130% at 50% 100%, color-mix(in srgb, var(--color-primary) 26%, transparent) 0%, transparent 70%)',
+            // Scaled by --dock-glow-scale (lower in light mode — see styles.css).
+            opacity: `calc(${0.1 + dockProximity * 0.57} * var(--dock-glow-scale, 1))`
+          }}
+        />
+      )}
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root
-          className="group/composer absolute bottom-0 left-1/2 z-30 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]"
+          className={cn(
+            'group/composer z-30 overflow-visible rounded-2xl',
+            poppedOut
+              ? // Floating: the composer (with its own border) floats with an even
+                // 5px transparent grab margin around it — drag that to move it.
+                'fixed w-[var(--composer-popout-width)] max-w-[calc(100vw-1.5rem)] bg-transparent p-[5px]'
+              : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
+            dragging && 'cursor-grabbing select-none touch-none'
+          )}
           data-drag-active={dragActive ? '' : undefined}
+          data-popped-out={poppedOut ? '' : undefined}
           data-slot="composer-root"
           data-status-stack={statusStackVisible ? '' : undefined}
           data-thread-scrolled-up={scrolledUp ? '' : undefined}
@@ -1830,6 +1913,7 @@ export function ChatBar({
           onDragLeave={handleDragLeave}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
+          onPointerDown={popoutAllowed ? onComposerGesturePointerDown : undefined}
           onSubmit={e => {
             e.preventDefault()
 
@@ -1840,6 +1924,16 @@ export function ChatBar({
             submitDraft()
           }}
           ref={composerRef}
+          style={
+            poppedOut
+              ? {
+                  bottom: `${popoutPosition.bottom}px`,
+                  right: `${popoutPosition.right}px`,
+                  // A compact one-sentence width when floating.
+                  ['--composer-popout-width' as string]: '19.5rem'
+                }
+              : undefined
+          }
         >
           {showHelpHint && <HelpHint />}
           {trigger && !argStageEmpty && (
@@ -1876,11 +1970,27 @@ export function ChatBar({
             }
             sessionId={statusSessionId}
           />
-          <div
-            className="pointer-events-none absolute inset-0 rounded-[inherit]"
-            style={{ background: COMPOSER_FADE_BACKGROUND }}
-          />
-          <div className="relative w-full rounded-[inherit]">
+          {!poppedOut && (
+            <div
+              className="pointer-events-none absolute inset-0 rounded-[inherit]"
+              style={{ background: COMPOSER_FADE_BACKGROUND }}
+            />
+          )}
+          {/* Drag region: covers the transparent grab margin around the surface.
+              The surface sits on top (z-4) so only the exposed ring receives this
+              element's hover/cursor — grab cursor + a diagonal hatch (/////)
+              appear when you hover the draggable margin, never over the input.
+              The hatch pattern + opacity ladder live in styles.css. */}
+          {popoutAllowed && (
+            <div
+              aria-hidden
+              className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+              data-dragging={dragging ? '' : undefined}
+              data-slot="composer-drag-region"
+              onDoubleClick={handleComposerToggle}
+            />
+          )}
+          <div className={cn('relative w-full', poppedOut ? 'rounded-[11px]' : 'rounded-[inherit]')}>
             <div
               className={cn(
                 'group/composer-surface relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out focus-within:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
@@ -1941,7 +2051,7 @@ export function ChatBar({
                       : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                   )}
                 >
-                  <div className="flex items-center [grid-area:menu]">{contextMenu}</div>
+                  <div className="flex translate-y-[3px] items-start self-start [grid-area:menu]">{contextMenu}</div>
                   <div className="min-w-0 [grid-area:input]">{input}</div>
                   <div className="flex items-center justify-end [grid-area:controls]">{controls}</div>
                 </div>

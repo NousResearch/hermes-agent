@@ -54,7 +54,7 @@ export function ContextMenu({
             type="button"
             variant="ghost"
           >
-            <Codicon name="add" size="1rem" />
+            <Codicon name="add" size="0.875rem" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-60" side="top" sideOffset={10}>

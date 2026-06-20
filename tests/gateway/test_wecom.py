@@ -37,10 +37,10 @@ class TestWeComRequirements:
 
 
 class TestWeComAdapterInit:
-    def test_declares_non_editable_message_capability(self):
+    def test_declares_native_streaming_unified(self):
         from gateway.platforms.wecom import WeComAdapter
 
-        assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+        assert WeComAdapter.native_streaming_unified is True
 
     def test_reads_config_from_extra(self):
         from gateway.platforms.wecom import WeComAdapter

@@ -174,3 +174,36 @@ def test_profile_can_be_selected_by_env(monkeypatch):
     monkeypatch.setenv("CLIO_EXECUTION_PROFILE", PROFILE_NAME)
     assert configured_clio_profile({"agent": {}}) == PROFILE_NAME
     assert clio_profile_path().name == f"{PROFILE_NAME}.md"
+
+
+def test_clio_mvp_safe_action_policy_auto_allows_safe_repo_commands(monkeypatch):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "_clio_mvp_safe_actions_enabled", lambda: True)
+    assert approval._clio_mvp_auto_approve(
+        "terminal",
+        "git push niko-fork ai/buidl-agent-harness-v1",
+        "feature branch push",
+    ) is True
+
+
+def test_clio_mvp_safe_action_policy_does_not_auto_allow_hard_gates(monkeypatch):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "_clio_mvp_safe_actions_enabled", lambda: True)
+    assert not approval._is_clio_mvp_safe_command("git push origin main")
+    assert not approval._is_clio_mvp_safe_command("deploy production")
+    assert not approval._is_clio_mvp_safe_execute_code("print('run provider test')")
+
+
+def test_clio_mvp_safe_action_policy_auto_allows_safe_execute_code(monkeypatch):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "_clio_mvp_safe_actions_enabled", lambda: True)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    result = approval.check_execute_code_guard(
+        "from hermes_tools import terminal\nprint(terminal('git status --short'))",
+        "local",
+    )
+    assert result["approved"] is True
+    assert result["clio_mvp_auto_approved"] is True

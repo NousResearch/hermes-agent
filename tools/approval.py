@@ -17,12 +17,44 @@ import sys
 import threading
 import time
 import unicodedata
-from typing import Optional
+from typing import Any, Callable, Optional
 from hermes_cli.config import cfg_get
 
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+_CLIO_MVP_HARD_GATE_RE = re.compile(
+    r"\b("
+    r"provider\s*(call|run|test|credential|key|secret|api)|"
+    r"prompt\s*(execution|run|test)|"
+    r"image\s*(generation|gen|create|test)|"
+    r"deploy\s+(production|prod)|production\s+deploy|"
+    r"\bdns\b|db\s*migration|database\s*migration|migrate\s+db|"
+    r"billing|credits?|payments?|secrets?|provider\s+credentials?|"
+    r"enable\s+worker|worker\s+enablement|merge\s+(to\s+)?main|"
+    r"git\s+(push\s+origin\s+main|merge\s+main|checkout\s+main|push\s+.*\bmain\b)|"
+    r"\.env\b|ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|"
+    r"CADDY|basic\s+auth|seed\s+phrase|private\s+key|wallet"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_CLIO_MVP_SAFE_COMMAND_RE = re.compile(
+    r"^\s*("
+    r"git\s+(status|diff|diff\s+--check|log|branch|checkout\s+-b|checkout\s+-B|"
+    r"switch\s+-c|add|commit\b|push\s+(?!.*\bmain\b)|fetch|pull|rev-parse)|"
+    r"gh\s+(pr\s+(create|view|edit|checks)|run\s+(list|view|watch)|api\s+repos/[^\s]+/branches/)|"
+    r"(uv\s+run\s+)?pytest\b|python\s+-m\s+pytest\b|"
+    r"(uv\s+run\s+)?ruff\b|(uv\s+run\s+)?ty\b|mypy\b|pyright\b|"
+    r"uv\s+build\b|npm\s+(run\s+)?(test|lint|build|typecheck)\b|"
+    r"pnpm\s+(test|lint|build|typecheck)\b|python\s+-m\s+py_compile\b|"
+    r"grep\b|rg\b|find\b|ls\b|pwd\b|date\b|wc\b|sha256sum\b|"
+    r"systemctl\s+--user\s+(status|show|restart)\s+hermes-gateway\.service\b|"
+    r"hermes\s+(status|doctor|config\s+(path|set\s+agent\.execution_profile\s+clio-mvp-execution-v1))\b"
+    r")",
+    re.IGNORECASE,
+)
 
 # Freeze YOLO mode at module import time. Reading os.environ on every call
 # would allow any skill running inside the process to set this variable and
@@ -1086,6 +1118,84 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _clio_mvp_safe_actions_enabled() -> bool:
+    """Return True when Clio MVP standing safe-action approvals are active."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.clio_profile import is_clio_mvp_execution_enabled
+
+        config = load_config()
+        enabled = cfg_get(config, "approvals", "clio_mvp_safe_actions", default=True)
+        return bool(enabled) and is_clio_mvp_execution_enabled(config)
+    except Exception as exc:
+        logger.debug("Clio MVP safe-action approval check failed: %s", exc)
+        return False
+
+
+def _contains_clio_mvp_hard_gate(text: str) -> bool:
+    return bool(_CLIO_MVP_HARD_GATE_RE.search(text or ""))
+
+
+def _is_clio_mvp_safe_command(command: str) -> bool:
+    text = str(command or "")
+    if not text.strip():
+        return False
+    if _contains_clio_mvp_hard_gate(text):
+        return False
+    return bool(_CLIO_MVP_SAFE_COMMAND_RE.search(text))
+
+
+def _is_clio_mvp_safe_execute_code(code: str) -> bool:
+    text = str(code or "")
+    if not text.strip():
+        return False
+    if _contains_clio_mvp_hard_gate(text):
+        return False
+    safe_markers = (
+        "from hermes_tools import",
+        "terminal(",
+        "read_file(",
+        "search_files(",
+        "write_file(",
+        "patch(",
+        "print(",
+    )
+    risky_markers = (
+        "subprocess.Popen",
+        "os.system",
+        "socket.",
+        "requests.post",
+        "curl ",
+        "base64 -d",
+        "chmod 777",
+        "sudo ",
+    )
+    return any(marker in text for marker in safe_markers) and not any(
+        marker in text for marker in risky_markers
+    )
+
+
+def _clio_mvp_auto_approve(action: str, payload: str, description: str) -> bool:
+    """Auto-approve already delegated Clio MVP safe engineering actions."""
+    if not _clio_mvp_safe_actions_enabled():
+        return False
+    if action == "terminal" and not _is_clio_mvp_safe_command(payload):
+        return False
+    if action == "execute_code" and not _is_clio_mvp_safe_execute_code(payload):
+        return False
+    if action == "apply_patch" and _contains_clio_mvp_hard_gate(payload + " " + description):
+        return False
+    if action not in {"terminal", "execute_code", "apply_patch"}:
+        return False
+    logger.info(
+        "Clio MVP safe-action auto-approved %s: %s (%s)",
+        action,
+        str(payload or "")[:200],
+        str(description or "")[:200],
+    )
+    return True
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -1333,10 +1443,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     except (ValueError, TypeError):
         timeout = 300
 
+    touch_activity: Callable[[dict[str, float], str], None] | None
     try:
-        from tools.environments.base import touch_activity_if_due
+        from tools.environments import base as env_base
+
+        touch_activity = env_base.touch_activity_if_due
     except Exception:  # pragma: no cover
-        touch_activity_if_due = None
+        touch_activity = None
 
     _now = time.monotonic()
     _deadline = _now + max(timeout, 0)
@@ -1349,8 +1462,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         if entry.event.wait(timeout=min(1.0, _remaining)):
             resolved = True
             break
-        if touch_activity_if_due is not None:
-            touch_activity_if_due(_activity_state, "waiting for user approval")
+        if touch_activity is not None:
+            touch_activity(_activity_state, "waiting for user approval")
 
     _drop_entry()
 
@@ -1466,7 +1579,8 @@ def check_all_command_guards(command: str, env_type: str,
     # inspect the explanation and approve if they understand the risk.
     if tirith_result["action"] in {"block", "warn"}:
         findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+        first_finding: Any = findings[0] if findings else {}
+        rule_id = first_finding.get("rule_id", "unknown") if isinstance(first_finding, dict) else "unknown"
         tirith_key = f"tirith:{rule_id}"
         tirith_desc = _format_tirith_description(tirith_result)
         if not is_approved(session_key, tirith_key):
@@ -1480,7 +1594,20 @@ def check_all_command_guards(command: str, env_type: str,
     if not warnings:
         return {"approved": True, "message": None}
 
-    # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
+    # --- Phase 2.5: Clio MVP standing approval ---
+    # Niko has delegated safe repo work under clio-mvp-execution-v1. Keep hard
+    # gates blocked, but do not ask for micro-approval on safe engineering work.
+    if _clio_mvp_auto_approve("terminal", command, combined_desc_for_llm := "; ".join(desc for _, desc, _ in warnings)):
+        for key, _, _ in warnings:
+            approve_session(session_key, key)
+        return {
+            "approved": True,
+            "message": None,
+            "clio_mvp_auto_approved": True,
+            "description": combined_desc_for_llm,
+        }
+
+    # --- Phase 2.6: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
@@ -1742,6 +1869,15 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # Built only now (past the early-return gates) so the common non-approval
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
+
+    if _clio_mvp_auto_approve("execute_code", code, description):
+        approve_session(session_key, pattern_key)
+        return {
+            "approved": True,
+            "message": None,
+            "clio_mvp_auto_approved": True,
+            "description": description,
+        }
 
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never

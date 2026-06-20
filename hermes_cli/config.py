@@ -2176,6 +2176,10 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # When the Clio MVP execution profile is active, auto-approve the
+        # standing safe engineering actions that Niko has already delegated,
+        # while preserving hard gates and logging every auto-approved action.
+        "clio_mvp_safe_actions": True,
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

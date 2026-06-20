@@ -706,6 +706,13 @@ class CodexAppServerSession:
         description = f"Codex requests exec in {cwd}"
         if reason:
             description += f" — {reason}"
+        try:
+            from tools.approval import _clio_mvp_auto_approve
+
+            if _clio_mvp_auto_approve("terminal", command, description):
+                return "acceptForSession"
+        except Exception:
+            logger.debug("Clio MVP Codex exec auto-approval check failed", exc_info=True)
         if self._approval_callback is not None:
             try:
                 choice = self._approval_callback(
@@ -746,6 +753,13 @@ class CodexAppServerSession:
                 else f"apply_patch: {reason}" if reason
                 else "apply_patch"
             )
+            try:
+                from tools.approval import _clio_mvp_auto_approve
+
+                if _clio_mvp_auto_approve("apply_patch", command_label, description):
+                    return "acceptForSession"
+            except Exception:
+                logger.debug("Clio MVP Codex patch auto-approval check failed", exc_info=True)
             try:
                 choice = self._approval_callback(
                     command_label,

@@ -643,6 +643,26 @@ class TestVerifySession:
         with pytest.raises(ProviderError, match="JWKS"):
             provider.verify_session(access_token=token)
 
+    def test_jwks_client_sends_explicit_http_headers(self):
+        provider = oidc_plugin.SelfHostedOIDCProvider(
+            issuer=_ISSUER, client_id=_CLIENT_ID
+        )
+        provider._discovery = dict(_DISCOVERY_DOC)
+        provider._discovery_fetched_at = time.time()
+
+        with patch("jwt.PyJWKClient") as client_cls:
+            provider._get_jwks_client()
+
+        client_cls.assert_called_once_with(
+            _DISCOVERY_DOC["jwks_uri"],
+            cache_keys=True,
+            lifespan=oidc_plugin._JWKS_CACHE_SECONDS,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "HermesAgent/1.0",
+            },
+        )
+
 
 # ---------------------------------------------------------------------------
 # refresh_session + revoke_session

@@ -3390,6 +3390,7 @@ class SessionDB:
         query: str,
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
+        exclude_session_id: str = None,
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
@@ -3454,6 +3455,9 @@ class SessionDB:
         params: list = [query]
         if not include_inactive:
             where_clauses.append("m.active = 1")
+        if exclude_session_id:
+            where_clauses.append("m.session_id != ?")
+            params.append(exclude_session_id)
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -3536,6 +3540,9 @@ class SessionDB:
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("m.active = 1")
+                if exclude_session_id:
+                    tri_where.append("m.session_id != ?")
+                    tri_params.append(exclude_session_id)
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -3593,6 +3600,9 @@ class SessionDB:
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
                 like_where = [f"({' OR '.join(token_clauses)})"]
+                if exclude_session_id:
+                    like_where.append("m.session_id != ?")
+                    like_params.append(exclude_session_id)
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)

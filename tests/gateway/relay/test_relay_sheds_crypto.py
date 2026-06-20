@@ -48,16 +48,14 @@ def _relay_py_files() -> list[Path]:
 
 
 # ``auth.py`` is the connector⇄gateway CHANNEL authenticator (the gateway's WS
-# upgrade bearer + inbound-delivery signature verification). ``inbound_receiver.py``
-# is the signed-inbound-delivery receiver that USES that channel auth to verify
-# connector→gateway POSTs. Both are net-new, intended, and the whole point of
-# authenticating an untrusted/disposable gateway — they are NOT platform crypto.
-# They use HMAC over the connector's per-gateway / per-tenant secrets (NOT any
-# platform's signing secret), so they are exempt from the platform-crypto symbol
-# scan below. The module-import ban (platform-crypto modules) still applies to
-# every file including these — they import only stdlib hmac/hashlib and each
-# other, never a platform-crypto module, so they stay clean there.
-_CHANNEL_AUTH_FILES = {"auth.py", "inbound_receiver.py"}
+# upgrade bearer). It is net-new, intended, and the whole point of
+# authenticating an untrusted/disposable gateway — it is NOT platform crypto.
+# It uses HMAC over the connector's per-gateway secret (NOT any platform's
+# signing secret), so it is exempt from the platform-crypto symbol scan below.
+# The module-import ban (platform-crypto modules) still applies to every file
+# including this one — it imports only stdlib hmac/hashlib, never a
+# platform-crypto module, so it stays clean there.
+_CHANNEL_AUTH_FILES = {"auth.py"}
 
 
 def test_relay_package_imports_no_platform_crypto():

@@ -44,6 +44,12 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# Import mirror_to_session for session mirroring after cron deliveries
+try:
+    from gateway.mirror import mirror_to_session
+except Exception:
+    mirror_to_session = None  # type: ignore
+
 
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
@@ -812,6 +818,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    # Mirror the sent message to the session transcript
+                    if mirror_to_session is not None and cleaned_delivery_content:
+                        try:
+                            mirror_to_session(
+                                platform_name,
+                                str(chat_id),
+                                cleaned_delivery_content.strip(),
+                                source_label="cron",
+                                thread_id=thread_id,
+                                user_id=None,
+                            )
+                        except Exception:
+                            pass  # Mirroring is best-effort; never fail the delivery
             except Exception as e:
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -845,6 +864,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            # Mirror the sent message to the session transcript
+            if mirror_to_session is not None and cleaned_delivery_content:
+                try:
+                    mirror_to_session(
+                        platform_name,
+                        str(chat_id),
+                        cleaned_delivery_content.strip(),
+                        source_label="cron",
+                        thread_id=thread_id,
+                        user_id=None,
+                    )
+                except Exception:
+                    pass  # Mirroring is best-effort; never fail the delivery
 
     if delivery_errors:
         return "; ".join(delivery_errors)

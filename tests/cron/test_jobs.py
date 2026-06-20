@@ -991,3 +991,189 @@ class TestSaveJobOutput:
         with pytest.raises(ValueError, match="output path"):
             save_job_output(str(tmp_cron_dir / "outside"), "# Results")
         assert not (tmp_cron_dir / "outside").exists()
+
+
+# =========================================================================
+# Multi-schedule (list) tests — see issue #49711
+# =========================================================================
+
+class TestParseScheduleList:
+    def test_list_of_schedules(self):
+        """parse_schedule should accept a list of schedule strings."""
+        result = parse_schedule(["every 30m", "0 21 * * 1-5"])
+        assert result["kind"] == "list"
+        assert len(result["schedules"]) == 2
+        assert result["schedules"][0]["kind"] == "interval"
+        assert result["schedules"][1]["kind"] == "cron"
+        assert "30m" in result["display"]
+
+    def test_list_with_one_shot_rejected(self):
+        """One-shot schedules inside arrays are rejected in v1."""
+        with pytest.raises(ValueError, match="[Oo]ne-shot"):
+            parse_schedule(["every 30m", "30m"])
+
+    def test_list_with_iso_timestamp_rejected(self):
+        """ISO timestamps inside arrays are rejected in v1."""
+        with pytest.raises(ValueError, match="[Oo]ne-shot"):
+            parse_schedule(["every 30m", "2026-07-01T09:00"])
+
+    def test_empty_list_raises(self):
+        with pytest.raises(ValueError):
+            parse_schedule([])
+
+    def test_single_string_still_works(self):
+        """Backward compat: single string returns single dict, not list."""
+        result = parse_schedule("every 1h")
+        assert result["kind"] == "interval"
+        assert "schedules" not in result
+
+
+class TestComputeNextRunList:
+    def test_list_returns_earliest(self, monkeypatch):
+        """Multi-schedule returns the earliest next_run."""
+        now = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        schedule = {
+            "kind": "list",
+            "schedules": [
+                {"kind": "interval", "minutes": 60},
+                {"kind": "interval", "minutes": 30},
+            ],
+        }
+        result = compute_next_run(schedule)
+        assert result is not None
+        expected = now + timedelta(minutes=30)
+        assert result == expected.isoformat()
+
+    def test_list_cron_and_interval(self, monkeypatch):
+        """Mix of cron and interval returns earliest."""
+        pytest.importorskip("croniter")
+        now = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        schedule = {
+            "kind": "list",
+            "schedules": [
+                {"kind": "cron", "expr": "0 23 * * *"},  # tonight at 11pm
+                {"kind": "interval", "minutes": 10},      # every 10 min
+            ],
+        }
+        result = compute_next_run(schedule)
+        assert result is not None
+        expected = now + timedelta(minutes=10)
+        assert result == expected.isoformat()
+
+    def test_list_all_none_returns_none(self):
+        """All sub-schedules returning None → returns None."""
+        schedule = {
+            "kind": "list",
+            "schedules": [
+                {"kind": "once", "run_at": "2020-01-01T00:00:00+00:00"},
+            ],
+        }
+        result = compute_next_run(schedule)
+        assert result is None
+
+
+class TestCreateJobList:
+    def test_create_with_schedule_list(self, tmp_cron_dir):
+        """create_job accepts a list of schedule strings."""
+        job = create_job(
+            prompt="Multi-schedule job",
+            schedule=["every 30m", "0 21 * * 1-5"],
+        )
+        assert job["schedule"]["kind"] == "list"
+        assert len(job["schedule"]["schedules"]) == 2
+        assert job["schedule_display"] == "every 30m; 0 21 * * 1-5"
+        assert job["next_run_at"] is not None
+
+    def test_create_with_schedule_list_one_shot_rejected(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="[Oo]ne-shot"):
+            create_job(prompt="Bad", schedule=["every 30m", "30m"])
+
+
+class TestUpdateJobList:
+    def test_update_to_schedule_list(self, tmp_cron_dir):
+        job = create_job(prompt="Update me", schedule="every 1h")
+        old_next = job["next_run_at"]
+        new_schedule = ["every 30m", "0 21 * * 1-5"]
+        updated = update_job(job["id"], {"schedule": new_schedule})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "list"
+        assert len(updated["schedule"]["schedules"]) == 2
+        assert updated["next_run_at"] != old_next
+
+    def test_update_from_list_to_string(self, tmp_cron_dir):
+        job = create_job(prompt="Downgrade", schedule=["every 30m", "0 21 * * 1-5"])
+        assert job["schedule"]["kind"] == "list"
+        updated = update_job(job["id"], {"schedule": "every 1h"})
+        assert updated["schedule"]["kind"] == "interval"
+
+
+class TestBackwardCompat:
+    def test_old_single_dict_schedule_loads(self, tmp_cron_dir):
+        """Old jobs stored as single dict (not list) must load and run."""
+        save_jobs([{
+            "id": "old-job",
+            "name": "Legacy Job",
+            "prompt": "test",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "schedule_display": "every 60m",
+            "repeat": {"times": None, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "next_run_at": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": "2026-01-01T00:00:00",
+        }])
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["schedule"]["kind"] == "interval"
+        # Should compute next_run_at on recovery
+        due = get_due_jobs()
+        # May or may not be due depending on time, but should not crash
+
+    def test_list_schedule_advance_next_run(self, tmp_cron_dir):
+        """advance_next_run must work for list-schedule jobs (crash safety)."""
+        job = create_job(prompt="Multi", schedule=["every 30m", "every 2h"])
+        # Force next_run_at to 5 minutes ago (job is due)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        # advance should succeed
+        assert advance_next_run(job["id"]) is True
+        # After advance, job should NOT be due
+        due = get_due_jobs()
+        assert len(due) == 0
+
+    def test_list_schedule_mark_job_run_recomputes(self, tmp_cron_dir):
+        """mark_job_run must recompute next_run for list-schedule jobs."""
+        job = create_job(prompt="Multi", schedule=["every 30m", "every 2h"])
+        mark_job_run(job["id"], success=True)
+        updated = get_job(job["id"])
+        assert updated["next_run_at"] is not None
+        assert updated["repeat"]["completed"] == 1
+        assert updated["enabled"] is True
+        assert updated["state"] == "scheduled"
+
+    def test_list_schedule_stale_fast_forward(self, tmp_cron_dir, monkeypatch):
+        """List-schedule job past grace window is fast-forwarded, not fired."""
+        now = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Multi", schedule=["every 30m", "every 2h"])
+        # Force next_run_at to 40 minutes ago (beyond 30m grace for 30m schedule)
+        stale_time = (now - timedelta(minutes=40)).isoformat()
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = stale_time
+        save_jobs(jobs)
+        # Stale job should be fast-forwarded, not fired
+        due = get_due_jobs()
+        assert len(due) == 0
+        # next_run_at should be in the future
+        updated = get_job(job["id"])
+        next_dt = datetime.fromisoformat(updated["next_run_at"])
+        if next_dt.tzinfo is None:
+            next_dt = next_dt.astimezone()
+        assert next_dt > now

@@ -191,6 +191,12 @@ def _schedule_display_for_job(job: Dict[str, Any]) -> str:
 
     schedule = job.get("schedule")
     if isinstance(schedule, dict):
+        # Handle list schedules: build display from sub-schedules
+        if schedule.get("kind") == "list":
+            sub_schedules = schedule.get("schedules", [])
+            if sub_schedules:
+                parts = [s.get("display", s.get("expr", "?")) for s in sub_schedules]
+                return "; ".join(parts)
         for key in ("display", "value", "expr", "run_at"):
             text = _coerce_job_text(schedule.get(key)).strip()
             if text:
@@ -286,16 +292,15 @@ def parse_duration(s: str) -> int:
     return value * multipliers[unit]
 
 
-def parse_schedule(schedule: str) -> Dict[str, Any]:
-    """
-    Parse schedule string into structured format.
-    
+def parse_schedule_single(schedule: str) -> Dict[str, Any]:
+    """Parse a single schedule string into structured format.
+
     Returns dict with:
         - kind: "once" | "interval" | "cron"
         - For "once": "run_at" (ISO timestamp)
         - For "interval": "minutes" (int)
         - For "cron": "expr" (cron expression)
-    
+
     Examples:
         "30m"              → once in 30 minutes
         "2h"               → once in 2 hours
@@ -307,7 +312,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
+
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
@@ -317,7 +322,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "minutes": minutes,
             "display": f"every {minutes}m"
         }
-    
+
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]
     parts = schedule.split()
@@ -336,7 +341,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "expr": schedule,
             "display": schedule
         }
-    
+
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
@@ -353,7 +358,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             }
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
-    
+
     # Duration like "30m", "2h", "1d" → one-shot from now
     try:
         minutes = parse_duration(schedule)
@@ -365,7 +370,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         }
     except ValueError:
         pass
-    
+
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
         f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
@@ -373,6 +378,36 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )
+
+
+def parse_schedule(schedule) -> Dict[str, Any]:
+    """Parse schedule string or list of strings into structured format.
+
+    Single string → returns single dict (backward compat).
+    List of strings → returns {"kind": "list", "schedules": [...]}.
+
+    One-shot schedules (duration like "30m", ISO timestamps) are rejected
+    inside schedule arrays in v1.
+    """
+    if isinstance(schedule, list):
+        if not schedule:
+            raise ValueError("Schedule list cannot be empty")
+        parsed_schedules = []
+        for s in schedule:
+            parsed = parse_schedule_single(str(s))
+            if parsed["kind"] == "once":
+                raise ValueError(
+                    f"One-shot schedule '{s}' cannot be used in a schedule array. "
+                    "Use 'every X' for recurring intervals."
+                )
+            parsed_schedules.append(parsed)
+        display_parts = [s.get("display", s.get("expr", "?")) for s in parsed_schedules]
+        return {
+            "kind": "list",
+            "schedules": parsed_schedules,
+            "display": "; ".join(display_parts),
+        }
+    return parse_schedule_single(schedule)
 
 
 def _ensure_aware(dt: datetime) -> datetime:
@@ -433,6 +468,13 @@ def _compute_grace_seconds(schedule: dict) -> int:
 
     kind = schedule.get("kind")
 
+    if kind == "list":
+        # Use the shortest grace among sub-schedules
+        sub_schedules = schedule.get("schedules", [])
+        if sub_schedules:
+            return min(_compute_grace_seconds(s) for s in sub_schedules)
+        return MIN_GRACE
+
     if kind == "interval":
         period_seconds = schedule.get("minutes", 1) * 60
         grace = period_seconds // 2
@@ -460,6 +502,17 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     Returns ISO timestamp string, or None if no more runs.
     """
     now = _hermes_now()
+
+    if schedule["kind"] == "list":
+        # Compute next_run for each sub-schedule, return earliest
+        candidates = []
+        for sub in schedule["schedules"]:
+            nxt = compute_next_run(sub, last_run_at)
+            if nxt:
+                candidates.append(nxt)
+        if not candidates:
+            return None
+        return min(candidates)  # ISO strings sort chronologically
 
     if schedule["kind"] == "once":
         return _recoverable_oneshot_run_at(schedule, now, last_run_at=last_run_at)
@@ -611,7 +664,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
 
 def create_job(
     prompt: Optional[str],
-    schedule: str,
+    schedule: Union[str, List[str]],
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
@@ -859,15 +912,19 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             if schedule_changed:
                 updated_schedule = updated["schedule"]
                 # The API may pass schedule as a raw string (e.g. "every 10m")
-                # instead of a pre-parsed dict.  Normalize it the same way
+                # or a list of strings. Normalize it the same way
                 # create_job() does so downstream code can call .get() safely.
-                if isinstance(updated_schedule, str):
+                if isinstance(updated_schedule, (str, list)):
                     updated_schedule = parse_schedule(updated_schedule)
                     updated["schedule"] = updated_schedule
-                updated["schedule_display"] = updates.get(
-                    "schedule_display",
-                    updated_schedule.get("display", updated.get("schedule_display")),
-                )
+                # Handle list display
+                if updated_schedule.get("kind") == "list":
+                    updated["schedule_display"] = updated_schedule.get("display", "")
+                else:
+                    updated["schedule_display"] = updates.get(
+                        "schedule_display",
+                        updated_schedule.get("display", updated.get("schedule_display")),
+                    )
                 if updated.get("state") != "paused":
                     updated["next_run_at"] = compute_next_run(updated_schedule)
 
@@ -1004,7 +1061,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
                     kind = job.get("schedule", {}).get("kind")
-                    if kind in {"cron", "interval"}:
+                    if kind in {"cron", "interval", "list"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
                             job["last_error"] = (
@@ -1048,7 +1105,7 @@ def advance_next_run(job_id: str) -> bool:
         for job in jobs:
             if job["id"] == job_id:
                 kind = job.get("schedule", {}).get("kind")
-                if kind not in {"cron", "interval"}:
+                if kind not in {"cron", "interval", "list"}:
                     return False
                 now = _hermes_now().isoformat()
                 new_next = compute_next_run(job["schedule"], now)
@@ -1116,7 +1173,7 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                     pass  # malformed claim → overwrite
             job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
             kind = job.get("schedule", {}).get("kind")
-            if kind in {"cron", "interval"}:
+            if kind in {"cron", "interval", "list"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
@@ -1167,7 +1224,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # next_run_at unset.  Without this branch, such jobs are
             # silently skipped forever; recompute next_run_at from the
             # schedule so they pick up at their next scheduled tick.
-            if not recovered_next and kind in {"cron", "interval"}:
+            if not recovered_next and kind in {"cron", "interval", "list"}:
                 recovered_next = compute_next_run(schedule, now.isoformat())
                 if recovered_next:
                     recovery_kind = kind
@@ -1198,7 +1255,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
-            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+            if kind in {"cron", "interval", "list"} and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())

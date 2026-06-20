@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
 import secrets
 import socket
@@ -87,7 +88,12 @@ class WXBizMsgCrypt:
 
     def decrypt(self, msg_signature: str, timestamp: str, nonce: str, encrypt: str) -> bytes:
         expected = _sha1_signature(self.token, timestamp, nonce, encrypt)
-        if expected != msg_signature:
+        # Constant-time comparison to avoid a timing side-channel on the
+        # callback signature. Consistent with hmac.compare_digest used in
+        # webhook.py and api_server.py for the same purpose.
+        if not isinstance(msg_signature, str) or not hmac.compare_digest(
+            expected, msg_signature
+        ):
             raise SignatureError("signature mismatch")
         try:
             cipher_text = base64.b64decode(encrypt)

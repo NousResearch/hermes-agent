@@ -18,6 +18,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from tools.send_message_tool import (
+    _sanitize_active_wake_text,
+    _sanitize_error_text,
+    _stable_correlation_id,
+    _trigger_adapter_active_wake,
+)
+
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
@@ -352,13 +359,30 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
                             )
+                            if bool(sub.get("trigger_agent")):
+                                receipt = await self._kanban_active_wake_receipt(
+                                    send_result=send_result,
+                                    platform=plat,
+                                    platform_name=platform_str,
+                                    chat_id=str(sub["chat_id"]),
+                                    thread_id=(sub.get("thread_id") or None),
+                                    message=msg,
+                                    adapter=adapter,
+                                )
+                                await asyncio.to_thread(
+                                    self._kanban_record_notify_receipt,
+                                    sub,
+                                    kind,
+                                    receipt,
+                                    board_slug,
+                                )
                             # After delivering the text notification, surface
                             # any artifact paths the worker referenced in
                             # ``kanban_complete(summary=..., artifacts=[...])``
@@ -439,6 +463,122 @@ class GatewayKanbanWatchersMixin:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _kanban_active_wake_receipt(
+        self,
+        *,
+        send_result: Any,
+        platform: Any,
+        platform_name: str,
+        chat_id: str,
+        thread_id: Optional[str],
+        message: str,
+        adapter: Any,
+    ) -> dict[str, Any]:
+        """Return a passive-send + active-wake receipt for a notifier event.
+
+        The notifier already performed the visible send before this helper is
+        called. Active wake is a separate synthetic inbound event; its status is
+        reported independently so a successful chat send never masquerades as a
+        successful agent wake.
+        """
+        receipt = self._kanban_normalize_send_result(send_result)
+        receipt.setdefault("success", True)
+        receipt["receipt_correlation"] = _stable_correlation_id(
+            platform_name, chat_id, thread_id, message
+        )
+        receipt["platform"] = platform_name
+        receipt["chat_id"] = str(chat_id)
+        if thread_id:
+            receipt["thread_id"] = str(thread_id)
+        receipt["active_wake_required"] = True
+
+        if not bool(receipt.get("success")):
+            receipt["triggered_agent"] = False
+            receipt["trigger_error"] = "SEND_FAILED"
+            return receipt
+
+        loop = getattr(self, "_gateway_loop", None)
+        wake_text = _sanitize_active_wake_text(message)
+        trigger_result = _trigger_adapter_active_wake(
+            platform=platform,
+            adapter=adapter,
+            loop=loop,
+            platform_name=platform_name,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            message=wake_text,
+        )
+        receipt.update(trigger_result)
+        if trigger_result.get("triggered_agent"):
+            # If scheduled onto this running loop, yield once so the task is
+            # accepted before the receipt event is persisted. This keeps tests
+            # deterministic without waiting for the model turn to complete.
+            try:
+                if asyncio.get_running_loop() is loop:
+                    await asyncio.sleep(0)
+            except RuntimeError:
+                pass
+        return receipt
+
+    @staticmethod
+    def _kanban_normalize_send_result(send_result: Any) -> dict[str, Any]:
+        if isinstance(send_result, dict):
+            receipt = dict(send_result)
+            if "success" not in receipt:
+                receipt["success"] = True
+        else:
+            receipt = {"success": bool(getattr(send_result, "success", True))}
+            message_id = getattr(send_result, "message_id", None)
+            if message_id:
+                receipt["message_id"] = str(message_id)
+            error = getattr(send_result, "error", None)
+            if error:
+                receipt["error"] = _sanitize_error_text(str(error))
+        if "error" in receipt and receipt["error"]:
+            receipt["error"] = _sanitize_error_text(str(receipt["error"]))
+        return receipt
+
+    def _kanban_record_notify_receipt(
+        self,
+        sub: dict,
+        event_kind: str,
+        receipt: dict[str, Any],
+        board: Optional[str] = None,
+    ) -> None:
+        """Persist a sanitized notifier active-wake receipt event."""
+        from hermes_cli import kanban_db as _kb
+
+        allowed = {
+            "success",
+            "message_id",
+            "receipt_correlation",
+            "triggered_agent",
+            "trigger_error",
+            "platform",
+            "chat_id",
+            "thread_id",
+            "active_wake_required",
+        }
+        payload = {key: receipt[key] for key in allowed if key in receipt}
+        payload["notified_event_kind"] = event_kind
+        payload.setdefault("platform", sub.get("platform"))
+        payload.setdefault("chat_id", sub.get("chat_id"))
+        if sub.get("thread_id"):
+            payload.setdefault("thread_id", sub.get("thread_id"))
+        if payload.get("trigger_error"):
+            payload["trigger_error"] = _sanitize_error_text(str(payload["trigger_error"]))
+        conn = _kb.connect(board=board)
+        try:
+            _kb._append_event(
+                conn,
+                sub["task_id"],
+                "notify_active_wake_receipt",
+                payload,
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,

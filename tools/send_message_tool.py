@@ -641,7 +641,34 @@ def _trigger_gateway_agent(
             adapter = None
 
     loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
-    if platform is None or adapter is None or loop is None:
+    if platform is None:
+        return {"triggered_agent": False, "trigger_error": "NOT_WIRED"}
+    return _trigger_adapter_active_wake(
+        platform=platform,
+        adapter=adapter,
+        loop=loop,
+        platform_name=platform_name,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        message=message,
+    )
+
+
+def _trigger_adapter_active_wake(
+    *,
+    platform,
+    adapter,
+    loop,
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+    message: str,
+    user_id: str = "hermes-active-wake",
+    user_name: str = "Hermes Active Wake",
+) -> dict:
+    """Schedule one sanitized internal active-wake MessageEvent on an adapter."""
+    handle_message = getattr(adapter, "handle_message", None) if adapter is not None else None
+    if adapter is None or loop is None or not callable(handle_message):
         return {"triggered_agent": False, "trigger_error": "NOT_WIRED"}
 
     try:
@@ -653,8 +680,8 @@ def _trigger_gateway_agent(
             chat_id=str(chat_id),
             chat_type="group",
             thread_id=str(thread_id) if thread_id else None,
-            user_id="hermes-active-wake",
-            user_name="Hermes Active Wake",
+            user_id=user_id,
+            user_name=user_name,
             is_bot=False,
             message_id=None,
         )
@@ -666,7 +693,7 @@ def _trigger_gateway_agent(
         )
         from agent.async_utils import safe_schedule_threadsafe
         future = safe_schedule_threadsafe(
-            adapter.handle_message(wake_event),
+            handle_message(wake_event),
             loop,
             logger=logger,
             log_message="active_wake request scheduling failed",

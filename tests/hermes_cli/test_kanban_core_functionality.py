@@ -3147,6 +3147,12 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     after = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
     assert "skills" in after, f"migration did not add skills column: {after}"
 
+    # The legacy DB deliberately has no notify table; adding optional
+    # trigger_agent must be skipped rather than crashing on a missing table.
+    assert conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
+    ).fetchone() is None
+
     # Idempotent: running again must not raise.
     kb._migrate_add_optional_columns(conn)
 

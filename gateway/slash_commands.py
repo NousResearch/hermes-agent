@@ -341,6 +341,49 @@ class GatewaySlashCommandsMixin:
 
         is_create = action == "create"
 
+        # Gateway-originated creates should use the same explicit origin
+        # contract as terminal-created tasks instead of relying only on a
+        # post-create notify-subscribe side effect.  Inject the supported CLI
+        # flags when the message source has platform/chat metadata and the user
+        # did not already provide an origin target.  The legacy post-create
+        # subscribe below remains as a harmless idempotent backstop for old
+        # output shapes and board parsing edge cases.
+        if is_create:
+            has_origin_flags = any(
+                tok == "--origin-platform"
+                or tok.startswith("--origin-platform=")
+                or tok == "--origin-chat-id"
+                or tok.startswith("--origin-chat-id=")
+                for tok in tokens
+            )
+            if not has_origin_flags:
+                source = event.source
+                platform = getattr(source, "platform", None)
+                platform_value = getattr(platform, "value", None)
+                platform_str = (platform_value if platform_value is not None else str(platform or "")).lower()
+                chat_id = str(getattr(source, "chat_id", "") or "")
+                thread_id = str(getattr(source, "thread_id", "") or "")
+                user_id = str(getattr(source, "user_id", "") or "")
+                if platform_str and chat_id:
+                    origin_args = [
+                        "--origin-platform", platform_str,
+                        "--origin-chat-id", chat_id,
+                    ]
+                    if thread_id:
+                        origin_args.extend(["--origin-thread-id", thread_id])
+                    if user_id:
+                        origin_args.extend(["--origin-user-id", user_id])
+                    try:
+                        profile_getter = getattr(self, "_active_profile_name", None)
+                        profile_name = getattr(self, "_kanban_notifier_profile", None) or (
+                            profile_getter() if callable(profile_getter) else None
+                        )
+                    except Exception:
+                        profile_name = None
+                    if profile_name:
+                        origin_args.extend(["--notifier-profile", profile_name])
+                    text = (text.rstrip() + " " + shlex.join(origin_args)).strip()
+
         try:
             output = await asyncio.to_thread(run_slash, text)
         except Exception as exc:  # pragma: no cover - defensive

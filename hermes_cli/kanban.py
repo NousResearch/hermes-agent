@@ -18,7 +18,6 @@ import argparse
 import contextlib
 import json
 import os
-import re
 import shlex
 import sys
 import time
@@ -1002,38 +1001,6 @@ def _profile_author() -> str:
     except Exception:
         return "user"
 
-def _infer_origin_subscription_from_body(body: Optional[str]) -> dict[str, str] | None:
-    """Infer a terminal ACK subscription from explicit Origin/return_to prose."""
-    if not body:
-        return None
-    origin_line = ""
-    for line in str(body).splitlines():
-        if re.search(r"\b(?:origin|return_to|return-to)\b", line, re.I):
-            origin_line = line.strip()
-            break
-    if not origin_line or not re.search(r"\bdiscord\b", origin_line, re.I):
-        return None
-    chat_match = re.search(r"<#(\d{5,})>", origin_line)
-    if chat_match is None:
-        chat_match = re.search(
-            r"\bchat_id\s*[=:]\s*(\d{5,})\b",
-            origin_line,
-            re.I,
-        )
-    if chat_match is None:
-        return None
-    thread_match = re.search(
-        r"\b(?:thread_id|topic_id)\s*[=:]\s*(\d{5,})\b",
-        origin_line,
-        re.I,
-    )
-    return {
-        "platform": "discord",
-        "chat_id": chat_match.group(1),
-        "thread_id": thread_match.group(1) if thread_match else "",
-    }
-
-
 # ---------------------------------------------------------------------------
 # Boards management (hermes kanban boards …)
 # ---------------------------------------------------------------------------
@@ -1351,12 +1318,11 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 def _cmd_create(args: argparse.Namespace) -> int:
     origin_platform = (getattr(args, "origin_platform", None) or "").strip()
     origin_chat_id = (getattr(args, "origin_chat_id", None) or "").strip()
-    inferred_origin = None
-    if not origin_platform and not origin_chat_id:
-        inferred_origin = _infer_origin_subscription_from_body(getattr(args, "body", None))
-        if inferred_origin:
-            origin_platform = inferred_origin["platform"]
-            origin_chat_id = inferred_origin["chat_id"]
+    # Do not infer durable subscriptions from body prose.  A body line such as
+    # "Origin/return_to: ..." is useful context for humans/notifiers, but it is
+    # not an explicit request to persist a notify subscription or to mark an
+    # active wake as required.  Durable ACK subscriptions are created only from
+    # the explicit origin flags below.
     if bool(origin_platform) ^ bool(origin_chat_id):
         print(
             "kanban: pass both --origin-platform and --origin-chat-id "
@@ -1414,11 +1380,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
             print(f"kanban: created task {task_id} but could not read it back", file=sys.stderr)
             return 1
         if origin_platform and origin_chat_id:
-            thread_id = (
-                getattr(args, "origin_thread_id", None)
-                or ((inferred_origin or {}).get("thread_id") or None)
-            )
-            trigger_agent = bool(getattr(args, "ack_trigger_agent", False)) or bool(inferred_origin)
+            thread_id = getattr(args, "origin_thread_id", None)
+            # Passive delivery is the safe default. `trigger_agent` is an
+            # active-wake claim and must be set only by the explicit flag;
+            # body prose alone is not proof that the notifier/gateway can
+            # wake an agent session.
+            trigger_agent = bool(getattr(args, "ack_trigger_agent", False))
             notifier_profile = getattr(args, "notifier_profile", None) or _profile_author()
             kb.add_notify_sub(
                 conn,

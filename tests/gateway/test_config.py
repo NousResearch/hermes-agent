@@ -1045,3 +1045,101 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestSecretScopeTokenDiscovery:
+    """Platform tokens must be discoverable via the per-profile secret scope.
+
+    When ``gateway.multiplex_profiles`` is on, secondary profiles load their
+    ``.env`` into a contextvar-based ``SecretScope`` (not ``os.environ``).
+    ``_apply_env_overrides`` must honour that scope so each profile discovers
+    its own bot tokens.  See issue #49415.
+    """
+
+    def test_telegram_token_from_secret_scope(self):
+        """A token in the active scope (but absent from os.environ) must
+        enable the Telegram platform."""
+        from agent.secret_scope import set_secret_scope, reset_secret_scope
+
+        token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "scope-tg-token"})
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                config = GatewayConfig()
+                _apply_env_overrides(config)
+            assert Platform.TELEGRAM in config.platforms
+            assert config.platforms[Platform.TELEGRAM].enabled is True
+            assert config.platforms[Platform.TELEGRAM].token == "scope-tg-token"
+        finally:
+            reset_secret_scope(token)
+
+    def test_discord_token_from_secret_scope(self):
+        from agent.secret_scope import set_secret_scope, reset_secret_scope
+
+        token = set_secret_scope({"DISCORD_BOT_TOKEN": "scope-dc-token"})
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                config = GatewayConfig()
+                _apply_env_overrides(config)
+            assert Platform.DISCORD in config.platforms
+            assert config.platforms[Platform.DISCORD].enabled is True
+            assert config.platforms[Platform.DISCORD].token == "scope-dc-token"
+        finally:
+            reset_secret_scope(token)
+
+    def test_slack_token_from_secret_scope(self):
+        from agent.secret_scope import set_secret_scope, reset_secret_scope
+
+        token = set_secret_scope({"SLACK_BOT_TOKEN": "scope-slack-token"})
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                config = GatewayConfig()
+                _apply_env_overrides(config)
+            assert Platform.SLACK in config.platforms
+            assert config.platforms[Platform.SLACK].enabled is True
+            assert config.platforms[Platform.SLACK].token == "scope-slack-token"
+        finally:
+            reset_secret_scope(token)
+
+    def test_multiple_tokens_from_one_scope(self):
+        """A full secondary profile .env in the scope should enable all its
+        platforms in a single ``_apply_env_overrides`` pass."""
+        from agent.secret_scope import set_secret_scope, reset_secret_scope
+
+        token = set_secret_scope({
+            "TELEGRAM_BOT_TOKEN": "tg-from-scope",
+            "DISCORD_BOT_TOKEN": "dc-from-scope",
+            "SLACK_BOT_TOKEN": "sl-from-scope",
+        })
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                config = GatewayConfig()
+                _apply_env_overrides(config)
+            assert config.platforms[Platform.TELEGRAM].token == "tg-from-scope"
+            assert config.platforms[Platform.DISCORD].token == "dc-from-scope"
+            assert config.platforms[Platform.SLACK].token == "sl-from-scope"
+        finally:
+            reset_secret_scope(token)
+
+    def test_scope_takes_precedence_over_environ(self):
+        """When a scope is active, it is authoritative — a stale token in
+        ``os.environ`` (e.g. the primary profile's) must NOT leak into a
+        secondary profile's config."""
+        from agent.secret_scope import set_secret_scope, reset_secret_scope
+
+        token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "secondary-token"})
+        try:
+            # Primary's token is in os.environ; secondary's is in the scope.
+            with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "primary-token"}):
+                config = GatewayConfig()
+                _apply_env_overrides(config)
+            assert config.platforms[Platform.TELEGRAM].token == "secondary-token"
+        finally:
+            reset_secret_scope(token)
+
+    def test_no_scope_falls_back_to_environ(self):
+        """Without an active scope, credentials resolve from os.environ
+        (backward-compatible behaviour for non-multiplex deployments)."""
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "env-token"}, clear=True):
+            config = GatewayConfig()
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.TELEGRAM].token == "env-token"

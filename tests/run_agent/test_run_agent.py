@@ -1546,6 +1546,16 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_strips_timestamp_metadata(self, agent):
+        messages = [{"role": "user", "content": "hi", "timestamp": 1781698587.0}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert "timestamp" not in kwargs["messages"][0]
+        assert kwargs["messages"][0]["content"] == "hi"
+        # Internal history is untouched — transport copies only when needed.
+        assert messages[0]["timestamp"] == 1781698587.0
+
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.
 
@@ -3258,15 +3268,19 @@ class TestHandleMaxIterations:
     def test_summary_strips_strict_schema_foreign_fields(self, agent):
         """Regression: the max-iterations summary request must NOT carry
         Chat-Completions-schema-foreign keys — tool_name (SQLite FTS
-        bookkeeping), codex_* reasoning carriers, or internal _-prefixed
-        scaffolding. Strict gateways (Fireworks-backed OpenCode Go, Mistral,
-        Kimi) reject these with 'Extra inputs are not permitted, field:
-        messages[N].tool_name'. The transport's convert_messages() strips
-        them on the main loop; this hand-built summary path must mirror it."""
+        bookkeeping), timestamp (gateway/session metadata), codex_* reasoning
+        carriers, or internal _-prefixed scaffolding. Strict gateways
+        (Fireworks-backed OpenCode Go, Mistral, Kimi) reject these with
+        'Extra inputs are not permitted, field: messages[N].tool_name'. The
+        transport's convert_messages() strips them on the main loop; this
+        hand-built summary path must mirror it."""
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
         agent._cached_system_prompt = "You are helpful."
+        agent.prefill_messages = [
+            {"role": "assistant", "content": "prefill", "timestamp": 1781698588.0},
+        ]
         messages = [
-            {"role": "user", "content": "do stuff"},
+            {"role": "user", "content": "do stuff", "timestamp": 1781698587.0},
             {
                 "role": "assistant",
                 "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
@@ -3282,12 +3296,15 @@ class TestHandleMaxIterations:
         sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
         for m in sent_msgs:
             assert "tool_name" not in m, m
+            assert "timestamp" not in m, m
             assert "codex_reasoning_items" not in m, m
             assert "codex_message_items" not in m, m
             assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
+        assert messages[0]["timestamp"] == 1781698587.0
+        assert agent.prefill_messages[0]["timestamp"] == 1781698588.0
 
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"

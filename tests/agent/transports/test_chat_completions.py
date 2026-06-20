@@ -104,6 +104,20 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_strips_timestamp_metadata(self, transport):
+        """Gateway/session timestamps are Hermes metadata, not Chat
+        Completions message fields. Strict OpenAI-compatible routes reject
+        them as extra inputs.
+        """
+        msgs = [{"role": "user", "content": "hi", "timestamp": 1781698587.0}]
+
+        result = transport.convert_messages(msgs)
+
+        assert "timestamp" not in result[0]
+        assert result[0]["content"] == "hi"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[0]["timestamp"] == 1781698587.0
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 

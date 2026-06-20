@@ -570,6 +570,172 @@ class TestExtractText:
         msg.rich_text = None
         assert DingTalkAdapter._extract_text(msg) == ""
 
+    def test_file_message_returns_filename_placeholder(self):
+        """msgtype=file parks content in message.extensions per SDK design.
+
+        ``ChatbotMessage.from_dict`` in dingtalk-stream <= 0.24 only maps
+        TextContent / ImageContent / RichTextContent; any other msgtype's
+        ``content`` dict falls through to ``message.extensions['content']``.
+        We must surface the filename so downstream ``_on_message`` does not
+        discard the event as "empty".
+        """
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "file"
+        msg.extensions = {
+            "content": {
+                "downloadCode": "dl-code-abc",
+                "fileName": "report.pdf",
+                "fileType": "pdf",
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文件] report.pdf"
+
+    def test_audio_message_returns_placeholder(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "audio"
+        msg.extensions = {"content": {"downloadCode": "dl-code", "fileName": "voice.mp3"}}
+        assert DingTalkAdapter._extract_text(msg) == "[语音] voice.mp3"
+
+    def test_file_message_without_filename(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "file"
+        msg.extensions = {"content": {"downloadCode": "dl"}}
+        assert DingTalkAdapter._extract_text(msg) == "[文件]"
+
+
+class TestExtractMedia:
+    """_extract_media must recognise standalone file/audio/video msgtypes.
+
+    DingTalk Stream Mode pushes ``msgtype=file`` / ``audio`` / ``video``
+    events for single-attachment messages. The SDK does not wrap these in
+    a dedicated Content dataclass — the payload lands in
+    ``message.extensions['content']``. Before the fix the adapter's
+    ``_extract_media`` returned ``(TEXT, [], [])`` for every such event,
+    so ``_on_message`` skipped it as "empty".
+    """
+
+    def _adapter(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        return DingTalkAdapter(PlatformConfig(enabled=True))
+
+    def test_standalone_file_msgtype_extracts_download_code(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "file"
+        msg.extensions = {
+            "content": {
+                "downloadCode": "dl-code-abc",
+                "fileName": "report.pdf",
+                "fileType": "pdf",
+            }
+        }
+        adapter = self._adapter()
+        msg_type, urls, mimes = adapter._extract_media(msg)
+        assert msg_type == MessageType.DOCUMENT
+        assert urls == ["dl-code-abc"]
+        assert mimes == ["application/octet-stream"]
+
+    def test_standalone_file_msgtype_audio_extension_maps_to_audio(self):
+        """fileType=mp3 should classify as audio, not generic document."""
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "file"
+        msg.extensions = {
+            "content": {
+                "downloadCode": "dl-code",
+                "fileName": "voice.mp3",
+                "fileType": "mp3",
+            }
+        }
+        adapter = self._adapter()
+        msg_type, urls, mimes = adapter._extract_media(msg)
+        assert msg_type == MessageType.AUDIO
+        assert urls == ["dl-code"]
+        assert mimes == ["audio"]
+
+    def test_standalone_audio_msgtype_extracts_url(self):
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "audio"
+        msg.extensions = {"content": {"downloadCode": "audio-dl"}}
+        adapter = self._adapter()
+        msg_type, urls, mimes = adapter._extract_media(msg)
+        assert msg_type == MessageType.AUDIO
+        assert urls == ["audio-dl"]
+        assert mimes == ["audio"]
+
+    def test_standalone_video_msgtype_extracts_url(self):
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "video"
+        msg.extensions = {"content": {"downloadCode": "video-dl"}}
+        adapter = self._adapter()
+        msg_type, urls, mimes = adapter._extract_media(msg)
+        assert msg_type == MessageType.VIDEO
+        assert urls == ["video-dl"]
+        assert mimes == ["video"]
+
+    def test_file_msgtype_with_empty_extensions_yields_nothing(self):
+        """Must not crash and must not fabricate media when payload is degenerate."""
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "file"
+        msg.extensions = {}
+        adapter = self._adapter()
+        msg_type, urls, mimes = adapter._extract_media(msg)
+        assert msg_type == MessageType.TEXT
+        assert urls == []
+        assert mimes == []
+
+    def test_text_msgtype_untouched_by_file_branch(self):
+        """Pre-existing text/picture/richText behaviour must be preserved."""
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "text"
+        msg.extensions = {}
+        adapter = self._adapter()
+        msg_type, urls, mimes = adapter._extract_media(msg)
+        assert msg_type == MessageType.TEXT
+        assert urls == []
+        assert mimes == []
+
 
 class TestExtractMedia:
     """_extract_media must split native voice rich-text items (auto-STT)

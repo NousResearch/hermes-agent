@@ -741,6 +741,31 @@ class DingTalkAdapter(BasePlatformAdapter):
                             parts.append(item.text)
                     content = " ".join(parts).strip()
 
+        # Standalone file/audio/video messages carry no text. The SDK
+        # (dingtalk-stream <= 0.24) only maps TextContent/ImageContent/
+        # RichTextContent inside ``from_dict``; any other msgtype leaves
+        # ``content`` in ``message.extensions['content']``. Surface a short
+        # placeholder so the agent knows *something* was sent — the
+        # downloadable URL is still attached via ``_extract_media``.
+        if not content:
+            msg_type_str = getattr(message, "message_type", "") or ""
+            if msg_type_str in ("file", "audio", "voice", "video"):
+                ext_content = (
+                    getattr(message, "extensions", None) or {}
+                ).get("content")
+                if isinstance(ext_content, dict):
+                    fname = (
+                        ext_content.get("fileName")
+                        or ext_content.get("file_name")
+                        or ""
+                    ).strip()
+                    if msg_type_str == "file":
+                        content = f"[文件] {fname}" if fname else "[文件]"
+                    elif msg_type_str in ("audio", "voice"):
+                        content = f"[语音] {fname}" if fname else "[语音]"
+                    elif msg_type_str == "video":
+                        content = f"[视频] {fname}" if fname else "[视频]"
+
         # Do NOT strip "@bot" from the text.  The mention is a routing
         # signal (delivered structurally via callback `isInAtList`), and
         # regex-stripping @handles would collateral-damage e-mails
@@ -813,6 +838,47 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if any("image" in t for t in media_types)
                 else MessageType.TEXT
             )
+
+        # Standalone file/audio/video messages: SDK leaves content in
+        # ``message.extensions['content']`` because ChatbotMessage.from_dict
+        # only knows how to parse text/picture/richText. Pull the download
+        # code (already resolved to a URL by ``_resolve_media_codes``) out
+        # so the agent can actually see the attachment.
+        if msg_type_str in ("file", "audio", "voice", "video") and not media_urls:
+            ext_content = (getattr(message, "extensions", None) or {}).get("content")
+            if isinstance(ext_content, dict):
+                url = (
+                    ext_content.get("downloadCode")
+                    or ext_content.get("download_code")
+                    or ""
+                )
+                if url:
+                    media_urls.append(url)
+                    if msg_type_str == "file":
+                        # Best-effort MIME hint based on fileType / fileName
+                        ftype = (ext_content.get("fileType") or "").lower()
+                        fname = (ext_content.get("fileName") or "").lower()
+                        if ftype in {"mp3", "wav", "m4a", "aac", "ogg"} or any(
+                            fname.endswith("." + ext)
+                            for ext in ("mp3", "wav", "m4a", "aac", "ogg")
+                        ):
+                            media_types.append("audio")
+                            msg_type = MessageType.AUDIO
+                        elif ftype in {"mp4", "mov", "avi", "mkv", "webm"} or any(
+                            fname.endswith("." + ext)
+                            for ext in ("mp4", "mov", "avi", "mkv", "webm")
+                        ):
+                            media_types.append("video")
+                            msg_type = MessageType.VIDEO
+                        else:
+                            media_types.append("application/octet-stream")
+                            msg_type = MessageType.DOCUMENT
+                    elif msg_type_str in ("audio", "voice"):
+                        media_types.append("audio")
+                        msg_type = MessageType.AUDIO
+                    elif msg_type_str == "video":
+                        media_types.append("video")
+                        msg_type = MessageType.VIDEO
 
         return msg_type, media_urls, media_types
 
@@ -1315,6 +1381,19 @@ class DingTalkAdapter(BasePlatformAdapter):
                     for key in ("downloadCode", "pictureDownloadCode", "download_code"):
                         if item.get(key):
                             codes_to_resolve.append((item, key))
+
+        # 3. Standalone file/audio/video messages — SDK parks the content
+        # dict in ``message.extensions['content']`` because its from_dict
+        # only maps text/picture/richText.
+        msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str in ("file", "audio", "voice", "video"):
+            ext_content = (
+                getattr(message, "extensions", None) or {}
+            ).get("content")
+            if isinstance(ext_content, dict):
+                for key in ("downloadCode", "download_code"):
+                    if ext_content.get(key):
+                        codes_to_resolve.append((ext_content, key))
 
         if not codes_to_resolve:
             return

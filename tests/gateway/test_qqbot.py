@@ -192,6 +192,28 @@ class TestVoiceAttachmentSSRFProtection:
 
 
 # ---------------------------------------------------------------------------
+# QQAdapter.connect() — credential validation
+# ---------------------------------------------------------------------------
+
+class TestQQConnect:
+    @pytest.mark.asyncio
+    async def test_missing_credentials_is_non_retryable(self):
+        import gateway.platforms.qqbot.adapter as qqbot_module
+        from gateway.platforms.qqbot import QQAdapter
+
+        with mock.patch.object(qqbot_module, "AIOHTTP_AVAILABLE", True), \
+             mock.patch.object(qqbot_module, "HTTPX_AVAILABLE", True):
+            adapter = QQAdapter(_make_config())  # no app_id / client_secret
+
+            connected = await adapter.connect()
+
+        assert connected is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_code == "qq_missing_credentials"
+        assert adapter.fatal_error_retryable is False
+
+
+# ---------------------------------------------------------------------------
 # WebSocket proxy handling
 # ---------------------------------------------------------------------------
 

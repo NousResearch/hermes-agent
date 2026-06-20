@@ -212,7 +212,7 @@ class WeComAdapter(BasePlatformAdapter):
             return False
         if not self._bot_id or not self._secret:
             message = "WeCom startup failed: WECOM_BOT_ID and WECOM_SECRET are required"
-            self._set_fatal_error("wecom_missing_credentials", message, retryable=True)
+            self._set_fatal_error("wecom_missing_credentials", message, retryable=False)
             logger.warning("[%s] %s", self.name, message)
             return False
 

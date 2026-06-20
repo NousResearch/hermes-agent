@@ -92,6 +92,7 @@ class TestWeComConnect:
         assert adapter.has_fatal_error is True
         assert adapter.fatal_error_code == "wecom_missing_credentials"
         assert "WECOM_BOT_ID" in (adapter.fatal_error_message or "")
+        assert adapter.fatal_error_retryable is False
 
     @pytest.mark.asyncio
     async def test_connect_records_handshake_failure_details(self, monkeypatch):

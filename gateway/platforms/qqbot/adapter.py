@@ -292,7 +292,7 @@ class QQAdapter(BasePlatformAdapter):
             return False
         if not self._app_id or not self._client_secret:
             message = "QQ startup failed: QQ_APP_ID and QQ_CLIENT_SECRET are required"
-            self._set_fatal_error("qq_missing_credentials", message, retryable=True)
+            self._set_fatal_error("qq_missing_credentials", message, retryable=False)
             logger.warning("[%s] %s", self._log_tag, message)
             return False
 

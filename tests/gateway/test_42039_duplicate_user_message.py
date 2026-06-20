@@ -65,6 +65,7 @@ def _bootstrap(monkeypatch, tmp_path):
     )
     runner.session_store.load_transcript.return_value = []
     runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.has_platform_message_id = MagicMock(return_value=False)
     runner.session_store.update_session = MagicMock()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

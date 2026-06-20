@@ -1,13 +1,36 @@
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 
-def test_ensure_dependency_skips_when_present():
+def _write_executable(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _fake_node_at(path: Path, version: str) -> Path:
+    return _write_executable(path, f"#!/bin/sh\necho {version}\n")
+
+
+def _fake_private_hermes_node(hermes_home: Path, version: str) -> Path:
+    node_bin = hermes_home / "node" / "bin"
+    _fake_node_at(node_bin / "node", version)
+    _write_executable(node_bin / "npm", "#!/bin/sh\necho npm\n")
+    return node_bin
+
+
+def test_ensure_dependency_skips_when_present(tmp_path, monkeypatch):
     """ensure_dependency is a no-op when the dep is already available."""
     from hermes_cli.dep_ensure import ensure_dependency
-    with patch("hermes_cli.dep_ensure.shutil") as mock_shutil:
-        mock_shutil.which.return_value = "/usr/bin/node"
-        result = ensure_dependency("node", interactive=False)
-        assert result is True
+
+    user_bin = tmp_path / "user" / "bin"
+    _fake_node_at(user_bin / "node", "v24.0.0")
+    monkeypatch.setenv("PATH", str(user_bin))
+
+    result = ensure_dependency("node", interactive=False)
+    assert result is True
 
 
 def test_ensure_dependency_returns_false_when_missing_noninteractive():
@@ -18,6 +41,54 @@ def test_ensure_dependency_returns_false_when_missing_noninteractive():
         with patch("hermes_cli.dep_ensure._find_install_script", return_value=(None, None)):
             result = ensure_dependency("node", interactive=False)
             assert result is False
+
+
+def test_ensure_dependency_accepts_private_hermes_node_when_not_on_path(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    private_bin = _fake_private_hermes_node(tmp_path, "v22.12.0")
+    empty_path = tmp_path / "empty"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.dep_ensure._find_install_script", lambda: (None, None)
+    )
+
+    assert ensure_dependency("node", interactive=False) is True
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(private_bin)
+
+
+def test_ensure_dependency_uses_private_hermes_node_when_path_node_is_too_old(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    user_bin = tmp_path / "user" / "bin"
+    _fake_node_at(user_bin / "node", "v22.11.0")
+    private_bin = _fake_private_hermes_node(tmp_path, "v22.12.0")
+    monkeypatch.setenv("PATH", str(user_bin))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    assert ensure_dependency("node", interactive=False) is True
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(private_bin)
+
+
+def test_ensure_dependency_does_not_shadow_modern_node_when_only_npm_is_missing(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    user_bin = tmp_path / "user" / "bin"
+    _fake_node_at(user_bin / "node", "v24.0.0")
+    _fake_private_hermes_node(tmp_path, "v22.12.0")
+    monkeypatch.setenv("PATH", str(user_bin))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    assert ensure_dependency("node", interactive=False) is True
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(user_bin)
 
 
 def test_find_install_script_from_checkout(tmp_path):
@@ -113,6 +184,7 @@ def test_has_hermes_agent_browser_windows_path(tmp_path):
     (node_dir / "agent-browser.cmd").write_text("@echo off")
     from hermes_cli.dep_ensure import _has_hermes_agent_browser
     with patch("hermes_cli.dep_ensure._IS_WINDOWS", True), \
+         patch("hermes_cli.node_runtime.sys.platform", "win32"), \
          patch("hermes_constants.get_hermes_home", return_value=tmp_path):
         assert _has_hermes_agent_browser() is True
 

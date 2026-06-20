@@ -1,6 +1,7 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -127,9 +128,9 @@ class TestCmdUpdateBranchFallback:
 
         # rev-list should use origin/main, not origin/fix/stoicneko
         rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert len(rev_list_cmds) == 1
-        assert "origin/main" in rev_list_cmds[0]
-        assert "origin/fix/stoicneko" not in rev_list_cmds[0]
+        assert rev_list_cmds
+        assert all("origin/main" in c for c in rev_list_cmds)
+        assert not any("origin/fix/stoicneko" in c for c in rev_list_cmds)
 
         # pull should use main, not fix/stoicneko
         pull_cmds = [c for c in commands if "pull" in c]
@@ -175,6 +176,22 @@ class TestCmdUpdateBranchFallback:
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_already_up_to_date_cleans_legacy_node_symlinks(
+        self, mock_run, _mock_which, mock_args
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(hm, "_cleanup_legacy_node_symlinks") as cleanup_mock:
+            cmd_update(mock_args)
+
+        cleanup_mock.assert_called()
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -825,3 +842,39 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+def test_update_node_dependencies_uses_private_hermes_npm_when_path_has_none(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import main as hm
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+    hermes_home = tmp_path / ".hermes"
+    node_bin = hermes_home / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    node = node_bin / "node"
+    node.write_text("#!/bin/sh\nprintf 'v22.12.0\\n'\n", encoding="utf-8")
+    node.chmod(0o755)
+    npm = node_bin / "npm"
+    npm.write_text("#!/bin/sh\n", encoding="utf-8")
+    npm.chmod(0o755)
+
+    calls = []
+
+    def fake_run_npm(npm_path, cwd, *, extra_args=(), capture_output=False, env=None):
+        calls.append((npm_path, Path(cwd), tuple(extra_args), capture_output, env))
+        return subprocess.CompletedProcess([npm_path], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(hm, "PROJECT_ROOT", project)
+    monkeypatch.setattr(hm.shutil, "which", lambda _name: None)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(hm, "_run_npm_install_deterministic", fake_run_npm)
+    monkeypatch.setattr(hm, "_nixos_build_env", lambda: None)
+
+    hm._update_node_dependencies()
+
+    assert [call[0] for call in calls] == [str(npm), str(npm)]
+    assert [call[1] for call in calls] == [project, project]

@@ -120,15 +120,9 @@ def remove_wrapper_script():
 
 def _node_symlink_candidate_dirs() -> "list[Path]":
     """Directories where the installer may have placed node/npm/npx symlinks."""
-    dirs: list[Path] = [Path.home() / ".local" / "bin"]
-    # Root FHS installs put links in /usr/local/bin.
-    if sys.platform == "linux":
-        dirs.append(Path("/usr/local/bin"))
-    # Termux installs put links in $PREFIX/bin.
-    prefix = os.environ.get("PREFIX", "")
-    if prefix and "com.termux" in prefix:
-        dirs.append(Path(prefix) / "bin")
-    return dirs
+    from hermes_cli.node_runtime import legacy_node_symlink_candidate_dirs
+
+    return legacy_node_symlink_candidate_dirs()
 
 
 def remove_node_symlinks(hermes_home: Path) -> list:
@@ -148,32 +142,12 @@ def remove_node_symlinks(hermes_home: Path) -> list:
     directory are removed — links the user has repointed elsewhere (nvm, fnm,
     etc.) are left untouched.
     """
-    node_dir = (hermes_home / "node").resolve()
-    removed = []
+    from hermes_cli.node_runtime import remove_legacy_node_symlinks
 
-    for name in ("node", "npm", "npx"):
-        for bin_dir in _node_symlink_candidate_dirs():
-            link = bin_dir / name
-            try:
-                # Only act on symlinks — never delete a real binary the user put here.
-                if not link.is_symlink():
-                    continue
-
-                # Resolve the link target and confirm it points into our node dir.
-                # os.readlink + manual join handles broken (dangling) links too;
-                # Path.resolve() on a dangling link still returns the target path.
-                target = Path(os.readlink(link))
-                if not target.is_absolute():
-                    target = (link.parent / target)
-                target = target.resolve()
-
-                if target == node_dir or node_dir in target.parents:
-                    link.unlink()
-                    removed.append(link)
-            except Exception as e:
-                log_warn(f"Could not remove {link}: {e}")
-
-    return removed
+    return remove_legacy_node_symlinks(
+        hermes_home,
+        candidate_dirs=_node_symlink_candidate_dirs(),
+    )
 
 
 def uninstall_gateway_service():

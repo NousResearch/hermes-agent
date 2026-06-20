@@ -413,23 +413,63 @@ get_command_link_display_dir() {
     fi
 }
 
-# Point a Hermes-managed Node's `npm install -g` at a directory that is on
-# PATH. npm's default global prefix for a bundled Node is the Node dir itself,
-# so global package binaries land in $HERMES_HOME/node/bin — which is NOT on
-# PATH (only the command link dir is) and is wiped on every Node upgrade.
-# Redirecting the prefix to the link dir's parent makes global bins resolve to
-# the command link dir (node/npm/npx live there too, already on PATH) and
-# survive upgrades. Scoped to the managed Node via its prefix-local global
+# Point a Hermes-managed Node's `npm install -g` at $HERMES_HOME/node. Global
+# bins then land in $HERMES_HOME/node/bin, which Hermes can add to its own
+# subprocess PATH without placing node/npm/npx in ~/.local/bin or another
+# user-global command directory. Scoped to the managed Node via its prefix-local
 # npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
-# Hermes's own global installs pass an explicit --prefix and are unaffected.
+# Hermes's own global installs pass the same explicit --prefix.
 # Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
 # every install run repairs pre-existing installs, not just fresh ones.
 configure_managed_node_npm_prefix() {
     [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
-    local link_dir
-    link_dir="$(get_command_link_dir)"
     mkdir -p "$HERMES_HOME/node/etc"
-    printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+    printf 'prefix=%s\n' "$HERMES_HOME/node" > "$HERMES_HOME/node/etc/npmrc"
+}
+
+node_link_points_into_hermes_node() {
+    local link="$1"
+    [ -L "$link" ] || return 1
+
+    local target target_abs node_dir
+    target="$(readlink "$link" 2>/dev/null)" || return 1
+    case "$target" in
+        /*) target_abs="$target" ;;
+        *)  target_abs="$(dirname "$link")/$target" ;;
+    esac
+
+    node_dir="$HERMES_HOME/node"
+    case "$target_abs" in
+        "$node_dir"|"$node_dir"/*) return 0 ;;
+    esac
+
+    if [ -d "$node_dir" ] && [ -e "$target_abs" ]; then
+        local resolved_target resolved_node
+        resolved_target="$(cd "$(dirname "$target_abs")" 2>/dev/null && pwd -P)/$(basename "$target_abs")"
+        resolved_node="$(cd "$node_dir" 2>/dev/null && pwd -P)"
+        case "$resolved_target" in
+            "$resolved_node"|"$resolved_node"/*) return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+remove_managed_node_path_symlinks() {
+    local dirs=("$HOME/.local/bin" "/usr/local/bin")
+    if is_termux && [ -n "${PREFIX:-}" ]; then
+        dirs+=("$PREFIX/bin")
+    fi
+
+    local dir name link
+    for dir in "${dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        for name in node npm npx; do
+            link="$dir/$name"
+            if node_link_points_into_hermes_node "$link"; then
+                rm -f "$link" 2>/dev/null || true
+            fi
+        done
+    done
 }
 
 get_hermes_command_path() {
@@ -741,9 +781,9 @@ node_satisfies_build() {
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
-    # Repair pre-existing Hermes-managed installs where `npm install -g` lands
-    # off PATH. No-op when there's no managed Node, so this is safe to run on
-    # every install — including re-runs that skip the Node (re)install below.
+    # Repair pre-existing Hermes-managed installs. The cleanup only removes
+    # node/npm/npx symlinks that still point into this Hermes-managed Node tree.
+    remove_managed_node_path_symlinks
     configure_managed_node_npm_prefix
 
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
@@ -860,21 +900,14 @@ install_node() {
         return 0
     fi
 
-    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
-    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
-    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
+    # Place into ~/.hermes/node/. Hermes exposes this Node only by prepending
+    # $HERMES_HOME/node/bin to subprocess PATH when it needs Node.
     rm -rf "$HERMES_HOME/node"
     mkdir -p "$HERMES_HOME"
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
 
-    local node_link_dir
-    node_link_dir="$(get_command_link_dir)"
-    mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
-
+    remove_managed_node_path_symlinks
     configure_managed_node_npm_prefix
 
     export PATH="$HERMES_HOME/node/bin:$PATH"

@@ -412,6 +412,43 @@ def test_termux_ultrafast_version_runs_before_heavy_startup(
     assert "OpenAI SDK:" in out
 
 
+def test_ensure_tui_node_prepends_resolved_node_without_local_bin(
+    tmp_path, monkeypatch, main_mod
+):
+    home = tmp_path / "home"
+    hermes_home = home / ".hermes"
+    node_bin = hermes_home / "node" / "bin"
+    local_bin = home / ".local" / "bin"
+    empty_path = tmp_path / "empty"
+    node_bin.mkdir(parents=True)
+    local_bin.mkdir(parents=True)
+    empty_path.mkdir()
+
+    node = node_bin / "node"
+    node.write_text("#!/bin/sh\necho v22.12.0\n", encoding="utf-8")
+    node.chmod(0o755)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return main_mod.subprocess.CompletedProcess(cmd, 0, stdout=f"{node}\n", stderr="")
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setattr(main_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._ensure_tui_node()
+
+    path_entries = os.environ["PATH"].split(os.pathsep)
+    assert path_entries[0] == str(node_bin)
+    assert str(local_bin) not in path_entries
+    assert calls
+    assert "ensure_node" in " ".join(calls[0][0])
+
+
 def test_read_openai_version_fast(monkeypatch, tmp_path, main_mod):
     package_dir = tmp_path / "openai"
     package_dir.mkdir()

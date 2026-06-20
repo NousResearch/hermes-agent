@@ -1,14 +1,11 @@
-"""Regression tests for the Hermes-managed Node's npm global prefix.
+"""Regression tests for Hermes-managed Node PATH isolation.
 
 When the installer falls back to a bundled Node under ``$HERMES_HOME/node``,
-npm's default global prefix is that Node dir, so ``npm install -g <pkg>``
-drops the package binary in ``$HERMES_HOME/node/bin`` — which is NOT on PATH
-(only the command link dir is) and is wiped on every Node upgrade. Users then
-report "I can ``npm i -g`` but the package isn't usable on the command line".
-
-The fix redirects the bundled Node's global prefix to the command link dir's
-parent (so global bins land in the already-on-PATH link dir alongside
-node/npm/npx), scoped to the bundled Node via its prefix-local global npmrc.
+Hermes must keep node/npm/npx private. Older installers linked them into the
+command link dir (usually ``~/.local/bin``), which could shadow nvm/fnm/Volta.
+The managed npm prefix stays inside ``$HERMES_HOME/node`` so npm global bins
+land in ``$HERMES_HOME/node/bin``: private to Hermes, but still visible to
+Hermes subprocess PATH construction and dependency detection.
 """
 
 from pathlib import Path
@@ -19,14 +16,14 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 NODE_BOOTSTRAP = REPO_ROOT / "scripts" / "lib" / "node-bootstrap.sh"
 
 
-def test_install_sh_redirects_bundled_npm_global_prefix_to_link_dir() -> None:
+def test_install_sh_keeps_bundled_npm_global_prefix_inside_hermes_home() -> None:
     text = INSTALL_SH.read_text()
 
-    # The redirect must target the link dir's PARENT so global bins resolve to
-    # <parent>/bin == the command link dir (node/npm/npx live there and it is
-    # guaranteed on PATH by the installer's PATH setup).
+    # prefix=$HERMES_HOME/node keeps global bins in $HERMES_HOME/node/bin,
+    # which Hermes can add to subprocess PATH without polluting ~/.local/bin.
     assert "configure_managed_node_npm_prefix()" in text
-    assert 'printf \'prefix=%s\\n\' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
+    assert 'printf \'prefix=%s\\n\' "$HERMES_HOME/node" > "$HERMES_HOME/node/etc/npmrc"' in text
+    assert 'printf \'prefix=%s\\n\' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"' not in text
 
 
 def test_install_sh_repairs_existing_managed_node_on_rerun() -> None:
@@ -37,19 +34,50 @@ def test_install_sh_repairs_existing_managed_node_on_rerun() -> None:
 
     check_node_body = text.split("check_node()", 1)[1].split("\ninstall_node()", 1)[0]
     assert "configure_managed_node_npm_prefix" in check_node_body
+    assert "remove_managed_node_path_symlinks" in check_node_body
 
     # No-op guard so it's safe to call when there is no managed Node.
     assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text
+    assert "node_link_points_into_hermes_node" in text
 
 
-def test_node_bootstrap_redirects_bundled_npm_global_prefix_to_link_dir() -> None:
+def test_node_bootstrap_keeps_bundled_npm_global_prefix_inside_hermes_home() -> None:
     text = NODE_BOOTSTRAP.read_text()
 
     assert "_nb_configure_npm_prefix()" in text
-    assert 'printf \'prefix=%s\\n\' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
+    assert 'printf \'prefix=%s\\n\' "$HERMES_HOME/node" > "$HERMES_HOME/node/etc/npmrc"' in text
+    assert 'printf \'prefix=%s\\n\' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"' not in text
 
     # Runs at the top of ensure_node so existing managed installs are repaired
     # even when a modern Node is already present (early return path).
     ensure_node_body = text.split("ensure_node()", 1)[1]
     assert "_nb_configure_npm_prefix" in ensure_node_body
+    assert "_nb_remove_legacy_node_links" in ensure_node_body
     assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text
+    assert "_nb_link_points_into_hermes_node" in text
+
+
+def test_installers_never_link_managed_node_tools_into_command_dir() -> None:
+    install_text = INSTALL_SH.read_text()
+    bootstrap_text = NODE_BOOTSTRAP.read_text()
+
+    forbidden = (
+        'ln -sf "$HERMES_HOME/node/bin/node"',
+        'ln -sf "$HERMES_HOME/node/bin/npm"',
+        'ln -sf "$HERMES_HOME/node/bin/npx"',
+    )
+    for snippet in forbidden:
+        assert snippet not in install_text
+        assert snippet not in bootstrap_text
+
+
+def test_node_bootstrap_keeps_version_manager_and_bundled_cascade() -> None:
+    text = NODE_BOOTSTRAP.read_text()
+    ensure_node_body = text.split("ensure_node()", 1)[1]
+
+    assert "_nb_try_fnm" in ensure_node_body
+    assert "_nb_try_proto" in ensure_node_body
+    assert "_nb_try_nvm" in ensure_node_body
+    assert "_nb_try_termux_pkg" in ensure_node_body
+    assert "_nb_try_brew" in ensure_node_body
+    assert "_nb_install_bundled_node" in ensure_node_body

@@ -79,10 +79,11 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
     elif platform in {
         Platform.API_SERVER,
         Platform.WEBHOOK,
-        Platform.MSGRAPH_WEBHOOK,
         Platform.WHATSAPP,
     }:
         mock_config.extra = {}
+    elif platform == Platform.MSGRAPH_WEBHOOK:
+        mock_config.extra = {"client_state": "expected-client-state"}
     elif platform == Platform.FEISHU:
         mock_config.extra = {"app_id": "app"}
     elif platform == Platform.WECOM:
@@ -97,6 +98,8 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
         mock_config.extra = {"app_id": "app", "app_secret": "sec"}
     elif platform == Platform.DINGTALK:
         mock_config.extra = {"client_id": "id", "client_secret": "sec"}
+    elif platform == Platform.RELAY:
+        mock_config.extra = {"relay_url": "wss://connector.example/relay"}
     else:
         pytest.skip(f"No synthetic config defined for {platform.value}")
 

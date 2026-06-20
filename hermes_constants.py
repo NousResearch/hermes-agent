@@ -5,6 +5,8 @@ without risk of circular imports.
 """
 
 import os
+import shutil
+import sys
 import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -40,17 +42,26 @@ def get_hermes_home_override() -> str | None:
     return str(override)
 
 
-def get_hermes_home() -> Path:
-    """Return the Hermes home directory (default: ~/.hermes).
+def _get_platform_default_hermes_home() -> Path:
+    """Return the platform-native default Hermes home path."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
 
-    Reads HERMES_HOME env var, falls back to ~/.hermes.
+
+def get_hermes_home() -> Path:
+    """Return the Hermes home directory (default: platform-native path).
+
+    Reads HERMES_HOME env var, falls back to the platform-native default.
     This is the single source of truth — all other copies should import this.
 
     When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
     a non-default profile is active, logs a loud one-shot warning to
     ``errors.log`` so cross-profile data corruption is diagnosable instead
     of silent.  Behavior is unchanged otherwise — we still return
-    ``~/.hermes`` — because raising here would brick 30+ module-level
+    the platform-native default — because raising here would brick 30+ module-level
     callers that import this at load time.  Subprocess spawners are
     expected to propagate ``HERMES_HOME`` explicitly (see the systemd
     template in ``hermes_cli/gateway.py`` and the kanban dispatcher in
@@ -69,10 +80,8 @@ def get_hermes_home() -> Path:
     global _profile_fallback_warned
     if not _profile_fallback_warned:
         try:
-            # Inline the default-root resolution from get_default_hermes_root()
-            # to stay import-safe (this function is called from module scope
-            # in 30+ files; we cannot afford to trigger logging setup here).
-            active_path = (Path.home() / ".hermes" / "active_profile")
+            fallback_home = _get_platform_default_hermes_home()
+            active_path = fallback_home / "active_profile"
             active = active_path.read_text().strip() if active_path.exists() else ""
         except (UnicodeDecodeError, OSError):
             active = ""
@@ -83,10 +92,9 @@ def get_hermes_home() -> Path:
             # module-import time from 30+ sites, often before logging is
             # configured, and (b) root-logger propagation would double-emit
             # on consoles where a StreamHandler is already attached.
-            import sys
             msg = (
                 f"[HERMES_HOME fallback] HERMES_HOME is unset but active "
-                f"profile is {active!r}. Falling back to ~/.hermes, which "
+                f"profile is {active!r}. Falling back to {fallback_home}, which "
                 f"is the DEFAULT profile — not {active!r}. Any data this "
                 f"process writes will land in the wrong profile. The "
                 f"subprocess spawner should pass HERMES_HOME explicitly "
@@ -98,13 +106,14 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    return _get_platform_default_hermes_home()
 
 
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 
-    In standard deployments this is ``~/.hermes``.
+    In standard deployments this is the platform-native Hermes home
+    (``~/.hermes`` on POSIX, ``%LOCALAPPDATA%\\hermes`` on native Windows).
 
     In Docker or custom deployments where ``HERMES_HOME`` points outside
     ``~/.hermes`` (e.g. ``/opt/data``), returns ``HERMES_HOME`` directly
@@ -117,7 +126,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = _get_platform_default_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
@@ -174,6 +183,25 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     return get_hermes_home() / "optional-skills"
 
 
+def get_optional_mcps_dir(default: Path | None = None) -> Path:
+    """Return the optional-mcps directory, honoring package-manager wrappers.
+
+    Mirrors :func:`get_optional_skills_dir` for the MCP catalog (Nous-approved
+    Model Context Protocol servers shipped with the repo but disabled by
+    default). Packaged installs may ship ``optional-mcps`` outside the Python
+    package tree and expose it via ``HERMES_OPTIONAL_MCPS``.
+    """
+    override = os.getenv("HERMES_OPTIONAL_MCPS", "").strip()
+    if override:
+        return Path(override)
+    packaged = _get_packaged_data_dir("optional-mcps")
+    if packaged is not None:
+        return packaged
+    if default is not None:
+        return default
+    return get_hermes_home() / "optional-mcps"
+
+
 def get_bundled_skills_dir(default: Path | None = None) -> Path:
     """Return the bundled skills directory for source and packaged installs.
 
@@ -215,6 +243,75 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     return home / new_subpath
 
 
+def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
+    """Return Hermes-managed Node.js directories in preferred lookup order.
+
+    Windows installs from ``scripts/install.ps1`` unpack portable Node directly
+    into ``%LOCALAPPDATA%\\hermes\\node``. POSIX installs use
+    ``$HERMES_HOME/node/bin``. Include both shapes on every platform so mixed
+    or migrated installs still work.
+    """
+    root = home or get_hermes_home()
+    dirs = [root / "node"]
+    bin_dir = root / "node" / "bin"
+    # NOTE: keep this ordering in sync with hermesManagedNodePathEntries() in
+    # apps/desktop/electron/main.cjs — the Electron main process is Node and
+    # cannot import this module, so the platform-ordering rule is mirrored there.
+    if sys.platform == "win32":
+        return dirs + [bin_dir]
+    return [bin_dir] + dirs
+
+
+def _candidate_node_command_names(command: str) -> list[str]:
+    base = Path(command).name
+    if sys.platform != "win32" or "." in base:
+        return [base]
+    if base.lower() == "npm":
+        # Prefer npm.cmd. PowerShell may block npm.ps1 by execution policy, and
+        # CreateProcess cannot launch a bare .ps1 the way it can launch .cmd.
+        return ["npm.cmd", "npm.exe", "npm"]
+    if base.lower() == "npx":
+        return ["npx.cmd", "npx.exe", "npx"]
+    if base.lower() == "node":
+        return ["node.exe", "node"]
+    return [f"{base}.cmd", f"{base}.exe", base]
+
+
+def find_hermes_node_executable(command: str) -> str | None:
+    """Return a Hermes-managed Node/npm executable path, if installed."""
+    names = _candidate_node_command_names(command)
+    for directory in iter_hermes_node_dirs():
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file() and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            ):
+                return str(candidate)
+    return None
+
+
+def find_node_executable(command: str) -> str | None:
+    """Resolve a Node.js command, preferring Hermes-managed installs.
+
+    This is for Hermes-owned subprocesses that should not be broken by a bad,
+    missing, or elevation-triggering system Node/npm on PATH.
+    """
+    return find_hermes_node_executable(command) or shutil.which(command)
+
+
+def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return *env* with Hermes-managed Node directories prepended to PATH."""
+    merged = dict(os.environ if env is None else env)
+    existing = merged.get("PATH", "")
+    parts = [p for p in existing.split(os.pathsep) if p]
+    managed = [str(path) for path in iter_hermes_node_dirs() if path.is_dir()]
+    for entry in reversed(managed):
+        if entry not in parts:
+            parts.insert(0, entry)
+    merged["PATH"] = os.pathsep.join(parts)
+    return merged
+
+
 def display_hermes_home() -> str:
     """Return a user-friendly display string for the current HERMES_HOME.
 
@@ -235,30 +332,147 @@ def display_hermes_home() -> str:
         return str(home)
 
 
-def get_subprocess_home() -> str | None:
-    """Return a per-profile HOME directory for subprocesses, or None.
+def secure_parent_dir(path: Path) -> None:
+    """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
 
-    When ``{HERMES_HOME}/home/`` exists on disk, subprocesses should use it
-    as ``HOME`` so system tools (git, ssh, gh, npm …) write their configs
-    inside the Hermes data directory instead of the OS-level ``/root`` or
-    ``~/``.  This provides:
+    Refuses to chmod ``/`` or any top-level directory (resolved parent with
+    fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
+    prevent catastrophic host bricking when ``HERMES_HOME`` or other path
+    env vars resolve to an unexpected location.
 
-    * **Docker persistence** — tool configs land inside the persistent volume.
-    * **Profile isolation** — each profile gets its own git identity, SSH
-      keys, gh tokens, etc.
-
-    The Python process's own ``os.environ["HOME"]`` and ``Path.home()`` are
-    **never** modified — only subprocess environments should inject this value.
-    Activation is directory-based: if the ``home/`` subdirectory doesn't
-    exist, returns ``None`` and behavior is unchanged.
+    See https://github.com/NousResearch/hermes-agent/issues/25821.
     """
-    hermes_home = get_hermes_home_override() or os.getenv("HERMES_HOME")
+    parent = path.parent.resolve()
+    # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
+    if parent == Path("/") or len(parent.parts) < 3:
+        return
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
+
+
+def _norm_home_path(path: str | None) -> str:
+    """Return a comparable absolute path string, or ``""`` for empty input."""
+    raw = (path or "").strip()
+    if not raw:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+    except Exception:
+        return os.path.normcase(raw)
+
+
+def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
+    """Return ``{HERMES_HOME}/home`` when the profile-home directory exists."""
+    hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
     profile_home = os.path.join(hermes_home, "home")
     if os.path.isdir(profile_home):
         return profile_home
     return None
+
+
+def _is_profile_home(candidate: str | None, profile_home: str | None) -> bool:
+    return bool(candidate and profile_home and _norm_home_path(candidate) == _norm_home_path(profile_home))
+
+
+def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
+    """Return likely OS-user home candidates in trust order."""
+    env = env or {}
+    candidates: list[str] = []
+    explicit = str(env.get("HERMES_REAL_HOME") or os.getenv("HERMES_REAL_HOME", "")).strip()
+    if explicit:
+        candidates.append(explicit)
+    home = str(env.get("HOME") or os.getenv("HOME", "")).strip()
+    if home:
+        candidates.append(home)
+    try:
+        import pwd
+
+        pw_home = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX-only module inside try/except
+        if pw_home:
+            candidates.append(pw_home)
+    except Exception:
+        pass
+    userprofile = str(env.get("USERPROFILE") or os.getenv("USERPROFILE", "")).strip()
+    if userprofile:
+        candidates.append(userprofile)
+    drive = str(env.get("HOMEDRIVE") or os.getenv("HOMEDRIVE", "")).strip()
+    path = str(env.get("HOMEPATH") or os.getenv("HOMEPATH", "")).strip()
+    if drive and path:
+        candidates.append(f"{drive}{path}" if path.startswith(("\\", "/")) else os.path.join(drive, path))
+    expanded = os.path.expanduser("~")
+    if expanded and expanded != "~":
+        candidates.append(expanded)
+    return candidates
+
+
+def get_real_home(env: dict[str, str] | None = None) -> str:
+    """Return the OS user's real home directory, avoiding Hermes profile HOME.
+
+    ``HERMES_HOME`` scopes Hermes state. ``HOME`` is reserved for the OS/user
+    account and the many external CLIs that store credentials under ``~``.
+    If a parent process is already running with ``HOME={HERMES_HOME}/home``,
+    this helper repairs back to the account home when possible.
+    """
+    profile_home = _profile_home_path(env)
+    seen: set[str] = set()
+    for candidate in _iter_real_home_candidates(env):
+        key = _norm_home_path(candidate)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if not _is_profile_home(candidate, profile_home):
+            return candidate
+    return "/tmp"
+
+
+def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
+    """Return a subprocess ``HOME`` override, if one should be applied.
+
+    Policy is controlled by ``terminal.home_mode`` (bridged to
+    ``TERMINAL_HOME_MODE``):
+
+    * ``auto`` (default): host installs keep the real user HOME; containers use
+      ``{HERMES_HOME}/home`` for persistent state. If a host parent already has
+      HOME pointed at the profile home, repair subprocesses back to real HOME.
+    * ``real``: always prefer the real OS-user HOME.
+    * ``profile``: use ``{HERMES_HOME}/home`` when it exists, preserving the
+      older strict per-profile tool-config isolation.
+    """
+    env = env or {}
+    profile_home = _profile_home_path(env)
+    mode = str(env.get("TERMINAL_HOME_MODE") or os.getenv("TERMINAL_HOME_MODE", "auto")).strip().lower() or "auto"
+    if mode in {"isolated", "profile_home", "profile-home"}:
+        mode = "profile"
+    if mode in {"host", "user", "real_home", "real-home"}:
+        mode = "real"
+
+    if mode == "profile":
+        return profile_home
+
+    real_home = get_real_home(env)
+    current_home = str(env.get("HOME") or os.getenv("HOME", "")).strip()
+    if mode == "real":
+        return real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
+
+    if profile_home and is_container():
+        return profile_home
+    if _is_profile_home(current_home, profile_home):
+        return real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
+    return None
+
+
+def apply_subprocess_home_env(env: dict[str, str]) -> None:
+    """Apply Hermes' subprocess HOME contract to *env* in-place."""
+    real_home = get_real_home(env)
+    if real_home:
+        env["HERMES_REAL_HOME"] = real_home
+    home = get_subprocess_home(env)
+    if home:
+        env["HOME"] = home
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
@@ -317,11 +531,21 @@ _container_detected: bool | None = None
 
 
 def is_container() -> bool:
-    """Return True when running inside a Docker/Podman container.
+    """Return True when running inside a container.
 
-    Checks ``/.dockerenv`` (Docker), ``/run/.containerenv`` (Podman),
-    and ``/proc/1/cgroup`` for container runtime markers.  Result is
-    cached for the process lifetime.  Import-safe — no heavy deps.
+    Recognizes Docker (``/.dockerenv``), Podman (``/run/.containerenv``),
+    and — via ``/proc/1/cgroup`` — the docker/podman/lxc cgroup-v1 markers.
+
+    cgroup v2 collapses ``/proc/1/cgroup`` to a single ``0::/`` line with no
+    runtime marker, so containerd/CRI-O runtimes (the common case on
+    Kubernetes/k3s) were previously missed. To cover those, also check:
+      * ``KUBERNETES_SERVICE_HOST`` env var — set in every Kubernetes pod.
+      * ``kubepods`` / ``containerd`` / ``crio`` markers in ``/proc/1/cgroup``.
+      * the same markers in ``/proc/self/mountinfo`` (cgroup-v2 fallback).
+
+    Result is cached for the process lifetime.  Import-safe — no heavy deps.
+
+    See: NousResearch/hermes-agent#47111
     """
     global _container_detected
     if _container_detected is not None:
@@ -332,10 +556,26 @@ def is_container() -> bool:
     if os.path.exists("/run/.containerenv"):
         _container_detected = True
         return True
+    # Kubernetes always injects this into pod containers; absent on hosts.
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        _container_detected = True
+        return True
+    _CGROUP_MARKERS = ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio")
     try:
         with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
             cgroup = f.read()
-            if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
+            if any(marker in cgroup for marker in _CGROUP_MARKERS):
+                _container_detected = True
+                return True
+    except OSError:
+        pass
+    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
+    # runtime still shows up in the mount table (overlay rootfs, runtime mount
+    # paths), so scan mountinfo as a last resort.
+    try:
+        with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
+            mountinfo = f.read()
+            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
                 _container_detected = True
                 return True
     except OSError:
@@ -412,7 +652,13 @@ def apply_ipv4_preference(force: bool = False) -> None:
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 
+# ─── Streaming Response Constants ────────────────────────────────────────────
+
+# Response ID for partial stream stubs used during error recovery
+PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
+
+FINISH_REASON_LENGTH = "length"
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
-
-AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"

@@ -42,6 +42,7 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -99,6 +100,8 @@ class ProcessSession:
     started_at: float = 0.0                     # time.time() of spawn
     exited: bool = False                        # Whether the process has finished
     exit_code: Optional[int] = None             # Exit code (None if still running)
+    completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
@@ -128,6 +131,7 @@ class ProcessSession:
     _watch_cooldown_until: float = field(default=0.0, repr=False)
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
+    _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -433,9 +437,51 @@ class ProcessRegistry:
 
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID without requiring the original process handle."""
+        """Terminate a host-visible PID and its descendants.
+
+        POSIX: walks the process tree with ``psutil`` and SIGTERMs
+        children before the parent so subprocess trees (e.g. Chromium
+        renderers/GPU helpers spawned by an ``agent-browser`` daemon)
+        don't get reparented to init and survive cleanup.
+
+        Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
+        the documented Microsoft primitive for tree-kill and matches the
+        existing convention in ``gateway.status.terminate_pid``. We can't
+        reuse the POSIX psutil path on Windows because:
+
+          1. Windows doesn't maintain a Unix-style process tree —
+             ``psutil.Process.children(recursive=True)`` walks PPID
+             links that go stale when intermediate processes exit, so
+             enumeration is best-effort and misses orphaned descendants.
+          2. ``psutil.Process.terminate()`` on Windows is
+             ``TerminateProcess()`` which kills only the target handle
+             and is a hard kill — there is no Windows equivalent of a
+             SIGTERM that cascades through a process group. (See the
+             warning in ``gateway/status.py::terminate_pid``: "os.kill
+             with SIGTERM is not equivalent to a tree-killing hard stop"
+             on Windows.) Headless Chromium has no GUI window, so the
+             softer ``taskkill /T`` without ``/F`` won't reach it either.
+
+        ``psutil`` is a hard dependency (see ``pyproject.toml``); the
+        bare-``os.kill`` fallback covers OSError / PermissionError on
+        POSIX and a missing ``taskkill.exe`` on Windows (effectively
+        unreachable on real Windows installs, but cheap insurance).
+        """
         if _IS_WINDOWS:
-            os.kill(pid, signal.SIGTERM)
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                    stdin=subprocess.DEVNULL,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (OSError, ProcessLookupError, PermissionError):
+                    pass
             return
 
         import psutil
@@ -549,6 +595,8 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
         proc = subprocess.Popen(
             [user_shell, "-lic", f"set +m; {command}"],
             text=True,
@@ -560,7 +608,7 @@ class ProcessRegistry:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            **_popen_kwargs,
         )
 
         session.process = proc
@@ -589,7 +637,8 @@ class ProcessRegistry:
             try:
                 if not _IS_WINDOWS:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS check above
+                        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:
@@ -653,7 +702,11 @@ class ProcessRegistry:
         )
 
         try:
-            result = env.execute(bg_command, timeout=timeout)
+            result = env.execute(
+                bg_command,
+                timeout=timeout,
+                rewrite_compound_background=False,
+            )
             output = result.get("output", "").strip()
             # Try to extract the PID from the output
             for line in output.splitlines():
@@ -661,9 +714,22 @@ class ProcessRegistry:
                 if line.isdigit():
                     session.pid = int(line)
                     break
+            # If the wrapper couldn't produce a PID (for example, syntax
+            # error or broken redirect), treat it as a failed launch instead
+            # of exposing a fake running session.
+            if session.pid is None:
+                session.exited = True
+                session.exit_code = int(result.get("returncode", -1))
+                if session.exit_code == 0:
+                    session.exit_code = -1
+                session.completion_reason = "failed_start"
+                session.termination_source = "failed_start"
+                session.output_buffer = result.get("output", "").strip()
         except Exception as e:
             session.exited = True
             session.exit_code = -1
+            session.completion_reason = "failed_start"
+            session.termination_source = "failed_start"
             session.output_buffer = f"Failed to start: {e}"
 
         if not session.exited:
@@ -679,9 +745,12 @@ class ProcessRegistry:
 
         with self._lock:
             self._prune_if_needed()
-            self._running[session.id] = session
+            if not session.exited:
+                self._running[session.id] = session
 
-        self._write_checkpoint()
+        if not session.exited:
+            self._write_checkpoint()
+
         return session
 
     # ----- Reader / Poller Threads -----
@@ -711,7 +780,9 @@ class ProcessRegistry:
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
             session.exited = True
-            session.exit_code = session.process.returncode
+            if session.completion_reason != "killed":
+                session.exit_code = session.process.returncode
+                session.completion_reason = "exited"
             self._move_to_finished(session)
 
     def _env_poller_loop(
@@ -757,6 +828,8 @@ class ProcessRegistry:
                     except (ValueError, IndexError):
                         session.exit_code = -1
                     session.exited = True
+                    if session.completion_reason != "killed":
+                        session.completion_reason = "exited"
                     self._move_to_finished(session)
                     return
 
@@ -764,6 +837,8 @@ class ProcessRegistry:
                 # Environment might be gone (sandbox reaped, etc.)
                 session.exited = True
                 session.exit_code = -1
+                session.completion_reason = "lost"
+                session.termination_source = "backend_lost"
                 self._move_to_finished(session)
                 return
 
@@ -795,7 +870,9 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("PTY wait timed out or failed: %s", e)
         session.exited = True
-        session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+        if session.completion_reason != "killed":
+            session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+            session.completion_reason = "exited"
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -808,6 +885,7 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
+        session._completion_event.set()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
@@ -819,8 +897,11 @@ class ProcessRegistry:
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
+                "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
                 "output": output_tail,
             })
 
@@ -920,7 +1001,9 @@ class ProcessRegistry:
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
-            session.exit_code = rc
+            if session.completion_reason != "killed":
+                session.exit_code = rc
+                session.completion_reason = "exited"
         logger.info(
             "Reconciled session %s: direct child exited with code %s but reader "
             "was still blocked (orphaned pipe). Flipped to exited.",
@@ -953,6 +1036,8 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
+            result["completion_reason"] = session.completion_reason
+            result["termination_source"] = session.termination_source
             self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
@@ -1030,6 +1115,8 @@ class ProcessRegistry:
 
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
+            if session is None:
+                return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
             # child has already exited (issue #17327).
@@ -1039,6 +1126,8 @@ class ProcessRegistry:
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
+                    "completion_reason": session.completion_reason,
+                    "termination_source": session.termination_source,
                     "output": strip_ansi(session.output_buffer[-2000:]),
                 }
                 if timeout_note:
@@ -1055,7 +1144,10 @@ class ProcessRegistry:
                     result["timeout_note"] = timeout_note
                 return result
 
-            time.sleep(1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            session._completion_event.wait(timeout=min(1.0, remaining))
 
         result = {
             "status": "timeout",
@@ -1067,7 +1159,7 @@ class ProcessRegistry:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str) -> dict:
+    def kill_process(self, session_id: str, *, source: str = "process.kill") -> dict:
         """Kill a background process."""
         session = self.get(session_id)
         if session is None:
@@ -1131,9 +1223,16 @@ class ProcessRegistry:
                 }
             session.exited = True
             session.exit_code = -15  # SIGTERM
+            session.completion_reason = "killed"
+            session.termination_source = source
             self._move_to_finished(session)
             self._write_checkpoint()
-            return {"status": "killed", "session_id": session.id}
+            return {
+                "status": "killed",
+                "session_id": session.id,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
+            }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -1145,10 +1244,14 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:
             try:
-                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
+                if _IS_WINDOWS:
+                    pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
+                else:
+                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
@@ -1190,6 +1293,19 @@ class ProcessRegistry:
             return {"status": "ok", "message": "stdin closed"}
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+    def count_running(self) -> int:
+        """Return the count of currently-running background processes.
+
+        Cheap O(1) read of the running dict, suitable for status-bar polling
+        on every render tick. CPython dict ``len()`` is atomic; callers do not
+        need to hold ``self._lock``. Reflects ``_running`` only: sessions are
+        moved to ``_finished`` when their subprocess exits.
+        """
+        try:
+            return len(self._running)
+        except Exception:
+            return 0
 
     def list_sessions(self, task_id: str = None) -> list:
         """List all running and recently-finished processes."""
@@ -1260,7 +1376,7 @@ class ProcessRegistry:
 
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id)
+            result = self.kill_process(session.id, source="kill_all")
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -1415,6 +1531,91 @@ class ProcessRegistry:
 process_registry = ProcessRegistry()
 
 
+def _format_age(seconds: float) -> str:
+    """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
+    try:
+        s = int(max(0, seconds))
+    except (TypeError, ValueError):
+        return "?"
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m" if s == 0 else f"{m}m{s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h" if m == 0 else f"{h}h{m}m"
+
+
+def _format_async_delegation(evt: dict) -> str:
+    """Format an async-delegation completion into a self-contained re-injection.
+
+    Carries the FULL original task source (goal, the context the parent
+    supplied, toolsets, role, model) plus dispatch time, status, and the
+    complete result summary. When this re-enters the conversation the agent
+    may be deep in unrelated context and won't remember why the subagent
+    existed, so the block is written to stand entirely on its own — enough to
+    use the result OR re-dispatch if the world has moved on.
+    """
+    import time as _time
+
+    deleg_id = evt.get("delegation_id", "unknown")
+    goal = evt.get("goal", "") or ""
+    context = evt.get("context")
+    toolsets = evt.get("toolsets")
+    role = evt.get("role") or "leaf"
+    model = evt.get("model") or "?"
+    status = evt.get("status") or "completed"
+    summary = evt.get("summary")
+    error = evt.get("error")
+    api_calls = evt.get("api_calls", 0)
+    duration = evt.get("duration_seconds", "?")
+    dispatched_at = evt.get("dispatched_at")
+    completed_at = evt.get("completed_at") or _time.time()
+
+    age = ""
+    if isinstance(dispatched_at, (int, float)):
+        age = f" ({_format_age(completed_at - dispatched_at)} ago)"
+
+    lines = [
+        f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
+        "A background subagent you dispatched earlier has finished. You may "
+        "have moved on since dispatching it; the full task source is below so "
+        "you can act on the result or re-dispatch if things have changed.",
+        "",
+    ]
+    if isinstance(dispatched_at, (int, float)):
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
+        lines.append(f"Dispatched: {ts}{age}")
+    lines.append(f"Original goal: {goal}")
+    if context:
+        lines.append(f"Context you provided: {context}")
+    if toolsets:
+        lines.append(f"Toolsets: {', '.join(toolsets)}")
+    lines.append(f"Role: {role}   Model: {model}")
+    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
+    lines.append("--- RESULT ---")
+    if status in ("completed", "success") and summary:
+        lines.append(summary)
+    elif status == "interrupted":
+        lines.append(
+            "The subagent was interrupted before completing"
+            + (f": {error}" if error else ".")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    else:
+        # error / timeout / failed
+        lines.append(
+            f"The subagent did not complete successfully (status={status})."
+            + (f"\n{error}" if error else "")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    return "\n".join(lines)
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -1443,11 +1644,29 @@ def format_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "async_delegation":
+        return _format_async_delegation(evt)
+
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
+    _reason = evt.get("completion_reason") or "exited"
+    _source = evt.get("termination_source") or ""
+    _signal = ""
+    if _exit in {-15, 143, "-15", "143"}:
+        _signal = ", SIGTERM"
+    if _reason == "killed":
+        _status = f"terminated by {_source or 'Hermes'}"
+    elif _reason == "lost":
+        _status = "marked lost because the process backend disappeared"
+    elif _reason == "failed_start":
+        _status = "failed to start"
+    elif _exit == 0:
+        _status = "completed normally"
+    else:
+        _status = "exited"
     return (
-        f"[IMPORTANT: Background process {_sid} completed "
-        f"(exit code {_exit}).\n"
+        f"[IMPORTANT: Background process {_sid} {_status} "
+        f"(exit code {_exit}{_signal}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )

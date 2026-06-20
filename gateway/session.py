@@ -91,6 +91,12 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    role_authorized: bool = False  # True when adapter granted access via role (not user ID)
+    # Profile this inbound message is routed to in a multiplexing gateway
+    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
+    # None => the gateway's active/default profile. Drives both session-key
+    # namespacing and the per-turn config/credential scope.
+    profile: Optional[str] = None
     
     @property
     def description(self) -> str:
@@ -134,6 +140,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.profile:
+            d["profile"] = self.profile
         return d
 
     @classmethod
@@ -152,6 +160,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            profile=data.get("profile"),
         )
     
 
@@ -293,6 +302,22 @@ def build_session_context_prompt(
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
+    if context.source.platform == Platform.MATRIX:
+        src = context.source
+        room_name = src.chat_name or src.chat_id
+        room_id = _hash_chat_id(src.chat_id) if redact_pii else src.chat_id
+        lines.append("")
+        lines.append(f"**Matrix Room:** {room_name}")
+        lines.append(f"**Matrix Room ID:** {room_id}")
+        if src.thread_id:
+            thread_id = _hash_chat_id(src.thread_id) if redact_pii else src.thread_id
+            lines.append(f"**Matrix Thread:** {thread_id}")
+        lines.append(
+            "**Matrix room boundary:** Treat this turn as scoped to the current "
+            "Matrix room/thread only. Do not assume unresolved references are "
+            "about other Matrix rooms or projects unless the user explicitly says so."
+        )
+
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
     # when group_sessions_per_user=False), multiple users contribute to the same
@@ -369,9 +394,10 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Yuanbao. "
-            "You CAN send private (DM) messages via the send_message tool. "
-            "Use target='yuanbao:direct:<account_id>' for DM "
-            "and target='yuanbao:group:<group_code>' for group chat."
+            "To send a private (DM) message to a user in the current group, "
+            "use the yb_send_dm tool (look up the recipient by name or pass "
+            "their user_id). Your normal reply is delivered to the group you "
+            "are responding in."
         )
 
     # Connected platforms
@@ -597,14 +623,40 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _session_key_namespace(profile: Optional[str]) -> str:
+    """Return the ``agent:<ns>`` namespace prefix for a session key.
+
+    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
+    ``main`` is a static namespace literal (NOT a branch name — branching keys
+    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
+    slot to carry the profile:
+
+    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
+      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
+      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
+    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
+      layout, just a different namespace, so two profiles serving the same
+      platform/chat never collide.
+    """
+    if not profile or profile == "default":
+        return "agent:main"
+    return f"agent:{profile}"
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    profile: Optional[str] = None,
 ) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
+
+    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
+    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
+    that don't multiplex produce byte-identical keys to before. Only the
+    multiplexing gateway passes a non-default profile.
 
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
@@ -625,6 +677,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -633,11 +686,27 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_chat_id}"
+        # No chat_id — fall back to the sender's own identifier before the
+        # bare per-platform sink.  Without this, every DM from every user that
+        # arrives without a chat_id (non-standard adapters / synthetic sources)
+        # collapses into one shared "<ns>:<platform>:dm" session, and a
+        # single cached agent ends up serving multiple people's conversations —
+        # cross-user history bleed.  participant_id keeps DMs isolated per user.
+        dm_participant_id = source.user_id_alt or source.user_id
+        if dm_participant_id and source.platform == Platform.WHATSAPP:
+            dm_participant_id = (
+                canonical_whatsapp_identifier(str(dm_participant_id))
+                or dm_participant_id
+            )
+        if dm_participant_id:
+            if source.thread_id:
+                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{ns}:{platform}:dm:{source.thread_id}"
+        return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -645,7 +714,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -741,12 +810,32 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
+    def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
+        """Return the profile namespace for session keys, or None when off.
+
+        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
+        keys stay in the legacy ``agent:main`` namespace — byte-identical to
+        before. When enabled, prefers the profile the inbound source was routed
+        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
+        per-credential adapter), falling back to the active profile name.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        if source is not None and source.profile:
+            return source.profile
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return None
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=self._resolve_profile_for_key(source),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
@@ -1247,21 +1336,27 @@ class SessionStore:
         entries.sort(key=lambda e: e.updated_at, reverse=True)
 
         return entries
-    
-    def get_transcript_path(self, session_id: str) -> Path:
-        """Get the path to a session's legacy transcript file."""
-        return self.sessions_dir / f"{session_id}.jsonl"
+
+    def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
+        """Return the active session entry for a persisted session ID, if any."""
+        if not session_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.session_id == session_id:
+                    return entry
+        return None
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL).
+        """Append a message to a session's transcript (SQLite).
 
         Args:
-            skip_db: When True, only write to JSONL and skip the SQLite write.
-                     Used when the agent already persisted messages to SQLite
-                     via its own _flush_messages_to_session_db(), preventing
-                     the duplicate-write bug (#860).
+            skip_db: When True, skip the SQLite write. Used when the agent
+                     already persisted messages to SQLite via its own
+                     _flush_messages_to_session_db(), preventing the
+                     duplicate-write bug (#860).
         """
-        # Write to SQLite (unless the agent already handled it)
         if self._db and not skip_db:
             try:
                 self._db.append_message(
@@ -1276,94 +1371,96 @@ class SessionStore:
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                     codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
+                    # Platform-side message id (yuanbao msg_id, telegram update_id, …).
+                    # Accept either explicit ``platform_message_id`` or the legacy
+                    # ``message_id`` key the JSONL transcript used.
+                    platform_message_id=(
+                        message.get("platform_message_id") or message.get("message_id")
+                    ),
+                    observed=bool(message.get("observed")),
+                    timestamp=message.get("timestamp"),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-        
-        # Also write legacy JSONL (keeps existing tooling working during transition)
-        transcript_path = self.get_transcript_path(session_id)
-        try:
-            with self._lock:
-                with open(transcript_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(message, ensure_ascii=False) + "\n")
-        except OSError as e:
-            # Disk full / read-only fs / permission errors must not crash the
-            # message handler — the SQLite write above is the primary store.
-            logger.debug("Failed to write JSONL transcript for %s: %s", session_id, e)
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
-        
-        Used by /retry, /undo, and /compress to persist modified conversation history.
-        Rewrites both SQLite and legacy JSONL storage.
+
+        Used by /retry, /undo, and /compress to persist modified conversation
+        history. state.db is the canonical store.
         """
-        # SQLite: replace atomically so a mid-rewrite failure doesn't leave
-        # the session half-empty in the DB while JSONL still has history.
         if self._db:
             try:
                 self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
-        
-        # JSONL: overwrite the file
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages from a session's transcript."""
-        db_messages = []
-        # Try SQLite first
-        if self._db:
-            try:
-                db_messages = self._db.get_messages_as_conversation(session_id)
-            except Exception as e:
-                logger.debug("Could not load messages from DB: %s", e)
+        """Load all messages from a session's transcript.
 
-        # Load legacy JSONL transcript (may contain more history than SQLite
-        # for sessions created before the DB layer was introduced).
-        transcript_path = self.get_transcript_path(session_id)
-        jsonl_messages = []
-        if transcript_path.exists():
-            try:
-                with open(transcript_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            try:
-                                jsonl_messages.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                logger.warning(
-                                    "Skipping corrupt line in transcript %s: %s",
-                                    session_id, line[:120],
-                                )
-            except OSError as e:
-                # JSONL is the legacy compatibility store. If it becomes
-                # unreadable, keep gateway recovery working by falling back to
-                # SQLite rows loaded above (or [] when no DB exists).
-                logger.debug("Failed to read JSONL transcript for %s: %s", session_id, e)
+        state.db is the canonical store. The legacy JSONL fallback was removed
+        in spec 002 — pre-DB sessions on existing disks have already been
+        migrated (their DB row holds the full message history).
+        """
+        if not self._db:
+            return []
+        try:
+            return self._db.get_messages_as_conversation(session_id)
+        except Exception as e:
+            logger.debug("Could not load messages from DB: %s", e)
+            return []
 
-        # Prefer whichever source has more messages.
-        #
-        # Background: when a session pre-dates SQLite storage (or when the DB
-        # layer was added while a long-lived session was already active), the
-        # first post-migration turn writes only the *new* messages to SQLite
-        # (because _flush_messages_to_session_db skips messages already in
-        # conversation_history, assuming they're persisted).  On the *next*
-        # turn load_transcript returns those few SQLite rows and ignores the
-        # full JSONL history — the model sees a context of 1-4 messages instead
-        # of hundreds.  Using the longer source prevents this silent truncation.
-        if len(jsonl_messages) > len(db_messages):
-            if db_messages:
-                logger.debug(
-                    "Session %s: JSONL has %d messages vs SQLite %d — "
-                    "using JSONL (legacy session not yet fully migrated)",
-                    session_id, len(jsonl_messages), len(db_messages),
-                )
-            return jsonl_messages
+    def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
+        """Back up ``n`` user turns via soft-delete, keeping rows for audit.
 
-        return db_messages
+        Unlike :meth:`rewrite_transcript` (a hard replace used by /retry),
+        this flips the truncated rows to ``active=0`` in state.db so they
+        survive for audit and stay hidden from re-prompts and search. Mirrors
+        the CLI/TUI ``/undo [N]`` behavior via ``SessionDB.rewind_to_message``.
+
+        Returns a dict ``{"rewound_count", "turns_undone", "target_text"}`` on
+        success, or ``None`` if there's no DB or no user message to back up to.
+        ``n`` clamps to the oldest user turn when it exceeds the turn count.
+        """
+        if not self._db:
+            return None
+        if n < 1:
+            n = 1
+        try:
+            recents = self._db.list_recent_user_messages(session_id, limit=max(n, 10))
+        except Exception as e:
+            logger.debug("rewind_session: failed to list user messages: %s", e)
+            return None
+        if not recents:
+            return None
+        target_idx = min(n - 1, len(recents) - 1)
+        target_id = recents[target_idx]["id"]
+        try:
+            result = self._db.rewind_to_message(session_id, target_id)
+        except ValueError as e:
+            logger.debug("rewind_session: %s", e)
+            return None
+        except Exception as e:
+            logger.debug("rewind_session: rewind_to_message failed: %s", e)
+            return None
+        target_msg = result.get("target_message") or {}
+        content = target_msg.get("content") or ""
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            target_text = "\n".join(t for t in parts if t)
+        elif isinstance(content, str):
+            target_text = content
+        else:
+            target_text = ""
+        return {
+            "rewound_count": result.get("rewound_count", 0),
+            "turns_undone": target_idx + 1,
+            "target_text": target_text,
+        }
 
 
 def build_session_context(

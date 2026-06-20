@@ -768,6 +768,83 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
+    """A worker scoped to a dir: task that spawns a child without a
+    workspace arg inherits the dir, not scratch (so follow-up code-gen
+    lands in the same project)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    proj = "/home/teknium/myproject"
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="dir worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path=proj,
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({"title": "follow-up", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "dir"
+        assert child.workspace_path == proj
+    finally:
+        conn.close()
+
+
+def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
+    """An explicit workspace arg overrides worker-task inheritance."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="dir worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path="/home/teknium/proj",
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({
+        "title": "scratch child", "assignee": "peer",
+        "workspace_kind": "scratch",
+    }))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "scratch"
+    finally:
+        conn.close()
+
+
+def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
+    """Orchestrator/CLI callers (no HERMES_KANBAN_TASK) still default to
+    scratch — inheritance only applies to task-scoped workers."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    d = json.loads(kt._handle_create({"title": "orch child", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "scratch"
+        assert child.workspace_path is None
+    finally:
+        conn.close()
+
+
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``
@@ -1093,6 +1170,11 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",
@@ -1115,6 +1197,11 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
 
     from run_agent import AIAgent
     a = AIAgent(
@@ -1316,10 +1403,19 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     from hermes_cli import kanban_db as kb
     import hermes_cli.kanban_db as _kb
 
+    # detect_crashed_workers now gates each running task behind a
+    # launch-window grace period (c002668ff) so a freshly-spawned worker
+    # whose PID isn't yet visible on /proc isn't reclaimed. The fixture
+    # creates the task moments before this assertion, so the grace
+    # period (default 30s) would skip the liveness check. Zero it out
+    # for this test — we WANT immediate reclamation here.
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
     conn = kb.connect()
     try:
         run1 = kb.latest_run(conn, worker_env)
         kb._set_worker_pid(conn, worker_env, 98765)
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [worker_env]
 
@@ -1716,3 +1812,193 @@ def test_board_param_in_all_schemas():
         assert "board" not in schema["parameters"].get("required", []), (
             f"{schema['name']} marks board as required; must be optional"
         )
+
+
+# ---------------------------------------------------------------------------
+# kanban_create auto-subscribe behaviour
+#
+# When a worker calls kanban_create from inside a session that has a
+# persistent delivery channel, the originating session should be
+# subscribed to the new task's completion/block events automatically.
+# - Gateway sessions: HERMES_SESSION_PLATFORM + HERMES_SESSION_CHAT_ID set.
+# - TUI sessions: HERMES_SESSION_KEY (or HERMES_SESSION_ID) set, with
+#   the platform/chat_id ContextVars intentionally empty.
+# - CLI / cron / test sessions: no delivery channel -> no subscription.
+# - Config gate kanban.auto_subscribe_on_create: false -> no subscription
+#   even when the session has a delivery channel.
+# ---------------------------------------------------------------------------
+
+def _list_subs_for_task(task_id):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        return list(kb.list_notify_subs(conn, task_id))
+    finally:
+        conn.close()
+
+
+def _sub_index(subs):
+    """Normalise a list of notify-subs (dicts or objects) into dicts
+    keyed by platform+chat_id, so assertions work regardless of the
+    return shape."""
+    out = []
+    for s in subs:
+        if isinstance(s, dict):
+            out.append(s)
+        else:
+            out.append({
+                "platform": getattr(s, "platform", None),
+                "chat_id": getattr(s, "chat_id", None),
+                "thread_id": getattr(s, "thread_id", None),
+                "user_id": getattr(s, "user_id", None),
+            })
+    return out
+
+
+def test_create_subscribes_gateway_session(monkeypatch, worker_env):
+    """A gateway session (platform + chat_id set) gets auto-subscribed
+    to its own kanban_create result, and the response surfaces the
+    ``subscribed`` flag so the orchestrator can react."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
+
+    out = kt._handle_create({
+        "title": "auto-sub gateway",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    new_tid = d["task_id"]
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(new_tid))
+    assert len(subs) == 1
+    s = subs[0]
+    assert s["platform"] == "telegram"
+    assert s["chat_id"] == "chat-42"
+    assert s["thread_id"] == "thread-7"
+    assert s["user_id"] == "user-9"
+
+
+def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
+    """TUI / desktop sessions don't have a platform/chat_id (single
+    local channel), but the parent process exports HERMES_SESSION_KEY.
+    We should still auto-subscribe, with platform='tui' and
+    chat_id=<key>."""
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_KEY", "tui-session-abc")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    out = kt._handle_create({
+        "title": "auto-sub tui",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    new_tid = d["task_id"]
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(new_tid))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "tui"
+    assert subs[0]["chat_id"] == "tui-session-abc"
+
+
+def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
+    """CLI / cron / test sessions have no persistent delivery channel.
+    _maybe_auto_subscribe returns False and no row is written."""
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    out = kt._handle_create({
+        "title": "no sub cli",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is False, d
+
+    assert _list_subs_for_task(d["task_id"]) == []
+
+
+def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env, tmp_path):
+    """The config gate kanban.auto_subscribe_on_create=false must
+    suppress auto-subscription even when the session has a delivery
+    channel. This is the knob that addresses the upstream design
+    concern from PR #19718 (reverted in #19721) — users who want
+    explicit kanban_notify-subscribe calls per task get that."""
+    # worker_env already created <tmp>/.hermes; use a fresh sibling
+    # home to avoid mkdir() colliding with the worker's directory.
+    home = tmp_path / "gate-home" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_on_create: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "no sub gated",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is False, d
+
+    assert _list_subs_for_task(d["task_id"]) == []
+
+
+def test_create_partial_session_context_no_subscribe(monkeypatch, worker_env):
+    """Only one of (platform, chat_id) set -> no implicit subscribe.
+    Either both are set (gateway) or neither (TUI / CLI); partial is
+    ambiguous and the safe default is to skip."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    out = kt._handle_create({
+        "title": "no sub partial",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is False, d
+
+
+def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
+    """If add_notify_sub itself raises (e.g. DB locked, schema drift),
+    _maybe_auto_subscribe must NOT bubble that up and fail the parent
+    kanban_create. The function returns False and the parent create
+    still succeeds with subscribed=False."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+
+    from hermes_cli import kanban_db as kb
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(kb, "add_notify_sub", _boom)
+
+    out = kt._handle_create({
+        "title": "auto-sub tolerates add_notify_sub failure",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, d
+    assert d["subscribed"] is False, d

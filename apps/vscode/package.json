@@ -1,0 +1,147 @@
+{
+  "name": "hermes-vscode",
+  "displayName": "Hermes Code",
+  "description": "Use Hermes Agent from a Claude-like VS Code/Cursor sidebar with editor, diagnostics, terminal, and patch/diff workflows.",
+  "version": "0.4.0",
+  "publisher": "nousresearch",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NousResearch/Hermes-Agent.git",
+    "directory": "apps/vscode"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "package.json",
+    "media/hermes.svg",
+    "src/acpClient.js",
+    "src/extension.js",
+    "src/patchParser.js"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:hermesCode.chatView",
+    "onCommand:hermesCode.openChat",
+    "onCommand:hermesCode.askSelection",
+    "onCommand:hermesCode.editSelection",
+    "onCommand:hermesCode.reviewDiff",
+    "onCommand:hermesCode.explainDiagnostics",
+    "onCommand:hermesCode.runCommandWithContext",
+    "onCommand:hermesCode.previewPatch",
+    "onCommand:hermesCode.applyPatch",
+    "onCommand:hermesCode.copyLastPatch",
+    "onCommand:hermesCode.clearChat",
+    "onCommand:hermesCode.configureHermesPath"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hermesCode",
+          "title": "Hermes",
+          "icon": "media/hermes.svg"
+        }
+      ]
+    },
+    "views": {
+      "hermesCode": [
+        {
+          "id": "hermesCode.chatView",
+          "name": "Hermes Code",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "hermesCode.openChat", "title": "Hermes Code: Open Chat" },
+      { "command": "hermesCode.askSelection", "title": "Hermes Code: Ask About Selection" },
+      { "command": "hermesCode.editSelection", "title": "Hermes Code: Edit Selection" },
+      { "command": "hermesCode.reviewDiff", "title": "Hermes Code: Review Current Git Diff" },
+      { "command": "hermesCode.explainDiagnostics", "title": "Hermes Code: Explain Diagnostics" },
+      { "command": "hermesCode.runCommandWithContext", "title": "Hermes Code: Run Terminal Command With Context" },
+      { "command": "hermesCode.previewPatch", "title": "Hermes Code: Preview Last Hermes Patch" },
+      { "command": "hermesCode.applyPatch", "title": "Hermes Code: Apply Last Hermes Patch" },
+      { "command": "hermesCode.copyLastPatch", "title": "Hermes Code: Copy Last Hermes Patch" },
+      { "command": "hermesCode.clearChat", "title": "Hermes Code: Clear Chat" },
+      { "command": "hermesCode.configureHermesPath", "title": "Hermes Code: Configure Hermes Path" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "hermesCode.askSelection", "group": "hermes@1", "when": "editorHasSelection" },
+        { "command": "hermesCode.editSelection", "group": "hermes@2", "when": "editorHasSelection" },
+        { "command": "hermesCode.explainDiagnostics", "group": "hermes@3" }
+      ],
+      "scm/title": [
+        { "command": "hermesCode.reviewDiff", "group": "navigation" }
+      ]
+    },
+    "configuration": {
+      "title": "Hermes Code",
+      "properties": {
+        "hermesCode.hermesCommand": {
+          "type": "string",
+          "default": "hermes",
+          "description": "Hermes executable to launch. Use an absolute path if VS Code cannot find hermes on PATH."
+        },
+        "hermesCode.backend": {
+          "type": "string",
+          "default": "acp",
+          "enum": ["acp", "subprocess"],
+          "description": "Use Hermes ACP for streaming/tool events, or legacy hermes chat subprocess mode."
+        },
+        "hermesCode.acpArgs": {
+          "type": "array",
+          "default": ["acp"],
+          "items": { "type": "string" },
+          "description": "Arguments for the Hermes ACP server when backend=acp."
+        },
+        "hermesCode.hermesArgs": {
+          "type": "array",
+          "default": ["chat", "--quiet", "--source", "vscode"],
+          "items": { "type": "string" },
+          "description": "Base arguments placed before dynamic session flags and the generated -q prompt."
+        },
+        "hermesCode.sessionMode": {
+          "type": "string",
+          "default": "workspace",
+          "enum": ["workspace", "fresh"],
+          "description": "Use a persistent Hermes --continue session per workspace, or start a fresh one-shot session each request."
+        },
+        "hermesCode.sessionName": {
+          "type": "string",
+          "default": "",
+          "description": "Optional explicit Hermes --continue session name. Empty means derive one from the workspace path."
+        },
+        "hermesCode.preferVisibleTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "When running explicit terminal commands from Hermes Code, use VS Code's visible integrated terminal."
+        },
+        "hermesCode.includeDiagnosticsByDefault": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include active file diagnostics in ordinary chat context."
+        },
+        "hermesCode.maxContextChars": {
+          "type": "number",
+          "default": 24000,
+          "minimum": 2000,
+          "description": "Maximum characters of editor/diff context sent to Hermes for one request."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --check src/extension.js && node --check src/acpClient.js && node test/patchParser.test.js && node test/acpClient.test.js",
+    "package:check": "npm run test && node scripts/package-check.js"
+  },
+  "devDependencies": {}
+}

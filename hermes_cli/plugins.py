@@ -167,6 +167,14 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Pre-response delivery hook. Fires after the tool-calling loop completes
+    # but BEFORE the turn result is finalized and returned. Plugins may
+    # inspect conversation_history and return {"action": "block", "message": "..."}
+    # to block delivery — causing the conversation loop to re-enter with a
+    # correction injected as a user message. First block wins.
+    # Kwargs: session_id, turn_id, user_message, final_response,
+    #         conversation_history, platform
+    "pre_response_delivery",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

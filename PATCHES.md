@@ -12,6 +12,89 @@ The following patches fix these issues and enable bug-free operation of multiple
 
 ---
 
+## 0. Multi-Profile Multiplexer Core (`gateway/run.py`, `gateway/config.py`, `gateway/session.py`, `gateway/delivery.py`)
+
+**Files:** `$HERMES_HOME/hermes-agent/gateway/run.py`, `gateway/config.py`, `gateway/session.py`, `gateway/delivery.py`
+**Full diff:** See `MULTIPLEXER_PATCH.diff` in this repository.
+
+### Problem
+Hermes supported only a single active profile per gateway. Running multiple profiles (each with its own Telegram bot token, SOUL.md, and config) required separate gateway processes — one per profile. This wasted resources, complicated systemd management, and prevented shared MCP tool servers from being reused across profiles.
+
+### Patch
+
+**`gateway/config.py`** — New `multiplex_profiles` config flag:
+```diff
++    multiplex_profiles: bool = False
+```
+When enabled, the gateway serves all profiles defined under `$HERMES_HOME/profiles/` from a single process. Each profile gets its own adapters, credentials, and session namespace.
+
+**`gateway/session.py`** — Profile-aware session keys + `SessionSource.profile` field:
+```diff
++    profile: Optional[str] = None  # Profile this inbound message is routed to
++
++def _session_key_namespace(profile: Optional[str]) -> str:
++    if not profile or profile == "default":
++        return "agent:main"
++    return f"agent:{profile}"
+```
+Session keys are namespaced per-profile (`agent:<profile>:<platform>:...`) so two profiles serving the same platform/chat never collide. Default profile produces byte-identical keys to before.
+
+**`gateway/run.py`** — Profile routing + secondary adapter startup:
+```diff
++self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
++
++def _adapter_for_source(self, source):
++    """Route outbound responses through the correct profile's bot token."""
++    if profile and multiplex_profiles:
++        return self._profile_adapters[profile][platform]
++    return self.adapters.get(platform)
++
++async def _start_secondary_profile_adapters(self) -> int:
++    """Bring up adapters for every non-active profile."""
++    # Creates+connects each profile's adapters under its HERMES_HOME scope
++    # Detects same-token conflicts (two profiles polling the same bot)
++    # Stamps source.profile on every inbound event
+```
+
+**`gateway/delivery.py`** — Profile-aware delivery routing:
+```diff
++    def __init__(self, config, adapters=None, profile_adapters=None):
++        self.profile_adapters = profile_adapters or {}
++
++    async def deliver(self, target, ...):
++        if target_profile and multiplex_profiles:
++            adapter = self.profile_adapters[target_profile][platform]
+```
+
+### Rationale
+- **Single gateway, multiple bots:** One systemd service serves N profiles, each with its own Telegram bot token and channel.
+- **No session collisions:** Per-profile namespace (`agent:<profile>`) keeps sessions isolated.
+- **Correct response routing:** `_adapter_for_source()` ensures responses go back through the profile's own bot token, not the default profile's.
+- **Credential conflict detection:** Same-token conflicts are caught at startup with a clear error message.
+- **Zero overhead when off:** `multiplex_profiles=False` (default) → all new code paths are no-ops, `_profile_adapters` stays empty, keys are byte-identical to before.
+
+### Affected call sites in `gateway/run.py`
+All `self.adapters.get(event.source.platform)` calls replaced with `self._adapter_for_source(event.source)`:
+- `_queue_or_replace_pending_event`
+- `_handle_active_session_busy_message`
+- `_drain_pending_events`
+- `_send_home_channel_startup_notifications`
+- `_restore_queued_startup_events`
+- `_auto_resume_sessions`
+- `_handle_slash_command` (platform resolution)
+- `gateway:startup` hook (platforms list includes secondary profiles)
+
+### Hindsight multiplexed daemon fix (`plugins/memory/hindsight/__init__.py`)
+```diff
++    if self._mode == "local_embedded" and self._idle_timeout == 0:
++        # Skip close — daemon persists for multiplexed profiles
++        logger.debug("Hindsight shutdown: skipping embedded client close "
++                     "(idle_timeout=0, daemon persists for multiplexed profiles)")
+```
+When `idle_timeout=0`, the embedded Hindsight daemon is configured to persist. Closing the client during one profile's shutdown causes a cleanup lock timeout (daemon busy serving other profiles). The fix skips the close when the daemon is configured to persist.
+
+---
+
 ## 1. MCP Reconnect Resilience (`mcp_tool.py`)
 
 **File:** `$HERMES_HOME/hermes-agent/tools/mcp_tool.py`
@@ -182,6 +265,8 @@ RuntimeMaxSec=43200
 
 | # | File | Change | Impact |
 |---|------|--------|--------|
+| 0 | `gateway/run.py`, `config.py`, `session.py`, `delivery.py` | Multi-profile multiplexer core: `multiplex_profiles` flag, `_profile_adapters`, `_adapter_for_source()`, profile-aware session keys | Single gateway serves N profiles with separate Telegram channels |
+| 0 | `plugins/memory/hindsight/__init__.py` | Skip embedded client close when `idle_timeout=0` | Hindsight daemon persists for multiplexed profiles |
 | 1 | `tools/mcp_tool.py:279,281` | Reconnect retries 5→20, backoff cap 60→30s | MCP servers survive transient SSE drops |
 | 2 | `config.yaml` (all profiles) | keepalive 180→60s, timeout 60→120s for gbrain/hindsight | No more idle-session expiry; long tool calls don't timeout |
 | 3 | `.env` (per profile + main) | Ollama URL `<host-ip>`→`localhost` | Hindsight daemon can reach Ollama for LLM verification |
@@ -200,7 +285,3 @@ MCP: registered 190 tool(s) from 5 server(s)
   open-design (stdio): 20 tools
   transcriptor (stdio): 11 tools
 ```
-
-- No gbrain connection drops in logs post-restart
-- No hindsight MCP connection drops in logs post-restart
-- All profiles have identical keepalive/timeout settings

@@ -1,0 +1,478 @@
+diff --git a/gateway/config.py b/gateway/config.py
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -550,6 +550,12 @@
+     # profile on the host: profiles are stamped into session keys and (in later
+     # phases) per-profile adapters/credentials are resolved. When False, the
+     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
++    multiplex_profiles: bool = False
++
+     # Unauthorized DM policy
+     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+ 
+@@ -657,6 +663,7 @@
+             "group_sessions_per_user": self.group_sessions_per_user,
+             "thread_sessions_per_user": self.thread_sessions_per_user,
+             "max_concurrent_sessions": self.max_concurrent_sessions,
++            "multiplex_profiles": self.multiplex_profiles,
+             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+             "streaming": self.streaming.to_dict(),
+             "session_store_max_age_days": self.session_store_max_age_days,
+@@ -703,6 +710,16 @@
+         group_sessions_per_user = data.get("group_sessions_per_user")
+         thread_sessions_per_user = data.get("thread_sessions_per_user")
++        multiplex_profiles = data.get("multiplex_profiles")
+         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
++        if multiplex_profiles is None and isinstance(nested_gateway, dict):
++            # Also honor gateway.multiplex_profiles written by
++            # ``hermes config set gateway.multiplex_profiles true``.
++            multiplex_profiles = nested_gateway.get("multiplex_profiles")
+         if "max_concurrent_sessions" in data:
+             max_concurrent_sessions_raw = data.get("max_concurrent_sessions")
+             max_concurrent_key = "max_concurrent_sessions"
+@@ -745,6 +762,7 @@
+             stt_enabled=_coerce_bool(stt_enabled, True),
+             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
+             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
++            multiplex_profiles=_coerce_bool(multiplex_profiles, False),
+             max_concurrent_sessions=max_concurrent_sessions,
+             unauthorized_dm_behavior=unauthorized_dm_behavior,
+             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+@@ -846,6 +864,12 @@
+                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+ 
++            # Multiplexing flag: accept both the top-level key and the nested
++            # gateway.multiplex_profiles form (from_dict resolves the nested
++            # fallback, but surface the top-level key here for parity with the
++            # other session-scope flags above).
++            if "multiplex_profiles" in yaml_cfg:
++                gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
++
+             gateway_section = yaml_cfg.get("gateway")
+             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
+
+diff --git a/gateway/session.py b/gateway/session.py
+--- a/gateway/session.py
++++ b/gateway/session.py
+@@ -92,6 +92,12 @@
+     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
+     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
++    # Profile this inbound message is routed to in a multiplexing gateway
++    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
++    # None => the gateway's active/default profile. Drives both session-key
++    # namespacing and the per-turn config/credential scope.
++    profile: Optional[str] = None
+ 
+     @property
+     def description(self) -> str:
+@@ -140,6 +146,8 @@
+             d["parent_chat_id"] = self.parent_chat_id
+         if self.message_id:
+             d["message_id"] = self.message_id
++        if self.profile:
++            d["profile"] = self.profile
+         return d
+ 
+     @classmethod
+@@ -160,6 +168,7 @@
+             guild_id=data.get("guild_id"),
+             parent_chat_id=data.get("parent_chat_id"),
+             message_id=data.get("message_id"),
++            profile=data.get("profile"),
+         )
+ 
+@@ -623,6 +632,44 @@
++def _session_key_namespace(profile: Optional[str]) -> str:
++    """Return the ``agent:<ns>`` namespace prefix for a session key.
++
++    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
++    ``main`` is a static namespace literal (NOT a branch name — branching keys
++    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
++    slot to carry the profile:
++
++    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
++      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
++      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
++    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
++      layout, just a different namespace, so two profiles serving the same
++      platform/chat never collide.
++    """
++    if not profile or profile == "default":
++        return "agent:main"
++    return f"agent:{profile}"
++
+ 
+ def build_session_key(
+     source: SessionSource,
+     group_sessions_per_user: bool = True,
+     thread_sessions_per_user: bool = False,
++    profile: Optional[str] = None,
+ ) -> str:
+     """Build a deterministic session key from a message source.
+ 
++    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
++    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
++    that don't multiplex produce byte-identical keys to before. Only the
++    multiplexing gateway passes a non-default profile.
++
+     DM rules:
+       - DMs include chat_id when present, so each private conversation is isolated.
+@@ -680,6 +717,7 @@
+         shared session per chat.
+       - Without identifiers, messages fall back to one session per platform/chat_type.
+     """
++    ns = _session_key_namespace(profile)
+     platform = source.platform.value
+     if source.chat_type == "dm":
+         dm_chat_id = source.chat_id
+@@ -810,6 +848,36 @@
++    def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
++        """Return the profile namespace for session keys, or None when off.
++
++        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
++        keys stay in the legacy ``agent:main`` namespace — byte-identical to
++        before. When enabled, prefers the profile the inbound source was routed
++        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
++        per-credential adapter), falling back to the active profile name.
++        """
++        if not getattr(self.config, "multiplex_profiles", False):
++            return None
++        if source is not None and source.profile:
++            return source.profile
++        try:
++            from hermes_cli.profiles import get_active_profile_name
++            return get_active_profile_name() or "default"
++        except Exception:
++            return None
+ 
+     def _generate_session_key(self, source: SessionSource) -> str:
+         return build_session_key(
+             source,
+             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
++            profile=self._resolve_profile_for_key(source),
+         )
+
+diff --git a/gateway/delivery.py b/gateway/delivery.py
+--- a/gateway/delivery.py
++++ b/gateway/delivery.py
+@@ -185,8 +185,16 @@
+     def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None,
++                 profile_adapters: Dict[str, Dict[Platform, Any]] = None):
+         """Initialize the delivery router."""
+         self.config = config
+         self.adapters = adapters or {}
++        self.profile_adapters = profile_adapters or {}
+         self.output_dir = get_hermes_home() / "cron" / "output"
+ 
+@@ -316,6 +324,16 @@
+         """Deliver content to a messaging platform."""
+         adapter = None
+         target_profile = getattr(target, "profile", None)
++        if target_profile and getattr(self.config, "multiplex_profiles", False):
++            profile_map = self.profile_adapters.get(target_profile, {})
++            adapter = profile_map.get(target.platform)
+         if adapter is None:
+             adapter = self.adapters.get(target.platform)
+
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -2387,6 +2387,20 @@
+         self.config = config or load_gateway_config()
++        # Mark the process as a profile multiplexer when configured. This flips
++        # agent.secret_scope.get_secret() to fail-closed on any unscoped
++        # credential read, so a missed migration crashes loudly instead of
++        # leaking a cross-profile value (Workstream A). Inert when off.
++        try:
++            from agent.secret_scope import set_multiplex_active
++            set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
++        except Exception:
++            logger.debug("could not set multiplex-active flag", exc_info=True)
+         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
++        # Multi-profile multiplexing: adapters for NON-default profiles live
++        # here, keyed by profile name then Platform. self.adapters stays the
++        # default/active profile's map so the ~93 existing self.adapters[...]
++        # sites are untouched when multiplexing is off (this dict is empty).
++        # Populated by _start_secondary_profile_adapters().
++        self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+         self._warn_if_docker_media_delivery_is_risky()
+         _gateway_runner_ref = _weakref.ref(self)
+@@ -2425,6 +2439,7 @@
+         self.delivery_router = DeliveryRouter(
+             self.config,
++            profile_adapters=self._profile_adapters,
+         )
+         self._running = False
+
+@@ -2955,6 +2970,80 @@
++    def _adapter_for_source(self, source) -> "BasePlatformAdapter | None":
++        """Resolve the correct outbound adapter for a source.
++        
++        In multiplex mode, routes through the profile-specific adapter
++        (self._profile_adapters[profile][platform]) so responses go back
++        through the correct bot token. Falls back to self.adapters for
++        default profile or when multiplexing is off.
++        """
++        profile = getattr(source, "profile", None)
++        platform = getattr(source, "platform", None)
++        if profile and platform and getattr(self.config, "multiplex_profiles", False):
++            profile_adapters = self._profile_adapters.get(profile, {})
++            adapter = profile_adapters.get(platform)
++            if adapter is not None:
++                return adapter
++        # Default profile or multiplexing off or profile adapter not found
++        if platform:
++            return self.adapters.get(platform)
++        return None
++
++    def _all_adapters(self):
++        """Yield (platform, adapter) for ALL adapters — default + multiplexed profiles.
++
++        In multiplex mode this iterates default profile adapters first, then
++        every secondary profile's adapters. In single-profile mode it's
++        identical to self.adapters.items().
++        """
++        yield from self.adapters.items()
++        if getattr(self.config, "multiplex_profiles", False):
++            for profile_name, plat_map in self._profile_adapters.items():
++                for platform, adapter in plat_map.items():
++                    yield platform, adapter
++
++    def _all_adapters_with_profile(self):
++        """Yield (platform, adapter, profile_name) for ALL adapters.
++
++        Default profile adapters get profile_name=None (or the active profile).
++        Secondary profile adapters get their profile name.
++        """
++        for platform, adapter in self.adapters.items():
++            yield platform, adapter, None
++        if getattr(self.config, "multiplex_profiles", False):
++            for profile_name, plat_map in self._profile_adapters.items():
++                for platform, adapter in plat_map.items():
++                    yield platform, adapter, profile_name
++
++    def _adapter_for_platform_name(self, platform_name: str, source=None):
++        """Resolve adapter by platform name string, with optional profile routing."""
++        profile = getattr(source, "profile", None) if source else None
++        if profile and getattr(self.config, "multiplex_profiles", False):
++            plat_map = self._profile_adapters.get(profile, {})
++            for p, a in plat_map.items():
++                if p.value == platform_name:
++                    return a
++        for p, a in self.adapters.items():
++            if p.value == platform_name:
++                return a
++        return None
++
++    def _adapter_for_platform(self, platform, source=None):
++        """Resolve adapter by Platform enum, with optional profile routing."""
++        profile = getattr(source, "profile", None) if source else None
++        if profile and getattr(self.config, "multiplex_profiles", False):
++            plat_map = self._profile_adapters.get(profile, {})
++            adapter = plat_map.get(platform)
++            if adapter is not None:
++                return adapter
++        return self.adapters.get(platform)
+
+ # Replace all self.adapters.get(event.source.platform) call sites with
+ # self._adapter_for_source(event.source) for correct profile routing:
+@@ -4112 +4191 @@
+-        adapter = self.adapters.get(event.source.platform)
++        adapter = self._adapter_for_source(event.source)
+@@ -4169 +4248 @@
+-        adapter = self.adapters.get(event.source.platform)
++        adapter = self._adapter_for_source(event.source)
+@@ -4196 +4275 @@
+-        adapter = self.adapters.get(event.source.platform)
++        adapter = self._adapter_for_source(event.source)
+@@ -4499 +4578 @@
+-        adapter = self.adapters.get(platform)
++        adapter = self._adapter_for_source(source) if source else self.adapters.get(platform)
+@@ -4561 +4640 @@
+-        for platform, adapter in list(self.adapters.items()):
++        for platform, adapter in list(self._all_adapters()):
+@@ -5047 +5126 @@
+-        adapter = self.adapters.get(source.platform) if source is not None else None
++        adapter = self._adapter_for_source(source) if source is not None else None
+@@ -5131 +5210 @@
+-        adapter = self.adapters.get(source.platform)
++        adapter = self._adapter_for_source(source)
+@@ -5669 +5748 @@
+         self.delivery_router.adapters = self.adapters
++        self.delivery_router.profile_adapters = self._profile_adapters
+@@ -5681 +5761 @@
+-            "platforms": [p.value for p in self.adapters.keys()],
++            "platforms": [p.value for p in self.adapters.keys()] + [p.value for _prof, pm in getattr(self, "_profile_adapters", {}).items() for p in pm.keys()],
+@@ -5596 +5676 @@
++        try:
++            _secondary_connected = await self._start_secondary_profile_adapters()
++            connected_count += _secondary_connected
++        except MultiplexConfigError as e:
++            # Invalid multiplexer config — abort startup cleanly
++            raise
+
+@@ -6807 +6887,140 new methods:
++    async def _start_secondary_profile_adapters(self) -> int:
++        """Bring up adapters for every non-active profile this gateway serves.
++
++        Returns the number of secondary adapters that connected. No-op (returns
++        0) unless ``gateway.multiplex_profiles`` is on.
++
++        Each profile's adapters are created and connected under that profile's
++        HERMES_HOME + secret scope, stored in ``self._profile_adapters[profile]``,
++        and given a message handler that stamps ``source.profile`` before
++        delegating to the shared ``_handle_message`` — so the agent turn resolves
++        that profile's config, skills, and credentials. Same-platform credential
++        collisions (two profiles polling the same bot token) are detected and
++        refused here.
++        """
++        if not getattr(self.config, "multiplex_profiles", False):
++            return 0
++        try:
++            from hermes_cli.profiles import profiles_to_serve, get_active_profile_name
++        except Exception:
++            return 0
++        active = get_active_profile_name() or "default"
++        connected = 0
++        claimed: Dict[tuple, str] = {}
++        for _plat, _ad in self.adapters.items():
++            fp = self._adapter_credential_fingerprint(_ad)
++            if fp is not None:
++                claimed[(_plat, fp)] = active
++        for profile_name, profile_home in profiles_to_serve(multiplex=True):
++            if profile_name == active:
++                continue
++            try:
++                connected += await self._start_one_profile_adapters(
++                    profile_name, profile_home, claimed
++                )
++            except MultiplexConfigError:
++                raise
++            except Exception as e:
++                logger.error(
++                    "Failed to start adapters for profile '%s': %s",
++                    profile_name, e, exc_info=True,
++                )
++        try:
++            from gateway.status import write_runtime_status
++            served = [active] + sorted(self._profile_adapters.keys())
++            write_runtime_status(served_profiles=served)
++        except Exception:
++            logger.debug("could not record served_profiles", exc_info=True)
++        return connected
++
++    async def _start_one_profile_adapters(
++        self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
++    ) -> int:
++        """Create+connect one profile's adapters under its runtime scope."""
++        from gateway.config import load_gateway_config
++        with _profile_runtime_scope(profile_home):
++            profile_cfg = load_gateway_config()
++        profile_map = self._profile_adapters.setdefault(profile_name, {})
++        connected = 0
++        for platform, platform_config in profile_cfg.platforms.items():
++            if not platform_config.enabled:
++                continue
++            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
++                raise MultiplexConfigError(
++                    f"Profile '{profile_name}' enables the port-binding platform "
++                    f"'{platform.value}', but gateway.multiplex_profiles is on. "
++                    f"Remove platforms.{platform.value} from profile "
++                    f"'{profile_name}'s config.yaml."
++                )
++            with _profile_runtime_scope(profile_home):
++                adapter = self._create_adapter(platform, platform_config)
++            if not adapter:
++                continue
++            fp = self._adapter_credential_fingerprint(adapter)
++            if fp is not None:
++                owner = claimed.get((platform, fp))
++                if owner is not None:
++                    logger.error(
++                        "Profile '%s' and '%s' both configure %s with the same "
++                        "credential — refusing to start the duplicate.",
++                        owner, profile_name, platform.value,
++                    )
++                    await self._safe_adapter_disconnect(adapter, platform)
++                    continue
++                claimed[(platform, fp)] = profile_name
++            adapter.set_message_handler(
++                self._make_profile_message_handler(profile_name)
++            )
++            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
++            adapter.set_session_store(self.session_store)
++            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
++            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
++            adapter._busy_text_mode = self._busy_text_mode
++            try:
++                with _profile_runtime_scope(profile_home):
++                    success = await self._connect_adapter_with_timeout(adapter, platform)
++                if success:
++                    profile_map[platform] = adapter
++                    connected += 1
++                    logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
++                else:
++                    logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
++                    await self._safe_adapter_disconnect(adapter, platform)
++            except Exception as e:
++                logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
++                await self._safe_adapter_disconnect(adapter, platform)
++        return connected
++
++    def _make_profile_message_handler(self, profile_name: str):
++        """Return a message handler that stamps source.profile then delegates."""
++        async def _handler(event):
++            try:
++                if getattr(event, "source", None) is not None and not event.source.profile:
++                    event.source.profile = profile_name
++            except Exception:
++                pass
++            return await self._handle_message(event)
++        return _handler
++
++    @staticmethod
++    def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:
++        """Return a stable, log-safe fingerprint of an adapter's credential."""
++        token = None
++        for attr in ("token", "bot_token", "_token", "api_token", "_bot_token"):
++            val = getattr(adapter, attr, None)
++            if isinstance(val, str) and val.strip():
++                token = val.strip()
++                break
++        if not token:
++            return None
++        import hashlib
++        return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
+
+diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
+--- a/plugins/memory/hindsight/__init__.py
++++ b/plugins/memory/hindsight/__init__.py
+@@ -1851,6 +1851,18 @@
++        if self._client is not None:
++            try:
++                if self._mode == "local_embedded":
++                    # Multiplexed gateway fix: when idle_timeout=0, the daemon is
++                    # configured to persist. Closing the embedded client here causes
++                    # a cleanup lock timeout (daemon busy serving other profiles),
++                    # which marks the client as _closed=True. Subsequent background
++                    # tasks (memory writes from other profiles) then fail silently.
++                    # Skip the close when the daemon is configured to persist.
++                    if self._idle_timeout == 0:
++                        logger.debug(
++                            "Hindsight shutdown: skipping embedded client close "
++                            "(idle_timeout=0, daemon persists for multiplexed profiles)"
++                        )
++                    else:
+                         inner_client = getattr(self._client, "_client", None)
+
+diff --git a/tools/mcp_tool.py b/tools/mcp_tool.py
+--- a/tools/mcp_tool.py
++++ b/tools/mcp_tool.py
+@@ -279,5 +279,5 @@
+-_MAX_RECONNECT_RETRIES = 5
++_MAX_RECONNECT_RETRIES = 20
+@@ -281,5 +281,5 @@
+-_MAX_BACKOFF_SECONDS = 60
++_MAX_BACKOFF_SECONDS = 30

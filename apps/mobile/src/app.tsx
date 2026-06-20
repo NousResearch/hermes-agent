@@ -1,10 +1,11 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 // The REAL desktop app (DesktopController) — its AppShell already collapses to a
 // drawer on narrow viewports, so mounting it on a phone gives the desktop chat
 // experience, responsively. We only gate it behind connect/login.
 import DesktopController from '@/app'
+import { $desktopBoot } from '@/store/boot'
 
 import type { ProbeResult } from '~bridge/auth'
 import { $reauthNonce, loadTarget, setTarget, type GatewayTarget } from '~bridge/state'
@@ -83,6 +84,52 @@ export function MobileRoot() {
     <>
       <DesktopController />
       <MobileBehaviors />
+      <BootAutoRetry />
     </>
+  )
+}
+
+/**
+ * Cold-launch connections sometimes time out because the Wi-Fi radio is still
+ * waking from power-save (the foreground lock hasn't ramped it yet) — a reload a
+ * second later, with the radio warm, connects fine. Rather than greet the user
+ * with the failure screen, quietly reload-retry up to twice behind a
+ * "Reconnecting…" cover; only after that does the manual BootFailureOverlay take
+ * over. The counter lives in sessionStorage so it survives the reload, and is
+ * cleared once the gateway connects.
+ */
+function BootAutoRetry() {
+  const boot = useStore($desktopBoot)
+  const [retrying, setRetrying] = useState(false)
+  const scheduled = useRef(false)
+
+  useEffect(() => {
+    const KEY = 'hermes-boot-retries'
+    const MAX = 2
+
+    if (boot.running && !boot.error) {
+      window.sessionStorage.removeItem(KEY)
+      return
+    }
+
+    if (boot.error && !boot.running && !scheduled.current) {
+      const tries = Number(window.sessionStorage.getItem(KEY) || '0')
+      if (tries >= MAX) return // give up — let BootFailureOverlay handle it
+      scheduled.current = true
+      window.sessionStorage.setItem(KEY, String(tries + 1))
+      setRetrying(true)
+      const timer = window.setTimeout(() => {
+        void window.hermesDesktop?.resetBootstrap?.()
+        window.location.reload()
+      }, 1100)
+      return () => window.clearTimeout(timer)
+    }
+  }, [boot.running, boot.error])
+
+  if (!retrying) return null
+  return (
+    <div className="fixed inset-0 z-[1500] grid place-items-center bg-(--ui-chat-surface-background) text-sm text-muted-foreground">
+      Reconnecting…
+    </div>
   )
 }

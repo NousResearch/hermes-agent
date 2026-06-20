@@ -701,3 +701,118 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# External bridge detection: timeout retry + port-kill guard  (#33365)
+# ---------------------------------------------------------------------------
+
+class TestExternalBridgeDetectionRetry:
+    """Regression tests for the external-bridge timeout / port-kill race.
+
+    Issue #33365: a 2-second health-check timeout on the external-bridge probe
+    caused connect() to call _kill_port_process() on a bridge that was merely
+    slow (e.g. mid WhatsApp 515-reconnect), destroying the user's externally-
+    managed bridge and replacing it with a managed one that then crashed.
+
+    The fix:
+    * Retry the probe up to 3 times (1 s between attempts).
+    * Skip _kill_port_process when ALL probes timed out (asyncio.TimeoutError)
+      so an external bridge that's briefly unresponsive is not blindly killed.
+    * Still call _kill_port_process when the connection was refused (nothing
+      listening on the port) — that's the safe, stale-process cleanup path.
+    """
+
+    def _bare_adapter(self):
+        adapter = _make_adapter()
+        # Seed attributes that connect() reads before the health-check loop
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._platform_lock_identity = None
+        adapter._shutting_down = False
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_three_timeouts_skips_port_kill(self):
+        """All 3 probes time out → _kill_port_process must NOT be called."""
+        adapter = self._bare_adapter()
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("builtins.open", return_value=MagicMock()), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill, \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"), \
+             patch("subprocess.Popen", return_value=MagicMock(poll=MagicMock(return_value=None))), \
+             patch("aiohttp.ClientSession", side_effect=asyncio.TimeoutError):
+            await adapter.connect()
+
+        mock_kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connection_refused_still_kills_port(self):
+        """ECONNREFUSED means nothing is on the port → _kill_port_process IS called."""
+        import aiohttp as _aiohttp
+
+        adapter = self._bare_adapter()
+
+        conn_error = _aiohttp.ClientConnectorError(
+            connection_key=MagicMock(), os_error=ConnectionRefusedError()
+        )
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("builtins.open", return_value=MagicMock()), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill, \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"), \
+             patch("subprocess.Popen", return_value=MagicMock(poll=MagicMock(return_value=None))), \
+             patch("aiohttp.ClientSession", side_effect=conn_error):
+            await adapter.connect()
+
+        mock_kill.assert_called_once_with(adapter._bridge_port)
+
+    @pytest.mark.asyncio
+    async def test_timeout_then_connected_uses_external_bridge(self):
+        """First probe times out, second succeeds with status=connected → external path."""
+        adapter = self._bare_adapter()
+
+        call_count = [0]
+
+        def _session_factory(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise asyncio.TimeoutError
+            # Second call: return a session that yields status=connected
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.json = AsyncMock(
+                return_value={"status": "connected", "scriptHash": "bridge-hash"},
+            )
+            mock_session = MagicMock()
+            mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
+            cm = MagicMock()
+            cm.__aenter__ = AsyncMock(return_value=mock_session)
+            cm.__aexit__ = AsyncMock(return_value=False)
+            return cm
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill, \
+             patch("plugins.platforms.whatsapp.adapter._file_content_hash", return_value="bridge-hash"), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task", return_value=MagicMock()), \
+             patch("aiohttp.ClientSession", side_effect=_session_factory):
+            result = await adapter.connect()
+
+        assert result is True
+        assert adapter._bridge_process is None  # External bridge, not managed
+        mock_kill.assert_not_called()

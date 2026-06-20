@@ -438,48 +438,80 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
             
-            # Check if bridge is already running and connected
+            # Check if bridge is already running and connected.
+            # Probe up to 3 times so that a brief unresponsive window during a
+            # WhatsApp 515-reconnect cycle doesn't cause us to fall through and
+            # kill an external bridge the user is managing themselves.
+            # _probe_timed_out is True only when every attempt got asyncio.TimeoutError
+            # (meaning something IS on the port but didn't reply fast enough); it stays
+            # False when the connection was outright refused (port truly empty).
             import aiohttp
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"http://127.0.0.1:{self._bridge_port}/health",
-                        timeout=aiohttp.ClientTimeout(total=2)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            bridge_status = data.get("status", "unknown")
-                            if bridge_status == "connected":
-                                # Staleness handshake: only reuse a running
-                                # bridge if it is serving the same bridge.js
-                                # that is on disk right now.  A long-lived
-                                # bridge survives gateway restarts AND
-                                # `hermes update`, so without this check it
-                                # keeps serving pre-update code forever
-                                # (e.g. no inbound media download).  Old
-                                # bridges that don't report scriptHash are
-                                # treated as stale by definition.
-                                running_hash = data.get("scriptHash", "")
-                                disk_hash = _file_content_hash(bridge_path)
-                                if running_hash and disk_hash and running_hash == disk_hash:
-                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                    self._mark_connected()
-                                    self._bridge_process = None  # Not managed by us
-                                    self._http_session = aiohttp.ClientSession()
-                                    self._poll_task = asyncio.create_task(self._poll_messages())
-                                    return True
-                                print(
-                                    f"[{self.name}] Running bridge is stale "
-                                    f"(running={running_hash or 'unversioned'}, disk={disk_hash}), restarting"
-                                )
-                            else:
-                                print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
-            except Exception:
-                pass  # Bridge not running, start a new one
-            
-            # Kill any orphaned bridge from a previous gateway run
+            _probe_timed_out = False
+            for _probe_attempt in range(3):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"http://127.0.0.1:{self._bridge_port}/health",
+                            timeout=aiohttp.ClientTimeout(total=3),
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                bridge_status = data.get("status", "unknown")
+                                if bridge_status == "connected":
+                                    # Staleness handshake: only reuse a running
+                                    # bridge if it is serving the same bridge.js
+                                    # that is on disk right now. A long-lived
+                                    # bridge survives gateway restarts and
+                                    # `hermes update`, so without this check it
+                                    # keeps serving pre-update code forever.
+                                    running_hash = data.get("scriptHash", "")
+                                    disk_hash = _file_content_hash(bridge_path)
+                                    if running_hash and disk_hash and running_hash == disk_hash:
+                                        print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                        self._mark_connected()
+                                        self._bridge_process = None  # Not managed by us
+                                        self._http_session = aiohttp.ClientSession()
+                                        self._poll_task = asyncio.create_task(self._poll_messages())
+                                        return True
+                                    print(
+                                        f"[{self.name}] Running bridge is stale "
+                                        f"(running={running_hash or 'unversioned'}, disk={disk_hash}), restarting"
+                                    )
+                                else:
+                                    print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
+                                    _probe_timed_out = False  # Got a clear answer — safe to kill
+                                    break
+                    _probe_timed_out = False  # Non-200 but a real response — safe to kill
+                    break
+                except asyncio.TimeoutError:
+                    # Port has something listening but it didn't respond in time.
+                    # Don't immediately conclude "bridge not running" — retry.
+                    _probe_timed_out = True
+                    if _probe_attempt < 2:
+                        await asyncio.sleep(1)
+                except Exception:
+                    # ECONNREFUSED or similar: nothing is on the port.
+                    _probe_timed_out = False
+                    break
+
+            # Kill any orphaned bridge from a previous gateway run.
+            # Skip _kill_port_process when all probes timed out — something is
+            # listening on the port (possibly the user's external bridge) and we
+            # couldn't confirm its status.  Killing it blindly would destroy an
+            # externally-managed bridge, then our own managed bridge would fail
+            # to start (port still occupied / session inconsistency), producing
+            # the "Poll error: ECONNREFUSED" crash loop described in #33365.
             _kill_stale_bridge_by_pidfile(self._session_path)
-            _kill_port_process(self._bridge_port)
+            if not _probe_timed_out:
+                _kill_port_process(self._bridge_port)
+            else:
+                logger.warning(
+                    "[%s] Health-check on port %d timed out on all 3 attempts — "
+                    "skipping port kill to avoid destroying an external bridge. "
+                    "The managed bridge may fail to start if the port is still occupied.",
+                    self.name,
+                    self._bridge_port,
+                )
             await asyncio.sleep(1)
             
             # Start the bridge process in its own process group.

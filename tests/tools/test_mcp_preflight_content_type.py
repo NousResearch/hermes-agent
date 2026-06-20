@@ -5,8 +5,15 @@ HTTP server (via httpx's ASGI/transport plumbing through a stdlib server),
 rather than reimplementing the probe inline. That distinction matters: the
 production probe must run on its own httpx client outside the MCP SDK's anyio
 task group, and a faithful test must exercise that actual method so the
-content-type allow-list, HEAD->GET fallback, and best-effort pass-through are
-all covered as shipped.
+content-type allow-list, HEAD->GET fallback, POST confirmation, and
+best-effort pass-through are all covered as shipped.
+
+Contract note (POST confirmation): MCP Streamable-HTTP is a POST protocol.
+Some real MCP servers (e.g. Attio) serve an HTML marketing page on
+``GET /mcp`` while answering ``POST /mcp`` with proper MCP JSON or an OAuth
+challenge. The probe therefore must NOT reject on a non-MCP GET content type
+alone -- it confirms with a POST first, and only rejects when the POST also
+returns a clean 2xx non-MCP response (a genuine "this is a web page" signal).
 """
 
 from __future__ import annotations
@@ -46,13 +53,28 @@ def _serve(handler_cls):
 
 def _handler(status: int = 200,
              content_type: "str | None" = "text/html; charset=utf-8",
-             body: bytes = b"<html>x</html>", head_status=None, record=None):
+             body: bytes = b"<html>x</html>", head_status=None, record=None,
+             post_status: "int | None" = None,
+             post_content_type: "str | None" = "__mirror__",
+             post_body: bytes = b"{}"):
     """Build a BaseHTTPRequestHandler that replies with the given shape.
 
     ``head_status`` lets HEAD return a different status than GET (to exercise
     the HEAD->GET fallback). ``record`` is an optional list that captures the
     HTTP methods the server actually saw.
+
+    The ``post_*`` knobs control the POST response used by the POST-confirmation
+    step. By default POST mirrors a non-MCP web page (same status/content type
+    as GET) so that a non-MCP GET is confirmed-and-rejected. Set
+    ``post_content_type`` to an MCP type (or ``post_status`` to a 4xx auth
+    challenge) to model a real MCP endpoint that only answers POST. Pass
+    ``post_content_type=None`` to send a POST response with NO content-type
+    header at all (the "mirror" sentinel is what makes ``None`` distinct from
+    the default).
     """
+
+    _post_status = post_status if post_status is not None else status
+    _post_ct = content_type if post_content_type == "__mirror__" else post_content_type
 
     class _H(http.server.BaseHTTPRequestHandler):
         def _write(self, sc, ct, payload):
@@ -75,6 +97,15 @@ def _handler(status: int = 200,
                 record.append("GET")
             self._write(status, content_type, body)
 
+        def do_POST(self):
+            if record is not None:
+                record.append("POST")
+            # Drain the request body so the client isn't left hanging.
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length:
+                self.rfile.read(length)
+            self._write(_post_status, _post_ct, post_body)
+
         def log_message(self, format, *args):  # noqa: A002
             pass
 
@@ -82,7 +113,7 @@ def _handler(status: int = 200,
 
 
 # ---------------------------------------------------------------------------
-# Reject: non-MCP content types on a 2xx response
+# Reject: non-MCP content types confirmed by a clean 2xx non-MCP POST
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("content_type", [
@@ -93,6 +124,8 @@ def _handler(status: int = 200,
     "text/HTML",  # case-insensitivity
 ])
 def test_non_mcp_content_type_raises(content_type):
+    """GET returns non-MCP HTML AND POST also returns a clean 2xx web page ->
+    genuine wrong-URL, must raise."""
     task = _make_task("bad_srv")
     with _serve(_handler(status=200, content_type=content_type)) as base:
         with pytest.raises(NonMcpEndpointError) as exc_info:
@@ -109,6 +142,54 @@ def test_non_mcp_error_is_non_retryable_connection_error():
 
 
 # ---------------------------------------------------------------------------
+# POST confirmation: HTML on GET but a real MCP endpoint on POST must PASS
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("post_content_type", [
+    "application/json",
+    "application/json; charset=utf-8",
+    "text/event-stream",
+])
+def test_html_get_but_mcp_post_passes(post_content_type):
+    """Attio-style: GET /mcp serves an HTML landing page, POST /mcp answers
+    with an MCP content type. Must NOT raise."""
+    task = _make_task()
+    record: list[str] = []
+    with _serve(_handler(
+        status=200, content_type="text/html",
+        post_status=200, post_content_type=post_content_type,
+        record=record,
+    )) as base:
+        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
+    assert "POST" in record  # the confirmation POST actually ran
+
+
+@pytest.mark.parametrize("post_status", [400, 401, 403, 404, 500])
+def test_html_get_but_post_challenge_passes(post_status):
+    """GET serves HTML, POST returns an auth/error challenge (non-2xx) -> the
+    URL is a real MCP endpoint that just needs credentials/a session. Pass."""
+    task = _make_task()
+    record: list[str] = []
+    with _serve(_handler(
+        status=200, content_type="text/html",
+        post_status=post_status, post_content_type="text/html",
+        record=record,
+    )) as base:
+        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
+    assert "POST" in record
+
+
+def test_html_get_but_post_no_content_type_passes():
+    """GET HTML, POST returns 2xx with no content type -> ambiguous, pass."""
+    task = _make_task()
+    with _serve(_handler(
+        status=200, content_type="text/html",
+        post_status=200, post_content_type=None, post_body=b"",
+    )) as base:
+        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
+
+
+# ---------------------------------------------------------------------------
 # Pass-through: valid MCP content types, ambiguous, and error responses
 # ---------------------------------------------------------------------------
 
@@ -121,7 +202,7 @@ def test_non_mcp_error_is_non_retryable_connection_error():
 def test_valid_mcp_content_types_pass(content_type):
     task = _make_task()
     with _serve(_handler(status=200, content_type=content_type, body=b"{}")) as base:
-        # Must not raise.
+        # Must not raise. GET already looks like MCP -> no POST needed.
         asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
 
 
@@ -133,7 +214,8 @@ def test_missing_content_type_passes():
 
 @pytest.mark.parametrize("status", [401, 403, 404, 500, 503])
 def test_non_2xx_responses_pass(status):
-    """4xx/5xx are auth challenges or transient errors — let the SDK handle."""
+    """4xx/5xx on the GET are auth challenges or transient errors — let the SDK
+    handle. The GET probe returns early without a POST confirmation."""
     task = _make_task()
     with _serve(_handler(status=status, content_type="text/html")) as base:
         asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
@@ -180,6 +262,7 @@ def test_cancelled_error_is_not_swallowed():
 # ---------------------------------------------------------------------------
 
 def test_head_405_falls_back_to_get_and_rejects_html():
+    """HEAD 405 -> GET HTML, and POST also a clean 2xx web page -> reject."""
     task = _make_task("fallback_srv")
     record: list[str] = []
     with _serve(_handler(
@@ -188,7 +271,8 @@ def test_head_405_falls_back_to_get_and_rejects_html():
     )) as base:
         with pytest.raises(NonMcpEndpointError):
             asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
-    assert record == ["HEAD", "GET"]
+    # HEAD falls back to GET, then the non-MCP GET triggers a POST confirmation.
+    assert record == ["HEAD", "GET", "POST"]
 
 
 def test_head_501_falls_back_to_get_and_passes_json():
@@ -199,6 +283,7 @@ def test_head_501_falls_back_to_get_and_passes_json():
         head_status=501, record=record,
     )) as base:
         asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
+    # GET already looks like MCP -> no POST confirmation needed.
     assert record == ["HEAD", "GET"]
 
 

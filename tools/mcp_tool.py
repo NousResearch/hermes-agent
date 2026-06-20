@@ -1934,6 +1934,47 @@ class MCPServerTask:
         if ct_base in self._MCP_CONTENT_TYPES:
             return  # Looks like a real MCP endpoint.
 
+        # HEAD/GET is NOT how MCP Streamable-HTTP works — clients POST. Some
+        # real MCP servers (e.g. Attio) serve an HTML marketing page on GET
+        # /mcp while answering POST with proper MCP JSON or an OAuth challenge.
+        # Before rejecting on the GET content type, confirm with a POST: a
+        # genuine endpoint replies with an MCP content type OR an auth/4xx
+        # challenge. Only a clean 2xx non-MCP POST is a true "wrong URL".
+        try:
+            async with _httpx.AsyncClient(**client_kwargs) as client:
+                post_headers = dict(probe_headers)
+                post_headers.setdefault(
+                    "Accept", "application/json, text/event-stream"
+                )
+                post_headers.setdefault("Content-Type", "application/json")
+                post_resp = await client.post(
+                    url,
+                    headers=post_headers,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": LATEST_PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "clientInfo": {"name": "hermes-preflight", "version": "1.0"},
+                        },
+                    },
+                )
+        except _httpx.HTTPError:
+            return  # POST transport error — let the SDK/handshake decide.
+
+        # An auth challenge or any client/server error means the URL *is* an
+        # MCP endpoint that simply needs credentials or a session — not a web
+        # page. Pass through and let the real handshake (incl. OAuth) proceed.
+        if not (200 <= post_resp.status_code < 300):
+            return
+        post_ct = (
+            post_resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        )
+        if not post_ct or post_ct in self._MCP_CONTENT_TYPES:
+            return  # POST looks like real MCP — the GET HTML was a landing page.
+
         raise NonMcpEndpointError(
             f"MCP server '{self.name}' at {url} returned Content-Type "
             f"'{ct_base}', not an MCP response (expected one of: "

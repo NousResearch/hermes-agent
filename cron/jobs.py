@@ -1569,8 +1569,18 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         save_jobs(jobs)
                         return
                 
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # Compute next run — protect against exceptions so save_jobs
+                # is always reached and the job doesn't get stuck with null.
+                try:
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
+                except Exception as exc:
+                    # logger.exception preserves the traceback — this broad
+                    # catch is the primary signal for diagnosing bad schedule
+                    # payloads / croniter failures.
+                    logger.exception(
+                        "Job '%s': compute_next_run failed (%s); keeping previous next_run_at",
+                        job_id, exc,
+                    )
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't

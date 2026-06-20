@@ -713,6 +713,36 @@ class TestMarkJobRun:
         assert updated["enabled"] is False
         assert updated["state"] == "completed"
 
+    def test_compute_next_run_raise_is_contained_and_persists(self, tmp_cron_dir, monkeypatch):
+        """Regression for the scheduler-resilience fix (PR #8290).
+
+        A *raised* compute_next_run() (not just a None return) while advancing a
+        recurring job must be contained: mark_job_run() does not propagate,
+        save_jobs() still runs, and the job keeps its previous next_run_at
+        rather than being wiped to null and picked up on every tick.
+        """
+        job = create_job(prompt="Recurring", schedule="every 1h")
+        prev_next_run = get_job(job["id"])["next_run_at"]
+        assert prev_next_run is not None
+
+        def _boom(*a, **kw):
+            raise RuntimeError("schedule computation blew up")
+
+        monkeypatch.setattr("cron.jobs.compute_next_run", _boom)
+
+        # Must not raise even though compute_next_run() explodes.
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated is not None, "job was lost when compute_next_run raised"
+        # State was persisted despite the exception ...
+        assert updated["last_status"] == "ok"
+        # ... next_run_at preserved rather than nulled ...
+        assert updated["next_run_at"] == prev_next_run
+        # ... and the recurring job stays live (not disabled/completed).
+        assert updated["enabled"] is True
+        assert updated["state"] == "scheduled"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""

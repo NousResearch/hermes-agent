@@ -150,6 +150,14 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - ``name`` on tool-result messages (``role=tool``) — Hermes attaches
+          the function name to tool-results in several places (see
+          conversation_loop.py and tool_executor.py). The OpenAI spec lists
+          ``name`` only on ``role=function`` (legacy 0613 schema) and
+          ``role=tool`` schemas vary across gateways; strict OpenAI-compatible
+          gateways like Palantir LLM-proxy reject it with
+          ``unrecognizedProperty=name``. Drop it on the wire — correlation is
+          already covered by ``tool_call_id``.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -160,6 +168,22 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - Reasoning echo fields on assistant messages — ``reasoning``
+          (OpenRouter unified format), ``reasoning_content``
+          (DeepSeek/Moonshot/Kimi), ``reasoning_details`` (OpenRouter
+          structured). These are preserved on the in-memory message dict
+          by ``parse_response`` so downstream code (thinking-prefill
+          retry, ``_extract_reasoning``, the Anthropic-Messages adapter's
+          replay path) can read them back. They must NOT reach the wire
+          on chat_completions providers — strict gateways like Palantir
+          LLM-proxy ``/openai/v1`` reject the assistant message with
+          ``HTTP 400 unrecognizedProperty=reasoning_content`` on the
+          NEXT turn (the field comes back in history). Permissive
+          providers (real OpenAI, OpenRouter) silently ignore them, which
+          masked the bug for months. The Anthropic-Messages transport
+          (``api_mode='anthropic_messages'``) handles its own replay via
+          thinking blocks, so dropping these on the OpenAI-wire path is
+          provider-agnostic and safe.
         """
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
@@ -172,7 +196,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or "reasoning" in msg
+                or "reasoning_content" in msg
+                or "reasoning_details" in msg
             ):
+                needs_sanitize = True
+                break
+            # ``name`` on tool-result messages — see docstring.
+            if msg.get("role") == "tool" and "name" in msg:
                 needs_sanitize = True
                 break
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
@@ -201,6 +232,19 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            # Strip ``name`` ONLY on tool-result messages (``role=tool``) —
+            # leave ``name`` on assistant/function messages alone where the
+            # spec actually expects it. Palantir's OpenAI surface rejects
+            # ``name`` on ``role=tool`` with ``unrecognizedProperty=name``.
+            if msg.get("role") == "tool":
+                msg.pop("name", None)
+            # Reasoning echo fields — see docstring above.  Dropping on
+            # the OpenAI-wire path is provider-agnostic; the
+            # Anthropic-Messages transport reads these from a separate
+            # message-shape branch before convert_messages runs.
+            msg.pop("reasoning", None)
+            msg.pop("reasoning_content", None)
+            msg.pop("reasoning_details", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

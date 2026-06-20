@@ -650,7 +650,27 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                # proc.terminate() maps to TerminateProcess(), which kills only
+                # the wrapper handle. Orphaned descendants (e.g. an ffmpeg the
+                # command spawned) survive and keep the stdout pipe open, hanging
+                # the reader long past the timeout. taskkill /T tears down the
+                # whole tree — the documented Windows primitive, matching
+                # ProcessRegistry._terminate_host_pid. psutil's children walk is
+                # unreliable here (stale PPID links miss orphaned descendants).
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        creationflags=windows_hide_flags(),
+                        stdin=subprocess.DEVNULL,
+                    )
+                except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
             else:
                 try:
                     pgid = os.getpgid(proc.pid)

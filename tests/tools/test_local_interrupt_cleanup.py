@@ -96,6 +96,67 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+def test_kill_process_taskkill_tree_on_windows(monkeypatch):
+    """On Windows, _kill_process must tear down the whole tree with taskkill /T.
+
+    Regression: the Windows branch used ``proc.terminate()`` (TerminateProcess),
+    which kills only the wrapper handle. Orphaned descendants (e.g. an ffmpeg the
+    command spawned) kept the stdout pipe open and hung the reader long past the
+    timeout. ``taskkill /PID <pid> /T /F`` is the documented Windows tree-kill
+    primitive (matching ProcessRegistry._terminate_host_pid).
+    """
+    import tools.environments.local as local_mod
+
+    env = object.__new__(LocalEnvironment)
+    terminate_calls = []
+    proc = SimpleNamespace(
+        pid=4242,
+        terminate=lambda: terminate_calls.append(True),
+        kill=lambda: None,
+        poll=lambda: None,
+        wait=lambda timeout=None: None,
+    )
+    run_calls = []
+
+    def fake_run(cmd, **kwargs):
+        run_calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+
+    env._kill_process(proc)
+
+    assert run_calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    # The wrapper-only terminate must not be what we rely on anymore.
+    assert terminate_calls == []
+
+
+def test_kill_process_windows_falls_back_to_kill_when_taskkill_missing(monkeypatch):
+    """If taskkill is unavailable, fall back to proc.kill() instead of raising."""
+    import tools.environments.local as local_mod
+
+    env = object.__new__(LocalEnvironment)
+    kill_calls = []
+    proc = SimpleNamespace(
+        pid=4243,
+        terminate=lambda: None,
+        kill=lambda: kill_calls.append(True),
+        poll=lambda: None,
+        wait=lambda timeout=None: None,
+    )
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("taskkill")
+
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+
+    env._kill_process(proc)
+
+    assert kill_calls == [True]
+
+
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""

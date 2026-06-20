@@ -662,18 +662,23 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
-) -> None:
+) -> list[str]:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
     Routes each file to the appropriate adapter method (send_voice, send_image_file,
     send_video, send_document) based on file extension — mirroring the routing logic
     in ``BasePlatformAdapter._process_message_background``.
+
+    Returns a list of per-attachment delivery errors.  Callers use this to avoid
+    marking cron delivery as successful when text delivery succeeded but a native
+    media attachment failed.
     """
     from pathlib import Path
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    delivery_errors: list[str] = []
 
     for media_path, _is_voice in media_files:
         try:
@@ -691,23 +696,31 @@ def _send_media_via_adapter(
             from agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
+                msg = f"cannot send media {media_path}, gateway loop unavailable"
                 logger.warning(
                     "Job '%s': cannot send media %s, gateway loop unavailable",
                     job.get("id", "?"), media_path,
                 )
-                return
+                delivery_errors.append(msg)
+                continue
             try:
                 result = future.result(timeout=30)
             except TimeoutError:
                 future.cancel()
                 raise
             if result and not getattr(result, "success", True):
+                err = getattr(result, "error", "unknown")
+                msg = f"media send failed for {media_path}: {err}"
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
-                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                    job.get("id", "?"), media_path, err,
                 )
+                delivery_errors.append(msg)
         except Exception as e:
+            delivery_errors.append(f"failed to send media {media_path}: {e}")
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+
+    return delivery_errors
 
 
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
@@ -860,9 +873,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             logger.warning("Job '%s': %s", job["id"], msg)
                             delivery_errors.append(msg)
 
-                # Send extracted media files as native attachments via the live adapter
+                # Send extracted media files as native attachments via the live adapter.
+                # A failed attachment means cron delivery is only partial: do not fall
+                # back to the standalone path after text may already have been sent
+                # (that risks duplicating the text), but do surface the failure so the
+                # run is not marked clean.
+                media_delivery_errors = []
                 if adapter_ok and media_files:
-                    _send_media_via_adapter(
+                    media_delivery_errors = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
@@ -871,8 +889,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         job,
                         platform=platform,
                     )
+                    if media_delivery_errors:
+                        delivery_errors.extend(media_delivery_errors)
+                        logger.warning(
+                            "Job '%s': live adapter delivery to %s:%s had media attachment failure(s): %s",
+                            job["id"], platform_name, chat_id, "; ".join(media_delivery_errors),
+                        )
+                        delivered = True
 
-                if adapter_ok:
+                if adapter_ok and not media_delivery_errors:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:

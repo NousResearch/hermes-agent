@@ -701,6 +701,65 @@ class TestDeliverResultWrapping:
         assert adapter.send_image_file.call_args[1]["image_path"] == str(media_path)
         adapter.send_voice.assert_not_called()
 
+    def test_live_adapter_media_failure_returns_delivery_error_without_false_success(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A failed live-adapter MEDIA attachment must surface as a cron
+        delivery error instead of being logged as a clean delivery.
+        """
+        from gateway.config import Platform
+        from concurrent.futures import Future
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "chart.png")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_image_file.return_value = MagicMock(success=False, error="Connection Closed")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.WHATSAPP: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        text_future = Future()
+        text_future.set_result(MagicMock(success=True))
+        media_future = Future()
+        media_future.set_result(MagicMock(success=False, error="Connection Closed"))
+        futures_iter = iter([text_future, media_future])
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return next(futures_iter)
+
+        job = {
+            "id": "comic-job",
+            "deliver": "origin",
+            "origin": {"platform": "whatsapp", "chat_id": "123@s.whatsapp.net"},
+        }
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        caplog.set_level(logging.INFO, logger="cron.scheduler")
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                f"Comic ready\nMEDIA:{media_path}",
+                adapters={Platform.WHATSAPP: adapter},
+                loop=loop,
+            )
+
+        assert result == f"media send failed for {media_path}: Connection Closed"
+        adapter.send_image_file.assert_called_once()
+        standalone_send.assert_not_awaited()
+        assert not any(
+            "Job 'comic-job': delivered to whatsapp:123@s.whatsapp.net via live adapter" in r.message
+            for r in caplog.records
+        )
+
     def test_live_adapter_media_only_no_text(self, tmp_path, monkeypatch):
         """When content is ONLY a MEDIA tag with no text, media should still be sent."""
         from gateway.config import Platform
@@ -2348,6 +2407,34 @@ class TestSendMediaViaAdapter:
         media_files = [(str(voice_path), False), (str(photo_path), False)]
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
         adapter.send_voice.assert_called_once()
+        adapter.send_image_file.assert_called_once()
+
+    def test_media_failure_returned_to_caller(self, tmp_path, monkeypatch):
+        from concurrent.futures import Future
+
+        adapter = MagicMock()
+        adapter.send_image_file = AsyncMock()
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "photo.png")
+        media_files = [(str(media_path), False)]
+
+        failed_future = Future()
+        failed_future.set_result(MagicMock(success=False, error="Connection Closed"))
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return failed_future
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            errors = _send_media_via_adapter(
+                adapter,
+                "123",
+                media_files,
+                None,
+                MagicMock(),
+                {"id": "j4"},
+            )
+
+        assert errors == [f"media send failed for {media_path}: Connection Closed"]
         adapter.send_image_file.assert_called_once()
 
 

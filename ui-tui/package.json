@@ -22,7 +22,7 @@
     "ink-text-input": "^6.0.0",
     "nanostores": "^1.2.0",
     "react": "^19.2.4",
-    "undici": "^6.25.0",
+    "undici": "^6.27.0",
     "unicode-animations": "^1.0.3"
   },
   "devDependencies": {

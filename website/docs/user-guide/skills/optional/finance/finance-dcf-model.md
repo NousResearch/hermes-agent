@@ -1185,7 +1185,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
 ### Cyclical Companies
 - Model through economic cycle
 - Normalize margins at mid-cycle
-- Consider trough and peak scenarios
+- Consider through and peak scenarios
 - Adjust beta for cyclicality
 
 ### Multi-Segment Companies

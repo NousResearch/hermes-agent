@@ -4,7 +4,6 @@ The server now uses uvicorn.Server directly (not uvicorn.run) so we stub
 Config + Server + asyncio.run to capture kwargs without starting an event loop.
 """
 
-import asyncio
 import contextlib
 
 import uvicorn

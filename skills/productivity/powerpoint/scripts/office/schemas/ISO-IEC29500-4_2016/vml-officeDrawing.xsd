@@ -282,7 +282,7 @@
     <xsd:attribute name="ungrouping" type="s:ST_TrueFalse" use="optional"/>
     <xsd:attribute name="rotation" type="s:ST_TrueFalse" use="optional"/>
     <xsd:attribute name="cropping" type="s:ST_TrueFalse" use="optional"/>
-    <xsd:attribute name="verticies" type="s:ST_TrueFalse" use="optional"/>
+    <xsd:attribute name="vertices" type="s:ST_TrueFalse" use="optional"/>
     <xsd:attribute name="adjusthandles" type="s:ST_TrueFalse" use="optional"/>
     <xsd:attribute name="text" type="s:ST_TrueFalse" use="optional"/>
     <xsd:attribute name="aspectratio" type="s:ST_TrueFalse" use="optional"/>

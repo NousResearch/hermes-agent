@@ -2,18 +2,18 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 approval:
-  dangerous_header: "⚠️  COMANDO PERICOLOSO: {description}"
+  dangerous_header: "⚠️  COMMANDO PERICOLOSO: {description}"
   choose_long:     "      [o]una volta  |  [s]essione  |  [a]sempre  |  [d]nega"
   choose_short:    "      [o]una volta  |  [s]essione  |  [d]nega"
   prompt_long:     "      Scelta [o/s/a/D]: "
   prompt_short:    "      Scelta [o/s/D]: "
-  timeout:         "      ⏱ Tempo scaduto — comando negato"
+  timeout:         "      ⏱ Tempo scaduto — commando negato"
   allowed_once:    "      ✓ Consentito una volta"
   allowed_session: "      ✓ Consentito per questa sessione"
   allowed_always:  "      ✓ Aggiunto alla lista permessi permanente"
   denied:          "      ✗ Negato"
   cancelled:       "      ✗ Annullato"
-  blocklist_message: "Questo comando è nella lista di blocco incondizionata e non può essere approvato."
+  blocklist_message: "Questo commando è nella lista di blocco incondizionata e non può essere approvato."
 
 gateway:
   approval_expired: "⚠️ Approvazione scaduta (l'agente non è più in attesa). Chiedi all'agente di riprovare."
@@ -54,17 +54,17 @@ gateway:
     state_running:         "in esecuzione"
 
   approve:
-    no_pending:            "Nessun comando in attesa di approvazione."
-    once_singular:         "✅ Comando approvato. L'agente sta riprendendo..."
+    no_pending:            "Nessun commando in attesa di approvazione."
+    once_singular:         "✅ Commando approvato. L'agente sta riprendendo..."
     once_plural:           "✅ Comandi approvati ({count} comandi). L'agente sta riprendendo..."
-    session_singular:      "✅ Comando approvato (modello approvato per questa sessione). L'agente sta riprendendo..."
+    session_singular:      "✅ Commando approvato (modello approvato per questa sessione). L'agente sta riprendendo..."
     session_plural:        "✅ Comandi approvati (modello approvato per questa sessione) ({count} comandi). L'agente sta riprendendo..."
-    always_singular:       "✅ Comando approvato (modello approvato in modo permanente). L'agente sta riprendendo..."
+    always_singular:       "✅ Commando approvato (modello approvato in modo permanente). L'agente sta riprendendo..."
     always_plural:         "✅ Comandi approvati (modello approvato in modo permanente) ({count} comandi). L'agente sta riprendendo..."
 
   background:
-    usage:                 "Uso: /background <prompt>\nEsempio: /background Riassumi le principali notizie di HN di oggi\n\nEsegue il prompt in una sessione separata. Puoi continuare a chattare — il risultato apparirà qui al termine."
-    started:               "🔄 Attività in background avviata: \"{preview}\"\nID attività: {task_id}\nPuoi continuare a chattare — i risultati appariranno al termine."
+    usage:                 "Uso: /background <prompt>\nEsempio: /background Riassumi le principali notizie di HN di oggi\n\nEsegue il prompt in una sessione separata. Puoi continuare a chattare — il risultato apparirà qui al determine."
+    started:               "🔄 Attività in background avviata: \"{preview}\"\nID attività: {task_id}\nPuoi continuare a chattare — i risultati appariranno al determine."
 
   branch:
     db_unavailable:        "Database delle sessioni non disponibile."
@@ -77,8 +77,8 @@ gateway:
   commands:
     usage:                 "Uso: `/commands [page]`"
     skill_header:          "⚡ **Comandi skill**:"
-    default_desc:          "Comando skill"
-    none:                  "Nessun comando disponibile."
+    default_desc:          "Commando skill"
+    none:                  "Nessun commando disponibile."
     header:                "📚 **Comandi** ({total} totali, pagina {page}/{total_pages})"
     nav_prev:              "`/commands {page}` ← prec"
     nav_next:              "succ → `/commands {page}`"
@@ -97,20 +97,20 @@ gateway:
   debug:
     upload_failed:         "✗ Caricamento del report di debug non riuscito: {error}"
     header:                "**Report di debug caricato:**"
-    auto_delete:           "⏱ I paste verranno eliminati automaticamente tra 6 ore."
+    auto_delete:           "⏱ I paste verranno eliminati automaticamente tra 6 or."
     full_logs_hint:        "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
     share_hint:            "Condividi questi link con il team Hermes per ricevere supporto."
 
   deny:
-    stale:                 "❌ Comando negato (l'approvazione era obsoleta)."
-    no_pending:            "Nessun comando in attesa da negare."
-    denied_singular:       "❌ Comando negato."
+    stale:                 "❌ Commando negato (l'approvazione era obsoleta)."
+    no_pending:            "Nessun commando in attesa da negare."
+    denied_singular:       "❌ Commando negato."
     denied_plural:         "❌ Comandi negati ({count} comandi)."
 
   fast:
     not_supported:         "⚡ /fast è disponibile solo per i modelli OpenAI che supportano Priority Processing."
     status:                "⚡ Priority Processing\n\nModalità attuale: `{mode}`\n\n_Uso:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Argomento sconosciuto: `{arg}`\n\n**Opzioni valide:** normal, fast, status"
+    unknown_arg:           "⚠️ Argomento sconosciuto: `{arg}`\n\n**Opzioni valid:** normal, fast, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (salvato nella configurazione)\n_(verrà applicato al prossimo messaggio)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (solo per questa sessione)"
     label_fast:            "FAST"
@@ -227,13 +227,13 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
-    no_named_sessions:     "Nessuna sessione con nome trovata.\nUsa `/title My Session` per dare un nome alla sessione attuale, poi `/resume My Session` per tornare a essa in seguito."
-    list_header:           "📋 **Sessioni con nome**\n"
+    no_named_sessions:     "Nessuna sessione con gnome trovata.\nUsa `/title My Session` per dare un gnome alla sessione attuale, poi `/resume My Session` per tornare a essa in seguito."
+    list_header:           "📋 **Sessioni con gnome**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUso: `/resume <session name>`"
-    list_footer_numbered:  "\nUso: `/resume <nome sessione>` o `/resume <numero>` (es. `/resume 1` per la più recente)"
+    list_footer_numbered:  "\nUso: `/resume <gnome sessione>` o `/resume <numero>` (es. `/resume 1` per la più recente)"
     list_failed:           "Impossibile elencare le sessioni: {error}"
     out_of_range:          "L'indice di ripresa {index} è fuori intervallo.\nUsa `/resume` senza argomenti per vedere le sessioni disponibili."
     not_found:             "Nessuna sessione trovata corrispondente a '**{name}**'.\nUsa `/resume` senza argomenti per vedere le sessioni disponibili."
@@ -295,7 +295,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_no_title:      "📌 Sessione: `{session_id}`\nNessun titolo impostato. Uso: `/title My Session Name`"
 
   topic:
-    not_telegram_dm:         "Il comando /topic è disponibile solo nelle chat private di Telegram."
+    not_telegram_dm:         "Il commando /topic è disponibile solo nelle chat private di Telegram."
     no_session_db:           "Database delle sessioni non disponibile."
     unauthorized:            "Non sei autorizzato a usare /topic su questo bot."
     restore_needs_topic:     "Per ripristinare una sessione, crea o apri prima un topic Telegram, poi invia /topic <session-id> all'interno di quel topic. Per creare un nuovo topic, apri All Messages e invia un messaggio qualsiasi lì."
@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   update:
     platform_not_messaging:  "✗ /update è disponibile solo dalle piattaforme di messaggistica. Esegui `hermes update` dal terminale."
     not_git_repo:            "✗ Non è un repository git — impossibile aggiornare."
-    hermes_cmd_not_found:    "✗ Impossibile localizzare il comando `hermes`. Hermes è in esecuzione, ma il comando di aggiornamento non ha trovato l'eseguibile nel PATH o tramite l'interprete Python attuale. Prova a eseguire `hermes update` manualmente nel terminale."
+    hermes_cmd_not_found:    "✗ Impossibile localizzare il commando `hermes`. Hermes è in esecuzione, ma il commando di aggiornamento non ha trovato l'eseguibile nel PATH o tramite l'interprete Python attuale. Prova a eseguire `hermes update` manualmente nel terminale."
     start_failed:            "✗ Avvio dell'aggiornamento non riuscito: {error}"
     starting:                "⚕ Avvio dell'aggiornamento di Hermes… mostrerò qui i progressi in streaming."
 
@@ -342,7 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_logged_in:            "Non hai effettuato l'accesso a Nous Portal. Accedi per vedere il saldo dei crediti e ricaricare."
 
   verbose:
-    not_enabled:           "Il comando `/verbose` non è abilitato per le piattaforme di messaggistica.\n\nAbilitalo in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    not_enabled:           "Il commando `/verbose` non è abilitato per le piattaforme di messaggistica.\n\nAbilitalo in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progresso strumenti: **OFF** — nessuna attività degli strumenti mostrata."
     mode_new:              "⚙️ Progresso strumenti: **NEW** — mostrato quando lo strumento cambia (lunghezza anteprima: `display.tool_preview_length`, predefinito 40)."
     mode_all:              "⚙️ Progresso strumenti: **ALL** — ogni chiamata a uno strumento viene mostrata (lunghezza anteprima: `display.tool_preview_length`, predefinito 40)."

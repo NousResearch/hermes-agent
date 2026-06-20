@@ -611,7 +611,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
         scheme = parsed.scheme.lower()
         host = parsed.hostname or ""
     except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Unparseable media URL: {url!r}") from exc
+        raise ValueError(f"Unparsable media URL: {url!r}") from exc
 
     if scheme not in {"http", "https"}:
         raise ValueError(
@@ -1072,7 +1072,7 @@ async def qr_login(
             status = str(status_resp.get("status") or "wait")
             if status == "wait":
                 print(".", end="", flush=True)
-            elif status == "scaned":
+            elif status == "scanned":
                 print("\n已扫码，请在微信里确认...")
             elif status == "scaned_but_redirect":
                 redirect_host = str(status_resp.get("redirect_host") or "")
@@ -1235,7 +1235,7 @@ class WeixinAdapter(BasePlatformAdapter):
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
 
         The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
-        unparseable values fall back to ``default``.
+        unparsable values fall back to ``default``.
         """
         import math
 

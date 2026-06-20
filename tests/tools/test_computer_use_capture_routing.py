@@ -62,7 +62,7 @@ def tmp_cache_dir(tmp_path):
 def _make_capture(
     *,
     png_b64: str = _PNG_B64,
-    mode: str = "som",
+    mode: str = "some",
     elements=None,
     app: str = "Safari",
     window_title: str = "GitHub – Issue #24015",
@@ -105,7 +105,7 @@ class TestCaptureResponseDefaultPath:
     def test_som_capture_returns_multimodal_envelope_when_native(self):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(png_b64=_PNG_B64, mode="som")
+        cap = _make_capture(png_b64=_PNG_B64, mode="some")
         with patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
             resp = cu_tool._capture_response(cap)
@@ -123,7 +123,7 @@ class TestCaptureResponseDefaultPath:
     def test_jpeg_capture_returns_image_jpeg_mime_when_native(self):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(png_b64=_JPEG_B64, mode="som")
+        cap = _make_capture(png_b64=_JPEG_B64, mode="some")
         with patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
             resp = cu_tool._capture_response(cap)
@@ -161,7 +161,7 @@ class TestCaptureResponseRoutedToAuxVision:
     ):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(mode="som")
+        cap = _make_capture(mode="some")
 
         captured_calls = {}
 
@@ -188,7 +188,7 @@ class TestCaptureResponseRoutedToAuxVision:
         # next agent turn.
         assert isinstance(resp, str)
         body = json.loads(resp)
-        assert body["mode"] == "som"
+        assert body["mode"] == "some"
         assert body["app"] == "Safari"
         assert "Sign in" in body["vision_analysis"]
         assert body["vision_analysis_routed_via"] == "auxiliary.vision"
@@ -214,7 +214,7 @@ class TestCaptureResponseRoutedToAuxVision:
     ):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(mode="som")
+        cap = _make_capture(mode="some")
         # We capture the path the aux call sees so we can assert it's gone
         # after _capture_response returns.
         observed_path = {}
@@ -245,7 +245,7 @@ class TestCaptureResponseRoutedToAuxVision:
         from tools.computer_use import tool as cu_tool
 
         cache_dir = tmp_path / "missing" / "cache_vision"
-        cap = _make_capture(mode="som")
+        cap = _make_capture(mode="some")
         observed_path = {}
 
         def _fake_get(*_args, **_kw):
@@ -279,7 +279,7 @@ class TestCaptureResponseRoutedToAuxVision:
     ):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(mode="som")
+        cap = _make_capture(mode="some")
         observed_path = {}
 
         def _fake_vat(image_path, _prompt):
@@ -309,7 +309,7 @@ class TestCaptureResponseRoutedToAuxVision:
     def test_empty_aux_analysis_falls_back_to_multimodal(self, tmp_cache_dir):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(mode="som")
+        cap = _make_capture(mode="some")
 
         def _fake_run_async(_coro):
             return _stub_aux_analysis("")
@@ -331,7 +331,7 @@ class TestCaptureResponseRoutedToAuxVision:
     def test_invalid_aux_response_falls_back_to_multimodal(self, tmp_cache_dir):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(mode="som")
+        cap = _make_capture(mode="some")
 
         def _fake_run_async(_coro):
             return 1234  # not a string at all
@@ -436,7 +436,7 @@ class TestBugReproductionAnchor:
     ):
         from tools.computer_use import tool as cu_tool
 
-        cap = _make_capture(mode="som")
+        cap = _make_capture(mode="some")
 
         def _fake_run_async(_coro):
             return _stub_aux_analysis(

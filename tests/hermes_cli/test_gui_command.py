@@ -427,7 +427,7 @@ def _write_zip(path: Path) -> None:
 def test_purge_electron_build_cache_clears_all_zips_and_unpacked_dir(tmp_path, monkeypatch):
     """Purge is unconditional: it removes every electron-*.zip (regardless of
     whether stdlib zipfile thinks it's corrupt) plus the half-written unpacked
-    dir, because @electron/get's own SHASUM check on re-download is the real
+    dir, because @electron/gets own SHASUM check on re-download is the real
     validator — not a self-rolled one."""
     cache = tmp_path / "electron-cache"
     # A "clean" zip and a prepended-junk zip — the latter is the real-world

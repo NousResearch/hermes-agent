@@ -2,18 +2,18 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 approval:
-  dangerous_header: "⚠️  COMANDO PELIGROSO: {description}"
+  dangerous_header: "⚠️  COMMANDO PELIGROSO: {description}"
   choose_long:     "      [o]una vez  |  [s]sesión  |  [a]siempre  |  [d]denegar"
   choose_short:    "      [o]una vez  |  [s]sesión  |  [d]denegar"
   prompt_long:     "      Opción [o/s/a/D]: "
   prompt_short:    "      Opción [o/s/D]: "
-  timeout:         "      ⏱ Tiempo agotado — comando denegado"
+  timeout:         "      ⏱ Tiempo agotado — commando denegado"
   allowed_once:    "      ✓ Permitido una vez"
   allowed_session: "      ✓ Permitido en esta sesión"
   allowed_always:  "      ✓ Añadido a la lista de permitidos permanente"
   denied:          "      ✗ Denegado"
   cancelled:       "      ✗ Cancelado"
-  blocklist_message: "Este comando está en la lista de bloqueo incondicional y no se puede aprobar."
+  blocklist_message: "Este commando está en la lista de bloqueo incondicional y no se puede aprobar."
 
 gateway:
   approval_expired: "⚠️ La aprobación ha caducado (el agente ya no está esperando). Pida al agente que lo intente de nuevo."
@@ -54,16 +54,16 @@ gateway:
     state_running:         "en ejecución"
 
   approve:
-    no_pending:            "No hay ningún comando pendiente que aprobar."
-    once_singular:         "✅ Comando aprobado. El agente se está reanudando..."
-    once_plural:           "✅ Comandos aprobados ({count} comandos). El agente se está reanudando..."
-    session_singular:      "✅ Comando aprobado (patrón aprobado para esta sesión). El agente se está reanudando..."
-    session_plural:        "✅ Comandos aprobados (patrón aprobado para esta sesión) ({count} comandos). El agente se está reanudando..."
-    always_singular:       "✅ Comando aprobado (patrón aprobado permanentemente). El agente se está reanudando..."
-    always_plural:         "✅ Comandos aprobados (patrón aprobado permanentemente) ({count} comandos). El agente se está reanudando..."
+    no_pending:            "No hay ningún commando pendiente que aprobar."
+    once_singular:         "✅ Commando aprobado. El agente se está reanudando..."
+    once_plural:           "✅ Commandos aprobados ({count} commandos). El agente se está reanudando..."
+    session_singular:      "✅ Commando aprobado (patrón aprobado para esta sesión). El agente se está reanudando..."
+    session_plural:        "✅ Commandos aprobados (patrón aprobado para esta sesión) ({count} commandos). El agente se está reanudando..."
+    always_singular:       "✅ Commando aprobado (patrón aprobado permanentemente). El agente se está reanudando..."
+    always_plural:         "✅ Commandos aprobados (patrón aprobado permanentemente) ({count} commandos). El agente se está reanudando..."
 
   background:
-    usage:                 "Uso: /background <prompt>\nEjemplo: /background Resume las principales historias de HN de hoy\n\nEjecuta el prompt en una sesión separada. Puedes seguir chateando — el resultado aparecerá aquí cuando termine."
+    usage:                 "Uso: /background <prompt>\nEjemplo: /background Resume las principales historias de HN de hoy\n\nEjecuta el prompt en una sesión separada. Puedes seguir chateando — el resultado aparecerá aquí cuando determine."
     started:               "🔄 Tarea en segundo plano iniciada: \"{preview}\"\nID de tarea: {task_id}\nPuedes seguir chateando — los resultados aparecerán aquí cuando terminen."
 
   branch:
@@ -76,10 +76,10 @@ gateway:
 
   commands:
     usage:                 "Uso: `/commands [page]`"
-    skill_header:          "⚡ **Comandos de skill**:"
-    default_desc:          "Comando de skill"
-    none:                  "No hay comandos disponibles."
-    header:                "📚 **Comandos** ({total} en total, página {page}/{total_pages})"
+    skill_header:          "⚡ **Commandos de skill**:"
+    default_desc:          "Commando de skill"
+    none:                  "No hay commandos disponibles."
+    header:                "📚 **Commandos** ({total} en total, página {page}/{total_pages})"
     nav_prev:              "`/commands {page}` ← anterior"
     nav_next:              "siguiente → `/commands {page}`"
     out_of_range:          "_(La página solicitada {requested} estaba fuera de rango, mostrando la página {page}.)_"
@@ -102,10 +102,10 @@ gateway:
     share_hint:            "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
 
   deny:
-    stale:                 "❌ Comando denegado (la aprobación había caducado)."
-    no_pending:            "No hay ningún comando pendiente que denegar."
-    denied_singular:       "❌ Comando denegado."
-    denied_plural:         "❌ Comandos denegados ({count} comandos)."
+    stale:                 "❌ Commando denegado (la aprobación había caducado)."
+    no_pending:            "No hay ningún commando pendiente que denegar."
+    denied_singular:       "❌ Commando denegado."
+    denied_plural:         "❌ Commandos denegados ({count} commandos)."
 
   fast:
     not_supported:         "⚡ /fast solo está disponible para modelos de OpenAI que admiten Priority Processing."
@@ -136,8 +136,8 @@ gateway:
     set:                   "⊙ Objetivo establecido (presupuesto de {budget} turnos): {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se agote el presupuesto.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
-    header:                "📖 **Comandos de Hermes**\n"
-    skill_header:          "\n⚡ **Comandos de skill** ({count} activos):"
+    header:                "📖 **Commandos de Hermes**\n"
+    skill_header:          "\n⚡ **Commandos de skill** ({count} activos):"
     more_use_commands:     "\n... y {count} más. Usa `/commands` para la lista paginada completa."
 
   insights:
@@ -146,7 +146,7 @@ gateway:
 
   kanban:
     error_prefix:          "⚠ error de kanban: {error}"
-    subscribed_suffix:     "(suscrito — recibirás una notificación cuando {task_id} termine o se bloquee)"
+    subscribed_suffix:     "(suscrito — recibirás una notificación cuando {task_id} determine o se bloquee)"
     truncated_suffix:      "… (truncado; usa `hermes kanban …` en tu terminal para la salida completa)"
     no_output:             "(sin salida)"
 
@@ -288,14 +288,14 @@ Future messages in this room will use that transcript until `/reset` or another 
   title:
     db_unavailable:        "Base de datos de sesiones no disponible."
     warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ El título está vacío tras la limpieza. Usa caracteres imprimibles."
+    empty_after_clean:     "⚠️ El título está vacío tras la limpieza. Usa characters imprimibles."
     set_to:                "✏️ Título de sesión establecido: **{title}**"
     not_found:             "Sesión no encontrada en la base de datos."
     current_with_title:    "📌 Sesión: `{session_id}`\nTítulo: **{title}**"
     current_no_title:      "📌 Sesión: `{session_id}`\nSin título. Uso: `/title Mi nombre de sesión`"
 
   topic:
-    not_telegram_dm:         "El comando /topic solo está disponible en chats privados de Telegram."
+    not_telegram_dm:         "El commando /topic solo está disponible en chats privados de Telegram."
     no_session_db:           "Base de datos de sesiones no disponible."
     unauthorized:            "No tienes autorización para usar /topic en este bot."
     restore_needs_topic:     "Para restaurar una sesión, primero crea o abre un topic de Telegram, luego envía /topic <session-id> dentro de ese topic. Para crear un topic nuevo, abre All Messages y envía cualquier mensaje allí."
@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   update:
     platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."
     not_git_repo:            "✗ No es un repositorio git — no se puede actualizar."
-    hermes_cmd_not_found:    "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
+    hermes_cmd_not_found:    "✗ No se pudo localizar el commando `hermes`. Hermes está en ejecución, pero el commando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
     start_failed:            "✗ No se pudo iniciar la actualización: {error}"
     starting:                "⚕ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
 
@@ -342,7 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_logged_in:            "No has iniciado sesión en Nous Portal. Inicia sesión para ver tu saldo de créditos y recargar."
 
   verbose:
-    not_enabled:           "El comando `/verbose` no está habilitado para plataformas de mensajería.\n\nHabilítalo en `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    not_enabled:           "El commando `/verbose` no está habilitado para plataformas de mensajería.\n\nHabilítalo en `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progreso de herramientas: **OFF** — no se muestra actividad de herramientas."
     mode_new:              "⚙️ Progreso de herramientas: **NEW** — se muestra al cambiar de herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_all:              "⚙️ Progreso de herramientas: **ALL** — se muestra cada llamada a herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
@@ -368,8 +368,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Canales de voz en vivo (Discord)**\n• Únete primero a un canal de voz, luego `/voice channel` — me uno, escucho y digo mis respuestas\n• `/voice leave` — desconectar del canal de voz"
 
   yolo:
-    disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los comandos peligrosos requerirán aprobación."
-    enabled:                    "⚡ Modo YOLO **ACTIVADO** en esta sesión — todos los comandos se aprueban automáticamente. Úsalo con precaución."
+    disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los commandos peligrosos requerirán aprobación."
+    enabled:                    "⚡ Modo YOLO **ACTIVADO** en esta sesión — todos los commandos se aprueban automáticamente. Úsalo con precaución."
 
   shared:
     session_db_unavailable:      "Base de datos de sesiones no disponible."

@@ -13,7 +13,7 @@ module:
      and writes [plugins."<name>@<marketplace>"] entries for any plugin
      the user has installed=true on their codex CLI. (This is what
      OpenClaw calls "migrate native codex plugins" — the YouTube-video-
-     worthy bit Pash highlighted: Canva, GitHub, Calendar, Gmail
+     worthy bit Hash highlighted: Canva, GitHub, Calendar, Gmail
      pre-configured.)
   3. Writes a [permissions] default profile so users on this runtime
      don't get an approval prompt on every write attempt.

@@ -453,7 +453,7 @@ lm_eval --model hf \
 
 **F1 Score**: Balances precision and recall
 
-**BLEU/ROUGE**: Text generation similarity
+**BLEU/ROGUE**: Text generation similarity
 
 **Pass@k**: Percentage passing when generating k samples
 

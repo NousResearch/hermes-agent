@@ -6,7 +6,6 @@ PATH, shadowing an existing nvm. Uninstall must remove those symlinks, but
 only when they still resolve into the Hermes-managed node dir.
 """
 
-import os
 from pathlib import Path
 
 import pytest

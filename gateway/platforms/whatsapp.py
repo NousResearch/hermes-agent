@@ -316,7 +316,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
 
         The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
-        unparseable values fall back to ``default``.
+        unparsable values fall back to ``default``.
         """
         import math
 

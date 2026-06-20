@@ -69,12 +69,12 @@ Appendix:
 **Template for a well-stated theorem:**
 
 ```latex
-\begin{assumption}[Bounded Gradients]\label{assum:bounded-grad}
+\begin{assumption}[Bounded Gradients]\label{assume:bounded-grad}
 There exists $G > 0$ such that $\|\nabla f(x)\| \leq G$ for all $x \in \mathcal{X}$.
 \end{assumption}
 
 \begin{theorem}[Convergence Rate]\label{thm:convergence}
-Under Assumptions~\ref{assum:bounded-grad} and~\ref{assum:smoothness},
+Under Assumptions~\ref{assume:bounded-grad} and~\ref{assume:smoothness},
 Algorithm~\ref{alg:method} with step size $\eta = \frac{1}{\sqrt{T}}$ satisfies
 \[
 \frac{1}{T}\sum_{t=1}^{T} \mathbb{E}\left[\|\nabla f(x_t)\|^2\right]
@@ -133,7 +133,7 @@ appears in Appendix~\ref{app:proofs}.
 We first establish two technical lemmas.
 
 \begin{lemma}[Descent Lemma]\label{lem:descent}
-Under Assumption~\ref{assum:smoothness}, for any step size $\eta \leq 1/L$:
+Under Assumption~\ref{assume:smoothness}, for any step size $\eta \leq 1/L$:
 \[
 f(x_{t+1}) \leq f(x_t) - \frac{\eta}{2}\|\nabla f(x_t)\|^2 + \frac{\eta^2 L}{2}\|\nabla f(x_t)\|^2.
 \]

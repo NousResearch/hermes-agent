@@ -73,7 +73,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
     # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
     # is in the same family but rendered identically here (no separate br catalog).
-    "portuguese": "pt", "português": "pt", "portugues": "pt",
+    "portuguese": "pt", "português": "pt", "portuguese": "pt",
     "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
     # Russian
     "russian": "ru", "русский": "ru", "ru-ru": "ru",

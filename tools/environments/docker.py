@@ -233,7 +233,7 @@ def _container_finished_at(docker_exe: str, container_id: str):
     """Parse ``docker inspect`` FinishedAt for *container_id*.
 
     Returns a timezone-aware datetime, or ``None`` if the field is missing,
-    unparseable, or the zero-value ``0001-01-01T00:00:00Z`` Docker emits
+    unparsable, or the zero-value ``0001-01-01T00:00:00Z`` Docker emits
     for never-finished containers. ``None`` means "don't reap" — the caller
     leaves the container alone.
     """

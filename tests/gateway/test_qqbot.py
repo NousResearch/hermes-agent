@@ -1038,10 +1038,10 @@ class TestBuildApprovalKeyboard:
     def test_button_data_embeds_session_key(self):
         from gateway.platforms.qqbot.keyboards import build_approval_keyboard
         kb = build_approval_keyboard("agent:main:qqbot:c2c:UID")
-        datas = [b.action.data for b in kb.content.rows[0].buttons]
-        assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
-        assert datas[1] == "approve:agent:main:qqbot:c2c:UID:allow-always"
-        assert datas[2] == "approve:agent:main:qqbot:c2c:UID:deny"
+        data = [b.action.data for b in kb.content.rows[0].buttons]
+        assert data[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
+        assert data[1] == "approve:agent:main:qqbot:c2c:UID:allow-always"
+        assert data[2] == "approve:agent:main:qqbot:c2c:UID:deny"
 
     def test_buttons_share_group_id_for_mutual_exclusion(self):
         from gateway.platforms.qqbot.keyboards import build_approval_keyboard
@@ -1086,8 +1086,8 @@ class TestBuildUpdatePromptKeyboard:
     def test_button_data_shape(self):
         from gateway.platforms.qqbot.keyboards import build_update_prompt_keyboard
         kb = build_update_prompt_keyboard()
-        datas = [b.action.data for b in kb.content.rows[0].buttons]
-        assert datas == ["update_prompt:y", "update_prompt:n"]
+        data = [b.action.data for b in kb.content.rows[0].buttons]
+        assert data == ["update_prompt:y", "update_prompt:n"]
 
 
 class TestBuildApprovalText:
@@ -1821,8 +1821,8 @@ class TestSendUpdatePrompt:
         assert captured["reply_to"] == "prev-msg"
         # Keyboard has the Yes/No buttons.
         dd = captured["keyboard"].to_dict()
-        datas = [b["action"]["data"] for b in dd["content"]["rows"][0]["buttons"]]
-        assert datas == ["update_prompt:y", "update_prompt:n"]
+        data = [b["action"]["data"] for b in dd["content"]["rows"][0]["buttons"]]
+        assert data == ["update_prompt:y", "update_prompt:n"]
 
     @pytest.mark.asyncio
     async def test_empty_default_has_no_hint(self):

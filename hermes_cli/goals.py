@@ -687,7 +687,7 @@ class GoalManager:
         if state.consecutive_parse_failures >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
             state.status = "paused"
             state.paused_reason = (
-                f"judge model returned unparseable output {state.consecutive_parse_failures} turns in a row"
+                f"judge model returned unparsable output {state.consecutive_parse_failures} turns in a row"
             )
             save_goal(self.session_id, state)
             return {

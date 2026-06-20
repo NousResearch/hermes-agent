@@ -127,7 +127,7 @@ export const es: Translations = {
 
   sessions: {
     title: "Sesiones",
-    history: "Historial",
+    history: "Historical",
     overview: "Resumen",
     searchPlaceholder: "Buscar contenido de mensajes...",
     noSessions: "Aún no hay sesiones",
@@ -243,7 +243,7 @@ export const es: Translations = {
       unitDays: "días",
       timeOfDay: "Hora del día",
       weekdays: "Días de la semana",
-      weekdaysShort: ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"],
+      weekdaysShort: ["Dom", "Lun", "Mar", "Mié", "Jue", "Via", "Sáb"],
       dayOfMonth: "Día del mes",
       onceAt: "Ejecutar el",
       customLabel: "Expresión cron",
@@ -286,7 +286,7 @@ export const es: Translations = {
     namePlaceholder: "p. ej. coder, writer, etc.",
     nameRequired: "El nombre es obligatorio",
     nameRule:
-      "Solo letras minúsculas, dígitos, _ y -; debe comenzar con una letra o dígito; hasta 64 caracteres.",
+      "Solo letras minúsculas, dígitos, _ y -; debe comenzar con una letra o dígito; hasta 64 characters.",
     invalidName: "Nombre de perfil no válido",
     cloneFrom: "Clonar desde el perfil",
     cloneFromNone: "Ninguno (vacío)",
@@ -302,7 +302,7 @@ export const es: Translations = {
     soulPlaceholder: "# Cómo debe comportarse este agente…",
     saveSoul: "Guardar SOUL",
     soulSaved: "SOUL.md guardado",
-    openInTerminal: "Copiar comando CLI",
+    openInTerminal: "Copiar commando CLI",
     commandCopied: "Copiado al portapapeles",
     copyFailed: "No se pudo copiar",
     confirmDeleteTitle: "¿Eliminar perfil?",
@@ -331,13 +331,13 @@ export const es: Translations = {
     missingEnvWarn: "Configura estos en Claves antes de que el complemento pueda ejecutarse:",
     noDashboardTab: "Sin pestaña de panel",
     openTab: "Abrir",
-    orphanHeading: "Extensiones solo del panel (sin coincidencia de plugin.yaml del agente)",
+    orphanHeading: "Extensions solo del panel (sin coincidencia de plugin.yaml del agente)",
     pluginListHeading: "Complementos instalados",
     providerDefaults: "incorporado / predeterminado",
     providersHeading: "Complementos de proveedor en tiempo de ejecución",
     providersHint:
       "Escribe memory.provider (vacío = incorporado) y context.engine en config.yaml. Surte efecto en la próxima sesión.",
-    refreshDashboard: "Volver a escanear extensiones del panel",
+    refreshDashboard: "Volver a escanear extensions del panel",
     removeConfirm: "¿Eliminar este complemento de ~/.hermes/plugins/?",
     removeHint: "Solo se pueden eliminar complementos instalados por el usuario en ~/.hermes/plugins.",
     rescanHeading: "Registro de complementos SPA",
@@ -347,7 +347,7 @@ export const es: Translations = {
     savedProviders: "Configuración del proveedor guardada.",
     sourceBadge: "Fuente",
     authRequired: "Autenticación requerida",
-    authRequiredHint: "Ejecuta este comando para autenticarte:",
+    authRequiredHint: "Ejecuta este commando para autenticarte:",
     updateGit: "Git pull",
     versionBadge: "Versión",
     showInSidebar: "Mostrar en barra lateral",
@@ -410,7 +410,7 @@ export const es: Translations = {
       stt: "Voz a texto",
       logging: "Registro",
       discord: "Discord",
-      auxiliary: "Auxiliar",
+      auxiliary: "Auxiliary",
     },
   },
 
@@ -439,7 +439,7 @@ export const es: Translations = {
   oauth: {
     title: "Inicios de sesión de proveedores (OAuth)",
     providerLogins: "Inicios de sesión de proveedores (OAuth)",
-    description: "{connected} de {total} proveedores OAuth conectados. Los flujos de inicio de sesión actualmente se ejecutan a través de la CLI; haz clic en Copiar comando y pégalo en una terminal para configurar.",
+    description: "{connected} de {total} proveedores OAuth conectados. Los flujos de inicio de sesión actualmente se ejecutan a través de la CLI; haz clic en Copiar commando y pégalo en una terminal para configurar.",
     connected: "Conectado",
     expired: "Caducado",
     notConnected: "No conectado. Ejecuta {command} en una terminal.",
@@ -450,7 +450,7 @@ export const es: Translations = {
     managedExternally: "Gestionado externamente",
     copied: "Copiado ✓",
     cli: "Copiar",
-    copyCliCommand: "Copiar comando CLI (para externo / alternativa)",
+    copyCliCommand: "Copiar commando CLI (para externo / alternativa)",
     connect: "Conectar",
     sessionExpires: "La sesión caduca en {time}",
     initiatingLogin: "Iniciando flujo de inicio de sesión…",
@@ -488,9 +488,9 @@ export const es: Translations = {
       kicker: "Agentic Gamerscore",
       title: "Hermes Achievements",
       subtitle:
-        "Insignias coleccionables de Hermes ganadas a partir del historial real de sesiones. Los logros conocidos no completados se muestran como Descubiertos; los logros secretos permanecen ocultos hasta que aparece el primer comportamiento coincidente.",
+        "Insignias coleccionables de Hermes ganadas a partir del historical real de sesiones. Los logros conocidos no completados se muestran como Descubiertos; los logros secretos permanecen ocultos hasta que aparece el primer comportamiento coincidente.",
       scan_subtitle:
-        "Escaneando el historial de sesiones de Hermes. El primer escaneo puede tardar 5–10 segundos en historiales grandes.",
+        "Escaneando el historical de sesiones de Hermes. El primer escaneo puede tardar 5–10 segundos en historiales grandes.",
     },
     actions: {
       rescan: "Volver a escanear",
@@ -528,7 +528,7 @@ export const es: Translations = {
         "Leyendo sesiones, llamadas a herramientas, metadatos del modelo y estado de desbloqueo.",
       starting_headline: "Iniciando escaneo de logros…",
       progress_detail:
-        "Escaneadas {scanned} de {total} sesiones · {pct}%. Las insignias se desbloquean a medida que se procesa más historial.",
+        "Escaneadas {scanned} de {total} sesiones · {pct}%. Las insignias se desbloquean a medida que se procesa más historical.",
       idle_detail:
         "Leyendo sesiones, llamadas a herramientas, metadatos del modelo y estado de desbloqueo. Las insignias aparecerán aquí a medida que se desbloqueen.",
     },
@@ -539,7 +539,7 @@ export const es: Translations = {
         "Los secretos ocultan su disparador exacto. Una vez que Hermes detecta una señal relacionada, la tarjeta pasa a Descubierto y muestra su requisito.",
       scan_status_header: "Estado del escaneo",
       scan_status_body:
-        "Hermes está escaneando el historial local una vez, después las tarjetas aparecerán automáticamente. No hay nada bloqueado si tarda unos segundos.",
+        "Hermes está escaneando el historical local una vez, después las tarjetas aparecerán automáticamente. No hay nada bloqueado si tarda unos segundos.",
       what_scanned_header: "Qué se escanea",
       what_scanned_body:
         "Sesiones, llamadas a herramientas, metadatos del modelo, errores, logros y estado de desbloqueo local.",
@@ -640,7 +640,7 @@ export const es: Translations = {
     result: "Result",
     comments: "Comentarios",
     events: "Eventos",
-    runHistory: "Historial de ejecuciones",
+    runHistory: "Historical de ejecuciones",
     workerLog: "Registro del worker",
     loadingLog: "Cargando registro…",
     noWorkerLog:
@@ -664,13 +664,13 @@ export const es: Translations = {
     show: "Mostrar",
     attention: "Atención",
     tasksNeedAttention: "tareas requieren atención",
-    taskNeedsAttention: "1 tarea requiere atención",
+    taskNeedsAttention: "1 tarea require atención",
     diagnostic: "diagnóstico",
     open: "Abrir",
     close: "Cerrar (Esc)",
     reassignTo: "Reasignar a:",
     copied: "Copiado",
-    copyCommand: "Copiar comando al portapapeles",
+    copyCommand: "Copiar commando al portapapeles",
     reclaim: "Recuperar",
     reassign: "Reasignar",
     renderingError: "La pestaña Kanban tuvo un error de renderizado",

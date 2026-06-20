@@ -48,7 +48,7 @@ that evolves. Structure serves the emotion, not the other way around.
 
 RHYME TYPES (from tight to loose):
 - Perfect: lean/mean
-- Family: crate/braid
+- Family: create/braid
 - Assonance: had/glass (same vowels, different endings)
 - Consonance: scene/when (different vowels, similar endings)
 - Near/slant: enough to suggest connection without locking it down

@@ -67,7 +67,7 @@ describe('buildCommitChangelog', () => {
     expect(groups[0].items).toEqual(['Real new feature'])
   })
 
-  it('routes unparseable commits to the "Other improvements" bucket', () => {
+  it('routes unparsable commits to the "Other improvements" bucket', () => {
     const groups = buildCommitChangelog([{ summary: 'Update sidebar styling' }])
 
     expect(groups[0].id).toBe('other')

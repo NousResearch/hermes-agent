@@ -260,7 +260,7 @@ fn interpreter_label() -> String {
 ///
 /// Mirrors `parseStageResult` from bootstrap-runner.cjs. install.ps1 may
 /// print info/banner lines before the result frame; we scan from the end.
-pub fn parse_stage_result(stdout: &str) -> Option<crate::events::StageResultPayload> {
+pub fn parse_stage_result(stdout: &str) -> Option<create::events::StageResultPayload> {
     for line in stdout.lines().rev() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -271,7 +271,7 @@ pub fn parse_stage_result(stdout: &str) -> Option<crate::events::StageResultPayl
                 && value.get("stage").and_then(|v| v.as_str()).is_some()
             {
                 if let Ok(parsed) =
-                    serde_json::from_value::<crate::events::StageResultPayload>(value)
+                    serde_json::from_value::<create::events::StageResultPayload>(value)
                 {
                     return Some(parsed);
                 }
@@ -283,7 +283,7 @@ pub fn parse_stage_result(stdout: &str) -> Option<crate::events::StageResultPayl
 
 /// Same logic but for the `-Manifest` payload (the LAST line with a `stages`
 /// array). Returns the parsed manifest.
-pub fn parse_manifest(stdout: &str) -> Option<crate::events::Manifest> {
+pub fn parse_manifest(stdout: &str) -> Option<create::events::Manifest> {
     for line in stdout.lines().rev() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -291,7 +291,7 @@ pub fn parse_manifest(stdout: &str) -> Option<crate::events::Manifest> {
         }
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
             if value.get("stages").and_then(|v| v.as_array()).is_some() {
-                if let Ok(parsed) = serde_json::from_value::<crate::events::Manifest>(value) {
+                if let Ok(parsed) = serde_json::from_value::<create::events::Manifest>(value) {
                     return Some(parsed);
                 }
             }

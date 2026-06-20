@@ -837,7 +837,7 @@ def restore_cron_jobs_if_emptied(
 
     live_count = _count_cron_jobs(live_path)
     # Only act when the live file is readable AND empty. ``None`` (missing or
-    # unparseable) is intentionally left alone — that's a different failure
+    # unparsable) is intentionally left alone — that's a different failure
     # mode the user should see rather than have papered over.
     if live_count is None or live_count > 0:
         return None

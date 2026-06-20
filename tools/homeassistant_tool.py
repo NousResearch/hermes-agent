@@ -53,7 +53,7 @@ _SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _BLOCKED_DOMAINS = frozenset({
     "shell_command",    # arbitrary shell commands as root in HA container
     "command_line",     # sensors/switches that execute shell commands
-    "python_script",    # sandboxed but can escalate via hass.services.call()
+    "python_script",    # sandboxed but can escalate via hash.services.call()
     "pyscript",         # scripting integration with broader access
     "hassio",           # addon control, host shutdown/reboot, stdin to containers
     "rest_command",     # HTTP requests from HA server (SSRF vector)

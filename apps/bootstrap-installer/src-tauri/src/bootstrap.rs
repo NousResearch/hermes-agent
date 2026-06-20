@@ -21,10 +21,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
-use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
-use crate::powershell::{self, StreamSink};
-use crate::AppState;
+use create::events::{BootstrapEvent, LogStream, Manifest, StageState};
+use create::install_script::{self, Pin, ScriptKind, ScriptSource};
+use create::powershell::{self, StreamSink};
+use create::AppState;
 
 // ---------------------------------------------------------------------------
 // Public Tauri commands
@@ -210,7 +210,7 @@ pub async fn launch_hermes_desktop(
 /// Walks the well-known electron-builder unpacked-app paths under
 /// `install_root`. Mirrors the resolver in `cmd_gui` (apps/desktop/release/
 /// <os>-unpacked/<exe>).
-pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
+pub(create) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
     let release_dir = install_root.join("apps").join("desktop").join("release");
     let candidates: &[(&str, &str)] = if cfg!(target_os = "windows") {
         &[
@@ -234,7 +234,7 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
     None
 }
 
-pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
+pub(create) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
     let exe = resolve_hermes_desktop_exe(install_root)?;
     #[cfg(target_os = "macos")]
     {
@@ -255,7 +255,7 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
 /// True when a prior install completed (bootstrap-complete marker present) AND a
 /// launchable desktop app exists on disk. Used by the installer's launcher fast
 /// path so a bare re-open just opens Hermes instead of re-running setup.
-pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
+pub(create) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
     install_root.join(".hermes-bootstrap-complete").exists()
         && resolve_hermes_desktop_exe(install_root).is_some()
 }
@@ -263,7 +263,7 @@ pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
 /// exists or the spawn fails, so the caller can fall back to showing the
 /// installer UI.
-pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io::Result<()> {
+pub(create) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io::Result<()> {
     let exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
     })?;
@@ -281,10 +281,10 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn open_macos_app_detached(app_bundle: &std::path::Path) -> std::io::Result<()> {
+pub(create) fn open_macos_app_detached(app_bundle: &std::path::Path) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("/usr/bin/open");
     cmd.arg(app_bundle);
-    cmd.current_dir(crate::paths::hermes_home());
+    cmd.current_dir(create::paths::hermes_home());
     cmd.spawn().map(|_child| ())
 }
 
@@ -307,7 +307,7 @@ fn desktop_launch_command(
         if let Some(app_bundle) = app_bundle_for_exe(exe_path) {
             let mut cmd = tokio::process::Command::new("/usr/bin/open");
             cmd.arg(app_bundle);
-            cmd.current_dir(crate::paths::hermes_home());
+            cmd.current_dir(create::paths::hermes_home());
             return cmd;
         }
     }
@@ -326,7 +326,7 @@ fn desktop_launch_command_std(
         if let Some(app_bundle) = app_bundle_for_exe(exe_path) {
             let mut cmd = std::process::Command::new("/usr/bin/open");
             cmd.arg(app_bundle);
-            cmd.current_dir(crate::paths::hermes_home());
+            cmd.current_dir(create::paths::hermes_home());
             return cmd;
         }
     }
@@ -641,7 +641,7 @@ async fn run_bootstrap(
     let hermes_home = args
         .hermes_home
         .clone()
-        .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
+        .unwrap_or_else(|| create::paths::hermes_home().to_string_lossy().into_owned());
     let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
 
     // Copy ourselves to HERMES_HOME/hermes-setup.exe so the desktop app can
@@ -649,7 +649,7 @@ async fn run_bootstrap(
     // a one-shot install concern; an `--update` re-invocation no-ops because
     // we're already running from that path. Best-effort — a failure here must
     // not fail an otherwise-successful install.
-    if let Err(err) = crate::paths::copy_self_to_hermes_home() {
+    if let Err(err) = create::paths::copy_self_to_hermes_home() {
         tracing::warn!(?err, "failed to copy installer into HERMES_HOME (non-fatal)");
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"

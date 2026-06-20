@@ -1993,7 +1993,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
         # for normal completion, and downstream SDKs accept "error" / custom
         # codes. See issue #22496.
-        if is_partial and err_msg and "truncat" in err_msg.lower():
+        if is_partial and err_msg and "truncate" in err_msg.lower():
             finish_reason = "length"
         elif is_failed or (not completed and err_msg):
             finish_reason = "error"

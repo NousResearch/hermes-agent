@@ -116,7 +116,7 @@ function tidySubject(subject: string): string {
 /**
  * Build a small grouped changelog from a list of raw commits.
  * Always returns at least one group; falls back to a neutral placeholder
- * when every commit was filtered or unparseable.
+ * when every commit was filtered or unparsable.
  */
 export function buildCommitChangelog(
   commits: readonly CommitChangelogInput[] | undefined,

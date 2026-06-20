@@ -201,7 +201,7 @@ def _strip_mdv2(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
 # so pipe tables render as noisy backslash-pipe text with no alignment.
-# Reformating each row into a bold heading plus bullet list keeps the content
+# Reformatting each row into a bold heading plus bullet list keeps the content
 # readable on mobile clients while preserving the source data.
 
 # Matches a GFM table delimiter row: optional outer pipes, cells containing

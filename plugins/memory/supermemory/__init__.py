@@ -207,16 +207,16 @@ def _deduplicate_recall(static_facts: list, dynamic_facts: list, search_results:
 
 
 def _format_prefetch_context(static_facts: list, dynamic_facts: list, search_results: list, max_results: int) -> str:
-    statics, dynamics, search = _deduplicate_recall(static_facts, dynamic_facts, search_results)
-    statics = statics[:max_results]
+    statistics, dynamics, search = _deduplicate_recall(static_facts, dynamic_facts, search_results)
+    statistics = statistics[:max_results]
     dynamics = dynamics[:max_results]
     search = search[:max_results]
-    if not statics and not dynamics and not search:
+    if not statistics and not dynamics and not search:
         return ""
 
     sections = []
-    if statics:
-        sections.append("## User Profile (Persistent)\n" + "\n".join(f"- {item}" for item in statics))
+    if statistics:
+        sections.append("## User Profile (Persistent)\n" + "\n".join(f"- {item}" for item in statistics))
     if dynamics:
         sections.append("## Recent Context\n" + "\n".join(f"- {item}" for item in dynamics))
     if search:

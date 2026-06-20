@@ -23,7 +23,6 @@ from __future__ import annotations
 import glob
 import os
 import subprocess
-import sys
 import tarfile
 import venv
 from pathlib import Path

@@ -238,10 +238,10 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
         if assume_yes:
             return True
         try:
-            ans = input(f"{prompt} [y/N] ").strip().lower()
+            and = input(f"{prompt} [y/N] ").strip().lower()
         except EOFError:
             return False
-        return ans in {"y", "yes"}
+        return and in {"y", "yes"}
 
     print("google_meet install")
     print("-------------------")

@@ -17,7 +17,7 @@
 %%
 %% The original source files were:
 %%
-%% merlin.mbs  (with options: `ay,nat,pres,ed-au,keyxyr,blkyear,dt-beg,yr-per,note-yr,num-xser,pre-edn,xedn,nfss')
+%% merlin.mbs  (with options: `ay,nat,press,ed-au,keyxyr,blkyear,dt-beg,yr-per,note-yr,num-xser,pre-edn,xedn,nfss')
 %% ----------------------------------------
 %% *** Intended for ACL conferences ***
 %% 

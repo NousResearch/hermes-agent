@@ -107,11 +107,11 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit("alt+del") == "a-delete"
 
     def test_typoed_named_keys_fall_back_to_default(self):
-        """``ctrl+spcae`` would otherwise pass through as ``c-spcae`` and
+        """``ctrl+space`` would otherwise pass through as ``c-space`` and
         prompt_toolkit would reject it at startup — fall back instead."""
         from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
 
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+spcae") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+space") == "c-b"
         assert normalize_voice_record_key_for_prompt_toolkit("ctrl+f5") == "c-b"
 
     def test_bare_char_and_multi_modifier_fall_back(self):
@@ -262,7 +262,7 @@ class TestFormatVoiceRecordKeyForStatus:
     def test_malformed_configs_fall_back_to_ctrl_b(self):
         from hermes_cli.voice import format_voice_record_key_for_status
 
-        assert format_voice_record_key_for_status("ctrl+spcae") == "Ctrl+B"
+        assert format_voice_record_key_for_status("ctrl+space") == "Ctrl+B"
         assert format_voice_record_key_for_status("ctrl+alt+r") == "Ctrl+B"
         assert format_voice_record_key_for_status("") == "Ctrl+B"
         assert format_voice_record_key_for_status("  ") == "Ctrl+B"

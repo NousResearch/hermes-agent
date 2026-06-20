@@ -553,7 +553,7 @@
     <xsd:restriction base="xsd:string">
       <xsd:enumeration value="ignore"/>
       <xsd:enumeration value="atMost"/>
-      <xsd:enumeration value="atLeast"/>
+      <xsd:enumeration value="at least"/>
     </xsd:restriction>
   </xsd:simpleType>
   <xsd:simpleType name="ST_EditAs">

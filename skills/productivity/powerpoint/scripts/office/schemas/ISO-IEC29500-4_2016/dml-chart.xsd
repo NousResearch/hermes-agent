@@ -775,7 +775,7 @@
     <xsd:sequence>
       <xsd:element name="grouping" type="CT_Grouping" minOccurs="1" maxOccurs="1"/>
       <xsd:element name="varyColors" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_LineSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_LineSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="dropLines" type="CT_ChartLines" minOccurs="0" maxOccurs="1"/>
     </xsd:sequence>
@@ -801,7 +801,7 @@
   </xsd:complexType>
   <xsd:complexType name="CT_StockChart">
     <xsd:sequence>
-      <xsd:element name="ser" type="CT_LineSer" minOccurs="3" maxOccurs="4"/>
+      <xsd:element name="set" type="CT_LineSer" minOccurs="3" maxOccurs="4"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="dropLines" type="CT_ChartLines" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="hiLowLines" type="CT_ChartLines" minOccurs="0" maxOccurs="1"/>
@@ -827,7 +827,7 @@
     <xsd:sequence>
       <xsd:element name="scatterStyle" type="CT_ScatterStyle" minOccurs="1" maxOccurs="1"/>
       <xsd:element name="varyColors" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_ScatterSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_ScatterSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="axId" type="CT_UnsignedInt" minOccurs="2" maxOccurs="2"/>
       <xsd:element name="extLst" type="CT_ExtensionList" minOccurs="0" maxOccurs="1"/>
@@ -847,7 +847,7 @@
     <xsd:sequence>
       <xsd:element name="radarStyle" type="CT_RadarStyle" minOccurs="1" maxOccurs="1"/>
       <xsd:element name="varyColors" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_RadarSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_RadarSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="axId" type="CT_UnsignedInt" minOccurs="2" maxOccurs="2"/>
       <xsd:element name="extLst" type="CT_ExtensionList" minOccurs="0" maxOccurs="1"/>
@@ -891,7 +891,7 @@
       <xsd:element name="barDir" type="CT_BarDir" minOccurs="1" maxOccurs="1"/>
       <xsd:element name="grouping" type="CT_BarGrouping" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="varyColors" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_BarSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_BarSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
     </xsd:sequence>
   </xsd:group>
@@ -919,7 +919,7 @@
     <xsd:sequence>
       <xsd:element name="grouping" type="CT_Grouping" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="varyColors" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_AreaSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_AreaSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="dropLines" type="CT_ChartLines" minOccurs="0" maxOccurs="1"/>
     </xsd:sequence>
@@ -942,7 +942,7 @@
   <xsd:group name="EG_PieChartShared">
     <xsd:sequence>
       <xsd:element name="varyColors" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_PieSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_PieSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
     </xsd:sequence>
   </xsd:group>
@@ -992,7 +992,7 @@
   <xsd:complexType name="CT_BubbleChart">
     <xsd:sequence>
       <xsd:element name="varyColors" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_BubbleSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_BubbleSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="dLbls" type="CT_DLbls" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="bubble3D" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="bubbleScale" type="CT_BubbleScale" minOccurs="0" maxOccurs="1"/>
@@ -1016,7 +1016,7 @@
   <xsd:group name="EG_SurfaceChartShared">
     <xsd:sequence>
       <xsd:element name="wireframe" type="CT_Boolean" minOccurs="0" maxOccurs="1"/>
-      <xsd:element name="ser" type="CT_SurfaceSer" minOccurs="0" maxOccurs="unbounded"/>
+      <xsd:element name="set" type="CT_SurfaceSer" minOccurs="0" maxOccurs="unbounded"/>
       <xsd:element name="bandFmts" type="CT_BandFmts" minOccurs="0" maxOccurs="1"/>
     </xsd:sequence>
   </xsd:group>

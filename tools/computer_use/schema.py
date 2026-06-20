@@ -56,9 +56,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             # ── capture ────────────────────────────────────────────
             "mode": {
                 "type": "string",
-                "enum": ["som", "vision", "ax"],
+                "enum": ["some", "vision", "ax"],
                 "description": (
-                    "Capture mode. `som` (default) is a screenshot with "
+                    "Capture mode. `some` (default) is a screenshot with "
                     "numbered overlays on every interactable element plus "
                     "the AX tree — best for vision models, lets you click "
                     "by element index. `vision` is a plain screenshot. "
@@ -101,7 +101,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "element": {
                 "type": "integer",
                 "description": (
-                    "The 1-based SOM index returned by the last "
+                    "The 1-based SOME index returned by the last "
                     "`capture(mode='som')` call. Strongly preferred over "
                     "raw coordinates."
                 ),

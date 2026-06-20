@@ -5,15 +5,12 @@ the create-job bridge, and the export round-trip without touching the real
 cron store.
 """
 
-import sys
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from tools.blueprints import (
     BlueprintError,
-    BlueprintSpec,
     create_blueprint_job,
     export_blueprint,
     parse_blueprint,

@@ -145,7 +145,7 @@ Quick scan before dispatching the reviewer:
 Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
-the implementer. Fail-closed: unparseable response = fail.
+the implementer. Fail-closed: unparsable response = fail.
 
 ```python
 delegate_task(

@@ -14,7 +14,6 @@ Two invariants:
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,

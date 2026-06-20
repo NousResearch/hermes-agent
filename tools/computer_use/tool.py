@@ -16,7 +16,7 @@ For captures / actions with `capture_after=True`:
       {
         "_multimodal": True,
         "content": [
-            {"type": "text", "text": "<human-readable summary + SOM index>"},
+            {"type": "text", "text": "<human-readable summary + SOME index>"},
             {"type": "image_url",
              "image_url": {"url": "data:image/png;base64,<b64>"}},
         ],
@@ -169,7 +169,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+    def capture(self, mode: str = "some", app: Optional[str] = None) -> CaptureResult:
         self.calls.append(("capture", {"mode": mode, "app": app}))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
@@ -319,9 +319,9 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     capture_after = bool(args.get("capture_after"))
 
     if action == "capture":
-        mode = str(args.get("mode", "som"))
-        if mode not in {"som", "vision", "ax"}:
-            return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
+        mode = str(args.get("mode", "some"))
+        if mode not in {"some", "vision", "ax"}:
+            return json.dumps({"error": f"bad mode {mode!r}; use some|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
@@ -439,7 +439,7 @@ def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
 
     Some providers reject images below 8x8 before the model sees the tool
     result. Inspecting the encoded bytes here lets computer_use fall back to
-    its AX/SOM text payload instead of sending an unusable placeholder.
+    its AX/SOME text payload instead of sending an unusable placeholder.
     """
     if not image_b64:
         return None
@@ -653,7 +653,7 @@ def _route_capture_through_aux_vision(
 
     The captured base64 PNG is materialised to ``$HERMES_HOME/cache/vision/``
     and handed to ``vision_analyze_tool`` with a generic describe prompt.
-    The resulting text description is merged into the existing AX/SOM
+    The resulting text description is merged into the existing AX/SOME
     summary so the main model receives a single text payload that mentions
     every interactable element AND a description of what the screenshot
     looked like.
@@ -699,7 +699,7 @@ def _route_capture_through_aux_vision(
             "menus or text fields, and any prominent text content the user "
             "would need to know about. Do not invent details that are not "
             "actually visible.\n\n"
-            f"AX/SOM index for cross-reference:\n{summary}"
+            f"AX/SOME index for cross-reference:\n{summary}"
         )
 
         result_json = _run_async(
@@ -759,7 +759,7 @@ def _maybe_follow_capture(
         # that capture_after=True re-captures the same app rather than the frontmost
         # window (which may have changed if the action caused a focus shift).
         last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        cap = backend.capture(mode="some", app=last_app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)

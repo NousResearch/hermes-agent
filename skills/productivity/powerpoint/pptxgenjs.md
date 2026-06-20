@@ -5,15 +5,15 @@
 ```javascript
 const pptxgen = require("pptxgenjs");
 
-let pres = new pptxgen();
-pres.layout = 'LAYOUT_16x9';  // or 'LAYOUT_16x10', 'LAYOUT_4x3', 'LAYOUT_WIDE'
-pres.author = 'Your Name';
-pres.title = 'Presentation Title';
+let press = new pptxgen();
+press.layout = 'LAYOUT_16x9';  // or 'LAYOUT_16x10', 'LAYOUT_4x3', 'LAYOUT_WIDE'
+press.author = 'Your Name';
+press.title = 'Presentation Title';
 
-let slide = pres.addSlide();
+let slide = press.addSlide();
 slide.addText("Hello World!", { x: 0.5, y: 0.5, fontSize: 36, color: "363636" });
 
-pres.writeFile({ fileName: "Presentation.pptx" });
+press.writeFile({ fileName: "Presentation.pptx" });
 ```
 
 ## Layout Dimensions
@@ -85,32 +85,32 @@ slide.addText("• First item", { ... });  // Creates double bullets
 ## Shapes
 
 ```javascript
-slide.addShape(pres.shapes.RECTANGLE, {
+slide.addShape(press.shapes.RECTANGLE, {
   x: 0.5, y: 0.8, w: 1.5, h: 3.0,
   fill: { color: "FF0000" }, line: { color: "000000", width: 2 }
 });
 
-slide.addShape(pres.shapes.OVAL, { x: 4, y: 1, w: 2, h: 2, fill: { color: "0000FF" } });
+slide.addShape(press.shapes.OVAL, { x: 4, y: 1, w: 2, h: 2, fill: { color: "0000FF" } });
 
-slide.addShape(pres.shapes.LINE, {
+slide.addShape(press.shapes.LINE, {
   x: 1, y: 3, w: 5, h: 0, line: { color: "FF0000", width: 3, dashType: "dash" }
 });
 
 // With transparency
-slide.addShape(pres.shapes.RECTANGLE, {
+slide.addShape(press.shapes.RECTANGLE, {
   x: 1, y: 1, w: 3, h: 2,
   fill: { color: "0088CC", transparency: 50 }
 });
 
 // Rounded rectangle (rectRadius only works with ROUNDED_RECTANGLE, not RECTANGLE)
 // ⚠️ Don't pair with rectangular accent overlays — they won't cover rounded corners. Use RECTANGLE instead.
-slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+slide.addShape(press.shapes.ROUNDED_RECTANGLE, {
   x: 1, y: 1, w: 3, h: 2,
   fill: { color: "FFFFFF" }, rectRadius: 0.1
 });
 
 // With shadow
-slide.addShape(pres.shapes.RECTANGLE, {
+slide.addShape(press.shapes.RECTANGLE, {
   x: 1, y: 1, w: 3, h: 2,
   fill: { color: "FFFFFF" },
   shadow: { type: "outer", color: "000000", blur: 6, offset: 2, angle: 135, opacity: 0.15 }
@@ -288,7 +288,7 @@ slide.addTable(tableData, { x: 1, y: 3.5, w: 8, colW: [4, 4] });
 
 ```javascript
 // Bar chart
-slide.addChart(pres.charts.BAR, [{
+slide.addChart(press.charts.BAR, [{
   name: "Sales", labels: ["Q1", "Q2", "Q3", "Q4"], values: [4500, 5500, 6200, 7100]
 }], {
   x: 0.5, y: 0.6, w: 6, h: 3, barDir: 'col',
@@ -296,12 +296,12 @@ slide.addChart(pres.charts.BAR, [{
 });
 
 // Line chart
-slide.addChart(pres.charts.LINE, [{
+slide.addChart(press.charts.LINE, [{
   name: "Temp", labels: ["Jan", "Feb", "Mar"], values: [32, 35, 42]
 }], { x: 0.5, y: 4, w: 6, h: 3, lineSize: 3, lineSmooth: true });
 
 // Pie chart
-slide.addChart(pres.charts.PIE, [{
+slide.addChart(press.charts.PIE, [{
   name: "Share", labels: ["A", "B", "Other"], values: [35, 45, 20]
 }], { x: 7, y: 1, w: 5, h: 4, showPercent: true });
 ```
@@ -311,7 +311,7 @@ slide.addChart(pres.charts.PIE, [{
 Default charts look dated. Apply these options for a modern, clean appearance:
 
 ```javascript
-slide.addChart(pres.charts.BAR, chartData, {
+slide.addChart(press.charts.BAR, chartData, {
   x: 0.5, y: 1, w: 9, h: 4, barDir: "col",
 
   // Custom colors (match your presentation palette)
@@ -350,14 +350,14 @@ slide.addChart(pres.charts.BAR, chartData, {
 ## Slide Masters
 
 ```javascript
-pres.defineSlideMaster({
+press.defineSlideMaster({
   title: 'TITLE_SLIDE', background: { color: '283A5E' },
   objects: [{
     placeholder: { options: { name: 'title', type: 'title', x: 1, y: 2, w: 8, h: 2 } }
   }]
 });
 
-let titleSlide = pres.addSlide({ masterName: "TITLE_SLIDE" });
+let titleSlide = press.addSlide({ masterName: "TITLE_SLIDE" });
 titleSlide.addText("My Title", { placeholder: "title" });
 ```
 
@@ -390,23 +390,23 @@ titleSlide.addText("My Title", { placeholder: "title" });
 7. **NEVER reuse option objects across calls** - PptxGenJS mutates objects in-place (e.g. converting shadow values to EMU). Sharing one object between multiple calls corrupts the second shape.
    ```javascript
    const shadow = { type: "outer", blur: 6, offset: 2, color: "000000", opacity: 0.15 };
-   slide.addShape(pres.shapes.RECTANGLE, { shadow, ... });  // ❌ second call gets already-converted values
-   slide.addShape(pres.shapes.RECTANGLE, { shadow, ... });
+   slide.addShape(press.shapes.RECTANGLE, { shadow, ... });  // ❌ second call gets already-converted values
+   slide.addShape(press.shapes.RECTANGLE, { shadow, ... });
 
    const makeShadow = () => ({ type: "outer", blur: 6, offset: 2, color: "000000", opacity: 0.15 });
-   slide.addShape(pres.shapes.RECTANGLE, { shadow: makeShadow(), ... });  // ✅ fresh object each time
-   slide.addShape(pres.shapes.RECTANGLE, { shadow: makeShadow(), ... });
+   slide.addShape(press.shapes.RECTANGLE, { shadow: makeShadow(), ... });  // ✅ fresh object each time
+   slide.addShape(press.shapes.RECTANGLE, { shadow: makeShadow(), ... });
    ```
 
 8. **Don't use `ROUNDED_RECTANGLE` with accent borders** - rectangular overlay bars won't cover rounded corners. Use `RECTANGLE` instead.
    ```javascript
    // ❌ WRONG: Accent bar doesn't cover rounded corners
-   slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 1, y: 1, w: 3, h: 1.5, fill: { color: "FFFFFF" } });
-   slide.addShape(pres.shapes.RECTANGLE, { x: 1, y: 1, w: 0.08, h: 1.5, fill: { color: "0891B2" } });
+   slide.addShape(press.shapes.ROUNDED_RECTANGLE, { x: 1, y: 1, w: 3, h: 1.5, fill: { color: "FFFFFF" } });
+   slide.addShape(press.shapes.RECTANGLE, { x: 1, y: 1, w: 0.08, h: 1.5, fill: { color: "0891B2" } });
 
    // ✅ CORRECT: Use RECTANGLE for clean alignment
-   slide.addShape(pres.shapes.RECTANGLE, { x: 1, y: 1, w: 3, h: 1.5, fill: { color: "FFFFFF" } });
-   slide.addShape(pres.shapes.RECTANGLE, { x: 1, y: 1, w: 0.08, h: 1.5, fill: { color: "0891B2" } });
+   slide.addShape(press.shapes.RECTANGLE, { x: 1, y: 1, w: 3, h: 1.5, fill: { color: "FFFFFF" } });
+   slide.addShape(press.shapes.RECTANGLE, { x: 1, y: 1, w: 0.08, h: 1.5, fill: { color: "0891B2" } });
    ```
 
 ---

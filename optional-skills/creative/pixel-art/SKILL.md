@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [creative, pixel-art, arcade, snes, nes, gameboy, retro, image, video]
+    tags: [creative, pixel-art, arcade, snes, nes, game boy, retro, image, video]
     category: creative
     credits:
       - "Hardware palettes and animation loops ported from Synero/pixel-art-studio (MIT) — https://github.com/Synero/pixel-art-studio"
@@ -52,13 +52,13 @@ clarify(
     choices=[
         "arcade — bold, chunky 80s cabinet feel (16 colors, 8px)",
         "nes — Nintendo 8-bit hardware palette (54 colors, 8px)",
-        "gameboy — 4-shade green Game Boy DMG",
+        "game boy — 4-shade green Game Boy DMG",
         "snes — cleaner 16-bit look (32 colors, 4px)",
     ],
 )
 ```
 
-When the user already named an era (e.g. "80s arcade", "Gameboy"), skip
+When the user already named an era (e.g. "80s arcade", "Game boy"), skip
 `clarify` and use the matching preset directly.
 
 ### Step 2 — Offer animation (optional)
@@ -94,7 +94,7 @@ Run `pixel_art()` first; if animation was requested, chain into
 | `arcade` | 80s arcade | adaptive 16 | 8px | Bold posters, hero art |
 | `snes` | 16-bit | adaptive 32 | 4px | Characters, detailed scenes |
 | `nes` | 8-bit | NES (54) | 8px | True NES look |
-| `gameboy` | DMG handheld | 4 green shades | 8px | Monochrome Game Boy |
+| `game boy` | DMG handheld | 4 green shades | 8px | Monochrome Game Boy |
 | `gameboy_pocket` | Pocket handheld | 4 grey shades | 8px | Mono GB Pocket |
 | `pico8` | PICO-8 | 16 fixed | 6px | Fantasy-console look |
 | `c64` | Commodore 64 | 16 fixed | 8px | 8-bit home computer |
@@ -160,7 +160,7 @@ pixel_art_video(
 ```bash
 cd /home/teknium/.hermes/skills/creative/pixel-art/scripts
 
-python pixel_art.py in.jpg out.png --preset gameboy
+python pixel_art.py in.jpg out.png --preset game boy
 python pixel_art.py in.jpg out.png --preset snes --palette PICO_8 --block 6
 
 python pixel_art_video.py out.png out.mp4 --scene night --duration 6 --gif

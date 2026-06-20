@@ -75,7 +75,7 @@ class TestSchema:
     def test_capture_mode_enum_has_som_vision_ax(self):
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
         modes = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["mode"]["enum"])
-        assert modes == {"som", "vision", "ax"}
+        assert modes == {"some", "vision", "ax"}
 
     def test_schema_exposes_max_elements_cap_for_capture(self):
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
@@ -344,7 +344,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="some", app=None):
                 return CaptureResult(
                     mode=mode, width=1024, height=768,
                     png_b64=fake_png, elements=[],
@@ -380,7 +380,7 @@ class TestCaptureResponse:
         tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAC0lEQVR4nGNgQAcAABIAAXfx+gAAAAAASUVORK5CYII="
 
         cap = CaptureResult(
-            mode="som",
+            mode="some",
             width=0,
             height=0,
             png_b64=tiny_png,
@@ -412,7 +412,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="some", app=None):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64=fake_png,
@@ -434,7 +434,7 @@ class TestCaptureResponse:
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
-            out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "some"})
         assert isinstance(out, dict)
         text_part = next(p for p in out["content"] if p.get("type") == "text")
         assert "#1" in text_part["text"]
@@ -454,7 +454,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="some", app=None):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64="",
@@ -586,7 +586,7 @@ class TestCaptureResponse:
             )
 
     def test_capture_multimodal_summary_omits_truncation_note(self):
-        """The som/vision multimodal envelope returns a screenshot, not an
+        """The some/vision multimodal envelope returns a screenshot, not an
         `elements` array — so a "response truncated to N of M elements"
         claim in the summary would be inaccurate.
         """
@@ -603,7 +603,7 @@ class TestCaptureResponse:
             def start(self): pass
             def stop(self): pass
             def is_available(self): return True
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="some", app=None):
                 return CaptureResult(
                     mode=mode, width=800, height=600,
                     png_b64=fake_png, elements=list(elements),
@@ -621,7 +621,7 @@ class TestCaptureResponse:
         with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
-            out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "some"})
 
         assert isinstance(out, dict) and out["_multimodal"] is True
         text_part = next(p for p in out["content"] if p.get("type") == "text")
@@ -1135,7 +1135,7 @@ class TestCaptureAfterAppContext:
             def is_available(self):
                 return True
 
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="some", app=None):
                 captured_app_args.append(app)
                 return CaptureResult(
                     mode=mode, width=100, height=100,
@@ -1201,7 +1201,7 @@ class TestCaptureAfterAppContext:
             def is_available(self):
                 return True
 
-            def capture(self, mode="som", app=None):
+            def capture(self, mode="some", app=None):
                 captured_app_args.append(app)
                 return CaptureResult(
                     mode=mode, width=100, height=100,
@@ -1359,7 +1359,7 @@ class TestCaptureAppFilterNoMatch:
         ]
         backend = _make_cua_backend_with_windows(windows)
 
-        cap = backend.capture(mode="som", app="Calculator")
+        cap = backend.capture(mode="some", app="Calculator")
 
         # No window matched; capture must NOT pick the frontmost (Fuwari).
         assert cap.app == "", (

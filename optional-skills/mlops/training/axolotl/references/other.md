@@ -733,7 +733,7 @@ Example 4 (json):
   - Integration
 - Future Work
 
-Inspired by Unsloth, we’ve implemented two optimizations for LoRA and QLoRA fine-tuning, supporting both single GPU and multi-GPU (including the DDP, DeepSpeed, and FSDP2 settings) training. These include (1) SwiGLU and GEGLU activation function Triton kernels, and (2) LoRA MLP and attention custom autograd functions. Our goal was to leverage operator fusion and tensor re-use in order to improve speed and reduce memory usage during the forward and backward passes of these calculations.
+Inspired by Unsloth, we’ve implemented two optimizations for LoRA and QLoRA fine-tuning, supporting both single GPU and multi-GPU (including the DDP, DeepSpeed, and FSDP2 settings) training. These include (1) SwiGLU and GEGLU activation function Triton kernels, and (2) LoRA MLP and attention custom autograd functions. Our goal was to leverage operator fusion and tensor reuse in order to improve speed and reduce memory usage during the forward and backward passes of these calculations.
 
 We currently support several common model architectures, including (but not limited to):
 

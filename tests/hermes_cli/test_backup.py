@@ -2041,7 +2041,7 @@ class TestRestoreCronJobsIfEmptied:
         assert result is None
 
     def test_noop_when_live_file_unreadable(self, tmp_path):
-        """An unparseable live file is left alone — that's a different failure
+        """An unparsable live file is left alone — that's a different failure
         mode the user should see, not silently overwrite."""
         from hermes_cli.backup import restore_cron_jobs_if_emptied
         hermes_home = tmp_path / ".hermes"

@@ -173,7 +173,7 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
         return f"{normalized_mod}{key_token}"
 
     # Multi-char key token must be a known named key; typos like
-    # ``ctrl+spcae`` fall back to the default rather than being passed
+    # ``ctrl+space`` fall back to the default rather than being passed
     # through as ``c-spcae`` (which prompt_toolkit would reject).
     named = _VOICE_NAMED_KEYS.get(key_token)
     if not named:

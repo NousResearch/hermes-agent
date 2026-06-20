@@ -225,6 +225,6 @@ def test_decompose_per_child_workspace_override(kanban_home):
         )
     with kb.connect() as conn:
         over = kb.get_task(conn, child_ids[0])
-        inh = kb.get_task(conn, child_ids[1])
+        in = kb.get_task(conn, child_ids[1])
     assert over.workspace_path == "/other/repo"
-    assert inh.workspace_path == proj
+    assert in.workspace_path == proj

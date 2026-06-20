@@ -32,7 +32,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
+use create::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
@@ -104,7 +104,7 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 }
 
 async fn run_update(app: AppHandle) -> Result<()> {
-    let hermes_home = crate::paths::hermes_home();
+    let hermes_home = create::paths::hermes_home();
     let install_root = hermes_home.join("hermes-agent");
     let update_branch = update_branch_from_args(std::env::args().skip(1))
         .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
@@ -257,7 +257,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             let msg = format!(
                 "hermes update failed (exit {:?}). See {} for details.",
                 other,
-                crate::paths::hermes_home()
+                create::paths::hermes_home()
                     .join("logs")
                     .join("update.log")
                     .display()
@@ -405,7 +405,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             );
         }
     } else if let Err(err) =
-        crate::bootstrap::launch_hermes_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
+        create::bootstrap::launch_hermes_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
     {
         // Launch failed: don't hard-fail the update (it succeeded); surface a
         // log line so the success screen can still tell the user to launch
@@ -424,7 +424,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
 /// Poll until the venv shim AND packaged desktop app bundle are no longer locked
 /// (Windows) or a bounded timeout elapses. On non-Windows this is a short fixed
 /// grace since file locking isn't the failure mode there.
-pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHandle, stage: &str) {
+pub(create) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHandle, stage: &str) {
     let lock_targets = install_lock_probe_paths(install_root);
     let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
 
@@ -668,7 +668,7 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
 }
 
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
-    let hermes_home = crate::paths::hermes_home();
+    let hermes_home = create::paths::hermes_home();
     let mut envs = vec![(
         "HERMES_HOME".to_string(),
         hermes_home.as_os_str().to_os_string(),
@@ -748,7 +748,7 @@ async fn install_macos_app_update(
         ));
     }
 
-    let rebuilt_app = crate::bootstrap::resolve_hermes_desktop_app(install_root).ok_or_else(|| {
+    let rebuilt_app = create::bootstrap::resolve_hermes_desktop_app(install_root).ok_or_else(|| {
         anyhow!(
             "desktop rebuild succeeded but no Hermes.app was found under {}",
             install_root.join("apps").join("desktop").join("release").display()
@@ -794,7 +794,7 @@ async fn install_macos_app_update(
     let ditto = Command::new("/usr/bin/ditto")
         .arg(&rebuilt_app)
         .arg(&tmp)
-        .current_dir(crate::paths::hermes_home())
+        .current_dir(create::paths::hermes_home())
         .status()
         .await
         .map_err(|e| anyhow!("running ditto: {e}"))?;
@@ -814,7 +814,7 @@ async fn install_macos_app_update(
         .arg("-dr")
         .arg("com.apple.quarantine")
         .arg(target_app)
-        .current_dir(crate::paths::hermes_home())
+        .current_dir(create::paths::hermes_home())
         .status()
         .await;
 
@@ -874,7 +874,7 @@ async fn remove_dir_if_exists(path: &Path) {
 
 #[cfg(target_os = "macos")]
 async fn launch_macos_app_and_exit(app: &AppHandle, target_app: &Path) -> Result<()> {
-    crate::bootstrap::open_macos_app_detached(target_app)
+    create::bootstrap::open_macos_app_detached(target_app)
         .map_err(|e| anyhow!("launching {}: {e}", target_app.display()))?;
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     app.exit(0);

@@ -43,42 +43,42 @@ def _per_user_key(uid, thread_id="thr1", chat_id="chan1"):
 
 def test_sibling_finds_other_users_run_in_same_thread():
     runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
+    key_a = _per_user_key("users")
     key_b = _per_user_key("userB")
     runner._running_agents = {key_b: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == [key_b]
+    assert runner._sibling_thread_run_keys(_thread_source("users"), key_a) == [key_b]
 
 
 def test_sibling_excludes_callers_own_key():
     runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
+    key_a = _per_user_key("users")
     key_b = _per_user_key("userB")
     runner._running_agents = {key_a: _FakeAgent(), key_b: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == [key_b]
+    assert runner._sibling_thread_run_keys(_thread_source("users"), key_a) == [key_b]
 
 
 def test_sibling_skips_pending_sentinel():
     runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
+    key_a = _per_user_key("users")
     key_b = _per_user_key("userB")
     runner._running_agents = {key_b: _AGENT_PENDING_SENTINEL}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == []
+    assert runner._sibling_thread_run_keys(_thread_source("users"), key_a) == []
 
 
 def test_sibling_does_not_match_different_thread_same_chat():
     # thr1 caller must not match a run in thr11 (prefix-collision guard).
     runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA", thread_id="thr1")
+    key_a = _per_user_key("users", thread_id="thr1")
     key_b_other = _per_user_key("userB", thread_id="thr11")
     runner._running_agents = {key_b_other: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == []
+    assert runner._sibling_thread_run_keys(_thread_source("users"), key_a) == []
 
 
 def test_sibling_returns_empty_for_non_thread_source():
     # Non-thread group/channel must NOT trigger the cross-user fallback.
     runner = object.__new__(GatewayRunner)
     nonthread = SessionSource(
-        platform=Platform.DISCORD, chat_type="group", chat_id="chan1", user_id="userA"
+        platform=Platform.DISCORD, chat_type="group", chat_id="chan1", user_id="users"
     )
     grp_b = build_session_key(
         SessionSource(
@@ -86,7 +86,7 @@ def test_sibling_returns_empty_for_non_thread_source():
         )
     )
     runner._running_agents = {grp_b: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(nonthread, "agent:main:discord:group:chan1:userA") == []
+    assert runner._sibling_thread_run_keys(nonthread, "agent:main:discord:group:chan1:users") == []
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ class _FakeStore:
 @pytest.mark.asyncio
 async def test_stop_interrupts_sibling_thread_run_when_authorized(monkeypatch):
     runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
+    key_a = _per_user_key("users")
     key_b = _per_user_key("userB")
     runner._running_agents = {key_b: _FakeAgent()}
     runner.session_store = _FakeStore(key_a)
@@ -124,7 +124,7 @@ async def test_stop_interrupts_sibling_thread_run_when_authorized(monkeypatch):
     runner._is_user_authorized = lambda source: True
 
     event = MessageEvent(
-        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("users")
     )
     result = await runner._handle_stop_command(event)
 
@@ -136,7 +136,7 @@ async def test_stop_interrupts_sibling_thread_run_when_authorized(monkeypatch):
 @pytest.mark.asyncio
 async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
     runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
+    key_a = _per_user_key("users")
     key_b = _per_user_key("userB")
     runner._running_agents = {key_b: _FakeAgent()}
     runner.session_store = _FakeStore(key_a)
@@ -150,7 +150,7 @@ async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
     runner._is_user_authorized = lambda source: False
 
     event = MessageEvent(
-        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("users")
     )
     result = await runner._handle_stop_command(event)
 

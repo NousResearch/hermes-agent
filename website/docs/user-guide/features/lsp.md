@@ -177,7 +177,7 @@ removed when you reset the profile.
 LSP servers are **lazy-spawned** on first use. Editing a Python file
 in a project that's never seen `.py` traffic spawns pyright; the
 spawn takes 1-3 seconds for most servers (rust-analyzer can take 10+
-on a cold project). Subsequent edits in the same workspace re-use
+on a cold project). Subsequent edits in the same workspace reuse
 the running server.
 
 The LSP layer adds a few milliseconds to clean writes when no

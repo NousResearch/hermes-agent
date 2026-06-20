@@ -423,11 +423,11 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+    def capture(self, mode: str = "some", app: Optional[str] = None) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        `get_window_state` (ax/some) or `screenshot` (vision).
         """
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})

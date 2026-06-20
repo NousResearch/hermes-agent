@@ -760,7 +760,7 @@ def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
     """Best-effort parse of a ``Retry-After`` header into whole seconds.
 
     Supports the delta-seconds form (e.g. ``"120"``). HTTP-date forms and
-    missing/unparseable values return ``None`` rather than guessing.
+    missing/unparsable values return ``None`` rather than guessing.
     """
     if headers is None:
         return None

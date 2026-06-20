@@ -195,7 +195,7 @@ def _assert_anti_pattern_guidance(prompt: str, label: str) -> None:
         f"{label}: must have an explicit 'Do NOT capture' section"
     )
     # Environment-dependent failures (the #6051 root cause)
-    assert any(k in lower for k in ("missing binar", "command not found", "uninstalled", "fresh-install")), (
+    assert any(k in lower for k in ("missing binary", "command not found", "uninstalled", "fresh-install")), (
         f"{label}: must call out environment/setup failures as not-skill-worthy"
     )
     # Negative-framing avoidance

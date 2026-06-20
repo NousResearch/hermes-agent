@@ -23,11 +23,11 @@ Comprehensive guide for designing, running, and reporting human evaluations in M
 
 | Scenario | Human Eval Required? | Notes |
 |----------|---------------------|-------|
-| Text generation quality (fluency, coherence) | **Yes** | Automated metrics (BLEU, ROUGE) correlate poorly with human judgment |
+| Text generation quality (fluency, coherence) | **Yes** | Automated metrics (BLEU, ROGUE) correlate poorly with human judgment |
 | Factual accuracy of generated text | **Strongly recommended** | Automated fact-checking is unreliable |
 | Safety/toxicity evaluation | **Yes for nuanced cases** | Classifiers miss context-dependent harm |
 | Preference between two systems | **Yes** | Most reliable method for comparing LLM outputs |
-| Summarization quality | **Yes** | ROUGE doesn't capture faithfulness or relevance well |
+| Summarization quality | **Yes** | ROGUE doesn't capture faithfulness or relevance well |
 | Task completion (UI, agents) | **Yes** | User studies are the gold standard |
 | Classification accuracy | **Usually no** | Ground truth labels suffice; human eval adds cost without insight |
 | Perplexity or loss comparisons | **No** | Automated metrics are the correct evaluation |

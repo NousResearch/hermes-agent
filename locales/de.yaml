@@ -17,7 +17,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
-  draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
+  draining:         "⏳ Warte auf {count} active(n) Agent(en) for dem Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."
   no_active_goal:   "Kein aktives Ziel."
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
@@ -25,7 +25,7 @@ gateway:
 
   model:
     error_prefix:           "Fehler: {error}"
-    switched:               "Modell gewechselt zu `{model}`"
+    switched:               "Model gewechselt zu `{model}`"
     provider_label:         "Anbieter: {provider}"
     context_label:          "Kontext: {tokens} Tokens"
     max_output_label:       "Max. Ausgabe: {tokens} Tokens"
@@ -38,19 +38,19 @@ gateway:
     current_label:          "Aktuell: `{model}` bei {provider}"
     current_tag:            " (aktuell)"
     more_models_suffix:     " (+{count} weitere)"
-    usage_switch_model:     "`/model <name>` — Modell wechseln"
+    usage_switch_model:     "`/model <name>` — Model wechseln"
     usage_switch_provider:  "`/model <name> --provider <slug>` — Anbieter wechseln"
     usage_persist:          "`/model <name> --global` — dauerhaft speichern"
 
   agents:
-    header:                "🤖 **Aktive Agenten & Aufgaben**"
-    active_agents:         "**Aktive Agenten:** {count}"
+    header:                "🤖 **Active Agenten & Aufgaben**"
+    active_agents:         "**Active Agenten:** {count}"
     this_chat:             " · dieser Chat"
     more:                  "... und {count} weitere"
     running_processes:     "**Laufende Hintergrundprozesse:** {count}"
     async_jobs:            "**Gateway-Async-Jobs:** {count}"
     none:                  "Keine aktiven Agenten oder laufenden Aufgaben."
-    state_starting:        "startet"
+    state_starting:        "started"
     state_running:         "läuft"
 
   approve:
@@ -90,7 +90,7 @@ gateway:
     nothing_to_do:         "Noch nichts zu komprimieren (das Transkript ist weiterhin vollständig geschützter Kontext)."
     focus_line:            "Fokus: \"{topic}\""
     summary_failed:        "⚠️ Zusammenfassungsgenerierung fehlgeschlagen ({error}). {count} historische Nachricht(en) wurden entfernt und durch einen Platzhalter ersetzt; früherer Kontext ist nicht mehr wiederherstellbar. Überprüfen Sie die Konfiguration des auxiliary.compression-Modells."
-    aborted:               "⚠️ Komprimierung abgebrochen ({error}). Keine Nachrichten wurden entfernt — die Konversation ist unverändert. Führe /compress aus, um es erneut zu versuchen, /reset für eine neue Sitzung, oder prüfe deine auxiliary.compression-Modellkonfiguration."
+    aborted:               "⚠️ Komprimierung abgebrochen ({error}). Keine Nachrichten wurden entfernt — die Konversation ist unverändert. Führe /compress aus, um es erneut zu versuchen, /reset für eine neue Sitzung, oder prüfe define auxiliary.compression-Modellkonfiguration."
     aux_failed:            "ℹ️ Das konfigurierte Komprimierungsmodell `{model}` ist fehlgeschlagen ({error}). Wiederherstellung mit Ihrem Hauptmodell — Kontext ist intakt — Sie sollten jedoch `auxiliary.compression.model` in config.yaml überprüfen."
     failed:                "Komprimierung fehlgeschlagen: {error}"
 
@@ -173,7 +173,7 @@ gateway:
     status:                    "🧠 **Reasoning-Einstellungen**\n\n**Stärke:** `{level}`\n**Geltungsbereich:** {scope}\n**Anzeige:** {display}\n\n_Verwendung:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
     display_on:                "an ✓"
     display_off:               "aus"
-    display_set_on:            "🧠 ✓ Reasoning-Anzeige: **AN**\nDas Modelldenken wird vor jeder Antwort auf **{platform}** angezeigt."
+    display_set_on:            "🧠 ✓ Reasoning-Anzeige: **AN**\nDas Modelldenken wird for jeder Antwort auf **{platform}** angezeigt."
     display_set_off:           "🧠 ✓ Reasoning-Anzeige: **AUS** für **{platform}**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` wird nicht unterstützt. Verwenden Sie `/reasoning <level> --global`, um den globalen Standard zu ändern."
     reset_done:                "🧠 ✓ Sitzungs-Reasoning-Override gelöscht; Rückfall auf globale Konfiguration."
@@ -208,9 +208,9 @@ gateway:
     header_default:        "✨ Sitzung zurückgesetzt! Neuanfang."
     header_new:            "✨ Neue Sitzung gestartet!"
     header_titled:         "✨ Neue Sitzung gestartet: {title}"
-    title_rejected:        "\n⚠️ Titel abgelehnt: {error}"
-    title_error_untitled:  "\n⚠️ {error} — Sitzung ohne Titel gestartet."
-    title_empty_untitled:  "\n⚠️ Titel ist nach Bereinigung leer — Sitzung ohne Titel gestartet."
+    title_rejected:        "\n⚠️ Title abgelehnt: {error}"
+    title_error_untitled:  "\n⚠️ {error} — Sitzung ohne Title gestartet."
+    title_empty_untitled:  "\n⚠️ Title ist nach Bereinigung leer — Sitzung ohne Title gestartet."
     tip:                   "\n✦ Tipp: {tip}"
 
   restart:
@@ -266,7 +266,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     matrix_scope_mode:     "  session_scope: {scope}"
     matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**Sitzungs-ID:** `{session_id}`"
-    title:                 "**Titel:** {title}"
+    title:                 "**Title:** {title}"
     created:               "**Erstellt:** {timestamp}"
     last_activity:         "**Letzte Aktivität:** {timestamp}"
     model:                 "**Modell:** `{model}`"
@@ -283,16 +283,16 @@ Future messages in this room will use that transcript until `/reset` or another 
   stop:
     stopped_pending:       "⚡ Gestoppt. Der Agent hatte noch nicht begonnen — Sie können diese Sitzung fortsetzen."
     stopped:               "⚡ Gestoppt. Sie können diese Sitzung fortsetzen."
-    no_active:             "Keine aktive Aufgabe zum Stoppen."
+    no_active:             "Keine active Aufgabe zum Stoppen."
 
   title:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
     warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ Titel ist nach der Bereinigung leer. Bitte druckbare Zeichen verwenden."
+    empty_after_clean:     "⚠️ Title ist nach der Bereinigung leer. Bitte druckbare Zeichen verwenden."
     set_to:                "✏️ Sitzungstitel gesetzt: **{title}**"
     not_found:             "Sitzung nicht in der Datenbank gefunden."
     current_with_title:    "📌 Sitzung: `{session_id}`\nTitel: **{title}**"
-    current_no_title:      "📌 Sitzung: `{session_id}`\nKein Titel gesetzt. Verwendung: `/title Mein Sitzungsname`"
+    current_no_title:      "📌 Sitzung: `{session_id}`\nKein Title gesetzt. Verwendung: `/title Mein Sitzungsname`"
 
   topic:
     not_telegram_dm:         "Der /topic-Befehl ist nur in Telegram-Privatchats verfügbar."
@@ -303,7 +303,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     topics_user_disallowed:  "Telegram-Topics sind aktiviert, aber Benutzer dürfen keine Topics erstellen.\n\nÖffnen Sie @BotFather → wählen Sie Ihren Bot → Bot Settings → Threads Settings, und deaktivieren Sie dann 'Disallow users to create new threads'.\n\nDann senden Sie /topic erneut."
     enable_failed:           "Telegram-Topic-Modus konnte nicht aktiviert werden: {error}"
     bound_status:            "Dieses Topic ist verknüpft mit:\nSitzung: {label}\nID: {session_id}\n\nVerwenden Sie /new, um dieses Topic durch eine neue Sitzung zu ersetzen.\nFür parallele Arbeit öffnen Sie All Messages und senden Sie dort eine Nachricht, um ein weiteres Topic zu erstellen."
-    thread_ready:            "Telegram-Multi-Session-Topics sind aktiviert.\n\nDieses Topic wird als unabhängige Hermes-Sitzung verwendet. Verwenden Sie /new, um die aktuelle Sitzung dieses Topics zu ersetzen. Für parallele Arbeit öffnen Sie All Messages und senden Sie dort eine Nachricht, um ein weiteres Topic zu erstellen."
+    thread_ready:            "Telegram-Multi-Session-Topics sind aktiviert.\n\nDieses Topic wird also unabhängige Hermes-Sitzung verwendet. Verwenden Sie /new, um die aktuelle Sitzung dieses Topics zu ersetzen. Für parallele Arbeit öffnen Sie All Messages und senden Sie dort eine Nachricht, um ein weiteres Topic zu erstellen."
     untitled_session:        "Unbenannte Sitzung"
 
   undo:
@@ -314,14 +314,14 @@ Future messages in this room will use that transcript until `/reset` or another 
   update:
     platform_not_messaging:  "✗ /update ist nur auf Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."
     not_git_repo:            "✗ Kein Git-Repository — Update nicht möglich."
-    hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
+    hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manual im Terminal auszuführen."
     start_failed:            "✗ Update konnte nicht gestartet werden: {error}"
     starting:                "⚕ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
 
   usage:
     rate_limits:              "⏱️ **Ratenlimits:** {state}"
     header_session:           "📊 **Sitzungs-Token-Nutzung**"
-    label_model:              "Modell: `{model}`"
+    label_model:              "Model: `{model}`"
     label_input_tokens:       "Eingabetokens: {count}"
     label_cache_read:         "Cache-Lesetokens: {count}"
     label_cache_write:        "Cache-Schreibtokens: {count}"

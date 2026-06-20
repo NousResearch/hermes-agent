@@ -1,6 +1,6 @@
 """Pixel art converter — Floyd-Steinberg dithering with preset or named palette.
 
-Named hardware palettes (NES, GameBoy, PICO-8, C64, etc.) ported from
+Named hardware palettes (NES, game boy, PICO-8, C64, etc.) ported from
 pixel-art-studio (MIT) — see ATTRIBUTION.md.
 
 Usage (import):
@@ -36,7 +36,7 @@ PRESETS = {
         "contrast": 1.5, "color": 1.4, "sharpness": 1.2,
         "posterize_bits": 6, "block": 8, "palette": "NES",
     },
-    "gameboy": {
+    "game boy": {
         "contrast": 1.5, "color": 1.0, "sharpness": 1.2,
         "posterize_bits": 6, "block": 8, "palette": "GAMEBOY_ORIGINAL",
     },
@@ -90,7 +90,7 @@ def pixel_art(input_path, output_path, preset="arcade", **overrides):
     Args:
         input_path: path to source image
         output_path: path to save the resulting PNG
-        preset: one of PRESETS (arcade, snes, nes, gameboy, pico8, c64, ...)
+        preset: one of PRESETS (arcade, snes, nes, game boy, pico8, c64, ...)
         **overrides: optionally override any preset field. In particular:
             palette: int (adaptive N colors) OR str (named palette from PALETTES)
             block:   int pixel block size

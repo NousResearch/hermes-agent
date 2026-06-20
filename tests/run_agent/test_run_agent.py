@@ -1899,7 +1899,7 @@ class TestBuildAssistantMessage:
 
     def test_with_reasoning_details(self, agent):
         details = [{"type": "reasoning.summary", "text": "step1", "signature": "sig1"}]
-        msg = _mock_assistant_msg(content="ans", reasoning_details=details)
+        msg = _mock_assistant_msg(content="and", reasoning_details=details)
         result = agent._build_assistant_message(msg, "stop")
         assert "reasoning_details" in result
         assert result["reasoning_details"][0]["text"] == "step1"
@@ -2352,7 +2352,7 @@ class TestConcurrentToolExecution:
                 mock_con.assert_not_called()
 
     def test_malformed_json_args_forces_sequential(self, agent):
-        """Unparseable tool arguments should fall back to sequential."""
+        """Unparsable tool arguments should fall back to sequential."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="NOT JSON {{{", call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])

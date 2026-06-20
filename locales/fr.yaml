@@ -87,9 +87,9 @@ gateway:
   compress:
     not_enough:            "Conversation insuffisante pour la compression (au moins 4 messages nécessaires)."
     no_provider:           "Aucun fournisseur configuré — compression impossible."
-    nothing_to_do:         "Rien à compresser pour l'instant (la transcription est encore entièrement du contexte protégé)."
+    nothing_to_do:         "Rien à compressor pour l'instant (la transcription est encore entièrement du contexte protégé)."
     focus_line:            "Focus : \"{topic}\""
-    summary_failed:        "⚠️ Échec de la génération du résumé ({error}). {count} message(s) historique(s) ont été supprimés et remplacés par un espace réservé ; le contexte antérieur n'est plus récupérable. Vérifiez la configuration du modèle auxiliary.compression."
+    summary_failed:        "⚠️ Échec de la génération du résumé ({error}). {count} message(s) historique(s) ont été supprimés et remplacés par un escape réservé ; le contexte antérieur n'est plus récupérable. Vérifiez la configuration du modèle auxiliary.compression."
     aborted:               "⚠️ Compression interrompue ({error}). Aucun message n'a été supprimé — la conversation est inchangée. Lancez /compress pour réessayer, /reset pour une nouvelle session, ou vérifiez la configuration de votre modèle auxiliary.compression."
     aux_failed:            "ℹ️ Le modèle de compression configuré `{model}` a échoué ({error}). Récupéré avec votre modèle principal — le contexte est intact — mais vous pouvez vérifier `auxiliary.compression.model` dans config.yaml."
     failed:                "Échec de la compression : {error}"
@@ -98,7 +98,7 @@ gateway:
     upload_failed:         "✗ Échec de l'envoi du rapport de débogage : {error}"
     header:                "**Rapport de débogage envoyé :**"
     auto_delete:           "⏱ Les pastes s'effaceront automatiquement dans 6 heures."
-    full_logs_hint:        "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
+    full_logs_hint:        "Pour envoyer les journaux completes, utilisez `hermes debug share` depuis la CLI."
     share_hint:            "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
 
   deny:
@@ -132,7 +132,7 @@ gateway:
     paused:                "⏸ Objectif en pause : {goal}"
     no_resume:             "Aucun objectif à reprendre."
     resumed:               "▶ Objectif repris : {goal}\nEnvoyez un message pour continuer, ou attendez — je passerai à l'étape suivante au prochain tour."
-    invalid:               "Objectif invalide : {error}"
+    invalid:               "Objectif invalid : {error}"
     set:                   "⊙ Objectif défini (budget de {budget} tours) : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que le budget soit épuisé.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
@@ -141,7 +141,7 @@ gateway:
     more_use_commands:     "\n... et {count} de plus. Utilisez `/commands` pour la liste paginée complète."
 
   insights:
-    invalid_days:          "Valeur --days invalide : {value}"
+    invalid_days:          "Valeur --days invalid : {value}"
     error:                 "Erreur lors de la génération des analyses : {error}"
 
   kanban:
@@ -168,7 +168,7 @@ gateway:
   reasoning:
     level_default:             "medium (par défaut)"
     level_disabled:            "none (désactivé)"
-    scope_session:             "remplacement de session"
+    scope_session:             "replacement de session"
     scope_global:              "configuration globale"
     status:                    "🧠 **Paramètres de raisonnement**\n\n**Effort :** `{level}`\n**Portée :** {scope}\n**Affichage :** {display}\n\n_Usage :_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
     display_on:                "activé ✓"
@@ -176,7 +176,7 @@ gateway:
     display_set_on:            "🧠 ✓ Affichage du raisonnement : **ACTIVÉ**\nLa réflexion du modèle sera affichée avant chaque réponse sur **{platform}**."
     display_set_off:           "🧠 ✓ Affichage du raisonnement : **DÉSACTIVÉ** pour **{platform}**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` n'est pas pris en charge. Utilisez `/reasoning <level> --global` pour modifier la valeur globale par défaut."
-    reset_done:                "🧠 ✓ Remplacement de raisonnement de la session effacé ; retour à la configuration globale."
+    reset_done:                "🧠 ✓ Replacement de raisonnement de la session effacé ; retour à la configuration globale."
     unknown_arg:               "⚠️ Argument inconnu : `{arg}`\n\n**Niveaux valides :** none, minimal, low, medium, high, xhigh\n**Affichage :** show, hide\n**Persister :** ajoutez `--global` pour enregistrer au-delà de cette session"
     set_global:                "🧠 ✓ Effort de raisonnement défini sur `{effort}` (enregistré dans la configuration)\n_(prend effet au prochain message)_"
     set_global_save_failed:    "🧠 ✓ Effort de raisonnement défini sur `{effort}` (session uniquement — échec de l'enregistrement de la configuration)\n_(prend effet au prochain message)_"
@@ -185,7 +185,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp annulé. Outils MCP inchangés."
     always_followup:       "ℹ️ Les prochains appels `/reload-mcp` s'exécuteront sans confirmation. Réactivez via `approvals.mcp_reload_confirm: true` dans `config.yaml`."
-    confirm_prompt:        "⚠️ **Confirmer /reload-mcp**\n\nRecharger les serveurs MCP reconstruit l'ensemble d'outils de cette session et **invalide le cache de prompt du fournisseur** — le prochain message renverra l'intégralité des jetons d'entrée. Sur les modèles à long contexte ou à raisonnement élevé, cela peut être coûteux.\n\nChoisissez :\n• **Approuver une fois** — recharger maintenant\n• **Toujours approuver** — recharger maintenant et masquer cette confirmation définitivement\n• **Annuler** — laisser les outils MCP inchangés\n\n_Alternative texte : répondez `/approve`, `/always` ou `/cancel`._"
+    confirm_prompt:        "⚠️ **Confirmer /reload-mcp**\n\nRecharger les serveurs MCP reconstruit l'ensemble d'outils de cette session et **invalid le cache de prompt du fournisseur** — le prochain message renverra l'intégralité des jetons d'entrée. Sur les modèles à long contexte ou à raisonnement élevé, cela peut être coûteux.\n\nChoisissez :\n• **Approuver une fois** — recharger maintenant\n• **Toujours approuver** — recharger maintenant et masquer cette confirmation définitivement\n• **Annuler** — laisser les outils MCP inchangés\n\n_Alternative texte : répondez `/approve`, `/always` ou `/cancel`._"
     header:                "🔄 **Serveurs MCP rechargés**\n"
     reconnected:           "♻️ Reconnectés : {names}"
     added:                 "➕ Ajoutés : {names}"
@@ -233,10 +233,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUsage : `/resume <nom de session>`"
-    list_footer_numbered:  "\nUtilisation : `/resume <nom de session>` ou `/resume <numéro>` (par exemple `/resume 1` pour la plus récente)"
+    list_footer_numbered:  "\nUtilisation : `/resume <nom de session>` ou `/resume <numéro>` (par example `/resume 1` pour la plus récente)"
     list_failed:           "Impossible de lister les sessions : {error}"
     out_of_range:          "L'index de reprise {index} est hors limites.\nUtilisez `/resume` sans arguments pour voir les sessions disponibles."
-    not_found:             "Aucune session correspondant à '**{name}**' trouvée.\nUtilisez `/resume` sans argument pour voir les sessions disponibles."
+    not_found:             "Aucune session correspondent à '**{name}**' trouvée.\nUtilisez `/resume` sans argument pour voir les sessions disponibles."
     already_on:            "📌 Déjà sur la session **{name}**."
     switch_failed:         "Échec du changement de session."
     resumed_one:           "↻ Session **{title}** reprise ({count} message). Conversation restaurée."
@@ -249,7 +249,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   rollback:
     not_enabled:           "Les points de contrôle ne sont pas activés.\nActivez-les dans config.yaml :\n```\ncheckpoints:\n  enabled: true\n```"
     none_found:            "Aucun point de contrôle trouvé pour {cwd}"
-    invalid_number:        "Numéro de point de contrôle invalide. Utilisez 1-{max}."
+    invalid_number:        "Numéro de point de contrôle invalid. Utilisez 1-{max}."
     restored:              "✅ Restauré au point de contrôle {hash} : {reason}\nUn instantané pré-rollback a été enregistré automatiquement."
     restore_failed:        "❌ {error}"
 
@@ -309,7 +309,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   undo:
     nothing:               "Rien à annuler."
     removed:               "↩️ {turns} tour(s) annulé(s) ({count} message(s)).\nSauvegardé dans : « {preview} »\nCopiez/modifiez le texte ci-dessus et envoyez-le pour relancer à partir d'ici."
-    invalid_count:         "Nombre invalide « {arg} » — utilisez /undo ou /undo N."
+    invalid_count:         "Nombre invalid « {arg} » — utilisez /undo ou /undo N."
 
   update:
     platform_not_messaging:  "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."
@@ -346,7 +346,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_off:              "⚙️ Progression des outils : **OFF** — aucune activité d'outil affichée."
     mode_new:              "⚙️ Progression des outils : **NEW** — affichée lors d'un changement d'outil (longueur d'aperçu : `display.tool_preview_length`, par défaut 40)."
     mode_all:              "⚙️ Progression des outils : **ALL** — chaque appel d'outil est affiché (longueur d'aperçu : `display.tool_preview_length`, par défaut 40)."
-    mode_verbose:          "⚙️ Progression des outils : **VERBOSE** — chaque appel d'outil avec ses arguments complets."
+    mode_verbose:          "⚙️ Progression des outils : **VERBOSE** — chaque appel d'outil avec ses arguments completes."
     saved_suffix:          "_(enregistré pour **{platform}** — prend effet au prochain message)_"
     save_failed:           "_(impossible d'enregistrer dans la configuration : {error})_"
 

@@ -2051,7 +2051,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "(possible upstream error or malformed SSE response)."
             )
 
-        # A stream that delivered a tool call but only partial/unparseable
+        # A stream that delivered a tool call but only partial/unparsable
         # JSON args splits into two very different cases:
         #
         #   1. Provider sent finish_reason="length" → a genuine output-cap

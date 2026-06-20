@@ -311,7 +311,7 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
     return { ch: named, mod, named, raw: lower }
   }
 
-  // Unknown multi-character token (e.g. typo'd ``ctrl+spcae``) — fall back
+  // Unknown multi-character token (e.g. typo'd ``ctrl+space``) — fall back
   // to the doc default rather than silently disabling the binding.
   return DEFAULT_VOICE_RECORD_KEY
 }

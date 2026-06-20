@@ -1222,7 +1222,7 @@ function findSystemPython() {
   //
   // We also restrict ourselves to Python 3.11–3.13. 3.14 is the latest
   // CPython but several Hermes deps (notably pywinpty's Rust-built
-  // windows_x86_64_msvc crate) don't yet publish 3.14 wheels, and
+  // windows_x86_64_msvc create) don't yet publish 3.14 wheels, and
   // `pip install -e .` falls back to source-build, which fails without
   // a Rust toolchain. install.ps1 sidesteps this by pinning to 3.11
   // via uv; until we add the same uv-managed Python pathway here, the
@@ -4595,7 +4595,7 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
     return
   }
 
-  await new Promise(resolve => {
+ await new Promise(resolve => {
     const timer = setTimeout(() => {
       try {
         if (IS_WINDOWS && Number.isInteger(child.pid)) {
@@ -4606,8 +4606,8 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
       } catch {
         // Already gone.
       }
-      resolve()
     }, timeoutMs)
+    
     child.once('exit', () => {
       clearTimeout(timer)
       resolve()

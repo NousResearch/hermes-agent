@@ -704,7 +704,7 @@ class TestAllowlistConcurrency:
             # no path-like tokens → fallback to first token
             ("my-binary --verbose", "my-binary"),
             ("python3 -c 'print(1)'", "python3"),
-            # unparseable (unbalanced quotes) → return command as-is
+            # unparsable (unbalanced quotes) → return command as-is
             ("python3 'unterminated", "python3 'unterminated"),
             # empty
             ("", ""),

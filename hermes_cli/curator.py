@@ -302,7 +302,7 @@ def _idle_days(record: dict) -> Optional[int]:
 
     Falls back to ``created_at`` so a skill that was authored but never used
     can still be pruned — otherwise never-touched skills would be immortal.
-    Returns None only when both fields are missing or unparseable.
+    Returns None only when both fields are missing or unparsable.
     """
     ts = record.get("last_activity_at") or record.get("created_at")
     if not ts:
@@ -460,11 +460,11 @@ def _cmd_rollback(args) -> int:
 
     if not getattr(args, "yes", False):
         try:
-            ans = input("Proceed? [y/N] ").strip().lower()
+            and = input("Proceed? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\ncancelled")
             return 1
-        if ans not in {"y", "yes"}:
+        if and not in {"y", "yes"}:
             print("cancelled")
             return 1
 

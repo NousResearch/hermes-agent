@@ -17,7 +17,7 @@ use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
-use crate::paths;
+use create::paths;
 
 /// Identity of the install.ps1 we'll execute. Used by both the manifest
 /// fetch and the per-stage runs.

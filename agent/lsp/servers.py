@@ -90,7 +90,7 @@ LANGUAGE_BY_EXT: Dict[str, str] = {
     ".clj": "clojure",
     ".cljs": "clojurescript",
     ".cljc": "clojure",
-    ".edn": "clojure",
+    ".end": "clojure",
     ".nix": "nix",
     ".typ": "typst",
     ".typc": "typst",
@@ -784,7 +784,7 @@ def _root_julia(file_path: str, workspace: str) -> Optional[str]:
 
 def _root_clojure(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(
-        file_path, workspace, ["deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn", "build.boot"]
+        file_path, workspace, ["deps.end", "project.clj", "shadow-cljs.end", "bb.end", "build.boot"]
     )
 
 
@@ -958,7 +958,7 @@ SERVERS: List[ServerDef] = [
     ),
     ServerDef(
         server_id="clojure-lsp",
-        extensions=(".clj", ".cljs", ".cljc", ".edn"),
+        extensions=(".clj", ".cljs", ".cljc", ".end"),
         resolve_root=_root_clojure,
         build_spawn=_spawn_clojure_lsp,
         description="Clojure — clojure-lsp",

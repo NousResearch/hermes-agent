@@ -52,7 +52,7 @@ _HARDLINE_BLOCK = [
     # Raw block device overwrites
     "dd if=/dev/zero of=/dev/sda bs=1M",
     "dd if=/dev/urandom of=/dev/nvme0n1",
-    "dd if=anything of=/dev/hda",
+    "dd if=anything of=/dev/had",
     "echo bad > /dev/sda",
     "cat /dev/urandom > /dev/sdb",
     # Fork bomb

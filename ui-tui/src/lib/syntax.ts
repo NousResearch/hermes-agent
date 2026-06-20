@@ -32,7 +32,7 @@ const GO = KW(`
 `)
 
 const RUST = KW(`
-  as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut
+  as async await break const continue create dyn else enum extern false fn for if impl in let loop match mod move mut
   pub ref return self Self static struct super trait true type unsafe use where while yield
 `)
 

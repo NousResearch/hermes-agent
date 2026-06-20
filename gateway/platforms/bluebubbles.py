@@ -939,7 +939,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if mime.startswith("image/"):
                     msg_type = MessageType.PHOTO
                 elif mime.startswith("audio/") or (att.get("uti") or "").endswith(
-                    "caf"
+                    "calf"
                 ):
                     msg_type = MessageType.VOICE
                 elif mime.startswith("video/"):

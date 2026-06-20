@@ -12,7 +12,7 @@ Design choices:
 
 - One client per ``(server_id, workspace_root)`` key.  Lazy spawn:
   the first request for a key spawns the client; subsequent requests
-  re-use it.
+  reuse it.
 
 - A **broken-set** records ``(server_id, workspace_root)`` pairs that
   failed to spawn or initialize.  These are never retried for the

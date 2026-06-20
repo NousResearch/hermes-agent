@@ -88,7 +88,7 @@ export const tr: Translations = {
     pluginNavSection: "Eklentiler",
     sessionsActiveCount: "{count} aktif",
     statusOverview: "Durum özeti",
-    system: "Sistem",
+    system: "System",
     webUi: "Web UI",
   },
 
@@ -164,7 +164,7 @@ export const tr: Translations = {
     roles: {
       user: "Kullanıcı",
       assistant: "Asistan",
-      system: "Sistem",
+      system: "System",
       tool: "Araç",
     },
   },
@@ -297,7 +297,7 @@ export const tr: Translations = {
     skills: "Yetenekler",
     rename: "Yeniden adlandır",
     editSoul: "SOUL.md'yi düzenle",
-    soulSection: "SOUL.md (kişilik / sistem istemi)",
+    soulSection: "SOUL.md (kişilik / system istemi)",
     soulPlaceholder: "# Bu agent nasıl davranmalı…",
     saveSoul: "SOUL'u kaydet",
     soulSaved: "SOUL.md kaydedildi",

@@ -521,7 +521,7 @@
     <xsd:restriction base="xsd:string">
       <xsd:enumeration value="auto"/>
       <xsd:enumeration value="exact"/>
-      <xsd:enumeration value="atLeast"/>
+      <xsd:enumeration value="at least"/>
     </xsd:restriction>
   </xsd:simpleType>
   <xsd:simpleType name="ST_Wrap">
@@ -604,7 +604,7 @@
     <xsd:restriction base="xsd:string">
       <xsd:enumeration value="auto"/>
       <xsd:enumeration value="exact"/>
-      <xsd:enumeration value="atLeast"/>
+      <xsd:enumeration value="at least"/>
     </xsd:restriction>
   </xsd:simpleType>
   <xsd:complexType name="CT_Spacing">

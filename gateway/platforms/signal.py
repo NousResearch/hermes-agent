@@ -235,7 +235,7 @@ class SignalAdapter(BasePlatformAdapter):
         # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
         self._recent_sent_timestamps: set = set()
         self._max_recent_timestamps = 50
-        # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
+        # Signal increasingly exposes ACPI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
         # phone number to the corresponding UUID when signal-cli prefers it.
         self._recipient_uuid_by_number: Dict[str, str] = {}

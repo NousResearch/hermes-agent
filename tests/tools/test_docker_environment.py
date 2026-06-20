@@ -1360,7 +1360,7 @@ def test_reap_orphan_scopes_to_profile_filter_via_label(monkeypatch):
 
 def test_reap_orphan_skips_container_with_unparseable_finished_at(monkeypatch):
     """If docker inspect returns the zero-value ``0001-01-01T00:00:00Z`` (no
-    FinishedAt yet) or an unparseable timestamp, the reaper must leave the
+    FinishedAt yet) or an unparsable timestamp, the reaper must leave the
     container alone. Defensive — never reap a container whose age we can't
     determine."""
     calls = _reaper_run_mock(
@@ -1379,7 +1379,7 @@ def test_reap_orphan_skips_container_with_unparseable_finished_at(monkeypatch):
     assert removed == 0
     rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
     assert not rms, (
-        f"reaper must NOT remove containers with unparseable FinishedAt; got: {rms}"
+        f"reaper must NOT remove containers with unparsable FinishedAt; got: {rms}"
     )
 
 
@@ -1466,7 +1466,6 @@ def test_container_finished_at_returns_none_on_zero_value():
     map to None so the reaper treats the container as unreapable."""
     # Direct test of the parsing helper — no subprocess needed since the
     # check happens after the inspect call returns.
-    import subprocess as _subprocess
 
     class _MockRun:
         def __init__(self, stdout):

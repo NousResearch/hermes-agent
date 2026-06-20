@@ -181,7 +181,7 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
                     )
 
     # All four constructions (seed + 3 rebuilds) should be distinct objects.
-    # If two are the same, the rebuild is cacheing the SDK client across
+    # If two are the same, the rebuild is caching the SDK client across
     # teardown, which also reproduces the bug class.
     assert len({id(c) for c in constructed}) == len(constructed), (
         "Some _create_openai_client calls returned the same object across "

@@ -172,12 +172,12 @@ class TestToolResultContentShortCircuit:
         return {
             "_multimodal": True,
             "content": [
-                {"type": "text", "text": "capture mode=som 800x600 app=Safari"},
+                {"type": "text", "text": "capture mode=some 800x600 app=Safari"},
                 {"type": "image_url",
                  "image_url": {"url": f"data:image/png;base64,{png_b64}"}},
             ],
-            "text_summary": "capture mode=som 800x600 app=Safari",
-            "meta": {"mode": "som", "width": 800, "height": 600, "elements": 5,
+            "text_summary": "capture mode=some 800x600 app=Safari",
+            "meta": {"mode": "some", "width": 800, "height": 600, "elements": 5,
                      "png_bytes": 1024},
         }
 

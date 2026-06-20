@@ -1928,7 +1928,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         both suddenly show the opaque "Context compaction" block in the
         slot where they were just reading the assistant's actual reply:
 
-            User:       "i cant see the output of the last message you
+            User:       "i can't see the output of the last message you
                          sent, i did see it previously, however now see
                          'context compaction'"
 
@@ -2081,7 +2081,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # meaningful cut point using the raw (non-inflated) budget so that
         # compression actually summarizes a worthwhile middle section.
         if cut_idx <= head_end and accumulated <= soft_ceiling and accumulated > 0:
-            # The entire compressable region fits in the soft ceiling.
+            # The entire compressible region fits in the soft ceiling.
             # Re-walk with the raw budget (no 1.5x multiplier) to find a
             # split that gives the summarizer something useful.
             raw_budget = token_budget
@@ -2213,7 +2213,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
-            # No compressable window — the entire transcript fits within
+            # No compressible window — the entire transcript fits within
             # the tail budget (soft_ceiling).  Without recording this as
             # an ineffective compression the anti-thrashing guard in
             # should_compress() never fires and every subsequent turn

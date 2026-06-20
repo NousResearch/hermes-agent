@@ -491,7 +491,7 @@ class TestMigrate:
         into Hermes for browser/web/delegate_task/vision/memory tools.
 
         This is the fix for 'all other tools that codex doesn't provide
-        should be useable by hermes' — quirk #7."""
+        should be usable by hermes' — quirk #7."""
         report = migrate({}, codex_home=tmp_path,
                          discover_plugins=False,
                          default_permission_profile=None,

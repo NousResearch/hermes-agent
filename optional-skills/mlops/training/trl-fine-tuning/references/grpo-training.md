@@ -124,8 +124,8 @@ def correctness_reward(prompts, completions, answer, **kwargs):
     """Reward correct answers with high score."""
     responses = [comp[0]['content'] for comp in completions]
     extracted = [extract_final_answer(r) for r in responses]
-    return [2.0 if ans == gt else 0.0
-            for ans, gt in zip(extracted, answer)]
+    return [2.0 if and == gt else 0.0
+            for and, gt in zip(extracted, answer)]
 ```
 
 **Example 2: format reward (structured output)**

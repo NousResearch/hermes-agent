@@ -25,7 +25,7 @@ gateway:
 
   model:
     error_prefix:           "Hiba: {error}"
-    switched:               "Modell átváltva: `{model}`"
+    switched:               "Model átváltva: `{model}`"
     provider_label:         "Szolgáltató: {provider}"
     context_label:          "Kontextus: {tokens} token"
     max_output_label:       "Max. kimenet: {tokens} token"
@@ -38,7 +38,7 @@ gateway:
     current_label:          "Aktuális: `{model}` ezen: {provider}"
     current_tag:            " (aktuális)"
     more_models_suffix:     " (+{count} további)"
-    usage_switch_model:     "`/model <name>` — modell váltása"
+    usage_switch_model:     "`/model <name>` — model váltása"
     usage_switch_provider:  "`/model <name> --provider <slug>` — szolgáltató váltása"
     usage_persist:          "`/model <name> --global` — megőrzés"
 
@@ -89,8 +89,8 @@ gateway:
     no_provider:           "Nincs konfigurált szolgáltató — nem lehet tömöríteni."
     nothing_to_do:         "Még nincs mit tömöríteni (a teljes átirat még védett kontextus)."
     focus_line:            "Fókusz: \"{topic}\""
-    summary_failed:        "⚠️ Az összefoglaló generálása sikertelen ({error}). {count} korábbi üzenet eltávolítva és helykitöltővel helyettesítve; a korábbi kontextus már nem helyreállítható. Érdemes ellenőrizni az auxiliary.compression modell konfigurációját."
-    aborted:               "⚠️ Tömörítés megszakítva ({error}). Egyetlen üzenet sem lett eldobva — a beszélgetés változatlan. Futtass /compress parancsot az újrapróbálkozáshoz, /reset egy új munkamenethez, vagy ellenőrizd az auxiliary.compression modell konfigurációt."
+    summary_failed:        "⚠️ Az összefoglaló generálása sikertelen ({error}). {count} korábbi üzenet eltávolítva és helykitöltővel helyettesítve; a korábbi kontextus már nem helyreállítható. Érdemes ellenőrizni az auxiliary.compression model konfigurációját."
+    aborted:               "⚠️ Tömörítés megszakítva ({error}). Egyetlen üzenet sem lett eldobva — a beszélgetés változatlan. Futtass /compress parancsot az újrapróbálkozáshoz, /reset egy új munkamenethez, vagy ellenőrizd az auxiliary.compression model konfigurációt."
     aux_failed:            "ℹ️ A beállított tömörítőmodell (`{model}`) hibát adott ({error}). A főmodellel helyreállítva — a kontextus érintetlen — de érdemes ellenőrizni az `auxiliary.compression.model` beállítást a config.yaml fájlban."
     failed:                "Tömörítés sikertelen: {error}"
 
@@ -173,7 +173,7 @@ gateway:
     status:                    "🧠 **Gondolkodási beállítások**\n\n**Erőfeszítés:** `{level}`\n**Hatókör:** {scope}\n**Megjelenítés:** {display}\n\n_Használat:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
     display_on:                "be ✓"
     display_off:               "ki"
-    display_set_on:            "🧠 ✓ Gondolkodás megjelenítése: **BE**\nA modell gondolatai minden válasz előtt megjelennek itt: **{platform}**."
+    display_set_on:            "🧠 ✓ Gondolkodás megjelenítése: **BE**\nA model gondolatai minden válasz előtt megjelennek itt: **{platform}**."
     display_set_off:           "🧠 ✓ Gondolkodás megjelenítése: **KI** itt: **{platform}**"
     reset_global_unsupported:  "⚠️ A `/reasoning reset --global` nem támogatott. Használd a `/reasoning <level> --global` parancsot a globális alapérték módosításához."
     reset_done:                "🧠 ✓ A munkamenet gondolkodási felülbírálása törölve; visszaállás a globális konfigurációra."
@@ -321,7 +321,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   usage:
     rate_limits:              "⏱️ **Sebességkorlátok:** {state}"
     header_session:           "📊 **Munkamenet tokenhasználat**"
-    label_model:              "Modell: `{model}`"
+    label_model:              "Model: `{model}`"
     label_input_tokens:       "Bemeneti tokenek: {count}"
     label_cache_read:         "Gyorsítótár-olvasási tokenek: {count}"
     label_cache_write:        "Gyorsítótár-írási tokenek: {count}"

@@ -310,7 +310,7 @@ Overall Assessment:
 
 ### Technical Concerns
 
-| Concern | How to Pre-empt |
+| Concern | How to Preempt |
 |---------|-----------------|
 | "Baselines too weak" | Use state-of-the-art baselines, cite recent work |
 | "Missing ablations" | Include systematic ablation study |
@@ -320,7 +320,7 @@ Overall Assessment:
 
 ### Novelty Concerns
 
-| Concern | How to Pre-empt |
+| Concern | How to Preempt |
 |---------|-----------------|
 | "Incremental contribution" | Clearly articulate what's new vs prior work |
 | "Similar to [paper X]" | Explicitly compare to X in Related Work |
@@ -328,7 +328,7 @@ Overall Assessment:
 
 ### Clarity Concerns
 
-| Concern | How to Pre-empt |
+| Concern | How to Preempt |
 |---------|-----------------|
 | "Hard to follow" | Use clear structure, signposting |
 | "Notation inconsistent" | Review all notation, create notation table |
@@ -337,7 +337,7 @@ Overall Assessment:
 
 ### Significance Concerns
 
-| Concern | How to Pre-empt |
+| Concern | How to Preempt |
 |---------|-----------------|
 | "Limited impact" | Discuss broader implications |
 | "Narrow evaluation" | Evaluate on multiple benchmarks |

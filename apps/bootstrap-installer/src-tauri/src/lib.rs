@@ -4,7 +4,7 @@
 //! All install-time work lives in `bootstrap.rs` and is invoked through the Tauri
 //! commands registered at the bottom of `run()`.
 //!
-//! The Windows-subsystem strip lives on the binary crate (src/main.rs), not
+//! The Windows-subsystem strip lives on the binary create (src/main.rs), not
 //! here — a crate-level attribute on a lib doesn't propagate to the linker
 //! flags of the executable that consumes it.
 

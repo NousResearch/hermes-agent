@@ -154,7 +154,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
   it('falls back to Ctrl+B for unrecognised multi-character tokens', async () => {
     const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('linux')
 
-    // Typos / unsupported names (``ctrl+spcae``, ``ctrl+f5``, …) fall back
+    // Typos / unsupported names (``ctrl+space``, ``ctrl+f5``, …) fall back
     // to the documented Ctrl+B default rather than silently disabling the
     // binding.
     expect(parseVoiceRecordKey('ctrl+spcae')).toEqual(DEFAULT_VOICE_RECORD_KEY)

@@ -50,7 +50,7 @@ function load(): Record<string, PaneStateSnapshot> {
       }
     }
   } catch {
-    // Treat unparseable persisted state as missing.
+    // Treat unparsable persisted state as missing.
   }
 
   return {}

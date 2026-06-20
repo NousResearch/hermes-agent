@@ -2,18 +2,18 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 approval:
-  dangerous_header: "⚠️  COMANDO PERIGOSO: {description}"
+  dangerous_header: "⚠️  COMMANDO PERIGOSO: {description}"
   choose_long:     "      [o]uma vez  |  [s]sessão  |  [a]sempre  |  [d]negar"
   choose_short:    "      [o]uma vez  |  [s]sessão  |  [d]negar"
   prompt_long:     "      Escolha [o/s/a/D]: "
   prompt_short:    "      Escolha [o/s/D]: "
-  timeout:         "      ⏱ Tempo esgotado — comando negado"
+  timeout:         "      ⏱ Tempo esgotado — commando negado"
   allowed_once:    "      ✓ Permitido uma vez"
   allowed_session: "      ✓ Permitido nesta sessão"
   allowed_always:  "      ✓ Adicionado à lista de permissões permanente"
   denied:          "      ✗ Negado"
   cancelled:       "      ✗ Cancelado"
-  blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
+  blocklist_message: "Este commando está na lista de bloqueio incondicional e não pode set aprovado."
 
 gateway:
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
@@ -24,7 +24,7 @@ gateway:
   config_save_failed: "⚠️ Não foi possível guardar a configuração: {error}"
 
   model:
-    error_prefix:           "Erro: {error}"
+    error_prefix:           "Error: {error}"
     switched:               "Modelo alterado para `{model}`"
     provider_label:         "Fornecedor: {provider}"
     context_label:          "Contexto: {tokens} tokens"
@@ -54,13 +54,13 @@ gateway:
     state_running:         "em execução"
 
   approve:
-    no_pending:            "Não há nenhum comando pendente para aprovar."
-    once_singular:         "✅ Comando aprovado. O agente está a retomar..."
-    once_plural:           "✅ Comandos aprovados ({count} comandos). O agente está a retomar..."
-    session_singular:      "✅ Comando aprovado (padrão aprovado para esta sessão). O agente está a retomar..."
-    session_plural:        "✅ Comandos aprovados (padrão aprovado para esta sessão) ({count} comandos). O agente está a retomar..."
-    always_singular:       "✅ Comando aprovado (padrão aprovado permanentemente). O agente está a retomar..."
-    always_plural:         "✅ Comandos aprovados (padrão aprovado permanentemente) ({count} comandos). O agente está a retomar..."
+    no_pending:            "Não há nenhum commando pendente para aprovar."
+    once_singular:         "✅ Commando aprovado. O agente está a retomar..."
+    once_plural:           "✅ Commandos aprovados ({count} commandos). O agente está a retomar..."
+    session_singular:      "✅ Commando aprovado (padrão aprovado para esta sessão). O agente está a retomar..."
+    session_plural:        "✅ Commandos aprovados (padrão aprovado para esta sessão) ({count} commandos). O agente está a retomar..."
+    always_singular:       "✅ Commando aprovado (padrão aprovado permanentemente). O agente está a retomar..."
+    always_plural:         "✅ Commandos aprovados (padrão aprovado permanentemente) ({count} commandos). O agente está a retomar..."
 
   background:
     usage:                 "Uso: /background <prompt>\nExemplo: /background Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."
@@ -76,10 +76,10 @@ gateway:
 
   commands:
     usage:                 "Uso: `/commands [page]`"
-    skill_header:          "⚡ **Comandos de skill**:"
-    default_desc:          "Comando de skill"
-    none:                  "Não há comandos disponíveis."
-    header:                "📚 **Comandos** ({total} no total, página {page}/{total_pages})"
+    skill_header:          "⚡ **Commandos de skill**:"
+    default_desc:          "Commando de skill"
+    none:                  "Não há commandos disponíveis."
+    header:                "📚 **Commandos** ({total} no total, página {page}/{total_pages})"
     nav_prev:              "`/commands {page}` ← anterior"
     nav_next:              "seguinte → `/commands {page}`"
     out_of_range:          "_(A página solicitada {requested} estava fora do intervalo, a mostrar a página {page}.)_"
@@ -87,9 +87,9 @@ gateway:
   compress:
     not_enough:            "Não há conversa suficiente para comprimir (são necessárias pelo menos 4 mensagens)."
     no_provider:           "Nenhum fornecedor configurado — não é possível comprimir."
-    nothing_to_do:         "Ainda não há nada para comprimir (a transcrição continua a ser todo o contexto protegido)."
+    nothing_to_do:         "Ainda não há nada para comprimir (a transcrição continua a set todo o contexto protegido)."
     focus_line:            "Foco: \"{topic}\""
-    summary_failed:        "⚠️ Falha ao gerar o resumo ({error}). {count} mensagem(ns) histórica(s) foram removidas e substituídas por um marcador; o contexto anterior já não pode ser recuperado. Considera verificar a configuração do modelo auxiliary.compression."
+    summary_failed:        "⚠️ Falha ao gerar o resumo ({error}). {count} mensagem(ns) histórica(s) foram removidas e substituídas por um marcador; o contexto anterior já não pode set recuperado. Considera verificar a configuração do modelo auxiliary.compression."
     aborted:               "⚠️ Compressão abortada ({error}). Nenhuma mensagem foi removida — a conversa está inalterada. Executa /compress para tentar de novo, /reset para uma sessão nova, ou verifica a configuração do modelo auxiliary.compression."
     aux_failed:            "ℹ️ O modelo de compressão configurado `{model}` falhou ({error}). Recuperado com o teu modelo principal — o contexto está intacto — mas talvez queiras verificar `auxiliary.compression.model` em config.yaml."
     failed:                "Compressão falhou: {error}"
@@ -102,10 +102,10 @@ gateway:
     share_hint:            "Partilha estes links com a equipa do Hermes para obter suporte."
 
   deny:
-    stale:                 "❌ Comando negado (a aprovação tinha expirado)."
-    no_pending:            "Não há nenhum comando pendente para negar."
-    denied_singular:       "❌ Comando negado."
-    denied_plural:         "❌ Comandos negados ({count} comandos)."
+    stale:                 "❌ Commando negado (a aprovação tinha expirado)."
+    no_pending:            "Não há nenhum commando pendente para negar."
+    denied_singular:       "❌ Commando negado."
+    denied_plural:         "❌ Commandos negados ({count} commandos)."
 
   fast:
     not_supported:         "⚡ /fast só está disponível para modelos da OpenAI que suportam Priority Processing."
@@ -136,16 +136,16 @@ gateway:
     set:                   "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
-    header:                "📖 **Comandos do Hermes**\n"
-    skill_header:          "\n⚡ **Comandos de skill** ({count} ativos):"
+    header:                "📖 **Commandos do Hermes**\n"
+    skill_header:          "\n⚡ **Commandos de skill** ({count} ativos):"
     more_use_commands:     "\n... e mais {count}. Usa `/commands` para a lista paginada completa."
 
   insights:
     invalid_days:          "Valor --days inválido: {value}"
-    error:                 "Erro ao gerar análise: {error}"
+    error:                 "Error ao gerar análise: {error}"
 
   kanban:
-    error_prefix:          "⚠ erro do kanban: {error}"
+    error_prefix:          "⚠ error do kanban: {error}"
     subscribed_suffix:     "(subscrito — receberás uma notificação quando {task_id} terminar ou bloquear)"
     truncated_suffix:      "… (truncado; usa `hermes kanban …` no teu terminal para a saída completa)"
     no_output:             "(sem saída)"
@@ -185,7 +185,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelado. As ferramentas MCP não foram alteradas."
     always_followup:       "ℹ️ Próximas chamadas a `/reload-mcp` serão executadas sem confirmação. Reativa através de `approvals.mcp_reload_confirm: true` em `config.yaml`."
-    confirm_prompt:        "⚠️ **Confirmar /reload-mcp**\n\nRecarregar os servidores MCP reconstrói o conjunto de ferramentas desta sessão e **invalida a cache de prompt do fornecedor** — a próxima mensagem reenviará os tokens de entrada completos. Em modelos de contexto longo ou de raciocínio elevado isto pode ser dispendioso.\n\nEscolhe:\n• **Aprovar uma vez** — recarregar agora\n• **Aprovar sempre** — recarregar agora e silenciar este pedido permanentemente\n• **Cancelar** — manter as ferramentas MCP inalteradas\n\n_Alternativa em texto: responde `/approve`, `/always` ou `/cancel`._"
+    confirm_prompt:        "⚠️ **Confirmar /reload-mcp**\n\nRecarregar os servidores MCP reconstrói o conjunto de ferramentas desta sessão e **invalida a cache de prompt do fornecedor** — a próxima mensagem reenviará os tokens de entrada completos. Em modelos de contexto longo ou de raciocínio elevado isto pode set dispendioso.\n\nEscolhe:\n• **Aprovar uma vez** — recarregar agora\n• **Aprovar sempre** — recarregar agora e silenciar este pedido permanentemente\n• **Cancelar** — manter as ferramentas MCP inalteradas\n\n_Alternativa em texto: responde `/approve`, `/always` ou `/cancel`._"
     header:                "🔄 **Servidores MCP recarregados**\n"
     reconnected:           "♻️ Reconectados: {names}"
     added:                 "➕ Adicionados: {names}"
@@ -227,13 +227,13 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
-    no_named_sessions:     "Não foram encontradas sessões com nome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
-    list_header:           "📋 **Sessões com nome**\n"
+    no_named_sessions:     "Não foram encontradas sessões com gnome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
+    list_header:           "📋 **Sessões com gnome**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
-    list_footer:           "\nUso: `/resume <nome da sessão>`"
-    list_footer_numbered:  "\nUso: `/resume <nome da sessão>` ou `/resume <número>` (ex.: `/resume 1` para a mais recente)"
+    list_footer:           "\nUso: `/resume <gnome da sessão>`"
+    list_footer_numbered:  "\nUso: `/resume <gnome da sessão>` ou `/resume <número>` (ex.: `/resume 1` para a mais recente)"
     list_failed:           "Não foi possível listar as sessões: {error}"
     out_of_range:          "O índice de retomada {index} está fora do intervalo.\nUse `/resume` sem argumentos para ver as sessões disponíveis."
     not_found:             "Não foi encontrada nenhuma sessão correspondente a '**{name}**'.\nUsa `/resume` sem argumentos para ver as sessões disponíveis."
@@ -288,14 +288,14 @@ Future messages in this room will use that transcript until `/reset` or another 
   title:
     db_unavailable:        "Base de dados de sessões indisponível."
     warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ O título está vazio após a limpeza. Usa caracteres imprimíveis."
+    empty_after_clean:     "⚠️ O título está vazio após a limpeza. Usa characters imprimíveis."
     set_to:                "✏️ Título da sessão definido: **{title}**"
     not_found:             "Sessão não encontrada na base de dados."
     current_with_title:    "📌 Sessão: `{session_id}`\nTítulo: **{title}**"
-    current_no_title:      "📌 Sessão: `{session_id}`\nSem título. Uso: `/title O meu nome de sessão`"
+    current_no_title:      "📌 Sessão: `{session_id}`\nSem título. Uso: `/title O menu gnome de sessão`"
 
   topic:
-    not_telegram_dm:         "O comando /topic só está disponível em chats privados do Telegram."
+    not_telegram_dm:         "O commando /topic só está disponível em chats privados do Telegram."
     no_session_db:           "Base de dados de sessões indisponível."
     unauthorized:            "Não tens autorização para usar /topic neste bot."
     restore_needs_topic:     "Para restaurar uma sessão, cria ou abre primeiro um topic do Telegram, depois envia /topic <session-id> dentro desse topic. Para criar um novo topic, abre All Messages e envia qualquer mensagem aí."
@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   update:
     platform_not_messaging:  "✗ /update só está disponível em plataformas de mensagens. Executa `hermes update` a partir do terminal."
     not_git_repo:            "✗ Não é um repositório git — não é possível atualizar."
-    hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
+    hermes_cmd_not_found:    "✗ Não foi possível localizar o commando `hermes`. O Hermes está em execução, mas o commando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
     start_failed:            "✗ Falha ao iniciar a atualização: {error}"
     starting:                "⚕ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
 
@@ -342,7 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_logged_in:            "Você não está conectado ao Nous Portal. Faça login para ver seu saldo de créditos e recarregar."
 
   verbose:
-    not_enabled:           "O comando `/verbose` não está ativado para plataformas de mensagens.\n\nAtiva-o em `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    not_enabled:           "O commando `/verbose` não está ativado para plataformas de mensagens.\n\nAtiva-o em `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progresso de ferramentas: **OFF** — não é mostrada qualquer atividade de ferramentas."
     mode_new:              "⚙️ Progresso de ferramentas: **NEW** — mostrado quando a ferramenta muda (comprimento da pré-visualização: `display.tool_preview_length`, predefinição 40)."
     mode_all:              "⚙️ Progresso de ferramentas: **ALL** — cada chamada de ferramenta é mostrada (comprimento da pré-visualização: `display.tool_preview_length`, predefinição 40)."
@@ -368,8 +368,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Canais de voz ao vivo (Discord)**\n• Entra primeiro num canal de voz, depois `/voice channel` — eu entro, ouço e falo as minhas respostas\n• `/voice leave` — desligar do canal de voz"
 
   yolo:
-    disabled:                   "⚠️ Modo YOLO **DESATIVADO** nesta sessão — comandos perigosos exigirão aprovação."
-    enabled:                    "⚡ Modo YOLO **ATIVADO** nesta sessão — todos os comandos são aprovados automaticamente. Usa com precaução."
+    disabled:                   "⚠️ Modo YOLO **DESATIVADO** nesta sessão — commandos perigosos exigirão aprovação."
+    enabled:                    "⚡ Modo YOLO **ATIVADO** nesta sessão — todos os commandos são aprovados automaticamente. Usa com precaução."
 
   shared:
     session_db_unavailable:      "Base de dados de sessões indisponível."

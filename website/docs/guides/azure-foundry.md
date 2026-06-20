@@ -60,7 +60,7 @@ Foundry's RBAC is per-resource (`Azure AI User` grants both surfaces; some tenan
 - No long-lived API keys to rotate or revoke.
 - RBAC-driven access — grant or remove `Azure AI User` on the Foundry resource, no config rewrite needed.
 - Access and audit logs are segmented by assignee instead of all callers sharing one static key.
-- Single auth surface for Azure VMs, AKS pods, App Service, Functions, Container Apps, and Foundry Agent Service via managed identity.
+- Single auth surface for Azure VMs, ASK pods, App Service, Functions, Container Apps, and Foundry Agent Service via managed identity.
 - Workload identity and service-principal flows for CI/CD pipelines.
 
 ### One-time setup (Azure side)
@@ -131,7 +131,7 @@ No secrets land in `~/.hermes/.env` for Entra mode — `azure-identity` caches t
 `azure-identity`'s `DefaultAzureCredential` walks this chain on each token request, stopping at the first credential that returns a token:
 
 1. **Environment credential** — `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` (or `AZURE_CLIENT_CERTIFICATE_PATH` / `AZURE_FEDERATED_TOKEN_FILE`).
-2. **Workload Identity** — `AZURE_FEDERATED_TOKEN_FILE` (AKS federated tokens / OIDC).
+2. **Workload Identity** — `AZURE_FEDERATED_TOKEN_FILE` (ASK federated tokens / OIDC).
 3. **Managed Identity** — IMDS endpoint (`169.254.169.254`) for virtual machines; `IDENTITY_ENDPOINT` for App Service / Functions / Container Apps. Foundry Agent Service hosted agents use the hosted agent's agent identity.
 4. **Visual Studio Code** — Azure account extension.
 5. **Azure CLI** — `az login` session.
@@ -161,7 +161,7 @@ hermes         # uses your az login token
 **Foundry Agent Service hosted agent:**
 - Create the hosted agent and grant that agent's identity `Azure AI User` (or `Foundry User`) on the Foundry resource. Hermes uses `ManagedIdentityCredential` from inside the hosted agent; role assignment belongs on the agent identity, not just the parent project or your user.
 
-**AKS Workload Identity (replaces AAD Pod Identity):**
+**ASK Workload Identity (replaces AAD Pod Identity):**
 - Annotate the pod's service account with the workload identity client ID.
 - The pod's federated token file is auto-detected via `AZURE_FEDERATED_TOKEN_FILE`.
 - `model.auth_mode: entra_id` works without further config changes.
@@ -288,7 +288,7 @@ You can always type a deployment name directly — Hermes does not validate agai
 | `AZURE_CLIENT_ID` | Entra ID client ID (service principal, workload identity, or user-assigned managed identity) |
 | `AZURE_CLIENT_SECRET` | Service principal secret |
 | `AZURE_CLIENT_CERTIFICATE_PATH` | Service principal cert (alternative to secret) |
-| `AZURE_FEDERATED_TOKEN_FILE` | Workload Identity federated token path (AKS) |
+| `AZURE_FEDERATED_TOKEN_FILE` | Workload Identity federated token path (ASK) |
 | `AZURE_AUTHORITY_HOST` | Sovereign cloud authority host override |
 | `IDENTITY_ENDPOINT` / `MSI_ENDPOINT` | Managed Identity endpoint for App Service, Functions, and Container Apps; VMs usually use IMDS instead |
 

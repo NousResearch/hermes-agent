@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import os
 import platform
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path

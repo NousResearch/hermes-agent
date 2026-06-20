@@ -293,7 +293,7 @@ def _parse_semver(v: str) -> Tuple[int, int, int]:
     try:
         return (int(parts[0]), int(parts[1]), int(parts[2]))
     except ValueError as exc:
-        raise DistributionError(f"Unparseable version: {v!r}") from exc
+        raise DistributionError(f"Unparsable version: {v!r}") from exc
 
 
 def check_hermes_requires(spec: str, current_version: str) -> None:

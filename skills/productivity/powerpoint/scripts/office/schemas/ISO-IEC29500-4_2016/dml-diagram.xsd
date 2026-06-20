@@ -97,14 +97,14 @@
       <xsd:enumeration value="node"/>
       <xsd:enumeration value="asst"/>
       <xsd:enumeration value="doc"/>
-      <xsd:enumeration value="pres"/>
+      <xsd:enumeration value="press"/>
       <xsd:enumeration value="parTrans"/>
       <xsd:enumeration value="sibTrans"/>
     </xsd:restriction>
   </xsd:simpleType>
   <xsd:complexType name="CT_Pt">
     <xsd:sequence>
-      <xsd:element name="prSet" type="CT_ElemPropSet" minOccurs="0" maxOccurs="1"/>
+      <xsd:element name="preset" type="CT_ElemPropSet" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="spPr" type="a:CT_ShapeProperties" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="t" type="a:CT_TextBody" minOccurs="0" maxOccurs="1"/>
       <xsd:element name="extLst" type="a:CT_OfficeArtExtensionList" minOccurs="0" maxOccurs="1"/>
@@ -608,7 +608,7 @@
       <xsd:enumeration value="followSib"/>
       <xsd:enumeration value="precedSib"/>
       <xsd:enumeration value="follow"/>
-      <xsd:enumeration value="preced"/>
+      <xsd:enumeration value="precede"/>
       <xsd:enumeration value="root"/>
       <xsd:enumeration value="none"/>
     </xsd:restriction>
@@ -667,11 +667,11 @@
       <xsd:enumeration value="t"/>
       <xsd:enumeration value="tMarg"/>
       <xsd:enumeration value="tOff"/>
-      <xsd:enumeration value="userA"/>
+      <xsd:enumeration value="users"/>
       <xsd:enumeration value="userB"/>
       <xsd:enumeration value="userC"/>
       <xsd:enumeration value="userD"/>
-      <xsd:enumeration value="userE"/>
+      <xsd:enumeration value="user"/>
       <xsd:enumeration value="userF"/>
       <xsd:enumeration value="userG"/>
       <xsd:enumeration value="userH"/>
@@ -684,7 +684,7 @@
       <xsd:enumeration value="userO"/>
       <xsd:enumeration value="userP"/>
       <xsd:enumeration value="userQ"/>
-      <xsd:enumeration value="userR"/>
+      <xsd:enumeration value="user"/>
       <xsd:enumeration value="userS"/>
       <xsd:enumeration value="userT"/>
       <xsd:enumeration value="userU"/>
@@ -715,7 +715,7 @@
       <xsd:enumeration value="asst"/>
       <xsd:enumeration value="nonAsst"/>
       <xsd:enumeration value="parTrans"/>
-      <xsd:enumeration value="pres"/>
+      <xsd:enumeration value="press"/>
       <xsd:enumeration value="sibTrans"/>
     </xsd:restriction>
   </xsd:simpleType>

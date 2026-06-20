@@ -94,7 +94,7 @@ const asWireText = (raw: unknown): string | null => {
 // Matches `<scheme>://user:pass@host…` style user-info segments in
 // otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
 // Used by the `redactUrl` fallback so embedded credentials are
-// scrubbed from log lines even when the URL is unparseable.
+// scrubbed from log lines even when the URL is unparsable.
 const _USERINFO_FALLBACK_RE = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i
 
 // Connection URLs (gateway, sidecar) often carry bearer tokens in the query

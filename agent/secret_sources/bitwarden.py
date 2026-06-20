@@ -464,7 +464,7 @@ def fetch_bitwarden_secrets(
     back to ``$HERMES_HOME`` / ``~/.hermes``.
 
     Raises :class:`RuntimeError` for fatal conditions (missing binary,
-    auth failure, unparseable output).  Callers in the env_loader path
+    auth failure, unparsable output).  Callers in the env_loader path
     catch this and emit a single warning; callers in the user-facing
     setup wizard let it propagate.
     """

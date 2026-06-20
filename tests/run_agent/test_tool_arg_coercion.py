@@ -157,7 +157,7 @@ class TestCoerceValue:
         assert _coerce_value('{"n": 1}', "object") == {"n": 1}
 
     def test_array_invalid_json_preserved(self):
-        """Unparseable strings are returned unchanged."""
+        """Unparsable strings are returned unchanged."""
         assert _coerce_value("not-json", "array") == "not-json"
 
     def test_object_invalid_json_preserved(self):

@@ -85,7 +85,7 @@ User prompt: *"Find my latest email from Stripe and summarise what they want me 
 
 The agent's plan:
 
-1. `computer_use(action="capture", mode="som", app="Mail")` — gets a
+1. `computer_use(action="capture", mode="some", app="Mail")` — gets a
    screenshot of Mail with every sidebar item, toolbar button, and message
    row numbered.
 2. `computer_use(action="click", element=14)` — clicks the search field
@@ -102,7 +102,7 @@ comes to front.
 
 | Provider | Vision? | Works? | Notes |
 |---|---|---|---|
-| Anthropic (Claude Sonnet/Opus 3+) | ✅ | ✅ | Best overall; SOM + raw coordinates. |
+| Anthropic (Claude Sonnet/Opus 3+) | ✅ | ✅ | Best overall; SOME + raw coordinates. |
 | OpenRouter (any vision model) | ✅ | ✅ | Multi-part tool messages supported. |
 | OpenAI (GPT-4+, GPT-5) | ✅ | ✅ | Same as above. |
 | Local vLLM / LM Studio (vision model) | ✅ | ✅ | If the model supports multi-part tool content. |
@@ -187,7 +187,7 @@ HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 didn't see may be blocking input. Dismiss it with `escape` or the close
 button.
 
-**Element indices are stale** — SOM indices are only valid until the
+**Element indices are stale** — SOME indices are only valid until the
 next `capture`. Re-capture after any state-changing action.
 
 **"blocked pattern in type text"** — The text you tried to `type`

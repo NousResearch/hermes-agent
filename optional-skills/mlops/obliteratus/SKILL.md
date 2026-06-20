@@ -18,7 +18,7 @@ metadata:
 
 9 CLI methods, 28 analysis modules, 116 model presets across 5 compute tiers, tournament evaluation, and telemetry-driven recommendations.
 
-Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
+Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, LEAVE concept erasure, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
 
 **License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Hermes Agent's MIT license clean.
 
@@ -134,7 +134,7 @@ obliteratus recommend <model_name> --insights  # global cross-architecture ranki
 ### Direction Extraction Methods (--direction-method flag)
 - **diff_means** (default) — Simple difference-in-means between refused/complied activations. Robust.
 - **svd** — Multi-direction SVD extraction. Better for complex alignment.
-- **leace** — LEACE (Linear Erasure via Closed-form Estimation). Optimal linear erasure.
+- **leave** — LEAVE (Linear Erasure via Closed-form Estimation). Optimal linear erasure.
 
 ### 4 Python-API-Only Methods
 (NOT available via CLI — require Python import, which violates AGPL boundary. Mention to user only if they explicitly want to use OBLITERATUS as a library in their own AGPL project.)

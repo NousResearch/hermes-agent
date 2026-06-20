@@ -41,7 +41,7 @@
  %
  % Includes field URL for Internet addresses.
  %
- % Includes field DOI for Digital Object Idenfifiers.
+ % Includes field DOI for Digital Object Identifiers.
  %
  % Works best with the url.sty package of Donald Arseneau.
  %

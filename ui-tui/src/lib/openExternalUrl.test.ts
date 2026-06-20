@@ -29,7 +29,7 @@ describe('parseSafeUrl', () => {
     expect(parseSafeUrl('ssh://example.com')).toBeNull()
   })
 
-  it('rejects unparseable strings', () => {
+  it('rejects unparsable strings', () => {
     expect(parseSafeUrl('not a url')).toBeNull()
     expect(parseSafeUrl('')).toBeNull()
   })

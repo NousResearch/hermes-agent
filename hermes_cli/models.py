@@ -546,7 +546,7 @@ def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
 
     Prefer the Portal's explicit ``paid_service_access.allowed`` entitlement
     decision.  Legacy payloads fall back to ``subscription.monthly_charge == 0``.
-    Returns False when both signals are missing or unparseable.
+    Returns False when both signals are missing or unparsable.
     """
     paid_access = account_info.get("paid_service_access")
     if isinstance(paid_access, dict):

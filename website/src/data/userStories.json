@@ -117,7 +117,7 @@
     "date": "",
     "category": "general",
     "headline": "I can't type well — voice from the terminal is huge for me",
-    "quote": "i cant type to well so being able to use voice from terminal window is huge for me. would be a great accsesabilty feature to add in.",
+    "quote": "i can't type to well so being able to use voice from terminal window is huge for me. would be a great accsesabilty feature to add in.",
     "size": "sm"
   },
   {
@@ -167,7 +167,7 @@
   {
     "id": "metics-weekly-cron",
     "source": "youtube",
-    "author": "Metics Media (YouTube)",
+    "author": "Metrics Media (YouTube)",
     "url": "https://www.youtube.com/watch?v=CwPUOVUdApE",
     "date": "2026",
     "category": "content-creation",
@@ -2592,7 +2592,7 @@
     "date": "",
     "category": "dev-workflow",
     "headline": "Built a tool-agnostic repo knowledge layer across all my agents",
-    "quote": "Over the past month I've been trying every agent and ai tool I can. OpenClaw, Hermes Agent, Kilo Code, Codex, Cursor, etc. Most of these have some sort of memory, but I wanted something persistant. I ended up building out a tool-agnostic repo knowledge layer. I pushed up the learning part to github so I can use it across repos.",
+    "quote": "Over the past month I've been trying every agent and ai tool I can. OpenClaw, Hermes Agent, Kilo Code, Codex, Cursor, etc. Most of these have some sort of memory, but I wanted something persistent. I ended up building out a tool-agnostic repo knowledge layer. I pushed up the learning part to github so I can use it across repos.",
     "size": "md"
   },
   {

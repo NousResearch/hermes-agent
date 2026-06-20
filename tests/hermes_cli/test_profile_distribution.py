@@ -199,7 +199,7 @@ class TestVersionRequires:
         assert _parse_semver("1.2") == (1, 2, 0)
 
     def test_parse_semver_rejects_garbage(self):
-        with pytest.raises(DistributionError, match="Unparseable"):
+        with pytest.raises(DistributionError, match="Unparsable"):
             _parse_semver("not-a-version")
 
 

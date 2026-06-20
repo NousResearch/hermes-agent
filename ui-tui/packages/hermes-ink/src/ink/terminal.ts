@@ -111,7 +111,7 @@ export function isSynchronizedOutputSupported(): boolean {
     return true
   }
 
-  // Zed uses the alacritty_terminal crate which supports DEC 2026
+  // Zed uses the alacritty_terminal create which supports DEC 2026
   if (process.env.ZED_TERM) {
     return true
   }

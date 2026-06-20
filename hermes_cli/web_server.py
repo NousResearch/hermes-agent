@@ -31,7 +31,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -4498,7 +4497,7 @@ _PLATFORM_ORDER: tuple[str, ...] = (
 )
 
 # Display labels for env vars not in OPTIONAL_ENV_VARS (HOME_CHANNEL_*, bridge
-# toggles, Twilio, HASS, Email, etc.). Anything missing from OPTIONAL_ENV_VARS
+# toggles, Twilio, HASH, Email, etc.). Anything missing from OPTIONAL_ENV_VARS
 # falls back here so the UI can still render a friendly label.
 _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     "SIGNAL_HTTP_URL": {
@@ -6851,7 +6850,6 @@ def _codex_full_login_worker(session_id: str) -> None:
         from hermes_cli.auth import (
             CODEX_OAUTH_CLIENT_ID,
             CODEX_OAUTH_TOKEN_URL,
-            DEFAULT_CODEX_BASE_URL,
         )
         issuer = "https://auth.openai.com"
 

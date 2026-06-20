@@ -23,7 +23,7 @@ Before projecting, OBLITERATUS extracts refusal directions using one of three me
 |:-------|:-----|:------------|:---------|
 | Diff-in-Means | `--direction-method diff_means` | Difference between mean activations on refused vs. complied prompts | Default, fast, robust |
 | SVD | `--direction-method svd` | Multi-direction extraction via Singular Value Decomposition | Complex alignment, multiple refusal mechanisms |
-| LEACE | `--direction-method leace` | Linear Erasure via Closed-form Estimation — mathematically optimal | Maximum precision, research |
+| LEAVE | `--direction-method leave` | Linear Erasure via Closed-form Estimation — mathematically optimal | Maximum precision, research |
 
 ---
 

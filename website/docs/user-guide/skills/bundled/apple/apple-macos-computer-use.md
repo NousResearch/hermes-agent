@@ -46,7 +46,7 @@ no Anthropic-native schema to learn.
 **Step 1 — Capture first.** Almost every task starts with:
 
 ```
-computer_use(action="capture", mode="som", app="Safari")
+computer_use(action="capture", mode="some", app="Safari")
 ```
 
 Returns a screenshot with numbered overlays on every interactable element
@@ -80,14 +80,14 @@ computer_use(action="click", element=7, capture_after=True)
 
 | `mode` | Returns | Best for |
 |---|---|---|
-| `som` (default) | Screenshot + numbered overlays + AX index | Vision models; preferred default |
-| `vision` | Plain screenshot | When SOM overlay interferes with what you want to verify |
+| `some` (default) | Screenshot + numbered overlays + AX index | Vision models; preferred default |
+| `vision` | Plain screenshot | When SOME overlay interferes with what you want to verify |
 | `ax` | AX tree only, no image | Text-only models, or when you don't need to see pixels |
 
 ## Actions
 
 ```
-capture           mode=som|vision|ax   app=…  (default: current app)
+capture           mode=some|vision|ax   app=…  (default: current app)
 click             element=N     OR     coordinate=[x, y]
 double_click      element=N     OR     coordinate=[x, y]
 right_click       element=N     OR     coordinate=[x, y]
@@ -195,7 +195,7 @@ your conversation context.
 - **"cua-driver not installed"** — Run `hermes tools` and enable Computer
   Use; the setup will install cua-driver via its upstream script. Requires
   macOS + Accessibility + Screen Recording permissions.
-- **Element index stale** — SOM indices come from the last `capture` call.
+- **Element index stale** — SOME indices come from the last `capture` call.
   If the UI shifted (new tab opened, dialog appeared), re-capture before
   clicking.
 - **Click had no effect** — Re-capture and verify. Sometimes a modal that

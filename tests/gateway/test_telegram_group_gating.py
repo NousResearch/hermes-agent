@@ -1058,7 +1058,7 @@ def test_text_reply_to_photo_caches_referenced_media(monkeypatch, tmp_path):
 # Observed-media caching (unmentioned group attachments)
 # ---------------------------------------------------------------------------
 
-def _group_photo_message(*, chat_id=-100, caption="Veja esta foto", file_size=1024):
+def _group_photo_message(*, chat_id=-100, caption="Veja esta photo", file_size=1024):
     file_obj = SimpleNamespace(
         file_path="photos/observed.png",
         download_as_bytearray=AsyncMock(return_value=bytearray(b"\x89PNG\r\n\x1a\n observed")),
@@ -1115,7 +1115,7 @@ def test_unmentioned_photo_observed_with_cached_path(monkeypatch, tmp_path):
         assert len(store.messages) == 1
         _, message, _ = store.messages[0]
         assert message["observed"] is True
-        assert "Veja esta foto" in message["content"]
+        assert "Veja esta photo" in message["content"]
         assert "image" in message["content"]
         assert str(cached_path) in message["content"]
         assert store.sources[0].user_id is None

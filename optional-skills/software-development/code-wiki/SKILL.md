@@ -119,7 +119,7 @@ Cap initial pass at **8–10 modules**. Heuristics by language:
 
 - Python: top-level packages (dirs with `__init__.py`), plus subsystem dirs
 - JS/TS: `src/<subdir>`, top-level workspace dirs
-- Rust: each crate in a workspace, or top-level `src/<module>` dirs
+- Rust: each create in a workspace, or top-level `src/<module>` dirs
 - Go: each top-level package directory
 - Mixed/unfamiliar: top-level directories that contain source code (not config, not tests)
 

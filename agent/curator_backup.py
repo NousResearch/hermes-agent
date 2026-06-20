@@ -104,7 +104,7 @@ def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
         info["reason"] = f"read error: {e}"
         return info
     # Count jobs as a nice diagnostic — but don't fail the snapshot if the
-    # file is unparseable; just store the raw text and let rollback deal
+    # file is unparsable; just store the raw text and let rollback deal
     # with it (or not, if it's corrupted). jobs.json wraps the list as
     # `{"jobs": [...], "updated_at": ...}` — we count via that shape, and
     # fall back to bare-list shape just in case the format ever changes.

@@ -59,7 +59,7 @@
   % Bug: An equation with $$ ... $$ isn't numbered, nor is the previous line.
 
   % Patch amsmath commands so that the previous line and the equation itself
-  % are numbered. Bug: multline has an extra line number.
+  % are numbered. Bug: multiline has an extra line number.
   % https://tex.stackexchange.com/questions/461186/how-to-use-lineno-with-amsmath-align
   \usepackage{etoolbox} %% <- for \pretocmd, \apptocmd and \patchcmd
 
@@ -88,7 +88,7 @@
   \AtBeginDocument{%
     \linenomathpatch{equation}%
     \linenomathpatchAMS{gather}%
-    \linenomathpatchAMS{multline}%
+    \linenomathpatchAMS{multiline}%
     \linenomathpatchAMS{align}%
     \linenomathpatchAMS{alignat}%
     \linenomathpatchAMS{flalign}%
@@ -305,7 +305,7 @@
   \hypersetup{colorlinks=true, citecolor=darkblue, linkcolor=darkblue, urlcolor=darkblue}
 \else
   % This definition is used if the hyperref package is not loaded.
-  % It provides a backup, no-op definiton of \href.
+  % It provides a backup, no-op definition of \href.
   % This is necessary because \href command is used in the acl_natbib.bst file.
   \def\href#1#2{{#2}}
   \usepackage{url}

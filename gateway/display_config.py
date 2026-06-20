@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Overrideable display settings and their global defaults
+# Overridable display settings and their global defaults
 # ---------------------------------------------------------------------------
 # These are the settings that can be configured per-platform.
 # Other display settings (compact, personality, skin, etc.) are CLI-only
@@ -144,7 +144,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
-# Canonical set of per-platform overrideable keys (for validation).
+# Canonical set of per-platform overridable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
 

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 class UIElement:
     """One interactable element on the current screen."""
 
-    index: int                       # 1-based SOM index
+    index: int                       # 1-based SOME index
     role: str                        # AX role (AXButton, AXTextField, ...)
     label: str = ""                  # AXTitle / AXDescription / AXValue snippet
     bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
@@ -37,7 +37,7 @@ class CaptureResult:
     At least one of png_b64 / elements is populated depending on capture mode:
       * mode="vision" → png_b64 only
       * mode="ax"     → elements only
-      * mode="som"    → both (default): PNG already has numbered overlays
+      * mode="some"    → both (default): PNG already has numbered overlays
                          drawn by the backend, and `elements` holds the
                          matching index → element mapping.
     """
@@ -86,7 +86,7 @@ class ComputerUseBackend(ABC):
 
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(self, mode: str = "some", app: Optional[str] = None) -> CaptureResult: ...
 
     # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod
@@ -147,7 +147,7 @@ class ComputerUseBackend(ABC):
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
         """Set a native value on an element (e.g. AXPopUpButton selection).
 
-        `element` is the 1-based SOM index returned by a prior capture call.
+        `element` is the 1-based SOME index returned by a prior capture call.
         """
 
     # ── Timing ──────────────────────────────────────────────────────

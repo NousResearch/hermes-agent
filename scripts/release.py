@@ -1102,7 +1102,7 @@ AUTHOR_MAP = {
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
-    "projectadmin@wit.id": "projectadmin-dev",
+    "projectadmin@with.id": "projectadmin-dev",
     "mrigankamondal10@gmail.com": "Dev-Mriganka",
     "132275809+shushuzn@users.noreply.github.com": "shushuzn",
     "ibrahimozsarac@gmail.com": "iborazzi",
@@ -1278,7 +1278,7 @@ AUTHOR_MAP = {
     "codex@openai.invalid": "teknium1",
     "screenmachine@gmail.com": "teknium1",
     "chenzeshi@live.com": "chen1749144759",
-    "mor.aleksandr@yahoo.com": "MorAlekss",
+    "more.aleksandr@yahoo.com": "MorAlekss",
     "276649498+ztexydt-cqh@users.noreply.github.com": "ztexydt-cqh",
     # v0.16.0 additions
     "teknium@nous.dev": "teknium1",

@@ -962,9 +962,9 @@ function rasterizeOrb(time) {
       a = rot(sx, sz, sphereOrbitY); sx = a[0]; sz = a[1];
 
       const latD = gridDist(Math.asin(Math.max(-1, Math.min(1, sy))) + Math.PI / 2, latStep);
-      const lonD = gridDist(Math.atan2(sz, sx) + Math.PI, lonStep);
+      const long = gridDist(Math.atan2(sz, sx) + Math.PI, lonStep);
       const wire = ORB.wire * (0.3 + depth * 0.7);
-      const minD = Math.min(latD, lonD);
+      const minD = Math.min(latD, long);
       if (minD > wire) continue;
 
       const edge = 1 - minD / wire;

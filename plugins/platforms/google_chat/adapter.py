@@ -2893,7 +2893,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             f"⚠️ No he podido adjuntar **{filename}**.",
             "Google Chat sólo permite adjuntar archivos cuando el bot tiene "
             "permiso explícito tuyo (OAuth de usuario). Es un consentimiento "
-            "único que se hace desde este chat.",
+            "único que se have desde este chat.",
             "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
             f"Mientras tanto el archivo está en el host: `{path}`",
         ])

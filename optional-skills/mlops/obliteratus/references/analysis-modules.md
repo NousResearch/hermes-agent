@@ -92,7 +92,7 @@ features. More surgical than direction-based methods.
 Creates and applies inference-time steering vectors for reversible refusal
 modification. Includes `SteeringVectorFactory` and `SteeringHookManager`.
 
-### 18. LEACE Concept Erasure (`leace.py`)
+### 18. LEAVE Concept Erasure (`leave.py`)
 Linear Erasure via Closed-form Estimation — mathematically optimal linear
 concept removal. Available as both analysis module and direction extraction method.
 

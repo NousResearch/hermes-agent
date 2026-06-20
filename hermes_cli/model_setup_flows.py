@@ -1116,11 +1116,11 @@ def _model_flow_azure_foundry(config, current_model=""):
             print(f"⚠ {err}")
             print(f"  Hint: {hint}")
             try:
-                ans = input("Save Entra config anyway and validate later? [Y/n]: ").strip().lower()
+                and = input("Save Entra config anyway and validate later? [Y/n]: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 return
-            if ans and ans not in ("y", "yes"):
+            if and and and not in ("y", "yes"):
                 print("Cancelled.")
                 return
 

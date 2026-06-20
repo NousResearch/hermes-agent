@@ -238,13 +238,13 @@ class TestSendHomeAssistant:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx), \
              patch.dict(os.environ, {"HASS_URL": "", "HASS_TOKEN": ""}, clear=False):
-            extra = {"url": "https://hass.example.com"}
+            extra = {"url": "https://hash.example.com"}
             result = asyncio.run(_send_homeassistant("hass-tok", extra, "mobile_app_phone", "alert!"))
 
         assert result == {"success": True, "platform": "homeassistant", "chat_id": "mobile_app_phone"}
         session.post.assert_called_once()
         call_kwargs = session.post.call_args
-        assert call_kwargs[0][0] == "https://hass.example.com/api/services/notify/notify"
+        assert call_kwargs[0][0] == "https://hash.example.com/api/services/notify/notify"
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer hass-tok"
         assert call_kwargs[1]["json"] == {"message": "alert!", "target": "mobile_app_phone"}
 
@@ -254,7 +254,7 @@ class TestSendHomeAssistant:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             result = asyncio.run(_send_homeassistant(
-                "bad-tok", {"url": "https://hass.example.com"},
+                "bad-tok", {"url": "https://hash.example.com"},
                 "target", "msg"
             ))
 
@@ -274,12 +274,12 @@ class TestSendHomeAssistant:
         session_ctx, session = _make_aiohttp_session(resp)
 
         with patch("aiohttp.ClientSession", return_value=session_ctx), \
-             patch.dict(os.environ, {"HASS_URL": "https://hass.env.com", "HASS_TOKEN": "env-tok"}, clear=False):
+             patch.dict(os.environ, {"HASS_URL": "https://hash.env.com", "HASS_TOKEN": "env-tok"}, clear=False):
             result = asyncio.run(_send_homeassistant("", {}, "notify_target", "hi"))
 
         assert result["success"] is True
         url = session.post.call_args[0][0]
-        assert "hass.env.com" in url
+        assert "hash.env.com" in url
 
 
 # ---------------------------------------------------------------------------

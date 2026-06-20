@@ -24,7 +24,7 @@ export const de: Translations = {
     active: "aktiv",
     inactive: "inaktiv",
     unknown: "unbekannt",
-    untitled: "Ohne Titel",
+    untitled: "Ohne Title",
     none: "Keine",
     form: "Formular",
     noResults: "Keine Ergebnisse",
@@ -53,17 +53,17 @@ export const de: Translations = {
     brand: "Hermes Agent",
     brandShort: "HA",
     closeNavigation: "Navigation schließen",
-    closeModelTools: "Modell und Werkzeuge schließen",
+    closeModelTools: "Model und Werkzeuge schließen",
     footer: {
       org: "Nous Research",
     },
-    activeSessionsLabel: "Aktive Sitzungen:",
+    activeSessionsLabel: "Active Sitzungen:",
     gatewayStatusLabel: "Gateway-Status:",
     gatewayStrip: {
       failed: "Start fehlgeschlagen",
       off: "Aus",
       running: "Läuft",
-      starting: "Startet",
+      starting: "Started",
       stopped: "Gestoppt",
     },
     nav: {
@@ -81,7 +81,7 @@ export const de: Translations = {
       skills: "Skills",
     },
     modelToolsSheetSubtitle: "& Werkzeuge",
-    modelToolsSheetTitle: "Modell",
+    modelToolsSheetTitle: "Model",
     navigation: "Navigation",
     openDocumentation: "Dokumentation in neuem Tab öffnen",
     openNavigation: "Navigation öffnen",
@@ -93,11 +93,11 @@ export const de: Translations = {
   },
 
   status: {
-    actionFailed: "Aktion fehlgeschlagen",
+    actionFailed: "Action fehlgeschlagen",
     actionFinished: "Abgeschlossen",
     actions: "Aktionen",
     agent: "Agent",
-    activeSessions: "Aktive Sitzungen",
+    activeSessions: "Active Sitzungen",
     connected: "Verbunden",
     connectedPlatforms: "Verbundene Plattformen",
     disconnected: "Getrennt",
@@ -117,7 +117,7 @@ export const de: Translations = {
     running: "Läuft",
     runningRemote: "Läuft (remote)",
     startFailed: "Start fehlgeschlagen",
-    starting: "Startet",
+    starting: "Started",
     startedInBackground: "Im Hintergrund gestartet — siehe Protokolle für den Fortschritt",
     stopped: "Gestoppt",
     updateHermes: "Hermes aktualisieren",
@@ -134,7 +134,7 @@ export const de: Translations = {
     noMatch: "Keine Sitzungen entsprechen deiner Suche",
     startConversation: "Starte eine Unterhaltung, um sie hier zu sehen",
     noMessages: "Keine Nachrichten",
-    untitledSession: "Sitzung ohne Titel",
+    untitledSession: "Sitzung ohne Title",
     deleteSession: "Sitzung löschen",
     confirmDeleteTitle: "Sitzung löschen?",
     confirmDeleteMessage:
@@ -144,7 +144,7 @@ export const de: Translations = {
     deleteEmpty: "Leere löschen",
     deleteEmptyConfirmTitle: "Leere Sitzungen löschen?",
     deleteEmptyConfirmMessage:
-      "Dies entfernt dauerhaft {count} Sitzungen ohne Nachrichten. Aktive und archivierte Sitzungen werden übersprungen. Dies kann nicht rückgängig gemacht werden.",
+      "Dies entfernt dauerhaft {count} Sitzungen ohne Nachrichten. Active und archivierte Sitzungen werden übersprungen. Dies kann nicht rückgängig gemacht werden.",
     emptySessionsDeleted: "{count} leere Sitzungen gelöscht",
     failedToDeleteEmpty: "Leere Sitzungen konnten nicht gelöscht werden",
     selectSession: "Sitzung auswählen",
@@ -163,7 +163,7 @@ export const de: Translations = {
     nextPage: "Nächste Seite",
     roles: {
       user: "Benutzer",
-      assistant: "Assistent",
+      assistant: "Assistant",
       system: "System",
       tool: "Werkzeug",
     },
@@ -176,7 +176,7 @@ export const de: Translations = {
     apiCalls: "API-Aufrufe",
     dailyTokenUsage: "Tägliche Token-Nutzung",
     dailyBreakdown: "Tagesaufschlüsselung",
-    perModelBreakdown: "Aufschlüsselung pro Modell",
+    perModelBreakdown: "Aufschlüsselung pro Model",
     topSkills: "Top-Skills",
     skill: "Skill",
     loads: "Agent geladen",
@@ -188,7 +188,7 @@ export const de: Translations = {
     noUsageData: "Keine Nutzungsdaten für diesen Zeitraum",
     startSession: "Starte eine Sitzung, um hier Analysen zu sehen",
     date: "Datum",
-    model: "Modell",
+    model: "Model",
     tokens: "Tokens",
     perDayAvg: "/Tag Ø",
     acrossModels: "über {count} Modelle",
@@ -230,7 +230,7 @@ export const de: Translations = {
     schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Zeitplan",
     scheduleModes: {
-      interval: "Wiederkehrendes Intervall",
+      interval: "Wiederkehrendes Interval",
       daily: "Täglich",
       weekly: "Wöchentlich",
       monthly: "Monatlich",
@@ -250,7 +250,7 @@ export const de: Translations = {
       customPlaceholder: "0 9 * * *",
       customHint:
         "Cron-Ausdruck mit fünf Feldern (Minute, Stunde, Tag, Monat, Wochentag).",
-      preview: "Wird gesendet als",
+      preview: "Wird gesendet also",
       previewEmpty: "(unvollständig)",
     },
     scheduleDescribe: {
@@ -272,7 +272,7 @@ export const de: Translations = {
     resume: "Fortsetzen",
     triggerNow: "Jetzt auslösen",
     delivery: {
-      local: "Lokal",
+      local: "Local",
       telegram: "Telegram",
       discord: "Discord",
       slack: "Slack",
@@ -293,7 +293,7 @@ export const de: Translations = {
     noProfiles: "Keine Profile gefunden.",
     defaultBadge: "Standard",
     hasEnv: "env",
-    model: "Modell",
+    model: "Model",
     skills: "Skills",
     rename: "Umbenennen",
     editSoul: "SOUL.md bearbeiten",
@@ -318,7 +318,7 @@ export const de: Translations = {
     disableRuntime: "Deaktivieren",
     enableAfterInstall: "Nach Installation aktivieren",
     enableRuntime: "Aktivieren",
-    forceReinstall: "Neuinstallation erzwingen (bestehenden Ordner zuerst löschen)",
+    forceReinstall: "Neuinstallation erzwingen (bestehenden Order zuerst löschen)",
     headline:
       "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
     identifierLabel: "Git-URL oder owner/repo",
@@ -327,7 +327,7 @@ export const de: Translations = {
     installHeading: "Aus GitHub / Git-URL installieren",
     installHint: "Verwende owner/repo-Kurzform oder eine vollständige https:// oder git@ Klon-URL.",
     memoryProviderLabel: "Speicheranbieter",
-    missingEnvWarn: "Setze diese unter Schlüssel, bevor das Plugin laufen kann:",
+    missingEnvWarn: "Setze diese under Schlüssel, bevor das Plugin laufen kann:",
     noDashboardTab: "Kein Dashboard-Tab",
     openTab: "Öffnen",
     orphanHeading: "Nur-Dashboard-Erweiterungen (keine Übereinstimmung mit Agent plugin.yaml)",
@@ -338,7 +338,7 @@ export const de: Translations = {
       "Schreibt memory.provider (leer = eingebaut) und context.engine in config.yaml. Wirkt sich auf die nächste Sitzung aus.",
     refreshDashboard: "Dashboard-Erweiterungen erneut scannen",
     removeConfirm: "Dieses Plugin aus ~/.hermes/plugins/ entfernen?",
-    removeHint: "Nur vom Benutzer installierte Plugins unter ~/.hermes/plugins können entfernt werden.",
+    removeHint: "Nur vom Benutzer installierte Plugins under ~/.hermes/plugins können entfernt werden.",
     rescanHeading: "SPA-Plugin-Registry",
     rescanHint: "Nach dem Hinzufügen von Dateien auf dem Datenträger erneut scannen, damit die Sidebar neue Manifeste erkennt.",
     runtimeHeading: "Gateway-Laufzeit (YAML-Plugins)",
@@ -377,7 +377,7 @@ export const de: Translations = {
     configPath: "~/.hermes/config.yaml",
     filters: "Filter",
     sections: "Bereiche",
-    exportConfig: "Konfiguration als JSON exportieren",
+    exportConfig: "Konfiguration also JSON exportieren",
     importConfig: "Konfiguration aus JSON importieren",
     resetDefaults: "Auf Standardwerte zurücksetzen",
     resetScopeTooltip: "{scope} auf Standardwerte zurücksetzen",
@@ -385,7 +385,7 @@ export const de: Translations = {
     resetScopeToast: "{scope} auf Standardwerte zurückgesetzt — überprüfen und Speichern, um zu übernehmen",
     rawYaml: "Rohe YAML-Konfiguration",
     searchResults: "Suchergebnisse",
-    fields: "Feld{s}",
+    fields: "Field{s}",
     noFieldsMatch: 'Keine Felder entsprechen "{query}"',
     configSaved: "Konfiguration gespeichert",
     yamlConfigSaved: "YAML-Konfiguration gespeichert",
@@ -414,7 +414,7 @@ export const de: Translations = {
   },
 
   env: {
-    changesNote: "Änderungen werden sofort auf der Festplatte gespeichert. Aktive Sitzungen übernehmen neue Schlüssel automatisch.",
+    changesNote: "Änderungen werden sofort auf der Festplatte gespeichert. Active Sitzungen übernehmen neue Schlüssel automatisch.",
     confirmClearMessage:
       "Der gespeicherte Wert für diese Variable wird aus deiner .env-Datei entfernt. Dies kann über die UI nicht rückgängig gemacht werden.",
     confirmClearTitle: "Diesen Schlüssel löschen?",
@@ -487,7 +487,7 @@ export const de: Translations = {
       kicker: "Agentic Gamerscore",
       title: "Hermes Achievements",
       subtitle:
-        "Sammelbare Hermes-Abzeichen, verdient durch echten Sitzungsverlauf. Bekannte, noch nicht abgeschlossene Achievements werden als Entdeckt angezeigt; geheime Achievements bleiben verborgen, bis das erste passende Verhalten auftritt.",
+        "Sammelbare Hermes-Abzeichen, verdient durch echten Sitzungsverlauf. Bekannte, noch nicht abgeschlossene Achievements werden also Entdeckt angezeigt; geheime Achievements bleiben verborgen, bis das erste passende Verhalten auftritt.",
       scan_subtitle:
         "Hermes-Sitzungsverlauf wird gescannt. Der erste Scan kann bei umfangreichem Verlauf 5–10 Sekunden dauern.",
     },
@@ -628,7 +628,7 @@ export const de: Translations = {
     createTask: "Aufgabe in dieser Spalte erstellen",
     noTasks: "— keine Aufgaben —",
     unassigned: "nicht zugewiesen",
-    untitled: "(ohne Titel)",
+    untitled: "(ohne Title)",
     loadingDetail: "Wird geladen…",
     addComment: "Kommentar hinzufügen… (Enter zum Senden)",
     comment: "Kommentar",
@@ -676,7 +676,7 @@ export const de: Translations = {
     reloadView: "Ansicht neu laden",
     wsAuthFailed:
       "WebSocket-Authentifizierung fehlgeschlagen — lade die Seite neu, um das Sitzungs-Token zu aktualisieren.",
-    markDone: "{n} Aufgabe(n) als erledigt markieren?",
+    markDone: "{n} Aufgabe(n) also erledigt markieren?",
     markArchived: "{n} Aufgabe(n) archivieren?",
     warning: "Warnung",
     phantomIds: "Phantom-IDs:",
@@ -727,17 +727,17 @@ export const de: Translations = {
       archived: "Archiviert",
     },
     confirmDone:
-      "Diese Aufgabe als erledigt markieren? Der Anspruch des Workers wird freigegeben und abhängige untergeordnete Aufgaben werden bereit.",
+      "Diese Aufgabe also erledigt markieren? Der Anspruch des Workers wird freigegeben und abhängige untergeordnete Aufgaben werden bereit.",
     confirmArchive:
       "Diese Aufgabe archivieren? Sie verschwindet aus der Standard-Board-Ansicht.",
     confirmBlocked:
-      "Diese Aufgabe als blockiert markieren? Der Anspruch des Workers wird freigegeben.",
+      "Diese Aufgabe also blockiert markieren? Der Anspruch des Workers wird freigegeben.",
     completionSummary:
-      "Abschluss-Zusammenfassung für {label}. Diese wird als Ergebnis der Aufgabe gespeichert.",
+      "Abschluss-Zusammenfassung für {label}. Diese wird also Ergebnis der Aufgabe gespeichert.",
     completionSummaryRequired:
-      "Eine Abschluss-Zusammenfassung ist erforderlich, bevor eine Aufgabe als erledigt markiert werden kann.",
+      "Eine Abschluss-Zusammenfassung ist erforderlich, bevor eine Aufgabe also erledigt markiert werden kann.",
     triagePlaceholder: "Grobe Idee — die KI wird die Spezifikation erstellen…",
-    taskTitlePlaceholder: "Titel der neuen Aufgabe…",
+    taskTitlePlaceholder: "Title der neuen Aufgabe…",
     specifier: "Specifier",
     assigneePlaceholder: "Zuständige Person",
     priority: "Priorität",
@@ -747,7 +747,7 @@ export const de: Translations = {
     workspacePathDir: "Arbeitsbereichs-Pfad (erforderlich, z. B. ~/projects/my-app)",
     workspacePathOptional:
       "Arbeitsbereichs-Pfad (optional, wird aus zuständiger Person abgeleitet, wenn leer)",
-    logTruncated: "(zeige die letzten 100 KB — vollständiges Log unter ",
+    logTruncated: "(zeige die letzten 100 KB — vollständiges Log under ",
     logAt: ")",
   },
 };

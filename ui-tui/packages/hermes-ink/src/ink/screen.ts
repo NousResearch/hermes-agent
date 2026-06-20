@@ -304,7 +304,7 @@ export class StylePool {
   }
 }
 
-// endCodes that produce visible effects on space characters
+// encodes that produce visible effects on space characters
 const VISIBLE_ON_SPACE = new Set([
   '\x1b[49m', // background color
   '\x1b[27m', // inverse

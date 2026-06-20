@@ -32,7 +32,7 @@ export const fr: Translations = {
     page: "Page",
     msgs: "msgs",
     tools: "outils",
-    match: "correspondance",
+    match: "correspondence",
     other: "Autre",
     configured: "configuré",
     removed: "supprimé",
@@ -287,7 +287,7 @@ export const fr: Translations = {
     nameRequired: "Le nom est requis",
     nameRule:
       "Lettres minuscules, chiffres, _ et - uniquement ; doit commencer par une lettre ou un chiffre ; jusqu'à 64 caractères.",
-    invalidName: "Nom de profil invalide",
+    invalidName: "Nom de profil invalid",
     cloneFrom: "Cloner depuis le profil",
     cloneFromNone: "Aucun (vide)",
     allProfiles: "Profils",
@@ -314,12 +314,12 @@ export const fr: Translations = {
   },
 
   pluginsPage: {
-    contextEngineLabel: "Moteur de contexte",
+    contextEngineLabel: "Motor de contexte",
     dashboardSlots: "Emplacements du tableau de bord",
     disableRuntime: "Désactiver",
     enableAfterInstall: "Activer après l'installation",
     enableRuntime: "Activer",
-    forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existant)",
+    forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existent)",
     headline:
       "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
@@ -331,7 +331,7 @@ export const fr: Translations = {
     missingEnvWarn: "Définissez ces variables dans Clés avant que le plugin puisse s'exécuter:",
     noDashboardTab: "Aucun onglet de tableau de bord",
     openTab: "Ouvrir",
-    orphanHeading: "Extensions du tableau de bord uniquement (aucune correspondance plugin.yaml d'agent)",
+    orphanHeading: "Extensions du tableau de bord uniquement (aucune correspondence plugin.yaml d'agent)",
     pluginListHeading: "Plugins installés",
     providerDefaults: "intégré / par défaut",
     providersHeading: "Plugins fournisseurs d'exécution",
@@ -346,7 +346,7 @@ export const fr: Translations = {
     saveProviders: "Enregistrer les paramètres de fournisseur",
     savedProviders: "Paramètres de fournisseur enregistrés.",
     sourceBadge: "Source",
-    authRequired: "Authentification requise",
+    authRequired: "Authentication requise",
     authRequiredHint: "Exécutez cette commande pour vous authentifier:",
     updateGit: "Git pull",
     versionBadge: "Version",
@@ -394,7 +394,7 @@ export const fr: Translations = {
     failedToSaveYaml: "Échec de l'enregistrement YAML",
     failedToLoadRaw: "Échec du chargement de la configuration brute",
     configImported: "Configuration importée — vérifiez et enregistrez",
-    invalidJson: "Fichier JSON invalide",
+    invalidJson: "Fichier JSON invalid",
     categories: {
       general: "Général",
       agent: "Agent",
@@ -439,13 +439,13 @@ export const fr: Translations = {
   oauth: {
     title: "Connexions fournisseurs (OAuth)",
     providerLogins: "Connexions fournisseurs (OAuth)",
-    description: "{connected} sur {total} fournisseurs OAuth connectés. Les flux de connexion s'exécutent actuellement via le CLI ; cliquez sur Copier la commande et collez-la dans un terminal pour configurer.",
+    description: "{connected} sur {total} fournisseurs OAuth connectés. Les flux de connection s'exécutent actuellement via le CLI ; cliquez sur Copier la commande et collez-la dans un terminal pour configurer.",
     connected: "Connecté",
     expired: "Expiré",
     notConnected: "Non connecté. Exécutez {command} dans un terminal.",
     runInTerminal: "dans un terminal.",
     noProviders: "Aucun fournisseur compatible OAuth détecté.",
-    login: "Connexion",
+    login: "Connection",
     disconnect: "Déconnecter",
     managedExternally: "Géré en externe",
     copied: "Copié ✓",
@@ -453,22 +453,22 @@ export const fr: Translations = {
     copyCliCommand: "Copier la commande CLI (pour externe / repli)",
     connect: "Connecter",
     sessionExpires: "La session expire dans {time}",
-    initiatingLogin: "Lancement du flux de connexion…",
+    initiatingLogin: "Lancement du flux de connection…",
     exchangingCode: "Échange du code contre des jetons…",
     connectedClosing: "Connecté ! Fermeture…",
-    loginFailed: "Échec de la connexion.",
-    sessionExpired: "Session expirée. Cliquez sur Réessayer pour démarrer une nouvelle connexion.",
+    loginFailed: "Échec de la connection.",
+    sessionExpired: "Session expirée. Cliquez sur Réessayer pour démarrer une nouvelle connection.",
     reOpenAuth: "Rouvrir la page d'authentification",
     reOpenVerification: "Rouvrir la page de vérification",
     submitCode: "Soumettre le code",
     pasteCode: "Collez le code d'autorisation (avec suffixe #state accepté)",
-    waitingAuth: "En attente de votre autorisation dans le navigateur…",
+    waitingAuth: "En attente de votre authorisation dans le navigateur…",
     enterCodePrompt: "Un nouvel onglet s'est ouvert. Saisissez ce code si demandé:",
     pkceStep1: "Un nouvel onglet s'est ouvert vers claude.ai. Connectez-vous et cliquez sur Autoriser.",
-    pkceStep2: "Copiez le code d'autorisation affiché après autorisation.",
+    pkceStep2: "Copiez le code d'authorisation affiché après authorisation.",
     pkceStep3: "Collez-le ci-dessous et soumettez.",
     flowLabels: {
-      pkce: "Connexion navigateur (PKCE)",
+      pkce: "Connection navigateur (PKCE)",
       device_code: "Code d'appareil",
       external: "CLI externe",
     },
@@ -488,7 +488,7 @@ export const fr: Translations = {
       kicker: "Agentic Gamerscore",
       title: "Hermes Achievements",
       subtitle:
-        "Badges Hermes à collectionner, gagnés à partir de l'historique réel des sessions. Les succès connus non terminés sont affichés comme Découverts ; les succès secrets restent cachés jusqu'à l'apparition du premier comportement correspondant.",
+        "Badges Hermes à collectionner, gagnés à partir de l'historique réel des sessions. Les succès connus non terminés sont affichés comme Découverts ; les succès secrets restent cachés jusqu'à l'apparition du premier comportement correspondent.",
       scan_subtitle:
         "Analyse de l'historique des sessions Hermes en cours. Le premier scan peut prendre 5 à 10 secondes sur les historiques volumineux.",
     },
@@ -528,9 +528,9 @@ export const fr: Translations = {
         "Lecture des sessions, des appels d'outils, des métadonnées du modèle et de l'état de déblocage.",
       starting_headline: "Démarrage du scan des succès…",
       progress_detail:
-        "{scanned} sessions analysées sur {total} · {pct}%. Les badges se débloquent à mesure que l'historique est traité.",
+        "{scanned} sessions analysées sur {total} · {pct}%. Les badges se débloquent à measure que l'historique est traité.",
       idle_detail:
-        "Lecture des sessions, des appels d'outils, des métadonnées du modèle et de l'état de déblocage. Les badges apparaissent ici à mesure qu'ils se débloquent.",
+        "Lecture des sessions, des appels d'outils, des métadonnées du modèle et de l'état de déblocage. Les badges apparaissent ici à measure qu'ils se débloquent.",
     },
     guide: {
       tiers_header: "Niveaux",
@@ -560,7 +560,7 @@ export const fr: Translations = {
     empty: {
       no_secrets_header: "Plus aucun secret caché dans ce scan.",
       no_secrets_body:
-        "Indice: les secrets démarrent généralement à partir d'échecs inhabituels ou de schémas d'utilisateurs avancés — conflits de ports, murs de permissions, variables d'environnement manquantes, erreurs YAML, collisions Docker, utilisation de rollback/checkpoint, succès de cache ou petits correctifs après beaucoup de texte rouge.",
+        "Indice: les secrets démarrent généralement à partir d'échecs inhabituels ou de schémas d'utilisateurs avancés — conflicts de ports, murs de permissions, variables d'environnement manquantes, erreurs YAML, collisions Docker, utilisation de rollback/checkpoint, succès de cache ou petits correctifs après beaucoup de texte rogue.",
     },
     filters: {
       all_categories: "Tous",
@@ -598,7 +598,7 @@ export const fr: Translations = {
     newBoard: "+ Nouveau tableau",
     newBoardTitle: "Nouveau tableau",
     newBoardDescription:
-      "Les tableaux vous permettent de séparer des flux de travail indépendants — un par projet, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
+      "Les tableaux vous permettent de séparer des flux de travail indépendants — un par project, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
     slug: "Slug",
     slugHint: "— minuscules, tirets, par ex. atm10-server",
     displayName: "Nom affiché",
@@ -748,7 +748,7 @@ export const fr: Translations = {
     workspacePathDir: "chemin du workspace (requis, par ex. ~/projects/my-app)",
     workspacePathOptional:
       "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
-    logTruncated: "(affichage des derniers 100 KB — log complet à ",
+    logTruncated: "(affichage des derniers 100 KB — log complete à ",
     logAt: ")",
   },
 };

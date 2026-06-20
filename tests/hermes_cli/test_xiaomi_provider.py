@@ -29,7 +29,8 @@ class TestXiaomiProviderRegistry:
         assert PROVIDER_REGISTRY["xiaomi"].auth_type == "api_key"
 
     def test_inference_base_url(self):
-        assert PROVIDER_REGISTRY["xiaomi"].inference_base_url == "https://api.xiaomimimo.com/v1"
+        # Default is SGP Token Plan endpoint; users with CN/AMS keys use cluster selector
+        assert PROVIDER_REGISTRY["xiaomi"].inference_base_url == "https://token-plan-sgp.xiaomimimo.com/v1"
 
     def test_api_key_env_vars(self):
         assert PROVIDER_REGISTRY["xiaomi"].api_key_env_vars == ("XIAOMI_API_KEY",)
@@ -109,11 +110,12 @@ class TestXiaomiCredentials:
         assert not status["configured"]
 
     def test_resolve_credentials(self, monkeypatch):
-        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
+        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-xiaomi-key-12345")
         monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
         creds = resolve_api_key_provider_credentials("xiaomi")
-        assert creds["api_key"] == "sk-test-12345678"
-        assert creds["base_url"] == "https://api.xiaomimimo.com/v1"
+        assert creds["api_key"] == "sk-test-xiaomi-key-12345"
+        # Default base_url is SGP Token Plan endpoint
+        assert creds["base_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
 
     def test_custom_base_url_override(self, monkeypatch):
         monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
@@ -372,3 +374,90 @@ class TestXiaomiAgentInit:
         overlay = HERMES_OVERLAYS["xiaomi"]
         api_mode = TRANSPORT_TO_API_MODE[overlay.transport]
         assert api_mode == "chat_completions"
+
+
+# ── Cluster selection tests ──────────────────────────────────────────────
+
+class TestXiaomiClusterConstants:
+    """Verify the Xiaomi MiMo Token Plan cluster endpoint constants."""
+
+    def test_sgp_base_url(self):
+        from hermes_cli.auth import XIAOMI_TOKEN_PLAN_SGP_BASE_URL
+        assert XIAOMI_TOKEN_PLAN_SGP_BASE_URL == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+    def test_cn_base_url(self):
+        from hermes_cli.auth import XIAOMI_TOKEN_PLAN_CN_BASE_URL
+        assert XIAOMI_TOKEN_PLAN_CN_BASE_URL == "https://token-plan-cn.xiaomimimo.com/v1"
+
+    def test_ams_base_url(self):
+        from hermes_cli.auth import XIAOMI_TOKEN_PLAN_AMS_BASE_URL
+        assert XIAOMI_TOKEN_PLAN_AMS_BASE_URL == "https://token-plan-ams.xiaomimimo.com/v1"
+
+    def test_clusters_dict_keys(self):
+        from hermes_cli.auth import XIAOMI_TOKEN_PLAN_CLUSTERS
+        assert set(XIAOMI_TOKEN_PLAN_CLUSTERS.keys()) == {"sgp", "cn", "ams"}
+
+    def test_clusters_dict_values(self):
+        from hermes_cli.auth import XIAOMI_TOKEN_PLAN_CLUSTERS
+        assert XIAOMI_TOKEN_PLAN_CLUSTERS["sgp"].endswith("token-plan-sgp.xiaomimimo.com/v1")
+        assert XIAOMI_TOKEN_PLAN_CLUSTERS["cn"].endswith("token-plan-cn.xiaomimimo.com/v1")
+        assert XIAOMI_TOKEN_PLAN_CLUSTERS["ams"].endswith("token-plan-ams.xiaomimimo.com/v1")
+
+
+class TestXiaomiRegionInference:
+    """Verify _infer_xiaomi_region correctly detects cluster from base URL."""
+
+    @pytest.mark.parametrize("url,expected", [
+        ("https://token-plan-sgp.xiaomimimo.com/v1", "sgp"),
+        ("https://token-plan-cn.xiaomimimo.com/v1", "cn"),
+        ("https://token-plan-ams.xiaomimimo.com/v1", "ams"),
+        ("https://api.xiaomimimo.com/v1", "sgp"),  # unknown URL → default SGP
+        ("", "sgp"),  # empty → default SGP
+        (None, "sgp"),  # None → default SGP
+        ("https://TOKEN-PLAN-CN.xiaomimimo.com/v1", "cn"),  # case-insensitive
+        ("  https://token-plan-ams.xiaomimimo.com/v1  ", "ams"),  # whitespace
+    ])
+    def test_infer_region(self, url, expected):
+        from hermes_cli.main import _infer_xiaomi_region
+        assert _infer_xiaomi_region(url) == expected
+
+
+class TestXiaomiBaseURLForRegion:
+    """Verify _xiaomi_base_url_for_region returns correct URL per cluster."""
+
+    def test_sgp_region(self):
+        from hermes_cli.main import _xiaomi_base_url_for_region
+        assert _xiaomi_base_url_for_region("sgp") == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+    def test_cn_region(self):
+        from hermes_cli.main import _xiaomi_base_url_for_region
+        assert _xiaomi_base_url_for_region("cn") == "https://token-plan-cn.xiaomimimo.com/v1"
+
+    def test_ams_region(self):
+        from hermes_cli.main import _xiaomi_base_url_for_region
+        assert _xiaomi_base_url_for_region("ams") == "https://token-plan-ams.xiaomimimo.com/v1"
+
+    def test_unknown_region_defaults_to_sgp(self):
+        from hermes_cli.main import _xiaomi_base_url_for_region
+        assert _xiaomi_base_url_for_region("unknown") == "https://token-plan-sgp.xiaomimimo.com/v1"
+        assert _xiaomi_base_url_for_region("") == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+
+class TestXiaomiURLMappingRegionalEndpoints:
+    """Verify that CN and AMS regional URLs map to xiaomi provider."""
+
+    def test_cn_token_plan_url_maps_to_xiaomi(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER["token-plan-cn.xiaomimimo.com"] == "xiaomi"
+
+    def test_ams_token_plan_url_maps_to_xiaomi(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER["token-plan-ams.xiaomimimo.com"] == "xiaomi"
+
+    def test_infer_from_cn_url(self):
+        from agent.model_metadata import _infer_provider_from_url
+        assert _infer_provider_from_url("https://token-plan-cn.xiaomimimo.com/v1") == "xiaomi"
+
+    def test_infer_from_ams_url(self):
+        from agent.model_metadata import _infer_provider_from_url
+        assert _infer_provider_from_url("https://token-plan-ams.xiaomimimo.com/v1") == "xiaomi"

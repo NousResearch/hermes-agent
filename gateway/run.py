@@ -20460,6 +20460,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+                # Drain the stream consumer before sending the clarify card.
+                # Without this, streamed text from the same model turn can
+                # arrive AFTER the clarify card on platforms with async
+                # delivery (Telegram), making the card appear above the
+                # question text.  drain() blocks until the background task
+                # has flushed all queued deltas/segment-breaks.
+                _sc = stream_consumer_holder[0] if stream_consumer_holder else None
+                if _sc is not None:
+                    try:
+                        _sc.drain(timeout=2.0)
+                    except Exception:
+                        logger.debug("Stream consumer drain before clarify failed", exc_info=True)
+
                 send_ok = False
                 fut = safe_schedule_threadsafe(
                     _status_adapter.send_clarify(

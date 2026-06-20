@@ -2379,3 +2379,119 @@ class TestStripOrphanCloseTags:
             assert tag not in consumer._accumulated
         assert "trailing prose" in consumer._accumulated
         assert "more" in consumer._accumulated
+
+
+# ── drain() sync barrier tests ──────────────────────────────────────────
+
+
+class TestDrainSync:
+    """Verify drain() blocks the calling thread until the background task
+    has flushed all queued deltas/segment-breaks to the platform."""
+
+    @pytest.mark.asyncio
+    async def test_drain_returns_after_segment_break_processed(self):
+        """drain() should return True after the background task processes
+        a pending _NEW_SEGMENT and the _DRAIN_SYNC sentinel."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.REQUIRES_EDIT_FINALIZE = False
+
+        consumer = GatewayStreamConsumer(adapter, "chat_drain")
+        task = asyncio.create_task(consumer.run())
+
+        # Give the background task a moment to start.
+        await asyncio.sleep(0.1)
+
+        # Queue some text and a segment break.
+        consumer.on_delta("Hello world")
+        consumer.on_delta(None)  # segment break
+
+        # drain() blocks the calling thread — run it in a separate thread
+        # so it doesn't block the event loop that the background task needs.
+        import threading as _t
+        result = {}
+        def _do_drain():
+            result["ok"] = consumer.drain(timeout=3.0)
+        t = _t.Thread(target=_do_drain)
+        t.start()
+
+        # Yield to the event loop so the background task can process
+        # the queue while the drain thread waits.
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while t.is_alive() and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        t.join(timeout=0.1)
+
+        ok = result.get("ok")
+        assert ok is True, "drain() should return True when the event fires"
+
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_drain_timeout_returns_false(self):
+        """drain() should return False on timeout if the background task
+        never processes the sentinel (e.g. it hasn't started yet)."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_timeout")
+
+        # Don't start the background task — drain should time out.
+        # Run in a thread so we don't block the event loop.
+        import threading as _t
+        result = {}
+        def _do_drain():
+            result["ok"] = consumer.drain(timeout=0.1)
+        t = _t.Thread(target=_do_drain)
+        t.start()
+        t.join(timeout=2.0)
+
+        assert result.get("ok") is False, "drain() should return False on timeout"
+
+    @pytest.mark.asyncio
+    async def test_drain_flushes_accumulated_text(self):
+        """drain() should cause accumulated (unflushed) text to be sent
+        to the platform before the event is set."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.REQUIRES_EDIT_FINALIZE = False
+
+        consumer = GatewayStreamConsumer(adapter, "chat_flush")
+        task = asyncio.create_task(consumer.run())
+
+        # Give the background task a moment to start.
+        await asyncio.sleep(0.1)
+
+        # Queue text without a segment break, then drain.
+        consumer.on_delta("Flushing test")
+
+        import threading as _t
+        result = {}
+        def _do_drain():
+            result["ok"] = consumer.drain(timeout=3.0)
+        t = _t.Thread(target=_do_drain)
+        t.start()
+
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while t.is_alive() and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        t.join(timeout=0.1)
+
+        assert result.get("ok") is True
+        # The text should have been sent (either via send or edit_message).
+        assert adapter.send.called or adapter.edit_message.called
+
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=2.0)

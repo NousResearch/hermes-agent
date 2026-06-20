@@ -20,6 +20,7 @@ import inspect
 import logging
 import queue
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -45,6 +46,11 @@ _DONE = object()
 # Sentinel to signal a tool boundary — finalize current message and start a
 # new one so that subsequent text appears below tool progress messages.
 _NEW_SEGMENT = object()
+
+# Sentinel for drain() — the background task sets _drain_event when it
+# processes this, allowing a sync caller on the agent thread to wait until
+# all queued deltas/segment-breaks have been flushed to the platform.
+_DRAIN_SYNC = object()
 
 # Queue marker for a completed assistant commentary message emitted between
 # API/tool iterations (for example: "I'll inspect the repo first.").
@@ -222,6 +228,12 @@ class GatewayStreamConsumer:
         self._draft_failures = 0
         self._before_finalize_notified = False
 
+        # Drain sync: allows a sync caller on the agent thread to wait until
+        # the background task has processed all queued items up to a drain
+        # sentinel.  Used by _clarify_callback_sync to ensure streamed text
+        # is flushed before the clarify card is sent.
+        self._drain_event: threading.Event = threading.Event()
+
     def _metadata_for_send(
         self,
         *,
@@ -384,6 +396,23 @@ class GatewayStreamConsumer:
     def finish(self) -> None:
         """Signal that the stream is complete."""
         self._queue.put(_DONE)
+
+    def drain(self, timeout: float = 2.0) -> bool:
+        """Block the calling (agent) thread until the background task has
+        processed all queued deltas and segment breaks.
+
+        Puts a ``_DRAIN_SYNC`` sentinel at the tail of the queue and waits
+        for the background task to set ``_drain_event``.  This ensures
+        streamed text is fully flushed to the platform before a subsequent
+        sync send (e.g. ``send_clarify``) fires — preventing the clarify
+        card from appearing above the streamed text.
+
+        Returns ``True`` if the drain completed within *timeout*, ``False``
+        on timeout (the caller should proceed anyway rather than hang).
+        """
+        self._drain_event.clear()
+        self._queue.put(_DRAIN_SYNC)
+        return self._drain_event.wait(timeout=timeout)
 
     # ── Think-block filtering ────────────────────────────────────────
     # Models like MiniMax emit inline <think>...</think> blocks in their
@@ -582,6 +611,7 @@ class GatewayStreamConsumer:
                 # Drain all available items from the queue
                 got_done = False
                 got_segment_break = False
+                got_drain_sync = False
                 commentary_text = None
                 while True:
                     try:
@@ -591,6 +621,9 @@ class GatewayStreamConsumer:
                             break
                         if item is _NEW_SEGMENT:
                             got_segment_break = True
+                            break
+                        if item is _DRAIN_SYNC:
+                            got_drain_sync = True
                             break
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
@@ -627,6 +660,7 @@ class GatewayStreamConsumer:
                 should_edit = (
                     got_done
                     or got_segment_break
+                    or got_drain_sync
                     or commentary_text is not None
                 )
                 if not self.cfg.buffer_only:
@@ -857,6 +891,21 @@ class GatewayStreamConsumer:
                     ):
                         await self._flush_segment_tail_on_edit_failure()
                     self._reset_segment_state(preserve_no_edit=True)
+
+                # Drain sync: signal the waiting agent thread that all
+                # queued deltas and segment breaks have been processed.
+                # The caller (drain()) puts _DRAIN_SYNC after any pending
+                # _NEW_SEGMENT, so by the time we get here the segment
+                # break has already been handled above.  Treat drain_sync
+                # like a segment break for state-reset purposes so the
+                # next text block starts a fresh message.
+                if got_drain_sync:
+                    if self._accumulated and not current_update_visible:
+                        # Flush any remaining accumulated text that wasn't
+                        # sent by the should_edit path above.
+                        await self._send_or_edit(self._accumulated, finalize=True)
+                    self._reset_segment_state(preserve_no_edit=True)
+                    self._drain_event.set()
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 

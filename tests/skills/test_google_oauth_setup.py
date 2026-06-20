@@ -18,7 +18,6 @@ SCRIPT_PATH = (
     / "skills/productivity/google-workspace/scripts/setup.py"
 )
 
-
 class FakeCredentials:
     def __init__(self, payload=None):
         self._payload = payload or {
@@ -41,7 +40,6 @@ class FakeCredentials:
 
     def to_json(self):
         return json.dumps(self._payload)
-
 
 class FakeFlow:
     created = []
@@ -131,6 +129,108 @@ def setup_module(monkeypatch, tmp_path):
     module.CLIENT_SECRET_PATH.write_text(json.dumps(client_secret))
     return module
 
+class TestResolveScopes:
+    def test_resolves_calendar_only(self, setup_module):
+        assert setup_module._resolve_scopes("calendar") == [
+            "https://www.googleapis.com/auth/calendar"
+        ]
+
+    def test_resolves_multiple_services_in_request_order(self, setup_module):
+        assert setup_module._resolve_scopes("calendar,gmail") == [
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.modify",
+        ]
+
+    def test_rejects_unknown_service(self, setup_module, capsys):
+        with pytest.raises(SystemExit):
+            setup_module._resolve_scopes("calendar,photos")
+
+        out = capsys.readouterr().out
+        assert "unknown service" in out.lower()
+        assert "calendar" in out
+
+class TestCheckAuth:
+    def _install_fake_credentials(self, monkeypatch, *, valid=True, expired=False, refresh_token=None):
+        class FakeGoogleCredentials:
+            def __init__(self):
+                self.valid = valid
+                self.expired = expired
+                self.refresh_token = refresh_token
+
+            def refresh(self, request):
+                self.valid = True
+                self.expired = False
+
+            def to_json(self):
+                return json.dumps({"token": "***", "scopes": ["https://www.googleapis.com/auth/calendar"]})
+
+        class FakeCredentialsModule:
+            @staticmethod
+            def from_authorized_user_file(filename):
+                return FakeGoogleCredentials()
+
+        credentials_module = types.ModuleType("google.oauth2.credentials")
+        credentials_module.Credentials = FakeCredentialsModule
+        requests_module = types.ModuleType("google.auth.transport.requests")
+        requests_module.Request = lambda: object()
+
+        monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+        monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
+
+    def test_check_auth_accepts_calendar_only_token_for_calendar_service(
+        self, setup_module, monkeypatch, capsys
+    ):
+        calendar_scope = "https://www.googleapis.com/auth/calendar"
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "***", "scopes": [calendar_scope]}))
+        self._install_fake_credentials(monkeypatch)
+
+        assert setup_module.check_auth([calendar_scope]) is True
+
+        out = capsys.readouterr().out
+        assert "AUTHENTICATED" in out
+
+    def test_check_auth_without_required_scopes_preserves_partial_success(
+        self, setup_module, monkeypatch, capsys
+    ):
+        setup_module.TOKEN_PATH.write_text(
+            json.dumps({"token": "***", "scopes": ["https://www.googleapis.com/auth/drive.readonly"]})
+        )
+        self._install_fake_credentials(monkeypatch)
+
+        assert setup_module.check_auth() is True
+
+        out = capsys.readouterr().out
+        assert "AUTHENTICATED (partial)" in out
+
+    def test_check_auth_rejects_token_without_scope_metadata_for_requested_service(
+        self, setup_module, monkeypatch, capsys
+    ):
+        calendar_scope = "https://www.googleapis.com/auth/calendar"
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "***"}))
+        self._install_fake_credentials(monkeypatch)
+
+        assert setup_module.check_auth([calendar_scope]) is False
+
+        out = capsys.readouterr().out
+        assert "NOT_AUTHENTICATED" in out
+        assert calendar_scope in out
+
+    def test_check_auth_rejects_token_missing_requested_service(
+        self, setup_module, monkeypatch, capsys
+    ):
+        calendar_scope = "https://www.googleapis.com/auth/calendar"
+        setup_module.TOKEN_PATH.write_text(
+            json.dumps({"token": "***", "scopes": ["https://www.googleapis.com/auth/drive.readonly"]})
+        )
+        self._install_fake_credentials(monkeypatch)
+
+        assert setup_module.check_auth([calendar_scope]) is False
+
+        out = capsys.readouterr().out
+        assert "NOT_AUTHENTICATED" in out
+        assert calendar_scope in out
 
 class TestGetAuthUrl:
     def test_persists_state_and_code_verifier_for_later_exchange(self, setup_module, capsys):
@@ -147,6 +247,17 @@ class TestGetAuthUrl:
         assert flow.autogenerate_code_verifier is True
         assert flow.authorization_kwargs == {"access_type": "offline", "prompt": "consent"}
 
+    def test_accepts_calendar_only_service_set(self, setup_module, capsys):
+        setup_module.get_auth_url(services="calendar", output_format="json")
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["auth_url"] == "https://auth.example/authorize?state=generated-state"
+        assert out["scopes"] == ["https://www.googleapis.com/auth/calendar"]
+
+        saved = json.loads(setup_module.PENDING_AUTH_PATH.read_text())
+        assert saved["scopes"] == ["https://www.googleapis.com/auth/calendar"]
+        flow = FakeFlow.created[-1]
+        assert flow.scopes == ["https://www.googleapis.com/auth/calendar"]
 
 class TestExchangeAuthCode:
     def test_reuses_saved_pkce_material_for_plain_code(self, setup_module):
@@ -257,6 +368,31 @@ class TestExchangeAuthCode:
         # Pending auth is cleaned up
         assert not setup_module.PENDING_AUTH_PATH.exists()
 
+    def test_uses_pending_calendar_only_scopes_when_callback_has_no_scope(self, setup_module, capsys):
+        calendar_scope = "https://www.googleapis.com/auth/calendar"
+        setup_module.PENDING_AUTH_PATH.write_text(
+            json.dumps({
+                "state": "saved-state",
+                "code_verifier": "saved-verifier",
+                "scopes": [calendar_scope],
+            })
+        )
+        FakeFlow.credentials_payload = {
+            "token": "***",
+            "refresh_token": "***",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "scopes": [calendar_scope],
+        }
+
+        setup_module.exchange_auth_code("4/test-auth-code")
+
+        flow = FakeFlow.created[-1]
+        assert flow.scopes == [calendar_scope]
+        assert "missing" not in capsys.readouterr().out.lower()
+        saved = json.loads(setup_module.TOKEN_PATH.read_text())
+        assert saved["scopes"] == [calendar_scope]
 
 class TestHermesConstantsFallback:
     """Tests for _hermes_home.py fallback when hermes_constants is unavailable."""

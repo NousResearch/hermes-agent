@@ -13,6 +13,7 @@ import fnmatch
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -653,6 +654,52 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return command
 
 
+def _is_tmp_delete_command(command: str) -> bool:
+    """Return True for simple rm commands that delete only /tmp paths.
+
+    The approval system intentionally does not prompt for deleting files under
+    /tmp, but it should still prompt for any other absolute root-level target.
+    Keep this conservative: only bypass approval for a single rm command whose
+    non-option operands are all /tmp or descendants of /tmp.
+    """
+    normalized = _normalize_command_for_detection(command).strip()
+    if not normalized:
+        return False
+    if re.search(r'(?:^|\s)(?:&&|\|\||[;|])(?:\s|$)|\n', normalized):
+        return False
+    try:
+        tokens = shlex.split(normalized)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+
+    index = 0
+    if tokens[index] == "sudo":
+        index += 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            index += 1
+    if index >= len(tokens) or tokens[index] != "rm":
+        return False
+
+    operands = []
+    for token in tokens[index + 1:]:
+        if token == "--":
+            continue
+        if token.startswith("-"):
+            continue
+        operands.append(token)
+
+    if not operands:
+        return False
+    return all(
+        operand == "/tmp"
+        or operand.startswith("/tmp/")
+        or operand == "/tmp/*"
+        for operand in operands
+    )
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -662,6 +709,12 @@ def detect_dangerous_command(command: str) -> tuple:
     command_lower = _normalize_command_for_detection(command).lower()
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):
+            if description in {
+                "delete in root path",
+                "recursive delete",
+                "recursive delete (long flag)",
+            } and _is_tmp_delete_command(command_lower):
+                continue
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)

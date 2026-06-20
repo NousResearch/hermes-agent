@@ -53,8 +53,14 @@ class TestDetectDangerousRm:
         assert key is not None
         assert "delete" in desc.lower()
 
-    def test_rm_recursive_long_flag(self):
+    def test_rm_recursive_long_flag_in_tmp_not_flagged(self):
         is_dangerous, key, desc = detect_dangerous_command("rm --recursive /tmp/stuff")
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_rm_recursive_long_flag_outside_tmp_detected(self):
+        is_dangerous, key, desc = detect_dangerous_command("rm --recursive /var/stuff")
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
@@ -231,8 +237,14 @@ class TestRmRecursiveFlagVariants:
         assert key is not None
         assert "recursive" in desc.lower() or "delete" in desc.lower()
 
-    def test_rm_rf(self):
+    def test_rm_rf_tmp_not_flagged(self):
         dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/test")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_rm_rf_root_level_outside_tmp_detected(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf /opt/test")
         assert dangerous is True
         assert key is not None
 
@@ -251,13 +263,31 @@ class TestRmRecursiveFlagVariants:
         assert dangerous is True
         assert key is not None
 
-    def test_rm_recursive_long(self):
+    def test_rm_recursive_long_tmp_not_flagged(self):
         dangerous, key, desc = detect_dangerous_command("rm --recursive /tmp")
-        assert dangerous is True
-        assert "delete" in desc.lower()
+        assert dangerous is False
+        assert key is None
+        assert desc is None
 
-    def test_sudo_rm_rf(self):
+    def test_sudo_rm_rf_tmp_not_flagged(self):
         dangerous, key, desc = detect_dangerous_command("sudo rm -rf /tmp")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_rm_multiple_tmp_targets_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/a /tmp/b")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_rm_mixed_tmp_and_other_root_detected(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/a /var/b")
+        assert dangerous is True
+        assert key is not None
+
+    def test_rm_tmp_compound_command_still_detected(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/a && rm -rf /opt/b")
         assert dangerous is True
         assert key is not None
 

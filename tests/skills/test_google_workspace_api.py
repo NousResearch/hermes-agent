@@ -229,6 +229,134 @@ def test_api_calendar_list_respects_date_range(api_module):
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
 
 
+def test_api_calendar_list_calendars_uses_calendar_list(api_module, capsys):
+    """calendar list-calendars calls calendarList.list and normalizes output."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "items": [
+                    {
+                        "id": "primary",
+                        "summary": "Personal",
+                        "primary": True,
+                        "accessRole": "owner",
+                        "timeZone": "America/Toronto",
+                    }
+                ]
+            }),
+            stderr="",
+        )
+
+    args = api_module.argparse.Namespace(
+        max=0,
+        min_access_role="",
+        show_deleted=False,
+        show_hidden=False,
+        page_token="",
+        sync_token="",
+        func=api_module.calendar_list_calendars,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_list_calendars(args)
+
+    assert captured["cmd"][:4] == ["/usr/bin/gws", "calendar", "calendarList", "list"]
+    assert "--params" not in captured["cmd"]
+    out = json.loads(capsys.readouterr().out)
+    assert out == [
+        {
+            "id": "primary",
+            "summary": "Personal",
+            "primary": True,
+            "accessRole": "owner",
+            "timeZone": "America/Toronto",
+            "backgroundColor": "",
+            "selected": False,
+        }
+    ]
+
+
+def test_api_calendar_list_calendars_passes_optional_params(api_module):
+    """calendar list-calendars exposes CalendarList.list filter/paging options."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
+    args = api_module.argparse.Namespace(
+        max=10,
+        min_access_role="writer",
+        show_deleted=True,
+        show_hidden=True,
+        page_token="page-1",
+        sync_token="sync-1",
+        func=api_module.calendar_list_calendars,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_list_calendars(args)
+
+    params = json.loads(captured["cmd"][captured["cmd"].index("--params") + 1])
+    assert params == {
+        "maxResults": 10,
+        "minAccessRole": "writer",
+        "showDeleted": True,
+        "showHidden": True,
+        "pageToken": "page-1",
+        "syncToken": "sync-1",
+    }
+
+
+def test_api_calendar_create_calendar_uses_calendars_insert(api_module, capsys):
+    """calendar create-calendar calls calendars.insert with optional fields."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "id": "concerts@example.com",
+                "summary": "Concerts",
+                "timeZone": "America/Toronto",
+            }),
+            stderr="",
+        )
+
+    args = api_module.argparse.Namespace(
+        summary="Concerts",
+        description="Shows",
+        location="Toronto",
+        timezone="America/Toronto",
+        func=api_module.calendar_create_calendar,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_create_calendar(args)
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["/usr/bin/gws", "calendar", "calendars", "insert"]
+    body = json.loads(cmd[cmd.index("--json") + 1])
+    assert body == {
+        "summary": "Concerts",
+        "description": "Shows",
+        "location": "Toronto",
+        "timeZone": "America/Toronto",
+    }
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "status": "created",
+        "id": "concerts@example.com",
+        "summary": "Concerts",
+        "timeZone": "America/Toronto",
+    }
+
+
 @pytest.mark.parametrize(
     "header_names",
     [

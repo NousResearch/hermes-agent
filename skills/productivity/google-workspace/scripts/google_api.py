@@ -11,7 +11,9 @@ Usage:
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py calendar list-calendars
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
+  python google_api.py calendar create-calendar --summary "Team Calendar" [--timezone America/Toronto]
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
   python google_api.py sheets get SHEET_ID RANGE
@@ -562,6 +564,64 @@ def calendar_delete(args):
     service = build_service("calendar", "v3")
     service.events().delete(calendarId=args.calendar, eventId=args.event_id).execute()
     print(json.dumps({"status": "deleted", "eventId": args.event_id}))
+
+
+def calendar_list_calendars(args):
+    params = {}
+    if args.max:
+        params["maxResults"] = args.max
+    if args.min_access_role:
+        params["minAccessRole"] = args.min_access_role
+    if args.show_deleted:
+        params["showDeleted"] = True
+    if args.show_hidden:
+        params["showHidden"] = True
+    if args.page_token:
+        params["pageToken"] = args.page_token
+    if args.sync_token:
+        params["syncToken"] = args.sync_token
+
+    if _gws_binary():
+        results = _run_gws(["calendar", "calendarList", "list"], params=params or None)
+    else:
+        service = build_service("calendar", "v3")
+        results = service.calendarList().list(**params).execute()
+
+    calendars = []
+    for calendar in results.get("items", []):
+        calendars.append({
+            "id": calendar.get("id", ""),
+            "summary": calendar.get("summary", ""),
+            "primary": calendar.get("primary", False),
+            "accessRole": calendar.get("accessRole", ""),
+            "timeZone": calendar.get("timeZone", ""),
+            "backgroundColor": calendar.get("backgroundColor", ""),
+            "selected": calendar.get("selected", False),
+        })
+    print(json.dumps(calendars, indent=2, ensure_ascii=False))
+
+
+def calendar_create_calendar(args):
+    body = {"summary": args.summary}
+    if args.description:
+        body["description"] = args.description
+    if args.location:
+        body["location"] = args.location
+    if args.timezone:
+        body["timeZone"] = args.timezone
+
+    if _gws_binary():
+        result = _run_gws(["calendar", "calendars", "insert"], body=body)
+    else:
+        service = build_service("calendar", "v3")
+        result = service.calendars().insert(body=body).execute()
+
+    print(json.dumps({
+        "status": "created",
+        "id": result.get("id", ""),
+        "summary": result.get("summary", ""),
+        "timeZone": result.get("timeZone", ""),
+    }, indent=2, ensure_ascii=False))
 
 
 # =========================================================================
@@ -1118,6 +1178,27 @@ def main():
     p.add_argument("event_id")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_delete)
+
+    p = cal_sub.add_parser("list-calendars", help="List calendars available to the account")
+    p.add_argument("--max", type=int, default=0, help="Maximum calendars to return")
+    p.add_argument(
+        "--min-access-role",
+        default="",
+        choices=["", "freeBusyReader", "owner", "reader", "writer"],
+        help="Filter by minimum access role",
+    )
+    p.add_argument("--show-deleted", action="store_true", help="Include deleted calendar list entries")
+    p.add_argument("--show-hidden", action="store_true", help="Include hidden calendars")
+    p.add_argument("--page-token", default="", help="Page token for pagination")
+    p.add_argument("--sync-token", default="", help="Sync token for incremental calendar list sync")
+    p.set_defaults(func=calendar_list_calendars)
+
+    p = cal_sub.add_parser("create-calendar", help="Create a new calendar")
+    p.add_argument("--summary", required=True)
+    p.add_argument("--description", default="")
+    p.add_argument("--location", default="")
+    p.add_argument("--timezone", default="", help="IANA timezone, e.g. America/Toronto")
+    p.set_defaults(func=calendar_create_calendar)
 
     # --- Drive ---
     drv = sub.add_parser("drive")

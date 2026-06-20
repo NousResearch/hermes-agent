@@ -390,14 +390,19 @@ class TestCheckStructure:
         findings = _check_structure(tmp_path)
         assert any(fi.pattern_id == "binary_file" for fi in findings)
 
+    @pytest.mark.skipif(
+        not _can_symlink(), reason="Symlinks need elevated privileges"
+    )
     def test_symlink_escape(self, tmp_path):
         target = tmp_path / "outside"
         target.mkdir()
+
         link = tmp_path / "skill" / "escape"
         (tmp_path / "skill").mkdir()
         link.symlink_to(target)
         findings = _check_structure(tmp_path / "skill")
         assert any(fi.pattern_id == "symlink_escape" for fi in findings)
+
 
     @pytest.mark.skipif(
         not _can_symlink(), reason="Symlinks need elevated privileges"

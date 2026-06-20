@@ -136,7 +136,9 @@ in-process component is operator review before install (§2.4,
 ### 2.4 In-Process Heuristics
 
 The following components screen or warn about LLM behavior. They
-are useful. They are not boundaries.
+are useful. They are not boundaries. The operational contract for
+sandbox and approval settings is documented in
+[`docs/security/sandbox-approval-policy.md`](docs/security/sandbox-approval-policy.md).
 
 - The **approval gate** detects common destructive shell patterns
   and prompts the operator before execution. Shell is Turing-

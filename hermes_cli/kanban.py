@@ -737,6 +737,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="With --state-type: keep runs whose column equals this value",
     )
 
+    # --- liveness (read-only board health digest) ---
+    p_live = sub.add_parser(
+        "liveness",
+        help="Read-only board liveness scanner / health digest",
+    )
+    p_live.add_argument("--tenant", default=None, help="Only scan tasks for this tenant")
+    p_live.add_argument(
+        "--ready-sla-minutes",
+        type=int,
+        default=240,
+        help="Ready-task age threshold before reporting a stale-ready finding",
+    )
+    p_live.add_argument("--json", action="store_true", help="Emit hermes.kanban_liveness.v1 JSON")
+
     # --- heartbeat (worker liveness signal) ---
     p_hb = sub.add_parser(
         "heartbeat",
@@ -950,6 +964,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "stats":    _cmd_stats,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
+            "liveness": _cmd_liveness,
             "heartbeat": _cmd_heartbeat,
             "assignees": _cmd_assignees,
             "notify-subscribe":   _cmd_notify_subscribe,
@@ -1250,6 +1265,35 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "by default (config: kanban.dispatch_interval_seconds). Without a\n"
         "running gateway, tasks stay in 'ready' forever."
     )
+    return 0
+
+
+def _cmd_liveness(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_liveness
+
+    with kb.connect_closing() as conn:
+        payload = kanban_liveness.scan_liveness(
+            conn,
+            tenant=getattr(args, "tenant", None),
+            ready_sla_minutes=getattr(args, "ready_sla_minutes", 240),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    summary = payload.get("summary") or {}
+    print(
+        f"Board health: {summary.get('health')} "
+        f"({summary.get('finding_count', 0)} finding(s), "
+        f"{summary.get('active_count', 0)} active task(s))"
+    )
+    for finding in payload.get("findings") or []:
+        print(
+            f"- [{finding.get('severity')}] {finding.get('kind')}: "
+            f"{finding.get('task_id')} {finding.get('title')}"
+        )
+        detail = finding.get("detail")
+        if detail:
+            print(f"  {detail}")
     return 0
 
 

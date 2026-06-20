@@ -5468,6 +5468,191 @@ class DispatchResult:
     actively preventing two dispatchers from racing on ``kanban.db``."""
 
 
+@dataclass
+class ReviewVerdictConsumptionResult:
+    """Summary returned by :func:`consume_review_verdicts`."""
+
+    consumed_review_verdicts: list[str] = field(default_factory=list)
+    created_review_verdict_followups: list[str] = field(default_factory=list)
+    skipped_review_verdicts: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _extract_review_verdict(metadata: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return None
+    source = (
+        metadata.get("review_of")
+        or metadata.get("subject_task_id")
+        or metadata.get("source_task_id")
+    )
+    if not source:
+        return None
+    raw_verdict = metadata.get("verdict")
+    if not raw_verdict and metadata.get("approved") is True:
+        raw_verdict = "APPROVED"
+    verdict = str(raw_verdict or "").strip().upper()
+    if verdict in {"GO", "PASS"}:
+        verdict = "APPROVED"
+    if verdict in {"REJECTED", "REQUEST_CHANGES", "REQUESTED_CHANGES"}:
+        verdict = "CHANGES_REQUESTED"
+    if verdict not in {
+        "APPROVED",
+        "CHANGES_REQUESTED",
+        "INSUFFICIENT_EVIDENCE",
+        "STOP_RED_HUMAN",
+    }:
+        return None
+    return {
+        "source_task_id": str(source).strip(),
+        "verdict": verdict,
+        "summary": str(metadata.get("summary") or metadata.get("review_summary") or "").strip(),
+    }
+
+
+def _review_verdict_already_consumed(conn: sqlite3.Connection, review_task_id: str) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_verdict_consumed' LIMIT 1",
+        (review_task_id,),
+    ).fetchone())
+
+
+def _latest_completed_review_verdict_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT r.id AS run_id, r.task_id AS review_task_id, r.metadata,
+               r.summary, r.ended_at, t.title AS review_title
+          FROM task_runs r
+          JOIN tasks t ON t.id = r.task_id
+         WHERE r.outcome = 'completed'
+           AND r.metadata IS NOT NULL
+         ORDER BY COALESCE(r.ended_at, r.started_at, 0) ASC, r.id ASC
+        """
+    ).fetchall()
+
+
+def consume_review_verdicts(conn: sqlite3.Connection) -> ReviewVerdictConsumptionResult:
+    """Consume completed independent-review verdicts exactly once.
+
+    The reconciler and dispatcher need a canonical Python primitive, not a
+    removed CLI verb. Completed review tasks advertise their source with
+    ``metadata.review_of`` / ``subject_task_id`` / ``source_task_id`` and a
+    normalized verdict. This function is idempotent via a
+    ``review_verdict_consumed`` event on the review task.
+    """
+    result = ReviewVerdictConsumptionResult()
+    for row in _latest_completed_review_verdict_rows(conn):
+        review_task_id = str(row["review_task_id"])
+        if _review_verdict_already_consumed(conn, review_task_id):
+            continue
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except Exception:
+            result.skipped_review_verdicts.append({
+                "review_task_id": review_task_id,
+                "reason": "metadata_parse_failed",
+            })
+            continue
+        verdict_doc = _extract_review_verdict(metadata)
+        if not verdict_doc:
+            continue
+        source_id = verdict_doc["source_task_id"]
+        source = get_task(conn, source_id)
+        if source is None:
+            result.skipped_review_verdicts.append({
+                "review_task_id": review_task_id,
+                "source_task_id": source_id,
+                "reason": "missing_source_task",
+            })
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    review_task_id,
+                    "review_verdict_consumed",
+                    {**verdict_doc, "action": "skipped_missing_source"},
+                    run_id=int(row["run_id"]),
+                )
+            continue
+        verdict = verdict_doc["verdict"]
+        payload = {
+            **verdict_doc,
+            "review_task_id": review_task_id,
+            "review_run_id": int(row["run_id"]),
+        }
+        created_followup: Optional[str] = None
+        if verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE"}:
+            title_prefix = (
+                "Address review changes for"
+                if verdict == "CHANGES_REQUESTED"
+                else "Provide review evidence for"
+            )
+            followup_body = (
+                "Created by kanban verdict consumer.\n"
+                f"source_task_id={source_id}\n"
+                f"review_task_id={review_task_id}\n"
+                f"review_run_id={int(row['run_id'])}\n"
+                f"verdict={verdict}\n\n"
+                f"Review summary: {verdict_doc.get('summary') or row['summary'] or ''}\n\n"
+                "Do not treat this as approval to apply/restart/deploy/push/merge. Preserve Red gates."
+            )
+            created_followup = create_task(
+                conn,
+                title=f"{title_prefix} {source_id}",
+                body=followup_body,
+                assignee=source.assignee,
+                created_by="kanban-verdict-consumer",
+                tenant=source.tenant,
+                priority=source.priority,
+                initial_status="blocked",
+                idempotency_key=f"review-verdict:{review_task_id}:{source_id}:{verdict}",
+            )
+            payload["created_followup"] = created_followup
+        with write_txn(conn):
+            if verdict == "APPROVED":
+                if source.status in {"blocked", "scheduled"}:
+                    next_status = "ready"
+                    # Preserve dependency semantics: if any parent is still open,
+                    # park in todo until recompute_ready can promote it.
+                    open_parent = conn.execute(
+                        "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+                        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+                        (source_id,),
+                    ).fetchone()
+                    if open_parent:
+                        next_status = "todo"
+                    conn.execute(
+                        "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                        "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+                        (next_status, source_id),
+                    )
+                _append_event(conn, source_id, "review_verdict_approved", payload)
+            elif verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE"}:
+                _append_event(conn, source_id, "review_verdict_followup_created", payload)
+            elif verdict == "STOP_RED_HUMAN":
+                _append_event(conn, source_id, "review_verdict_red_hold", payload)
+            _append_event(
+                conn,
+                review_task_id,
+                "review_verdict_consumed",
+                payload,
+                run_id=int(row["run_id"]),
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    source_id,
+                    "kanban-verdict-consumer",
+                    f"Consumed review verdict {verdict} from {review_task_id}."
+                    + (f" Created follow-up {created_followup}." if created_followup else ""),
+                    int(time.time()),
+                ),
+            )
+        result.consumed_review_verdicts.append(source_id)
+        if created_followup:
+            result.created_review_verdict_followups.append(created_followup)
+    return result
+
+
 # Bounded registry of recently-reaped worker child exits, populated by the
 # reap loop at the top of ``dispatch_once`` and consulted by
 # ``detect_crashed_workers`` to classify a dead-pid task.

@@ -367,6 +367,37 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _check_gateway_transport_liveness(issues: list[str]) -> None:
+    """Fail doctor when the gateway process is alive but transport is wedged."""
+    try:
+        from gateway.status import (
+            classify_gateway_transport_liveness,
+            read_runtime_status,
+        )
+    except Exception as e:
+        check_warn("Gateway transport liveness", f"(could not import status helpers: {e})")
+        return
+
+    state = read_runtime_status()
+    if not state:
+        return
+
+    liveness = classify_gateway_transport_liveness(state)
+    if liveness.get("healthy"):
+        check_ok("Gateway transport liveness", "(runtime status healthy)")
+        return
+
+    _section("Gateway Transport")
+    for issue in liveness.get("platforms", []):
+        platform = issue.get("platform") or "gateway"
+        code = issue.get("code") or "transport_unhealthy"
+        summary = issue.get("summary") or "transport unhealthy"
+        repair = issue.get("recommended_repair") or "Restart the affected gateway profile"
+        check_fail(f"{platform}: {code}", f"({summary})")
+        check_info(repair)
+        issues.append(f"{code}: {summary}; {repair}")
+
+
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
@@ -1300,6 +1331,7 @@ def run_doctor(args):
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
+    _check_gateway_transport_liveness(issues)
 
     if sys.platform != "win32":
         _section("Command Installation")

@@ -3804,6 +3804,13 @@ def launchd_status(deep: bool = False):
         print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")
 
+    runtime_lines = _runtime_health_lines()
+    if runtime_lines:
+        print()
+        print("Recent gateway health:")
+        for line in runtime_lines:
+            print(f"  {line}")
+
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"
         if log_file.exists():
@@ -4931,7 +4938,11 @@ def _platform_status(platform: dict) -> str:
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status
+        from gateway.status import (
+            classify_gateway_log_line,
+            classify_gateway_transport_liveness,
+            read_runtime_status,
+        )
     except Exception:
         return []
 
@@ -4945,11 +4956,37 @@ def _runtime_health_lines() -> list[str]:
     active_agents = state.get("active_agents")
     restart_requested = state.get("restart_requested")
     platforms = state.get("platforms", {}) or {}
+    liveness = classify_gateway_transport_liveness(state)
+    seen_codes = set()
+
+    for issue in liveness.get("platforms", []):
+        platform = issue.get("platform") or "gateway"
+        code = issue.get("code") or "transport_unhealthy"
+        seen_codes.add(code)
+        summary = issue.get("summary") or "transport unhealthy"
+        repair = issue.get("recommended_repair")
+        detail = f"{summary} [{code}]"
+        if repair:
+            detail = f"{detail}; repair: {repair}"
+        lines.append(f"⚠ {platform}: {detail}")
 
     for platform, pdata in platforms.items():
         if pdata.get("state") == "fatal":
             message = pdata.get("error_message") or "unknown error"
             lines.append(f"⚠ {platform}: {message}")
+
+    for issue in _recent_gateway_log_transport_issues(classify_gateway_log_line):
+        code = issue.get("code") or "transport_unhealthy"
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
+        platform = issue.get("platform") or "gateway"
+        summary = issue.get("summary") or "transport unhealthy"
+        repair = issue.get("recommended_repair")
+        detail = f"{summary} [{code}]"
+        if repair:
+            detail = f"{detail}; repair: {repair}"
+        lines.append(f"⚠ {platform}: {detail}")
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
@@ -4961,6 +4998,33 @@ def _runtime_health_lines() -> list[str]:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
 
     return lines
+
+
+def _recent_gateway_log_transport_issues(classifier) -> list[dict]:
+    log_file = get_hermes_home() / "logs" / "gateway.log"
+    if not log_file.exists():
+        return []
+    try:
+        with log_file.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 65536), os.SEEK_SET)
+            raw = handle.read()
+    except OSError:
+        return []
+
+    issues: list[dict] = []
+    seen_codes: set[str] = set()
+    for line in reversed(raw.decode("utf-8", errors="replace").splitlines()[-200:]):
+        issue = classifier(line)
+        if not issue:
+            continue
+        code = issue.get("code")
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
+        issues.append(issue)
+    return list(reversed(issues))
 
 
 def _setup_standard_platform(platform: dict):

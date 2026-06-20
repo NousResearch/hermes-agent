@@ -42,7 +42,7 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -3623,15 +3623,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform_state: Optional[str] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
+        polling_state: Optional[str] = None,
+        reconnect_failure_count: Optional[int] = None,
+        last_successful_poll_at: Optional[str] = None,
+        transport_paused: Optional[bool] = None,
     ) -> None:
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(
-                platform=platform,
-                platform_state=platform_state,
-                error_code=error_code,
-                error_message=error_message,
-            )
+            kwargs = {
+                "platform": platform,
+                "platform_state": platform_state,
+                "error_code": error_code,
+                "error_message": error_message,
+            }
+            if polling_state is not None:
+                kwargs["polling_state"] = polling_state
+            if reconnect_failure_count is not None:
+                kwargs["reconnect_failure_count"] = reconnect_failure_count
+            if last_successful_poll_at is not None:
+                kwargs["last_successful_poll_at"] = last_successful_poll_at
+            if transport_paused is not None:
+                kwargs["transport_paused"] = transport_paused
+            write_runtime_status(**kwargs)
         except Exception:
             pass
 
@@ -3667,6 +3680,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_state="paused",
                 error_code=None,
                 error_message=info["pause_reason"],
+                polling_state="paused",
+                reconnect_failure_count=info.get("attempts", 0),
+                transport_paused=True,
             )
         except Exception:
             pass
@@ -3698,6 +3714,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_state="retrying",
                 error_code=None,
                 error_message=None,
+                polling_state="retrying",
+                reconnect_failure_count=0,
+                transport_paused=False,
             )
         except Exception:
             pass
@@ -6248,6 +6267,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             platform_state="connected",
                             error_code=None,
                             error_message=None,
+                            polling_state="connected",
+                            reconnect_failure_count=0,
+                            last_successful_poll_at=(
+                                datetime.now(timezone.utc).isoformat()
+                                if platform.value == "telegram"
+                                else None
+                            ),
+                            transport_paused=False,
                         )
                         logger.info("✓ %s reconnected successfully", platform.value)
 
@@ -6300,6 +6327,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             platform_state="retrying",
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message or "failed to reconnect",
+                            polling_state="retrying",
+                            reconnect_failure_count=attempt,
+                            transport_paused=False,
                         )
                         backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                         info["attempts"] = attempt
@@ -6338,6 +6368,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         platform_state="retrying",
                         error_code=None,
                         error_message=str(e),
+                        polling_state="retrying",
+                        reconnect_failure_count=attempt,
+                        transport_paused=False,
                     )
                     backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                     info["attempts"] = attempt

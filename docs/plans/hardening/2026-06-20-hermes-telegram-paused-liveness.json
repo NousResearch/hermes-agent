@@ -1,0 +1,32 @@
+{
+  "id": "HARDENING-HERMES-TELEGRAM-PAUSED-LIVENESS-2026-06-20",
+  "source_finding": {
+    "status": "restored",
+    "severity": "operational_reliability_incident",
+    "root_cause_class": "gateway_transport_liveness_failure",
+    "symptom": "Hermes gateway process remained alive while Telegram polling paused after repeated reconnect failures, causing conductor silence."
+  },
+  "fix_packet": {
+    "runtime_classifier": "gateway.status.classify_gateway_transport_liveness",
+    "log_classifier": "gateway.status.classify_gateway_log_line",
+    "doctor_surface": "hermes doctor reports HERMES_TELEGRAM_PAUSED or HERMES_TELEGRAM_STALE as red failures",
+    "status_surface": "hermes gateway status reports behavior-level transport health even when PID exists",
+    "dashboard_surface": "/api/status returns gateway_liveness",
+    "repair": "Restart only the affected Hermes gateway profile."
+  },
+  "exit_criteria": [
+    "Paused Telegram runtime state fails red with code HERMES_TELEGRAM_PAUSED while PID metadata exists.",
+    "Stale Telegram last_successful_poll_at fails red with code HERMES_TELEGRAM_STALE.",
+    "Fresh connected Telegram state remains healthy.",
+    "Pause log signature classifies as HERMES_TELEGRAM_PAUSED.",
+    "Runbook separates Hermes transport health from Qwen/Ollama/Postgres/API health."
+  ],
+  "recheck": {
+    "commands": [
+      "scripts/run_tests.sh tests/gateway/test_status_transport_liveness.py tests/hermes_cli/test_gateway_runtime_health.py tests/gateway/test_telegram_network_reconnect.py",
+      ".venv/bin/python -m pytest tests/hermes_cli/test_doctor.py::test_check_gateway_transport_liveness_fails_paused_telegram -q",
+      "python -m py_compile gateway/status.py gateway/run.py gateway/platforms/telegram.py hermes_cli/gateway.py hermes_cli/doctor.py hermes_cli/web_server.py"
+    ],
+    "status": "rechecked_pass"
+  }
+}

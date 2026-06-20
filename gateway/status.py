@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -34,6 +35,11 @@ _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
+HERMES_TELEGRAM_PAUSED = "HERMES_TELEGRAM_PAUSED"
+HERMES_TELEGRAM_STALE = "HERMES_TELEGRAM_STALE"
+HERMES_RESTART_PROFILE_REPAIR = (
+    "Restart only this Hermes gateway profile: hermes gateway restart"
+)
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
@@ -72,6 +78,170 @@ def _get_lock_dir() -> Path:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _transport_issue(
+    *,
+    platform: str,
+    code: str,
+    summary: str,
+    state: Optional[str] = None,
+    reconnect_failure_count: Optional[int] = None,
+    last_successful_poll_at: Optional[str] = None,
+) -> dict[str, Any]:
+    return {
+        "platform": platform,
+        "healthy": False,
+        "code": code,
+        "summary": summary,
+        "state": state,
+        "reconnect_failure_count": reconnect_failure_count,
+        "last_successful_poll_at": last_successful_poll_at,
+        "recommended_repair": HERMES_RESTART_PROFILE_REPAIR,
+    }
+
+
+_TELEGRAM_PAUSED_RE = re.compile(
+    r"\btelegram\b.*\bpaused after\s+(\d+)\s+consecutive(?:\s+\w+)?\s+failures?\b",
+    re.IGNORECASE,
+)
+
+
+def classify_gateway_log_line(line: str) -> Optional[dict[str, Any]]:
+    """Classify gateway log lines that imply transport liveness failure."""
+    match = _TELEGRAM_PAUSED_RE.search(line or "")
+    if not match:
+        return None
+
+    count = _coerce_int(match.group(1))
+    summary = "Telegram polling paused"
+    if count is not None:
+        summary = f"{summary} after {count} reconnect failures"
+    return _transport_issue(
+        platform="telegram",
+        code=HERMES_TELEGRAM_PAUSED,
+        summary=summary,
+        state="paused",
+        reconnect_failure_count=count,
+    )
+
+
+def classify_gateway_transport_liveness(
+    state: Optional[dict[str, Any]],
+    *,
+    stale_after_seconds: int = 900,
+    now: Any = None,
+) -> dict[str, Any]:
+    """Classify behavior-level gateway transport health from runtime status.
+
+    PID/process checks answer "is the gateway process alive?" This answers
+    whether a messaging transport is still usable. A paused Telegram polling
+    transport is unhealthy even when the gateway process remains alive.
+    """
+    now_dt = _coerce_datetime(now) or datetime.now(timezone.utc)
+    issues: list[dict[str, Any]] = []
+
+    if isinstance(state, dict):
+        platforms = state.get("platforms") or {}
+        if isinstance(platforms, dict):
+            for platform, raw_platform_state in platforms.items():
+                if not isinstance(raw_platform_state, dict):
+                    continue
+                platform_name = str(platform)
+                platform_key = platform_name.lower()
+                transport_state = str(raw_platform_state.get("state") or "").lower()
+                polling_state = str(
+                    raw_platform_state.get("polling_state") or transport_state
+                ).lower()
+                reconnect_failure_count = _coerce_int(
+                    raw_platform_state.get("reconnect_failure_count")
+                )
+                last_successful_poll_at = raw_platform_state.get("last_successful_poll_at")
+                paused = (
+                    bool(raw_platform_state.get("transport_paused"))
+                    or transport_state == "paused"
+                    or polling_state == "paused"
+                )
+
+                if platform_key == "telegram" and paused:
+                    summary = "Telegram polling paused"
+                    if reconnect_failure_count is not None:
+                        summary += f" after {reconnect_failure_count} reconnect failures"
+                    error_message = raw_platform_state.get("error_message")
+                    if error_message:
+                        summary += f": {error_message}"
+                    issues.append(_transport_issue(
+                        platform=platform_name,
+                        code=HERMES_TELEGRAM_PAUSED,
+                        summary=summary,
+                        state=transport_state or polling_state or None,
+                        reconnect_failure_count=reconnect_failure_count,
+                        last_successful_poll_at=last_successful_poll_at,
+                    ))
+                    continue
+
+                last_poll_dt = _coerce_datetime(last_successful_poll_at)
+                if (
+                    platform_key == "telegram"
+                    and last_poll_dt is not None
+                    and (
+                        transport_state in {"connected", "running"}
+                        or polling_state in {"connected", "polling"}
+                    )
+                ):
+                    age_seconds = max(0, int((now_dt - last_poll_dt).total_seconds()))
+                    if age_seconds > int(stale_after_seconds):
+                        issues.append(_transport_issue(
+                            platform=platform_name,
+                            code=HERMES_TELEGRAM_STALE,
+                            summary=(
+                                "Telegram polling stale: last successful poll "
+                                f"{age_seconds}s ago"
+                            ),
+                            state=transport_state or polling_state or None,
+                            reconnect_failure_count=reconnect_failure_count,
+                            last_successful_poll_at=last_successful_poll_at,
+                        ))
+
+    first_issue = issues[0] if issues else None
+    return {
+        "healthy": not issues,
+        "status": "healthy" if not issues else "unhealthy",
+        "code": None if first_issue is None else first_issue["code"],
+        "summary": "Gateway transports healthy" if first_issue is None else first_issue["summary"],
+        "recommended_repair": None if first_issue is None else first_issue["recommended_repair"],
+        "platforms": issues,
+    }
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
@@ -576,17 +746,22 @@ def write_runtime_status(
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
     served_profiles: Any = _UNSET,
+    polling_state: Any = _UNSET,
+    reconnect_failure_count: Any = _UNSET,
+    last_successful_poll_at: Any = _UNSET,
+    transport_paused: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
+    now_iso = _utc_now_iso()
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
-    payload["updated_at"] = _utc_now_iso()
+    payload["updated_at"] = now_iso
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
@@ -604,13 +779,51 @@ def write_runtime_status(
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
+        platform_key = str(platform).lower()
+        has_explicit_last_successful_poll = last_successful_poll_at is not _UNSET
         if platform_state is not _UNSET:
             platform_payload["state"] = platform_state
+            if platform_key == "telegram":
+                normalized_state = str(platform_state or "").lower()
+                if normalized_state == "connected":
+                    platform_payload["polling_state"] = "connected"
+                    platform_payload["transport_paused"] = False
+                    platform_payload["reconnect_failure_count"] = 0
+                    if not has_explicit_last_successful_poll:
+                        platform_payload.pop("last_successful_poll_at", None)
+                elif normalized_state == "paused":
+                    platform_payload["polling_state"] = "paused"
+                    platform_payload["transport_paused"] = True
+                elif normalized_state in {"connecting", "retrying"}:
+                    platform_payload["polling_state"] = normalized_state
+                    platform_payload["transport_paused"] = False
+                elif normalized_state in {"fatal", "disconnected"}:
+                    platform_payload["polling_state"] = normalized_state
+                    platform_payload["transport_paused"] = False
         if error_code is not _UNSET:
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
-        platform_payload["updated_at"] = _utc_now_iso()
+        if polling_state is not _UNSET:
+            platform_payload["polling_state"] = polling_state
+        if reconnect_failure_count is not _UNSET:
+            coerced_count = _coerce_int(reconnect_failure_count)
+            if coerced_count is None:
+                platform_payload.pop("reconnect_failure_count", None)
+            else:
+                platform_payload["reconnect_failure_count"] = max(0, coerced_count)
+        if last_successful_poll_at is not _UNSET:
+            if last_successful_poll_at is None:
+                platform_payload.pop("last_successful_poll_at", None)
+            elif isinstance(last_successful_poll_at, datetime):
+                platform_payload["last_successful_poll_at"] = (
+                    last_successful_poll_at.astimezone(timezone.utc).isoformat()
+                )
+            else:
+                platform_payload["last_successful_poll_at"] = str(last_successful_poll_at)
+        if transport_paused is not _UNSET:
+            platform_payload["transport_paused"] = bool(transport_paused)
+        platform_payload["updated_at"] = now_iso
         payload["platforms"][platform] = platform_payload
 
     _write_json_file(path, payload)

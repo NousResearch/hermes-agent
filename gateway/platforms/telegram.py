@@ -460,6 +460,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
+        self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        self._polling_heartbeat_shutdown = False
+        self._polling_heartbeat_interval_seconds = self._env_float_clamped(
+            "HERMES_TELEGRAM_POLLING_HEARTBEAT_SECONDS",
+            60.0,
+            min_value=30.0,
+            max_value=600.0,
+        )
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
@@ -1431,6 +1439,80 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, exc_info=True,
             )
 
+    def _record_polling_heartbeat_success(self) -> None:
+        self._write_runtime_status_safe(
+            "polling_heartbeat",
+            platform_state="connected",
+            polling_state="connected",
+            error_code=None,
+            error_message=None,
+            reconnect_failure_count=0,
+            last_successful_poll_at=datetime.now(timezone.utc).isoformat(),
+            transport_paused=False,
+        )
+
+    def _start_polling_heartbeat_monitor(self) -> None:
+        if self._webhook_mode:
+            return
+        if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
+            return
+        self._polling_heartbeat_shutdown = False
+        task = asyncio.create_task(self._polling_heartbeat_monitor())
+        self._polling_heartbeat_task = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._clear_polling_heartbeat_task)
+
+    def _clear_polling_heartbeat_task(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if self._polling_heartbeat_task is task:
+            self._polling_heartbeat_task = None
+
+    async def _handle_polling_heartbeat_error(self, error: Exception) -> None:
+        try:
+            await self._handle_polling_network_error(error)
+        except Exception as reconnect_err:
+            # Intentionally let asyncio.CancelledError propagate; this guard
+            # only keeps unexpected reconnect failures from killing heartbeat.
+            logger.warning(
+                "[%s] Telegram polling heartbeat reconnect handler failed: %s",
+                self.name,
+                reconnect_err,
+                exc_info=True,
+            )
+
+    async def _polling_heartbeat_monitor(self) -> None:
+        """Refresh transport liveness and re-enter reconnect on polling wedges."""
+        while (
+            not self._polling_heartbeat_shutdown
+            and not self.has_fatal_error
+            and not self._webhook_mode
+        ):
+            await asyncio.sleep(self._polling_heartbeat_interval_seconds)
+            if self._polling_heartbeat_shutdown or self.has_fatal_error or self._webhook_mode:
+                return
+            if not (self._app and self._app.updater and self._app.updater.running):
+                logger.warning(
+                    "[%s] Telegram polling heartbeat found updater not running",
+                    self.name,
+                )
+                await self._handle_polling_heartbeat_error(
+                    RuntimeError("Updater not running during polling heartbeat")
+                )
+                continue
+
+            try:
+                await asyncio.wait_for(self._app.bot.get_me(), timeout=10)
+            except Exception as heartbeat_err:
+                logger.warning(
+                    "[%s] Telegram polling heartbeat failed: %s",
+                    self.name,
+                    heartbeat_err,
+                )
+                await self._handle_polling_heartbeat_error(heartbeat_err)
+                continue
+
+            self._record_polling_heartbeat_success()
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -1490,6 +1572,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            self._record_polling_heartbeat_success()
+            self._start_polling_heartbeat_monitor()
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx
@@ -2261,6 +2345,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+            if not self._webhook_mode:
+                self._record_polling_heartbeat_success()
+                self._start_polling_heartbeat_monitor()
 
             # Surface the gateway as "Online" in the bot's short description
             # (opt-in via extra.status_indicator). Non-fatal.
@@ -2329,6 +2416,19 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_status_indicator(online=False)
         except Exception:
             pass
+
+        self._polling_heartbeat_shutdown = True
+        if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
+            heartbeat_task = self._polling_heartbeat_task
+            if heartbeat_task is not asyncio.current_task():
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.debug("[%s] Polling heartbeat task failed during disconnect", self.name, exc_info=True)
+        self._polling_heartbeat_task = None
 
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:

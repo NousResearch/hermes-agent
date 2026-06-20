@@ -69,6 +69,7 @@ from hermes_cli.memory_providers import (
     get_memory_provider,
 )
 from gateway.status import (
+    classify_gateway_transport_liveness,
     get_running_pid,
     get_runtime_status_running_pid,
     read_runtime_status,
@@ -995,7 +996,6 @@ class ManagedFilesPolicy:
     locked_root: Path | None
     can_change_path: bool
 
-
 _FS_READDIR_HIDDEN = {
     ".git",
     ".hg",
@@ -1764,6 +1764,7 @@ async def get_status(profile: Optional[str] = None):
         gateway_platforms: dict = {}
         gateway_exit_reason = None
         gateway_updated_at = None
+        gateway_liveness = classify_gateway_transport_liveness(None)
         configured_gateway_platforms: set[str] | None = None
         try:
             from gateway.config import load_gateway_config
@@ -1812,6 +1813,10 @@ async def get_status(profile: Optional[str] = None):
                 # stopped/None state so the dashboard shows the correct badge.
                 if gateway_state in {None, "stopped"}:
                     gateway_state = "running"
+            gateway_liveness = classify_gateway_transport_liveness({
+                **runtime,
+                "platforms": gateway_platforms,
+            })
 
         # If there was no runtime info at all but the health probe confirmed alive,
         # ensure we still report the gateway as running (no shared volume scenario).
@@ -1863,6 +1868,7 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway_platforms,
             "gateway_exit_reason": gateway_exit_reason,
             "gateway_updated_at": gateway_updated_at,
+            "gateway_liveness": gateway_liveness,
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,

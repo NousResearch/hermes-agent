@@ -118,12 +118,27 @@ async def test_reconnect_does_not_self_schedule_when_fatal_error_set():
 
 
 @pytest.mark.asyncio
-async def test_reconnect_success_resets_error_count():
+async def test_polling_heartbeat_reconnect_errors_are_contained():
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock(side_effect=RuntimeError("boom"))
+
+    await adapter._handle_polling_heartbeat_error(RuntimeError("heartbeat failed"))
+
+    adapter._handle_polling_network_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_success_resets_error_count(monkeypatch):
     """
     When start_polling() succeeds, _polling_network_error_count should reset to 0.
     """
     adapter = _make_adapter()
     adapter._polling_network_error_count = 3
+    status_writes = []
+    monkeypatch.setattr(
+        "gateway.status.write_runtime_status",
+        lambda **kwargs: status_writes.append(kwargs),
+    )
 
     mock_updater = MagicMock()
     mock_updater.running = True
@@ -139,6 +154,11 @@ async def test_reconnect_success_resets_error_count():
         await adapter._handle_polling_network_error(Exception("Bad Gateway"))
 
     assert adapter._polling_network_error_count == 0
+    assert any(
+        write.get("polling_state") == "connected"
+        and write.get("last_successful_poll_at")
+        for write in status_writes
+    )
 
     # Clean up the heartbeat-probe task scheduled after a successful reconnect.
     pending = [t for t in adapter._background_tasks if not t.done()]

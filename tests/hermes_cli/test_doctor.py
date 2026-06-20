@@ -252,6 +252,35 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     assert out == ""
     assert issues == []
 
+def test_check_gateway_transport_liveness_fails_paused_telegram(monkeypatch, capsys):
+    from gateway import status as gateway_status
+
+    monkeypatch.setattr(
+        gateway_status,
+        "read_runtime_status",
+        lambda: {
+            "pid": 12345,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "platforms": {
+                "telegram": {
+                    "state": "paused",
+                    "error_message": "auto-paused after 10 consecutive reconnect failures",
+                    "reconnect_failure_count": 10,
+                }
+            },
+        },
+    )
+
+    issues = []
+    doctor._check_gateway_transport_liveness(issues)
+
+    out = capsys.readouterr().out
+    assert "Gateway Transport" in out
+    assert "HERMES_TELEGRAM_PAUSED" in out
+    assert "hermes gateway restart" in out
+    assert any("HERMES_TELEGRAM_PAUSED" in issue for issue in issues)
+
 
 # ── Memory provider section (doctor should only check the *active* provider) ──
 

@@ -9,7 +9,6 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $activeSessionId } from '@/store/session'
 import {
   $subagentsBySession,
   buildSubagentTree,
@@ -77,12 +76,19 @@ interface AgentsViewProps {
 
 export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
-  const activeSessionId = useStore($activeSessionId)
   const subagentsBySession = useStore($subagentsBySession)
 
+  // Aggregate subagents across every session — the status bar's
+  // "Agents N running" count uses the same aggregate (see
+  // use-statusbar-items.tsx → activeSubagentCount over
+  // Object.values(subagentsBySession)). Filtering to only the active
+  // session here produced a desynced Spawn tree (#49808): users saw
+  // "Agents 2 running" in the status bar while the Spawn tree overlay
+  // rendered the "No live subagents" empty state because the running
+  // agents belonged to a different session.
   const activeSubagents = useMemo(
-    () => (activeSessionId ? (subagentsBySession[activeSessionId] ?? []) : []),
-    [activeSessionId, subagentsBySession]
+    () => Object.values(subagentsBySession).flat(),
+    [subagentsBySession]
   )
 
   const tree = useMemo(() => buildSubagentTree(activeSubagents), [activeSubagents])

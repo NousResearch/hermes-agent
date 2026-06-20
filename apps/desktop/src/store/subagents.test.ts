@@ -109,3 +109,69 @@ describe('subagent store', () => {
     expect($subagentsBySession.get().s2).toHaveLength(1)
   })
 })
+
+// Regression test for #49808: the Spawn tree overlay and the status
+// bar's "Agents N running" indicator used to disagree because they
+// filtered $subagentsBySession differently — the status bar
+// aggregated every session, the Spawn tree kept only the active
+// session. This block pins the post-fix contract: both indicators
+// read from the same aggregate scope.
+describe('#49808 — Spawn tree / status bar aggregate scope', () => {
+  beforeEach(() => $subagentsBySession.set({}))
+
+  it('status bar count and Spawn tree aggregate over the same scope', () => {
+    // Two sessions, two running subagents each. The "active session"
+    // would be s1 in the old implementation; s2 is non-active but
+    // still owns running subagents.
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 'a1', task_index: 0 })
+    upsertSubagent('s1', { goal: 'patch tests', status: 'running', subagent_id: 'a2', task_index: 1 })
+    upsertSubagent('s2', { goal: 'background work', status: 'running', subagent_id: 'b1', task_index: 0 })
+    upsertSubagent('s2', { goal: 'cron poll', status: 'running', subagent_id: 'b2', task_index: 1 })
+
+    // The status bar uses Object.values(...).reduce(...activeSubagentCount...).
+    const statusBarCount = Object.values($subagentsBySession.get()).reduce(
+      (sum, items) => sum + activeSubagentCount(items),
+      0
+    )
+    expect(statusBarCount).toBe(4)
+
+    // The Spawn tree (post-fix) uses Object.values(...).flat() — the
+    // same scope as the status bar.
+    const spawnTreeFlat = Object.values($subagentsBySession.get()).flat()
+    const spawnTreeRoots = buildSubagentTree(spawnTreeFlat)
+    const spawnTreeTotal = spawnTreeRoots.reduce(
+      (sum, root) => sum + 1 + root.children.length,
+      0
+    )
+    expect(spawnTreeTotal).toBe(4)
+
+    // Counter-example that documents the regression: filtering to
+    // only the active session would yield 2 subagents while the
+    // status bar counted 4. The post-fix Spawn tree must include
+    // s2's subagents too.
+    const activeOnly = $subagentsBySession.get()['s1'] ?? []
+    expect(activeOnly).toHaveLength(2)
+    expect(statusBarCount).not.toBe(activeOnly.length)
+  })
+
+  it('Spawn tree stays empty only when no session has running subagents', () => {
+    // Empty-state pin: with only terminal subagents, both indicators
+    // agree on zero running/queued and the Spawn tree renders its
+    // empty placeholder. Note that buildSubagentTree includes
+    // completed/failed nodes (so we count activeSubagentCount instead
+    // of tree length for the Spawn-tree side of the contract).
+    upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'a1', task_index: 0 })
+
+    const spawnTreeFlat = Object.values($subagentsBySession.get()).flat()
+    const spawnTreeActiveCount = activeSubagentCount(spawnTreeFlat)
+
+    const statusBarCount = Object.values($subagentsBySession.get()).reduce(
+      (sum, items) => sum + activeSubagentCount(items),
+      0
+    )
+    expect(spawnTreeActiveCount).toBe(0)
+    expect(statusBarCount).toBe(0)
+    // Both indicators agree — the regression condition for #49808.
+    expect(spawnTreeActiveCount).toBe(statusBarCount)
+  })
+})

@@ -6691,15 +6691,36 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    def _coerce_cli_value(raw: str):
+        """Best-effort scalar/structured coercion for ``hermes config set``.
+
+        Preserve the existing bool/int/float behavior first so common scalar
+        writes stay stable. Then, for object/list-looking payloads, attempt a
+        conservative JSON parse. Invalid object-like strings fall back to the
+        original raw string instead of raising.
+        """
+        if raw.lower() in {'true', 'yes', 'on'}:
+            return True
+        if raw.lower() in {'false', 'no', 'off'}:
+            return False
+        if raw.isdigit():
+            return int(raw)
+        if raw.replace('.', '', 1).isdigit():
+            return float(raw)
+
+        stripped = raw.strip()
+        if (stripped.startswith('{') and stripped.endswith('}')) or (
+            stripped.startswith('[') and stripped.endswith(']')
+        ):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                return raw
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        return raw
+
+    value = _coerce_cli_value(value)
 
     _set_nested(user_config, key, value)
     

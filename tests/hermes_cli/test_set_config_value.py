@@ -247,3 +247,42 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# Structured value parsing — regression tests for object-like CLI values
+# ---------------------------------------------------------------------------
+
+class TestStructuredValues:
+    """Object/list-like CLI values should persist with structured YAML types."""
+
+    def test_json_object_value_persists_as_mapping(self, _isolated_hermes_home):
+        set_config_value("foo.bar", '{"x":1,"nested":{"y":2}}')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["foo"]["bar"] == {"x": 1, "nested": {"y": 2}}
+        assert isinstance(reloaded["foo"]["bar"], dict)
+
+    def test_provider_block_object_persists_as_mapping(self, _isolated_hermes_home):
+        set_config_value(
+            "providers.deepseek",
+            '{"base_url":"https://api.deepseek.com","key_env":"DEEPSEEK_API_KEY","api_mode":"chat_completions"}',
+        )
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["providers"]["deepseek"] == {
+            "base_url": "https://api.deepseek.com",
+            "key_env": "DEEPSEEK_API_KEY",
+            "api_mode": "chat_completions",
+        }
+        assert isinstance(reloaded["providers"]["deepseek"], dict)
+
+    def test_invalid_object_like_string_falls_back_to_raw_string(self, _isolated_hermes_home):
+        set_config_value("foo.bar", '{not valid json}')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["foo"]["bar"] == '{not valid json}'
+        assert isinstance(reloaded["foo"]["bar"], str)

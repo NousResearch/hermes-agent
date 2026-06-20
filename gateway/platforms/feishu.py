@@ -154,9 +154,15 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Feishu post-type 'md' does not render these — we strip/convert them before sending.
+_MARKDOWN_UNSUPPORTED_IN_POST_RE = re.compile(
+    r"^#{1,6}\s+(.+)$|"  # headers: "# Title" → stripped of leading #
+    r"^[-*_]{3,}\s*$|"   # horizontal rules: "---" → removed
+    r"^>\s+(.+)$|"        # blockquotes: "> text" → "「 text」"
+    r"^(\s*)[-*]\s+(.+)$|"  # unordered lists: "- item" → "• item"
+    r"^(\s*)\d+\.\s+(.+)$",  # ordered lists: "1. item" → "1. item" (keep as-is, Feishu supports)
+    re.MULTILINE,
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -4373,16 +4379,49 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    def _preprocess_markdown_for_feishu(self, content: str) -> str:
+        """Strip / convert markdown elements that Feishu post-type does not render.
+
+        Feishu ``md`` elements support: bold, italic, underline, strikethrough
+        (via <s> tag), inline code, links, @mentions, and fenced code blocks.
+        Everything else (headers, horizontal rules, blockquotes, unordered lists)
+        would appear as raw markdown text if sent as-is, so we convert them here.
+        """
+
+        def _replace_line(m: re.Match) -> str:
+            full = m.group(0)
+            # Horizontal rules → blank line
+            if re.match(r"^[-*_]{3,}\s*$", full):
+                return ""
+            # Headers → strip leading ``#`` and render as bold
+            header_m = re.match(r"^(#{1,6})\s+(.+)$", full, re.MULTILINE)
+            if header_m:
+                return f"**{header_m.group(2)}**"
+            # Blockquotes → prefix with 「 」
+            bq_m = re.match(r"^>\s+(.+)$", full)
+            if bq_m:
+                return f"「 {bq_m.group(1)}」"
+            # Unordered lists → replace ``-`` with ``•``
+            ul_m = re.match(r"^(\s*)[-*]\s+(.+)$", full)
+            if ul_m:
+                indent = ul_m.group(1)
+                return f"{indent}• {ul_m.group(2)}"
+            return full
+
+        # Strikethrough ``~~text~~`` → Feishu <s> tag (md element supports it)
+        content = re.sub(r"~~([^~]+)~~", r"<s>\1</s>", content)
+        return _MARKDOWN_UNSUPPORTED_IN_POST_RE.sub(_replace_line, content)
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
+        # Detect markdown hints in the ORIGINAL content before preprocessing.
+        # _preprocess_markdown_for_feishu strips/converts headers, blockquotes,
+        # and lists — checking the processed text would miss these markers.
+        use_post = bool(_MARKDOWN_HINT_RE.search(content))
+        processed = self._preprocess_markdown_for_feishu(content)
+
+        if use_post:
+            return "post", _build_markdown_post_payload(processed)
+        text_payload = {"text": processed}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
     async def _send_uploaded_file_message(

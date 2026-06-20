@@ -52,10 +52,23 @@ def bare_gemini_model_id(model: str) -> str:
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
-    """Return True when the endpoint speaks Gemini's native REST API."""
+    """Return True when the endpoint speaks Gemini's native REST API.
+
+    Recognizes:
+    - Google AI Studio: ``generativelanguage.googleapis.com/v1beta``
+      (default; the ``/openai`` compat suffix is excluded.)
+    - Palantir Foundry LLM proxy: any host with the path segment
+      ``/api/v2/llm/proxy/google/v1`` (Foundry forwards the native
+      ``models/{rid}:generateContent`` shape verbatim to Vertex/Gemini).
+    """
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
+    # Palantir Foundry LLM proxy - native Gemini shape, just behind a Bearer token.
+    # Keeping this case before the googleapis.com check keeps both paths working
+    # if a downstream caller proxies via a custom Foundry domain.
+    if "/api/v2/llm/proxy/google/v1" in normalized:
+        return True
     if "generativelanguage.googleapis.com" not in normalized:
         return False
     return not normalized.endswith("/openai")
@@ -880,9 +893,15 @@ class GeminiNativeClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "x-goog-api-key": self.api_key,
             "User-Agent": "hermes-agent (gemini-native)",
         }
+        # Palantir Foundry LLM proxy expects ``Authorization: Bearer <token>``;
+        # Google AI Studio expects ``x-goog-api-key: <key>``. We branch on the
+        # base_url shape so the same adapter can talk to both surfaces.
+        if "/api/v2/llm/proxy/google" in (self.base_url or "").lower():
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        else:
+            headers["x-goog-api-key"] = self.api_key
         headers.update(self._default_headers)
         return headers
 

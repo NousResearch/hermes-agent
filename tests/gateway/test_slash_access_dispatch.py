@@ -526,26 +526,8 @@ async def test_channel_allowlist_blocks_unlisted_skill_command(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_channel_allowlist_allows_mention_prefixed_listed_skill_command(monkeypatch):
-    """Mention-gated groups can invoke an allowed skill slash after @bot."""
-    from agent import skill_commands
-
-    monkeypatch.setattr(
-        skill_commands,
-        "get_skill_commands",
-        lambda: {
-            "/deep-research": {
-                "name": "deep-research",
-                "description": "Deep research",
-                "skill_dir": "/tmp/deep-research",
-            },
-        },
-    )
-    monkeypatch.setattr(
-        skill_commands,
-        "build_skill_invocation_message",
-        lambda *args, **kwargs: "[deep-research invocation message]",
-    )
+async def test_channel_allowlist_allows_mention_prefixed_listed_skill_command():
+    """Mention-gated groups can invoke an allowed slash command after @bot."""
     runner = _make_runner(
         platform=Platform.SIGNAL,
         platform_extra={
@@ -558,6 +540,7 @@ async def test_channel_allowlist_allows_mention_prefixed_listed_skill_command(mo
     )
     runner._draining = False
     runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    runner._handle_deep_research_command = AsyncMock(return_value="deep-research-started")
     source = _make_source(
         platform=Platform.SIGNAL,
         user_id="regular-user",
@@ -570,30 +553,13 @@ async def test_channel_allowlist_allows_mention_prefixed_listed_skill_command(mo
 
     result = await runner._handle_message(event)
 
-    assert result == "agent-ran"
-    assert event.text == "[deep-research invocation message]"
+    assert result == "deep-research-started"
+    runner._handle_message_with_agent.assert_not_awaited()
+    runner._handle_deep_research_command.assert_awaited_once_with(event)
 
 
 @pytest.mark.asyncio
-async def test_channel_allowlist_allows_listed_skill_command(monkeypatch):
-    from agent import skill_commands
-
-    monkeypatch.setattr(
-        skill_commands,
-        "get_skill_commands",
-        lambda: {
-            "/deep-research": {
-                "name": "deep-research",
-                "description": "Deep research",
-                "skill_dir": "/tmp/deep-research",
-            },
-        },
-    )
-    monkeypatch.setattr(
-        skill_commands,
-        "build_skill_invocation_message",
-        lambda *args, **kwargs: "[deep-research invocation message]",
-    )
+async def test_channel_allowlist_allows_listed_skill_command():
     runner = _make_runner(
         platform=Platform.SIGNAL,
         platform_extra={
@@ -606,6 +572,7 @@ async def test_channel_allowlist_allows_listed_skill_command(monkeypatch):
     )
     runner._draining = False
     runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    runner._handle_deep_research_command = AsyncMock(return_value="deep-research-started")
     source = _make_source(
         platform=Platform.SIGNAL,
         user_id="regular-user",
@@ -616,8 +583,9 @@ async def test_channel_allowlist_allows_listed_skill_command(monkeypatch):
 
     result = await runner._handle_message(event)
 
-    assert result == "agent-ran"
-    assert event.text == "[deep-research invocation message]"
+    assert result == "deep-research-started"
+    runner._handle_message_with_agent.assert_not_awaited()
+    runner._handle_deep_research_command.assert_awaited_once_with(event)
 
 
 def test_gateway_channel_command_access_config_bridges_to_platform_extra(monkeypatch, tmp_path):

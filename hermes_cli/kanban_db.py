@@ -2788,6 +2788,85 @@ def _end_run(
     return run_id
 
 
+def _event_payload_dict(raw: Any) -> dict[str, Any]:
+    """Best-effort JSON payload decoding for task_events rows."""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _current_run_source_status(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Return the source lane for the task's active run, if known.
+
+    Review claims stamp ``source_status='review'`` onto their ``claimed``
+    event so downstream recovery paths can restore the review lane instead of
+    dropping back into the generic ready queue.
+    """
+    row = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["current_run_id"]:
+        return None
+    claimed = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'claimed' AND run_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, int(row["current_run_id"])),
+    ).fetchone()
+    if not claimed:
+        return None
+    source = _event_payload_dict(claimed["payload"]).get("source_status")
+    return str(source) if source else None
+
+
+def _latest_wait_resume_status(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Return the most recent paused-lane resume target, if any.
+
+    ``blocked`` / ``scheduled`` events can carry ``resume_status`` when the
+    task should resume somewhere other than the generic ready/todo lanes.
+    Today this is used for review tasks so human pauses don't strip the
+    review-specific dispatcher path.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'scheduled') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return None
+    resume_status = _event_payload_dict(row["payload"]).get("resume_status")
+    return str(resume_status) if resume_status else None
+
+
+def _pause_resume_status(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Resolve which lane a paused task should return to when resumed."""
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return None
+    if row["status"] in {"blocked", "scheduled"}:
+        return _latest_wait_resume_status(conn, task_id)
+    if row["status"] == "running":
+        return _current_run_source_status(conn, task_id)
+    return None
+
+
 def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     row = conn.execute(
         "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,),
@@ -4136,6 +4215,7 @@ def block_task(
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
+        resume_status = _pause_resume_status(conn, task_id)
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4178,7 +4258,10 @@ def block_task(
                 outcome="blocked",
                 summary=reason,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        payload = {"reason": reason}
+        if resume_status:
+            payload["resume_status"] = resume_status
+        _append_event(conn, task_id, "blocked", payload, run_id=run_id)
         return True
 
 
@@ -4265,6 +4348,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     now = int(time.time())
     with write_txn(conn):
+        resume_status = _latest_wait_resume_status(conn, task_id)
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
@@ -4293,7 +4377,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
             (task_id,),
         ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        if resume_status == "review":
+            new_status = "review"
+        else:
+            new_status = "todo" if undone_parents else "ready"
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
@@ -4791,6 +4878,7 @@ def schedule_task(
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
     with write_txn(conn):
+        resume_status = _pause_resume_status(conn, task_id)
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -4818,7 +4906,10 @@ def schedule_task(
                 outcome="scheduled",
                 summary=reason,
             )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        payload = {"reason": reason}
+        if resume_status:
+            payload["resume_status"] = resume_status
+        _append_event(conn, task_id, "scheduled", payload, run_id=run_id)
         return True
 
 

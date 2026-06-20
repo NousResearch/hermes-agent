@@ -3473,6 +3473,51 @@ def test_claim_review_task_fails_when_already_claimed(kanban_home):
     assert second is None
 
 
+def test_unblock_review_task_restores_review_lane(kanban_home):
+    """Review tasks blocked mid-review must resume in the review lane."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me", assignee="alice")
+        _set_task_status(conn, t, "review")
+        claimed = kb.claim_review_task(conn, t)
+        assert claimed is not None
+
+        assert kb.block_task(conn, t, reason="need human")
+        blocked = kb.get_task(conn, t)
+        assert blocked.status == "blocked"
+
+        assert kb.unblock_task(conn, t) is True
+        resumed = kb.get_task(conn, t)
+        assert resumed.status == "review"
+
+        events = kb.list_events(conn, t)
+        blocked_event = next(e for e in events if e.kind == "blocked")
+        assert blocked_event.payload["resume_status"] == "review"
+        unblocked_event = next(e for e in reversed(events) if e.kind == "unblocked")
+        assert unblocked_event.payload == {"status": "review"}
+
+
+def test_unblock_scheduled_review_task_restores_review_lane(kanban_home):
+    """A scheduled follow-up from a blocked review task must still resume to review."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me later", assignee="alice")
+        _set_task_status(conn, t, "review")
+        claimed = kb.claim_review_task(conn, t)
+        assert claimed is not None
+
+        assert kb.block_task(conn, t, reason="need human")
+        assert kb.schedule_task(conn, t, reason="tomorrow") is True
+        assert kb.get_task(conn, t).status == "scheduled"
+
+        assert kb.unblock_task(conn, t) is True
+        resumed = kb.get_task(conn, t)
+        assert resumed.status == "review"
+
+        scheduled_event = next(
+            e for e in reversed(kb.list_events(conn, t)) if e.kind == "scheduled"
+        )
+        assert scheduled_event.payload["resume_status"] == "review"
+
+
 def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
     """dispatch_once dry-run sees review tasks and reports them as spawned."""
     with kb.connect() as conn:
@@ -3500,6 +3545,31 @@ def test_dispatch_review_spawns_with_correct_skills(
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
+    assert len(res.spawned) == 1
+    assert len(spawned_tasks) == 1
+    assert spawned_tasks[0].skills == ["sdlc-review"]
+
+
+def test_unblocked_review_task_dispatches_via_review_queue(
+    kanban_home, all_assignees_spawnable,
+):
+    """A human-unblocked review task must re-enter the review dispatcher path."""
+    spawned_tasks = []
+
+    def capture_spawn(task, workspace, board=None):
+        spawned_tasks.append(task)
+        return 42
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me", assignee="alice")
+        _set_task_status(conn, t, "review")
+        assert kb.claim_review_task(conn, t) is not None
+        assert kb.block_task(conn, t, reason="need human")
+        assert kb.unblock_task(conn, t) is True
+        assert kb.get_task(conn, t).status == "review"
+
+        res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
+
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
     assert spawned_tasks[0].skills == ["sdlc-review"]

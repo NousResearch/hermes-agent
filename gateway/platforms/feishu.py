@@ -61,7 +61,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -3613,6 +3613,92 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
+
+        # ── Merge-forward expansion: fetch sub-messages via API ──
+        if normalized.raw_type == "merge_forward" and self._client and message_id:
+            try:
+                request = self._build_get_message_request(message_id)
+                response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+                if response and getattr(response, "success", lambda: False)():
+                    items = getattr(getattr(response, "data", None), "items", None) or []
+                    # Filter sub-messages (those with upper_message_id point to the container)
+                    sub_msgs = [it for it in items if getattr(it, "upper_message_id", None)]
+                    if sub_msgs:
+                        lines: list[str] = ["[Merged and Forwarded Messages]"]
+                        for item in sub_msgs[:50]:
+                            sender_id = str(
+                                getattr(getattr(item, "sender", None), "id", "") or ""
+                            )
+                            body_content = str(
+                                getattr(getattr(item, "body", None), "content", "") or ""
+                            )
+                            msg_type = str(
+                                getattr(item, "msg_type", "text") or "text"
+                            ).lower()
+                            if msg_type == "text" and body_content:
+                                try:
+                                    parsed_body = json.loads(body_content)
+                                    display_text = str(
+                                        parsed_body.get("text", body_content)
+                                    )
+                                except Exception:
+                                    display_text = body_content
+                            elif msg_type == "post" and body_content:
+                                try:
+                                    post_parsed = parse_feishu_post_payload(
+                                        json.loads(body_content)
+                                        if body_content
+                                        else {}
+                                    )
+                                    display_text = post_parsed.text_content or "[Post]"
+                                except Exception:
+                                    display_text = "[Post]"
+                            elif msg_type == "image":
+                                display_text = "[Image]"
+                            elif msg_type == "file":
+                                try:
+                                    parsed_body = (
+                                        json.loads(body_content)
+                                        if body_content
+                                        else {}
+                                    )
+                                    file_name = str(
+                                        parsed_body.get("file_name", "") or ""
+                                    )
+                                    display_text = (
+                                        f"[File: {file_name}]"
+                                        if file_name
+                                        else "[File]"
+                                    )
+                                except Exception:
+                                    display_text = "[File]"
+                            elif msg_type == "audio":
+                                display_text = "[Audio]"
+                            elif msg_type in {"video", "media"}:
+                                display_text = "[Video]"
+                            elif msg_type == "sticker":
+                                display_text = "[Sticker]"
+                            else:
+                                display_text = f"[{msg_type}]"
+                            if sender_id and display_text:
+                                lines.append(f"- {sender_id}: {display_text}")
+                            elif display_text:
+                                lines.append(f"- {display_text}")
+                        if len(sub_msgs) > 50:
+                            lines.append(
+                                f"... and {len(sub_msgs) - 50} more messages"
+                            )
+                        # Preserve all original fields, only replace text_content
+                        normalized = replace(
+                            normalized, text_content="\n".join(lines)
+                        )
+            except Exception:
+                logger.warning(
+                    "[Feishu] Failed to expand merge_forward message %s",
+                    message_id,
+                    exc_info=True,
+                )
+
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id,
             normalized=normalized,

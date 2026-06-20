@@ -205,9 +205,15 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             from hermes_cli import a2a_context  # noqa: PLC0415
 
-            # v1 信任边界:token+私网 = 同团队;caller 身份取请求里的 callerUid。
-            # Phase 3 上主签票后,改成把验过的 caller_uid 经 caller_uid_override 传入。
-            self._send_json(200, a2a_context.handle_a2a_request(body))
+            # 主签票验证(Phase 3,codex #3):团队 token + 私网只证「同队」,这里再密码学验调用方
+            # 身份(Ed25519 签名)+ 必须是本节点上级 + 防重放;通过后用**验过的** caller_uid 作答
+            # (忽略 body 里可伪造的 callerUid)。
+            caller_uid, err = a2a_context.authorize_request(body)
+            if err:
+                rpc_id = body.get("id") if isinstance(body, dict) else None
+                self._send_json(200, a2a_context.make_error_response(rpc_id, -32600, err))
+                return
+            self._send_json(200, a2a_context.handle_a2a_request(body, caller_uid_override=caller_uid))
             return
         if self.path.rstrip("/") == "/kb/ingest":
             if not self._gate():

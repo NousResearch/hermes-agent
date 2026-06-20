@@ -12,6 +12,7 @@ import sqlite3
 import pytest
 
 from hermes_cli import a2a_context as ac
+from hermes_cli import kari_identity as ki
 from hermes_state import SessionDB
 
 
@@ -181,3 +182,65 @@ def test_is_callable(monkeypatch, tmp_path):
 
     kr.add_grant("财务", "subGhost", "agent", "agent")  # 授权在但没有该资源
     assert kr.is_callable("x", "财务", "subGhost", "agent", "agent") is False  # F5:资源不存活 → 拒
+
+
+# --------------------------- 请求鉴权 authorize_request(Phase 3:主签票)---------------------------
+def _signed_req(tmp_path, *, caller, target, ctx="", key="boss"):
+    """造一个带主签票的 /a2a 请求体,返回 (body, 签票方公钥)。"""
+    ki.set_key_path(str(tmp_path / f"{key}.key"))
+    pub = ki.public_key_b64()
+    ticket = ki.make_ticket(caller, target, ctx)
+    body = {
+        "id": 1,
+        "method": "message/send",
+        "params": {
+            "message": {"parts": [{"kind": "text", "text": "hi"}], "contextId": ctx},
+            "callerUid": caller,
+            "ticket": ticket,
+        },
+    }
+    return body, pub
+
+
+def test_authorize_ok(tmp_path):
+    body, boss_pub = _signed_req(tmp_path, caller="boss", target="me")
+    caller, err = ac.authorize_request(body, self_uid="me", fetch_pubkey=lambda u: boss_pub, ancestors={"boss"})
+    assert err == "" and caller == "boss"
+
+
+def test_authorize_missing_ticket():
+    body = {"id": 1, "method": "message/send", "params": {"message": {"parts": [{"kind": "text", "text": "hi"}]}}}
+    caller, err = ac.authorize_request(body, self_uid="me", fetch_pubkey=lambda u: "", ancestors={"boss"})
+    assert caller == "" and "ticket" in err
+
+
+def test_authorize_non_ancestor_rejected(tmp_path):
+    body, boss_pub = _signed_req(tmp_path, caller="boss", target="me")
+    caller, err = ac.authorize_request(body, self_uid="me", fetch_pubkey=lambda u: boss_pub, ancestors={"someone"})
+    assert caller == "" and "上级" in err
+
+
+def test_authorize_forged_ticket_rejected(tmp_path):
+    """攻击者(有团队 token)用自己的密钥签票自称 caller=boss,但用 boss 真实公钥验不过。"""
+    ki.set_key_path(str(tmp_path / "boss.key"))
+    boss_pub = ki.public_key_b64()
+    ki.set_key_path(str(tmp_path / "evil.key"))
+    ticket = ki.make_ticket("boss", "me", "")  # evil 签,自称 boss
+    body = {"id": 1, "method": "message/send", "params": {"message": {"parts": [{"kind": "text", "text": "hi"}]}, "ticket": ticket}}
+    caller, err = ac.authorize_request(body, self_uid="me", fetch_pubkey=lambda u: boss_pub, ancestors={"boss"})
+    assert caller == "" and "票无效" in err
+
+
+def test_authorize_replay_rejected(tmp_path):
+    body, boss_pub = _signed_req(tmp_path, caller="boss", target="me")
+    f = lambda u: boss_pub  # noqa: E731
+    c1, e1 = ac.authorize_request(body, self_uid="me", fetch_pubkey=f, ancestors={"boss"})
+    assert e1 == "" and c1 == "boss"
+    c2, e2 = ac.authorize_request(body, self_uid="me", fetch_pubkey=f, ancestors={"boss"})  # 同 nonce 重放
+    assert c2 == "" and "重放" in e2
+
+
+def test_authorize_wrong_target_rejected(tmp_path):
+    body, boss_pub = _signed_req(tmp_path, caller="boss", target="someoneelse")  # 票发给别人的
+    caller, err = ac.authorize_request(body, self_uid="me", fetch_pubkey=lambda u: boss_pub, ancestors={"boss"})
+    assert caller == "" and "票无效" in err

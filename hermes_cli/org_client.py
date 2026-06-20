@@ -130,6 +130,13 @@ def gather_capabilities() -> dict:
         except Exception:  # noqa: BLE001
             summary = ""
     cap["summary"] = summary or "爱马仕本地实例"
+    # A2A 验签公钥(Ed25519,公开信息):上报后同团队节点可据此验本机签的票(Phase 3 身份)。
+    try:
+        from hermes_cli import kari_identity  # noqa: PLC0415
+
+        cap["pubkey"] = kari_identity.public_key_b64()
+    except Exception:  # noqa: BLE001
+        pass
     return cap
 
 
@@ -161,6 +168,8 @@ def report_resources(kind: str, items: list[dict]) -> tuple[bool, dict]:
 _ACCOUNT_ME_PATH = "/account/me"
 _self_uid_cache: dict[str, str] = {}  # token → uid(登录态不变,缓存避免每轮上报都打 /account/me)
 _self_root_cache: dict[str, str] = {}  # token → root_id(主账号 uid;3b 直连用)
+_PUBKEY_PATH = "/api/v1/kari/org/pubkey/"  # + uid:取同团队某节点的 A2A 验签公钥
+_pubkey_cache: dict[str, str] = {}  # uid → pubkey(公钥稳定,缓存)
 
 
 def self_user_id() -> Optional[str]:
@@ -180,6 +189,38 @@ def self_user_id() -> Optional[str]:
     if uid:
         _self_uid_cache[token] = uid
     return uid or None
+
+
+def fetch_pubkey(uid: str) -> Optional[str]:
+    """取某节点(同团队)的 A2A 验签公钥(云端下发,缓存)。A2A 子验主签票用。拿不到 → None。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return None
+    if uid in _pubkey_cache:
+        return _pubkey_cache[uid]
+    base, token = _cloud()
+    if not (base and token):
+        return None
+    st, r = _call("GET", _PUBKEY_PATH + uid, token)
+    pk = str(r.get("pubkey") or "").strip() if st == 200 else ""
+    if pk:
+        _pubkey_cache[uid] = pk
+    return pk or None
+
+
+def self_ancestors() -> set:
+    """本节点的上级集合(root_id + parent_id)。A2A「只允许上级发起对话」鉴权用。未登录 → 空集。"""
+    out: set = set()
+    base, token = _cloud()
+    if not (base and token):
+        return out
+    st, r = _call("GET", _ACCOUNT_ME_PATH, token)
+    if st == 200:
+        for k in ("root_id", "parent_id"):
+            v = str(r.get(k) or "").strip()
+            if v:
+                out.add(v)
+    return out
 
 
 def _store_own_resources(kind: str, items: "list[dict] | None") -> None:
@@ -315,12 +356,16 @@ def lan_agent_chat(target_uid: str, message: str, context_id: str = "", timeout:
     }
     if context_id:
         message_obj["contextId"] = context_id
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "message/send",
-        "params": {"message": message_obj, "callerUid": self_user_id() or ""},
-    }
+    self_uid = self_user_id() or ""
+    params: dict = {"message": message_obj, "callerUid": self_uid}
+    # Phase 3 身份:签一张主授权票(子用本机公钥验签),证明 caller 身份不靠可伪造的 callerUid。
+    try:
+        from hermes_cli import kari_identity  # noqa: PLC0415
+
+        params["ticket"] = kari_identity.make_ticket(self_uid, target_uid, context_id)
+    except Exception:  # noqa: BLE001
+        pass
+    body = {"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": params}
     try:
         import httpx  # noqa: PLC0415
 

@@ -322,6 +322,68 @@ def handle_a2a_request(body: dict, caller_uid_override: Optional[str] = None) ->
     return make_message_response(parsed["rpc_id"], answer, ctx)
 
 
+# --------------------------- 请求鉴权(Phase 3:主签票 + 上级鉴权 + 防重放,codex #3)---------------------------
+_seen_nonces: dict[str, float] = {}
+_nonce_lock = threading.Lock()
+
+
+def _nonce_fresh(nonce: str, exp) -> bool:
+    """nonce 首次见返回 True 并记下;再见(重放)/缺失返回 False。按 exp 自动驱逐。"""
+    if not nonce:
+        return False
+    now = time.time()
+    with _nonce_lock:
+        for n in [k for k, v in _seen_nonces.items() if v < now]:
+            _seen_nonces.pop(n, None)
+        if nonce in _seen_nonces:
+            return False
+        try:
+            _seen_nonces[nonce] = float(exp) if exp else now + 120
+        except (TypeError, ValueError):
+            _seen_nonces[nonce] = now + 120
+        return True
+
+
+def authorize_request(body: dict, *, self_uid=None, fetch_pubkey=None, ancestors=None) -> Tuple[str, str]:
+    """验 A2A 请求的**主签票**,返回 (verified_caller_uid, error)。error 非空 = 拒绝。
+
+    团队 LAN 令牌只证「同队」,不证「这个 uid」;callerUid 自报可伪造。故 A2A 强制带 ticket:
+      1. 取 ticket.caller 的**云端公钥**(同团队可取)验签(含 target=自身、exp);
+      2. nonce 防重放;
+      3. **caller 必须是本节点上级**(root_id/parent_id)——「上级可调子 agent」。
+    身份用密码学验过的 ticket.caller,**不信 body 的 callerUid**。
+    self_uid/fetch_pubkey/ancestors 可注入(测试);默认走 org_client + kari_identity。
+    """
+    from hermes_cli import kari_identity  # noqa: PLC0415
+
+    params = ((body or {}).get("params") if isinstance(body, dict) else None) or {}
+    ticket = params.get("ticket")
+    if not isinstance(ticket, dict):
+        return "", "缺少授权票(ticket):A2A 需主签票,团队令牌不足以证明调用方身份"
+    if self_uid is None or fetch_pubkey is None or ancestors is None:
+        from hermes_cli import org_client  # noqa: PLC0415
+
+        if self_uid is None:
+            self_uid = org_client.self_user_id()
+        if fetch_pubkey is None:
+            fetch_pubkey = org_client.fetch_pubkey
+        if ancestors is None:
+            ancestors = org_client.self_ancestors()
+    if not self_uid:
+        return "", "本节点未登录云端,无法验票"
+    claim = str((ticket.get("body") or {}).get("caller") or "")
+    pub = fetch_pubkey(claim) if claim else None
+    ok, tbody, reason = kari_identity.verify_ticket(ticket, pub or "", self_uid)
+    if not ok:
+        return "", f"票无效:{reason}"
+    caller = str(tbody.get("caller") or "")
+    if not _nonce_fresh(tbody.get("nonce"), tbody.get("exp")):
+        return "", "票已使用或缺 nonce(防重放)"
+    if caller not in (ancestors or set()):
+        return "", "调用方非本节点上级,无权发起对话"
+    return caller, ""
+
+
 def build_agent_card(base_url: str = "") -> dict:
     """A2A Agent Card(挂 /.well-known/agent-card.json)。能力简介取自本机 gather_capabilities。"""
     try:

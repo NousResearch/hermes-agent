@@ -33,6 +33,8 @@ def _make_desktop_tree(tmp_path: Path) -> Path:
     desktop_dir = root / "apps" / "desktop"
     desktop_dir.mkdir(parents=True)
     (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
+    (desktop_dir / "assets").mkdir()
+    (desktop_dir / "assets" / "icon.png").write_bytes(b"png")
     return root
 
 
@@ -44,10 +46,62 @@ def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin")
     elif platform == "win32":
         exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
     else:
+        monkeypatch.setenv("XDG_DATA_HOME", str(root / ".xdg-data"))
         exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
     exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
     return exe
+
+
+def test_install_linux_desktop_entry_writes_launcher_and_icon(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main.subprocess.run") as mock_run:
+        cli_main._install_linux_desktop_entry(packaged_exe, desktop_dir)
+
+    desktop_entry = root / ".xdg-data" / "applications" / "hermes-desktop.desktop"
+    copied_icon = root / ".xdg-data" / "icons" / "hicolor" / "512x512" / "apps" / "hermes-desktop.png"
+
+    assert desktop_entry.exists()
+    assert copied_icon.read_bytes() == b"png"
+    text = desktop_entry.read_text(encoding="utf-8")
+    assert f'Exec="{packaged_exe}" %U' in text
+    assert f'TryExec="{packaged_exe}"' in text
+    assert f"Icon={copied_icon}" in text
+    assert "MimeType=x-scheme-handler/hermes;" in text
+    assert "StartupWMClass=Hermes" in text
+    mock_run.assert_not_called()
+
+
+def test_install_linux_desktop_entry_refreshes_desktop_caches(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    def _which(name: str) -> str | None:
+        mapping = {
+            "update-desktop-database": "/usr/bin/update-desktop-database",
+            "gtk-update-icon-cache": "/usr/bin/gtk-update-icon-cache",
+        }
+        return mapping.get(name)
+
+    with patch("hermes_cli.main.shutil.which", side_effect=_which), \
+         patch("hermes_cli.main.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
+        cli_main._install_linux_desktop_entry(packaged_exe, desktop_dir)
+
+    assert mock_run.call_args_list[0].args[0] == [
+        "/usr/bin/update-desktop-database",
+        str(root / ".xdg-data" / "applications"),
+    ]
+    assert mock_run.call_args_list[1].args[0] == [
+        "/usr/bin/gtk-update-icon-cache",
+        "-f",
+        "-t",
+        str(root / ".xdg-data" / "icons" / "hicolor"),
+    ]
 
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
@@ -151,6 +205,17 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     mock_install.assert_not_called()
     mock_run.assert_called_once()
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
+
+
+def test_gui_build_only_registers_linux_desktop_entry(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    with patch("hermes_cli.main.shutil.which", return_value=None):
+        cli_main.cmd_gui(_ns(skip_build=True, build_only=True))
+
+    assert (root / ".xdg-data" / "applications" / "hermes-desktop.desktop").exists()
 
 
 def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):

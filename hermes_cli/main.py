@@ -5354,6 +5354,96 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
 
+def _desktop_linux_data_dir() -> Path:
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    if xdg_data:
+        return Path(xdg_data).expanduser()
+    return Path.home() / ".local" / "share"
+
+
+def _desktop_entry_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`") + '"'
+
+
+def _linux_desktop_cache_tool(name: str) -> str | None:
+    tool = shutil.which(name)
+    if not tool:
+        return None
+    try:
+        if Path(tool).name != name:
+            return None
+    except Exception:
+        return None
+    return tool
+
+
+def _install_linux_desktop_entry(packaged_executable: Path, desktop_dir: Path) -> None:
+    """Install or refresh the per-user desktop launcher for Hermes Desktop."""
+    if sys.platform != "linux":
+        return
+
+    data_dir = _desktop_linux_data_dir()
+    applications_dir = data_dir / "applications"
+    icon_dir = data_dir / "icons" / "hicolor" / "512x512" / "apps"
+    desktop_entry_path = applications_dir / "hermes-desktop.desktop"
+    icon_target_path = icon_dir / "hermes-desktop.png"
+    icon_source = next(
+        (
+            candidate
+            for candidate in (
+                desktop_dir / "assets" / "icon.png",
+                desktop_dir / "public" / "apple-touch-icon.png",
+            )
+            if candidate.exists()
+        ),
+        None,
+    )
+
+    try:
+        applications_dir.mkdir(parents=True, exist_ok=True)
+        icon_dir.mkdir(parents=True, exist_ok=True)
+        if icon_source is not None:
+            shutil.copy2(icon_source, icon_target_path)
+    except OSError as exc:
+        print(f"  ⚠ Failed to stage Hermes Desktop launcher assets: {exc}")
+        return
+
+    icon_value = str(icon_target_path if icon_source is not None else desktop_dir / "assets" / "icon.png")
+    desktop_entry = "\n".join(
+        [
+            "[Desktop Entry]",
+            "Name=Hermes",
+            "Comment=Hermes Agent Desktop",
+            f"Exec={_desktop_entry_quote(str(packaged_executable))} %U",
+            f"TryExec={_desktop_entry_quote(str(packaged_executable))}",
+            f"Icon={icon_value}",
+            "Terminal=false",
+            "Type=Application",
+            "Categories=Development;",
+            "StartupNotify=true",
+            "StartupWMClass=Hermes",
+            "MimeType=x-scheme-handler/hermes;",
+            "",
+        ]
+    )
+    try:
+        if desktop_entry_path.read_text(encoding="utf-8") != desktop_entry:
+            desktop_entry_path.write_text(desktop_entry, encoding="utf-8")
+    except FileNotFoundError:
+        desktop_entry_path.write_text(desktop_entry, encoding="utf-8")
+    except OSError as exc:
+        print(f"  ⚠ Failed to write Hermes Desktop launcher: {exc}")
+        return
+
+    update_desktop_database = _linux_desktop_cache_tool("update-desktop-database")
+    if update_desktop_database:
+        subprocess.run([update_desktop_database, str(applications_dir)], check=False)
+
+    gtk_update_icon_cache = _linux_desktop_cache_tool("gtk-update-icon-cache")
+    if gtk_update_icon_cache:
+        subprocess.run([gtk_update_icon_cache, "-f", "-t", str(data_dir / "icons" / "hicolor")], check=False)
+
+
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
     if sys.platform != "linux":
@@ -5559,6 +5649,7 @@ def cmd_gui(args: argparse.Namespace):
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
         else:
+            _install_linux_desktop_entry(packaged_executable, desktop_dir)
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
         return
 
@@ -5571,6 +5662,8 @@ def cmd_gui(args: argparse.Namespace):
         print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)
+
+    _install_linux_desktop_entry(packaged_executable, desktop_dir)
 
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         sys.exit(1)

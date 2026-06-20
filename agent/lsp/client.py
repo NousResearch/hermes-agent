@@ -44,6 +44,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
@@ -247,11 +249,42 @@ class LSPClient:
 
     @staticmethod
     def _win_wrap_cmd(cmd: List[str]) -> List[str]:
-        """On Windows, wrap .cmd/.bat shims so CreateProcess can run them."""
+        """On Windows, wrap .cmd/.bat shims and Unix shell scripts so
+        CreateProcess can run them.
+
+        npm/npx-installed LSP servers often place a Unix shell script
+        (no .exe/.cmd/.bat extension, '#!/bin/sh' shebang) as the launcher
+        -- e.g. pyright-langserver under ~/.hermes/lsp/bin/. CreateProcess
+        cannot execute these directly and fails with WinError 193
+        ("%1 is not a valid Win32 application") (issue #49470).
+        """
         exe = cmd[0]
-        if exe.lower().endswith((".cmd", ".bat")):
+        lower = exe.lower()
+        if lower.endswith((".cmd", ".bat")):
             return ["cmd.exe", "/c", *cmd]
-        return cmd
+        if lower.endswith((".exe", ".com", ".msi", ".ps1")):
+            return cmd
+        # Heuristic: any other extensionless/unknown-extension executable on
+        # Windows is most likely a Unix shell script shim (or has no
+        # extension at all). Try to detect a shebang to avoid wrapping a
+        # genuine native binary that just lacks a recognized suffix.
+        try:
+            with open(exe, "rb") as f:
+                head = f.read(2)
+            if head != b"#!":
+                return cmd
+        except OSError:
+            return cmd
+        bash = shutil.which("bash")
+        if not bash:
+            logger.warning(
+                "[lsp] '%s' looks like a Unix shell script but 'bash' is not "
+                "on PATH; spawn will likely fail with WinError 193. Install "
+                "Git for Windows (provides Git Bash) to run this LSP server.",
+                exe,
+            )
+            return cmd
+        return [bash, "-c", " ".join(shlex.quote(a) for a in cmd)]
 
     async def _spawn(self) -> None:
         env = dict(os.environ)

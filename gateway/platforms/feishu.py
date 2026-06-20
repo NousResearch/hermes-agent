@@ -486,7 +486,11 @@ def _render_text_element(element: Dict[str, Any]) -> str:
     if _is_style_enabled(style_dict, "code"):
         return _wrap_inline_code(text)
 
-    rendered = _escape_markdown_text(text)
+    # Feishu rich text elements provide raw text + separate style metadata.
+    # Do NOT escape the text before applying style wrappers — Feishu already
+    # separates content from formatting, and escaping breaks markdown rendering
+    # when the text is sent back through a post message with tag=md.
+    rendered = text
     if not rendered:
         return ""
     if _is_style_enabled(style_dict, "bold"):

@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -318,23 +319,12 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     # gateway.  See #13242.
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
-    patterns = [
-        "hermes_cli.main gateway",
-        "hermes_cli.main --profile",
-        "hermes_cli.main -p",
-        "hermes_cli/main.py gateway",
-        "hermes_cli/main.py --profile",
-        "hermes_cli/main.py -p",
-        "hermes gateway",
-        # Windows: only match invocations that actually carry the ``gateway``
-        # subcommand or the gateway-dedicated console-script shim. Bare
-        # ``hermes.exe --profile`` / ``hermes.exe -p`` would also match
-        # ``hermes.exe --profile foo dashboard`` and other CLI subcommands,
-        # producing false-positive gateway PIDs (Copilot review).
-        "hermes.exe gateway",
-        "hermes-gateway.exe",
-        "gateway/run.py",
-    ]
+    # Strict command-line matcher shared with gateway.status: requires the
+    # actual ``gateway run`` subcommand (or the dedicated entrypoints), so this
+    # scan no longer false-matches ``gateway status``/``dashboard`` siblings or
+    # unrelated processes like ``python -m tui_gateway``. Lazy import mirrors the
+    # circular-import avoidance used elsewhere in this module.
+    from gateway.status import looks_like_gateway_command_line
     current_home = str(get_hermes_home().resolve())
     current_home_lc = current_home.lower()
     current_profile_arg = _profile_arg(current_home)
@@ -429,8 +419,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    current_cmd_lc = current_cmd.lower()
-                    if any(p in current_cmd_lc for p in patterns) and (
+                    if looks_like_gateway_command_line(current_cmd) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -455,8 +444,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                                 cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            cmdline_lc = cmdline.lower()
-                            if any(p in cmdline_lc for p in patterns) and (
+                            if looks_like_gateway_command_line(cmdline) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -499,8 +487,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
                     if pid is None:
                         continue
-                    command_lc = command.lower()
-                    if any(pattern in command_lc for pattern in patterns) and (
+                    if looks_like_gateway_command_line(command) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
@@ -1095,11 +1082,30 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         # Other container runtimes (or containers built before Phase 2)
         # still get the original "docker (foreground)" label.
         try:
-            from hermes_cli.service_manager import detect_service_manager
+            from hermes_cli.service_manager import detect_service_manager, get_service_manager
             if detect_service_manager() == "s6":
+                profile = _profile_suffix() or "default"
+                service_name = f"gateway-{profile}"
+                mgr = get_service_manager()
+                service_installed = False
+                service_running = False
+                try:
+                    service_dir = getattr(mgr, "scandir", None)
+                    if service_dir is not None:
+                        service_installed = (service_dir / service_name).is_dir()
+                except Exception:
+                    service_installed = False
+                if service_installed:
+                    try:
+                        service_running = bool(mgr.is_running(service_name))
+                    except Exception:
+                        service_running = False
                 return GatewayRuntimeSnapshot(
                     manager="s6 (container supervisor)",
+                    service_installed=service_installed,
+                    service_running=service_running,
                     gateway_pids=gateway_pids,
+                    service_scope="s6",
                 )
         except Exception:
             pass  # Fall through to the legacy label on any detection error.
@@ -1430,7 +1436,7 @@ def _profile_suffix() -> str:
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
 
-def _profile_arg(hermes_home: str | None = None) -> str:
+def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
     """Return ``--profile <name>`` only when HERMES_HOME is a named profile.
 
     For ``~/.hermes/profiles/<name>``, returns ``"--profile <name>"``.
@@ -1440,12 +1446,16 @@ def _profile_arg(hermes_home: str | None = None) -> str:
         hermes_home: Optional explicit HERMES_HOME path. Defaults to the current
             ``get_hermes_home()`` value. Should be passed when generating a
             service definition for a different user (e.g. system service).
+        default_root: Optional Hermes root to compare against. Used when
+            generating a system service for another user from a sudo/root
+            process, where ``Path.home()`` and ``get_default_hermes_root()``
+            refer to root but the target profile lives under the service user.
     """
     import re
     from hermes_constants import get_default_hermes_root
 
     home = Path(hermes_home or str(get_hermes_home())).resolve()
-    default = get_default_hermes_root().resolve()
+    default = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
     if home == default:
         return ""
     profiles_root = (default / "profiles").resolve()
@@ -1457,6 +1467,16 @@ def _profile_arg(hermes_home: str | None = None) -> str:
     except ValueError:
         pass
     return ""
+
+
+def _profile_arg_for_target_user(hermes_home: str, target_home_dir: str) -> str:
+    """Return the profile arg for a system service running as another user."""
+    target_root = Path(target_home_dir) / ".hermes"
+    try:
+        Path(hermes_home).resolve().relative_to(target_root.resolve())
+        return _profile_arg(hermes_home, default_root=target_root)
+    except ValueError:
+        return _profile_arg(hermes_home)
 
 
 def get_service_name() -> str:
@@ -2384,7 +2404,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
-        profile_arg = _profile_arg(hermes_home)
+        profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
@@ -3434,14 +3454,60 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
+
+    # If this refresh is running INSIDE the gateway's own launchd process tree
+    # (e.g. the agent triggered a self-update via its terminal tool), a direct
+    # `launchctl bootout` tears down the service's process group — which
+    # includes THIS CLI — before the follow-up `bootstrap` can run. The gateway
+    # then stays unloaded and KeepAlive can't revive it (#43842). Detect that
+    # case and hand the reload to a detached session that survives the bootout.
+    gateway_pid = None
+    try:
+        from gateway.status import get_running_pid
+        gateway_pid = get_running_pid()
+    except Exception:
+        gateway_pid = None
+
+    if (
+        gateway_pid is not None
+        and _is_pid_ancestor_of_current_process(gateway_pid)
+        and hasattr(os, "setsid")  # POSIX-only; launchd is macOS so always true here
+    ):
+        # Delegate to a new session: `start_new_session=True` detaches the
+        # helper from the gateway's process group, so the bootout that kills
+        # the gateway (and us) does not kill the helper before it bootstraps.
+        reload_script = (
+            f"sleep 2; "
+            f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
+            f"sleep 1; "
+            f"launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null"
+        )
+        try:
+            subprocess.Popen(
+                ["/bin/bash", "-c", reload_script],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.warning("Deferred launchd reload could not be spawned: %s", e)
+            return False
+        print(
+            "↻ Updated gateway launchd service definition; reload deferred to a "
+            "detached helper (refresh ran inside the gateway process tree)"
+        )
+        return True
+
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
+        ["launchctl", "bootout", target],
         check=False,
         timeout=90,
     )
     subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        ["launchctl", "bootstrap", domain, str(plist_path)],
         check=False,
         timeout=30,
     )
@@ -3762,6 +3828,181 @@ def _is_official_docker_checkout() -> bool:
     )
 
 
+def _running_under_gateway_supervisor() -> bool:
+    """Return True when this process IS the gateway a service manager launched.
+
+    The conflict guard below must never fire on the service's own startup, or
+    it would wedge the unit into a respawn/refuse loop. Each supervisor exports
+    a reliable marker into the child's environment:
+
+      - systemd sets ``INVOCATION_ID`` for every unit it launches (the same
+        marker ``gateway/run.py`` already uses to pick the restart path).
+      - launchd sets ``XPC_SERVICE_NAME`` to the job label for jobs it spawns;
+        interactive shells inherit the sentinel ``"0"`` instead.
+      - the s6-overlay container longrun exports ``HERMES_S6_SUPERVISED_CHILD``.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        return True
+    xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
+    if xpc_service and xpc_service != "0":
+        return True
+    return False
+
+
+def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
+    """Refuse a named-profile gateway when a multiplexer is already serving it.
+
+    When the default profile's gateway runs with gateway.multiplex_profiles=on,
+    it is the sole inbound process for EVERY profile on the host. Starting a
+    separate gateway for a named profile would double-bind that profile's
+    platforms (two pollers on one bot token, port fights). In that mode a
+    named-profile ``hermes gateway run`` is always a misconfiguration, so we
+    hard-error with a pointer to the multiplexer. ``--force`` overrides.
+
+    Inert unless ALL of: (a) this invocation is a named profile, (b) a default-
+    profile gateway is running, (c) that gateway's config has multiplexing on.
+    """
+    if force:
+        return
+    # (a) Are we a named profile? Default/custom-hash homes return "".
+    try:
+        suffix = _profile_suffix()
+    except Exception:
+        return
+    if not suffix:
+        return  # default profile (or unrecognized) — this guard doesn't apply
+
+    try:
+        from hermes_constants import get_default_hermes_root
+        default_root = get_default_hermes_root()
+        # (b) Is the default-profile gateway running?
+        from gateway.status import get_running_pid as _default_running_pid  # noqa
+    except Exception:
+        return
+
+    try:
+        import yaml as _yaml
+        from gateway.status import _read_pid_record  # type: ignore
+
+        # (b) default gateway PID file present + alive
+        default_pid_path = default_root / "gateway.pid"
+        rec = _read_pid_record(default_pid_path)
+        if not rec:
+            return
+        from gateway.status import _pid_exists, _pid_from_record
+        pid = _pid_from_record(rec)
+        if not pid or not _pid_exists(pid):
+            return
+
+        # (c) default config has multiplexing on
+        cfg_path = default_root / "config.yaml"
+        if not cfg_path.exists():
+            return
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = _yaml.safe_load(f) or {}
+        multiplex = bool(
+            cfg.get("multiplex_profiles")
+            or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+        )
+        if not multiplex:
+            return
+    except Exception:
+        logger.debug("Multiplexer-conflict probe failed", exc_info=True)
+        return
+
+    print_error(
+        f"The default gateway is running as a profile multiplexer and already "
+        f"serves profile '{suffix}'."
+    )
+    print(
+        "  When gateway.multiplex_profiles is on, the default gateway is the\n"
+        "  single inbound process for every profile. Starting a separate\n"
+        "  gateway for this profile would double-bind its platforms (two\n"
+        "  pollers on one bot token, port conflicts).\n"
+    )
+    print("  Manage the multiplexer instead (from the default profile):")
+    print()
+    print("    hermes gateway restart")
+    print()
+    print("  Pass --force to start a separate profile gateway anyway (not")
+    print("  recommended while the multiplexer is running).")
+    sys.exit(1)
+
+
+def _guard_supervised_gateway_conflict(force: bool = False) -> None:
+    """Refuse a foreground gateway when a service manager already supervises one.
+
+    Running ``hermes gateway run [--replace]`` (or the manual-restart fallback)
+    from a shell on a systemd/launchd host spawns a second, long-lived
+    dispatcher that escapes the service cgroup, survives
+    ``systemctl restart``, and becomes a silent concurrent writer on the shared
+    kanban DB — the documented root cause of multi-writer SQLite WAL corruption
+    (issue #35240). Pass ``--force`` to start anyway.
+    """
+    if force or _running_under_gateway_supervisor():
+        return
+    try:
+        snapshot = get_gateway_runtime_snapshot()
+    except Exception:
+        # Best-effort guard: a probe failure must never block a real startup.
+        logger.debug("Supervised-gateway conflict probe failed", exc_info=True)
+        return
+    if not (snapshot.service_installed and snapshot.service_running):
+        return
+
+    print_error(
+        f"A gateway is already running under {snapshot.manager} for this profile."
+    )
+    print(
+        "  Starting another one from a shell leaves an orphan dispatcher that\n"
+        "  escapes the service, survives restarts, and writes to the same kanban\n"
+        "  DB concurrently — which can corrupt it. Restart the supervised gateway\n"
+        "  instead:"
+    )
+    print()
+    print("    hermes gateway restart")
+    print()
+    print(
+        "  Pass --force to start a foreground gateway anyway (not recommended\n"
+        "  while the service is running)."
+    )
+    sys.exit(1)
+
+
+def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
+    """Refuse duplicate foreground startup before importing gateway.run.
+
+    ``gateway.run`` performs the authoritative PID/lock check, but importing it
+    is expensive: it pulls in model_tools/plugin discovery first. On small
+    instances, a supervisor or dashboard loop repeatedly running bare
+    ``hermes gateway run`` can burn memory/CPU just to fail with "already
+    running" after plugin discovery. This cheap PID-file preflight preserves the
+    same user-facing contract while avoiding that startup work without scanning
+    unrelated gateway processes from other HERMES_HOME roots.
+    """
+    if replace or _running_under_gateway_supervisor():
+        return
+    try:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid()
+    except Exception:
+        logger.debug("Existing-gateway process probe failed", exc_info=True)
+        return
+    if pid is None:
+        return
+
+    print_error(
+        f"Another gateway instance is already running (PID {pid})."
+    )
+    print("  Use 'hermes gateway restart' to replace it,")
+    print("  or 'hermes gateway stop' first.")
+    print("  Or use 'hermes gateway run --replace' to auto-replace.")
+    sys.exit(1)
+
+
 def _guard_official_docker_root_gateway() -> None:
     """Refuse gateway startup when the official Docker privilege drop was bypassed."""
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
@@ -3789,7 +4030,7 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
-def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground.
 
     Args:
@@ -3798,8 +4039,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
+        force: Skip the supervised-gateway conflict guard and start even when a
+               systemd/launchd service is already supervising this profile.
     """
     _guard_official_docker_root_gateway()
+    _guard_named_profile_under_multiplexer(force=force)
+    _guard_supervised_gateway_conflict(force=force)
+    _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Detached Windows gateway runs must ignore console-control broadcasts
@@ -6345,7 +6591,8 @@ def _gateway_command_inner(args):
         verbose = getattr(args, "verbose", 0)
         quiet = getattr(args, "quiet", False)
         replace = getattr(args, "replace", False)
-        run_gateway(verbose, quiet=quiet, replace=replace)
+        force = getattr(args, "force", False)
+        run_gateway(verbose, quiet=quiet, replace=replace, force=force)
         return
 
     if subcmd == "setup":

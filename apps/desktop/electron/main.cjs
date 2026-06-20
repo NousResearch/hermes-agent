@@ -28,6 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
   buildSessionWindowUrl,
+  chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
@@ -38,11 +39,13 @@ const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
-const { buildDesktopBackendEnv } = require('./backend-env.cjs')
+const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
+const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
+const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -62,6 +65,7 @@ const {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
@@ -145,6 +149,8 @@ if (REMOTE_DISPLAY_REASON) {
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
 }
+
+ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
 // Keep the renderer running at full speed while the window is in the background
 // or occluded. The chat transcript streams to screen through a
@@ -240,8 +246,18 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
-  if (process.env.HERMES_HOME) return path.resolve(process.env.HERMES_HOME)
+  if (process.env.HERMES_HOME) return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+  if (IS_WINDOWS) {
+    // A GUI app launched from Explorer inherits the environment block captured
+    // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
+    // process.env even though the CLI (a fresh shell) sees it. Without this the
+    // backend silently falls back to %LOCALAPPDATA%\hermes and reports "No
+    // inference provider configured" despite a valid configured home (#45471).
+    // Consult the live User-scoped registry value before the default below.
+    const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
+    if (fromRegistry) return normalizeHermesHomeRoot(fromRegistry)
+  }
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
     const legacy = path.join(app.getPath('home'), '.hermes')
@@ -254,6 +270,23 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+
+function hermesManagedNodePathEntries() {
+  // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
+  // hermes_constants.py — this Node main process cannot import the Python
+  // module, so the platform-ordering rule is mirrored here.
+  const root = path.join(HERMES_HOME, 'node')
+  const bin = path.join(root, 'bin')
+  const entries = IS_WINDOWS ? [root, bin] : [bin, root]
+  return entries.filter(directoryExists)
+}
+
+function pathWithHermesManagedNode(...entries) {
+  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH]
+    .filter(Boolean)
+    .join(path.delimiter)
+}
+
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
 // install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
 // up with identical layouts and can share one install.
@@ -1813,7 +1846,7 @@ async function applyUpdates(opts = {}) {
       env: {
         ...process.env,
         HERMES_HOME,
-        PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH].filter(Boolean).join(path.delimiter)
+        PATH: pathWithHermesManagedNode(venvBin)
       },
       detached: true,
       stdio: 'ignore',
@@ -1857,7 +1890,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     env: {
       ...process.env,
       HERMES_HOME,
-      PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH].filter(Boolean).join(path.delimiter)
+      PATH: pathWithHermesManagedNode(venvBin)
     },
     detached: true,
     stdio: 'ignore',
@@ -1938,13 +1971,11 @@ async function applyUpdatesPosixInApp() {
   }
 
   // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
-  // npm build can find them on a machine with no system Node.
-  const extraPath = [path.join(HERMES_HOME, 'node', 'bin'), path.join(updateRoot, 'venv', 'bin')]
-    .filter(Boolean)
-    .join(path.delimiter)
+  // npm build can find them on a machine with no system Node. Windows portable
+  // Node lives directly under %LOCALAPPDATA%\hermes\node, not node\bin.
   const env = {
     HERMES_HOME,
-    PATH: [extraPath, process.env.PATH].filter(Boolean).join(path.delimiter)
+    PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
 
   // `hermes update` reaps stale `hermes dashboard` backends (a code update
@@ -1996,10 +2027,14 @@ async function applyUpdatesPosixInApp() {
   }
 
   emitUpdateProgress({ stage: 'rebuild', message: 'Rebuilding the desktop app…', percent: 60 })
-  const rebuilt = await runStreamedUpdate(hermes, ['desktop', '--build-only'], {
-    cwd: updateRoot,
-    env,
-    stage: 'rebuild'
+  // Retry-once: a first rebuild can fail on a still-settling tree or a
+  // self-healed (network-blocked) Electron download; a second run builds clean
+  // off the healed dist so we reach the swap+relaunch below instead of bailing.
+  const rebuilt = await runRebuildWithRetry(attempt => {
+    if (attempt > 0) {
+      emitUpdateProgress({ stage: 'rebuild', message: 'Retrying the desktop rebuild…', percent: 60 })
+    }
+    return runStreamedUpdate(hermes, ['desktop', '--build-only'], { cwd: updateRoot, env, stage: 'rebuild' })
   })
   if (rebuilt.code !== 0) {
     emitUpdateProgress({
@@ -5072,65 +5107,68 @@ function focusWindow(win) {
   win.focus()
 }
 
+function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
+  const icon = getAppIconPath()
+  const win = new BrowserWindow({
+    width: SESSION_WINDOW_MIN_WIDTH,
+    height: SESSION_WINDOW_MIN_HEIGHT,
+    minWidth: SESSION_WINDOW_MIN_WIDTH,
+    minHeight: SESSION_WINDOW_MIN_HEIGHT,
+    title: 'Hermes',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    opacity: windowOpacity(),
+    icon,
+    // Don't show until the renderer's first themed paint is ready. macOS
+    // `vibrancy` ignores `backgroundColor` and paints a translucent OS
+    // material (which follows the OS appearance, not the app theme), so a
+    // dark-themed app on a light-mode Mac flashes white until the renderer
+    // covers it. ready-to-show fires after the boot-time paint in
+    // themes/context.tsx, so the window appears already themed.
+    show: false,
+    backgroundColor: getWindowBackgroundColor(),
+    webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
+  })
+
+  if (IS_MAC) {
+    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  }
+
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) win.show()
+  })
+
+  win.on('will-enter-full-screen', () => sendWindowStateChanged(true))
+  win.on('enter-full-screen', () => sendWindowStateChanged(true))
+  win.on('will-leave-full-screen', () => sendWindowStateChanged(false))
+  win.on('leave-full-screen', () => sendWindowStateChanged(false))
+
+  wireCommonWindowHandlers(win)
+
+  win.loadURL(
+    buildSessionWindowUrl(sessionId, {
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+      watch,
+      newSession
+    })
+  )
+
+  return win
+}
+
 // Open (or focus) a standalone window for a single chat session.
 function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => {
-    const icon = getAppIconPath()
-    const win = new BrowserWindow({
-      width: SESSION_WINDOW_MIN_WIDTH,
-      height: SESSION_WINDOW_MIN_HEIGHT,
-      minWidth: SESSION_WINDOW_MIN_WIDTH,
-      minHeight: SESSION_WINDOW_MIN_HEIGHT,
-      title: 'Hermes',
-      titleBarStyle: 'hidden',
-      titleBarOverlay: getTitleBarOverlayOptions(),
-      trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-      vibrancy: IS_MAC ? 'sidebar' : undefined,
-      opacity: windowOpacity(),
-      icon,
-      // Don't show until the renderer's first themed paint is ready. macOS
-      // `vibrancy` ignores `backgroundColor` and paints a translucent OS
-      // material (which follows the OS appearance, not the app theme), so a
-      // dark-themed app on a light-mode Mac flashes white until the renderer
-      // covers it. ready-to-show fires after the boot-time paint in
-      // themes/context.tsx, so the window appears already themed.
-      show: false,
-      backgroundColor: getWindowBackgroundColor(),
-      webPreferences: {
-        preload: path.join(__dirname, 'preload.cjs'),
-        contextIsolation: true,
-        webviewTag: true,
-        sandbox: true,
-        nodeIntegration: false,
-        devTools: true
-      }
-    })
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+}
 
-    if (IS_MAC) {
-      win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-    }
-
-    win.once('ready-to-show', () => {
-      if (!win.isDestroyed()) win.show()
-    })
-
-    win.on('will-enter-full-screen', () => sendWindowStateChanged(true))
-    win.on('enter-full-screen', () => sendWindowStateChanged(true))
-    win.on('will-leave-full-screen', () => sendWindowStateChanged(false))
-    win.on('leave-full-screen', () => sendWindowStateChanged(false))
-
-    wireCommonWindowHandlers(win)
-
-    win.loadURL(
-      buildSessionWindowUrl(sessionId, {
-        devServer: DEV_SERVER,
-        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
-        watch
-      })
-    )
-
-    return win
-  })
+// Open a fresh compact window on the new-session draft (#/). Not registry-keyed:
+// like ⌘N in a browser, every press opens a new window — and a draft window that
+// later converts to a real session must not get refocused as if it were blank.
+function createNewSessionWindow() {
+  return spawnSecondaryWindow({ newSession: true })
 }
 
 function createWindow() {
@@ -5158,23 +5196,11 @@ function createWindow() {
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      webviewTag: true,
-      sandbox: true,
-      nodeIntegration: false,
-      devTools: true,
-      // Keep timers + requestAnimationFrame running at full speed when the
-      // window is blurred/occluded. The chat transcript streams to the screen
-      // through a requestAnimationFrame-gated flush (useSessionStateCache),
-      // so with Chromium's default background throttling the live answer
-      // stalls whenever this window isn't focused (e.g. you switch to your
-      // editor mid-turn, or open detached devtools) and only appears once you
-      // refocus or refresh. A streaming chat app must render in the
-      // background, so opt out — matching the secondary windows above.
-      backgroundThrottling: false
-    }
+    // Shared with the secondary session windows (chatWindowWebPreferences) so
+    // both keep `backgroundThrottling: false` — the chat transcript streams via
+    // a requestAnimationFrame-gated flush that Chromium pauses for blurred
+    // windows, stalling the live answer until refocus. See session-windows.cjs.
+    webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
   })
 
   if (IS_MAC) {
@@ -5314,6 +5340,11 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   }
 
   createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+
+  return { ok: true }
+})
+ipcMain.handle('hermes:window:openNewSession', async () => {
+  createNewSessionWindow()
 
   return { ok: true }
 })
@@ -5586,9 +5617,14 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
   await prepareProfileDeleteRequest(request)
 
-  const connection = await ensureBackend(request?.profile)
+  const profile = request?.profile
+  const connection = await ensureBackend(profile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-  const url = `${connection.baseUrl}${request.path}`
+  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
+    globalRemote: globalRemoteActive(),
+    profileRemoteOverride: profileHasRemoteOverride(profile)
+  })
+  const url = `${connection.baseUrl}${requestPath}`
   // OAuth gateways authenticate REST via the HttpOnly session cookie held in
   // the OAuth partition — route through Electron's net stack bound to that
   // session so the cookie attaches automatically. Token/local modes keep using
@@ -5609,11 +5645,30 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) return false
-  new Notification({
+  // Action buttons render only on signed macOS builds; elsewhere they're dropped
+  // and the body click still works.
+  const actions = Array.isArray(payload?.actions) ? payload.actions : []
+  const notification = new Notification({
     title: payload?.title || 'Hermes',
     body: payload?.body || '',
-    silent: Boolean(payload?.silent)
-  }).show()
+    silent: Boolean(payload?.silent),
+    actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
+  })
+  notification.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    focusWindow(mainWindow)
+    if (payload?.sessionId) {
+      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
+    }
+  })
+  notification.on('action', (_actionEvent, index) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const action = actions[index]
+    if (action?.id) {
+      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload?.sessionId, actionId: action.id })
+    }
+  })
+  notification.show()
   return true
 })
 
@@ -6512,6 +6567,12 @@ app.on('before-quit', () => {
   }
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+
+  // Kill open PTYs before environment teardown to avoid the node-pty#904
+  // ThreadSafeFunction SIGABRT race.
+  for (const id of [...terminalSessions.keys()]) {
+    disposeTerminalSession(id)
+  }
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')

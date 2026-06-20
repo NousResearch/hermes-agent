@@ -517,7 +517,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         pass
 
     models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
@@ -1853,18 +1853,7 @@ def _model_flow_kimi(config, current_model=""):
     print()
 
     # Step 3: Model selection — show appropriate models for the endpoint
-    if is_coding_plan:
-        # Coding Plan models (kimi-k2.6 first)
-        model_list = [
-            "kimi-k2.6",
-            "kimi-k2.5",
-            "kimi-for-coding",
-            "kimi-k2-thinking",
-            "kimi-k2-thinking-turbo",
-        ]
-    else:
-        # Legacy Moonshot models (excludes Coding Plan-only models)
-        model_list = _PROVIDER_MODELS.get("moonshot", [])
+    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
 
     if model_list:
         selected = _prompt_model_selection(

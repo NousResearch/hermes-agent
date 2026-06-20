@@ -1,8 +1,10 @@
 """Shared utility functions for hermes-agent."""
 
+import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -71,14 +73,38 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call.
+    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``;
+    those cases fall back to copy/fsync/unlink for cross-device, bind-mount,
+    and busy-file deployments.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    tmp_str = str(tmp_path)
+    try:
+        os.replace(tmp_str, real_path)
+    except OSError as exc:
+        if exc.errno not in (errno.EXDEV, errno.EBUSY):
+            raise
+        logger.debug(
+            "atomic_replace: %s -> %s failed with %s; falling back to copy",
+            tmp_str,
+            real_path,
+            errno.errorcode.get(exc.errno, exc.errno),
+        )
+        shutil.copyfile(tmp_str, real_path)
+        try:
+            shutil.copystat(tmp_str, real_path)
+        except OSError:
+            pass
+        try:
+            with open(real_path, "rb") as f:
+                os.fsync(f.fileno())
+        except OSError:
+            pass
+        os.unlink(tmp_str)
     return real_path
 
 

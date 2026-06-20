@@ -80,9 +80,12 @@ const HOVER_REVEAL_EASE = 'cubic-bezier(0.32,0.72,0,1)'
 // Offset shadow lifting the revealed panel off the content (same both sides;
 // the mirror axis is offset-x, which is 0). Same color on light + dark.
 const HOVER_REVEAL_SHADOW = '0px -18px 18px -5px #00000012'
-// Edge trigger strip, inset past the OS window-resize grab area.
+// Edge trigger strip, inset past the OS window-resize grab area AND the
+// adjacent pane's scrollbar (0.5rem, .scrollbar-dt) — the strip overlays the
+// neighboring scroller's edge, so any overlap makes the scrollbar reveal the
+// pane on hover and swallow its clicks (#44140).
 const HOVER_REVEAL_TRIGGER_WIDTH = 14
-const HOVER_REVEAL_EDGE_GUTTER = 6
+const HOVER_REVEAL_EDGE_GUTTER = 'calc(0.5rem + 2px)'
 
 // Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
 // from the keyboard, since its store-open toggle is a no-op while collapsed.

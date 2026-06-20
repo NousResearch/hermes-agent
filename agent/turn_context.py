@@ -69,6 +69,7 @@ def build_turn_context(
     task_id: Optional[str],
     stream_callback,
     persist_user_message: Optional[str],
+    persist_user_timestamp: Optional[float] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -111,6 +112,24 @@ def build_turn_context(
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 
+    # Between-turns MCP refresh: an MCP server that finished connecting since
+    # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
+    # connect, missing the bounded startup wait) lands in THIS turn's tool
+    # snapshot.  This is cache-safe by construction: it runs in the per-turn
+    # prologue, before this turn's first API call assembles ``tools=``, so it
+    # only ever extends a fresh request prefix — it never mutates the cached
+    # prefix of an in-flight turn.  No-op when no MCP servers are registered
+    # (the common case, gated by the cheap ``has_registered_mcp_tools`` check)
+    # or when the tool set is unchanged (``refresh_agent_mcp_tools`` diffs by
+    # name and leaves the snapshot untouched on no-change).
+    try:
+        if not getattr(agent, "_skip_mcp_refresh", False):
+            from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
+            if has_registered_mcp_tools():
+                refresh_agent_mcp_tools(agent, quiet_mode=True)
+    except Exception:
+        logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
+
     # Sanitize surrogate characters from user input.
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)
@@ -121,6 +140,7 @@ def build_turn_context(
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
+    agent._persist_user_message_timestamp = persist_user_timestamp
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id

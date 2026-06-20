@@ -6702,7 +6702,20 @@ def set_config_value(key: str, value: str):
         value = float(value)
 
     _set_nested(user_config, key, value)
-    
+
+    # When switching model.provider, clear stale model.base_url so the
+    # runtime auto-detection resolves the correct endpoint for the new
+    # provider.  Without this, ``hermes config set model.provider deepseek``
+    # after a wizard run that set base_url to xAI's endpoint leaves config
+    # in an inconsistent state (provider=deepseek, base_url=https://api.x.ai/v1).
+    # See: https://github.com/NousResearch/hermes-agent/issues/40862
+    if key == "model.provider":
+        model_section = user_config.get("model")
+        if isinstance(model_section, dict) and "base_url" in model_section:
+            removed_url = model_section.pop("base_url")
+            print(f"  Cleared stale model.base_url ({removed_url}) — "
+                  "the new provider's endpoint will be resolved automatically.")
+
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write

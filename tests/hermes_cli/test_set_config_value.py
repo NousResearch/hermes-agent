@@ -247,3 +247,72 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# model.provider change clears stale base_url — #40862
+# ---------------------------------------------------------------------------
+
+class TestProviderSwitchClearsBaseUrl:
+    """When model.provider changes via config set, stale model.base_url
+    must be cleared so runtime auto-detection resolves the correct endpoint.
+    See: https://github.com/NousResearch/hermes-agent/issues/40862
+    """
+
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_switching_provider_clears_base_url(self, _isolated_hermes_home, capsys):
+        """Switching from xai-oauth to deepseek should remove base_url."""
+        self._write_config(_isolated_hermes_home, (
+            "model:\n"
+            "  default: grok-4.3\n"
+            "  provider: xai-oauth\n"
+            "  base_url: https://api.x.ai/v1\n"
+        ))
+
+        set_config_value("model.provider", "deepseek")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["model"]["provider"] == "deepseek"
+        assert "base_url" not in reloaded["model"]
+        # User gets a message about the cleared URL
+        captured = capsys.readouterr()
+        assert "Cleared stale model.base_url" in captured.out
+        assert "api.x.ai" in captured.out
+
+    def test_switching_provider_no_base_url_is_noop(self, _isolated_hermes_home, capsys):
+        """If there's no base_url to clear, the switch still works silently."""
+        self._write_config(_isolated_hermes_home, (
+            "model:\n"
+            "  default: gpt-4o\n"
+            "  provider: openai\n"
+        ))
+
+        set_config_value("model.provider", "anthropic")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["model"]["provider"] == "anthropic"
+        assert "base_url" not in reloaded["model"]
+        captured = capsys.readouterr()
+        assert "Cleared stale" not in captured.out
+
+    def test_non_provider_key_preserves_base_url(self, _isolated_hermes_home):
+        """Changing model.default should NOT touch base_url."""
+        self._write_config(_isolated_hermes_home, (
+            "model:\n"
+            "  default: grok-4.3\n"
+            "  provider: xai-oauth\n"
+            "  base_url: https://api.x.ai/v1\n"
+        ))
+
+        set_config_value("model.default", "deepseek-v4-pro")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["model"]["default"] == "deepseek-v4-pro"
+        # base_url must be preserved — only model.default changed
+        assert reloaded["model"]["base_url"] == "https://api.x.ai/v1"
+        assert reloaded["model"]["provider"] == "xai-oauth"

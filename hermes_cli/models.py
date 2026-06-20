@@ -2531,6 +2531,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
+        # GMI has a dedicated live-fetch path above. If it returns no data,
+        # fall back directly to the curated static list instead of falling
+        # through to the generic api-key profile fetch; that generic path would
+        # make a second live call and can make offline fallback tests flaky.
+        return list(_PROVIDER_MODELS.get("gmi", []))
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

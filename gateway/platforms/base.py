@@ -1398,6 +1398,34 @@ def cache_media_bytes(
     return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_DOCUMENT_TYPES[ext], "document", display or f"document{ext}")
 
 
+def _normalize_media_path(path: str, *, platform: Optional[str] = None) -> str:
+    """Translate git-bash style paths to native Windows paths (Windows only).
+
+    On Windows, models running under git-bash / MSYS often emit POSIX-looking
+    paths (``/c/Users/...``, ``/tmp/...``) that the native file APIs cannot
+    open, so the media is silently dropped. Map them back to native paths:
+
+    * ``/<drive>/rest``  -> ``<DRIVE>:/rest``
+    * ``/tmp/rest``      -> ``%TEMP%/rest`` (or ``%TMP%``)
+    * ``~/rest``         -> the expanded home directory
+
+    No-op on non-Windows platforms (and for paths that don't match), so the
+    behavior on Linux/macOS is unchanged.
+    """
+    if (platform or sys.platform) != "win32":
+        return path
+    drive_match = re.match(r"^/([a-zA-Z])/(.*)$", path)
+    if drive_match:
+        return f"{drive_match.group(1).upper()}:/{drive_match.group(2)}"
+    if path.startswith("/tmp/"):
+        tmpdir = os.environ.get("TEMP", os.environ.get("TMP", ""))
+        if tmpdir:
+            return os.path.join(tmpdir, path[5:])
+    if path.startswith("~/"):
+        return os.path.expanduser(path)
+    return path
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -3027,7 +3055,7 @@ class BasePlatformAdapter(ABC):
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
                 try:
-                    media.append((os.path.expanduser(path), has_voice_tag))
+                    media.append((_normalize_media_path(os.path.expanduser(path)), has_voice_tag))
                 except (OSError, RuntimeError, ValueError):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.

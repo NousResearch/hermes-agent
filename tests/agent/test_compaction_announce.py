@@ -258,3 +258,107 @@ class TestEmitter:
         a = _FakeAgent(raise_on_emit=True)
         # must not raise
         _emit_compaction_announce(a, dedupe_key=("lcm", 1), **_base())
+
+
+# ───────────────────── Task 4: fallback-event capture ────────────────────────
+
+class _FallbackAgent:
+    def __init__(self, turn_id="sess:default:abc"):
+        self.emitted = []
+        self._current_turn_id = turn_id
+        self._last_fallback_announced = None
+        self.provider = "claude-app"
+
+    def _emit_status(self, msg):
+        self.emitted.append(msg)
+
+
+class TestFallbackEventCapture:
+    def test_records_structured_event(self):
+        from agent.chat_completion_helpers import _emit_fallback_announce
+
+        a = _FallbackAgent(turn_id="sess1:default:t1")
+        _emit_fallback_announce(
+            a, "claude-opus-4-8", "gpt-5.5", "openai-codex",
+            old_provider="claude-app", old_window=1_000_000, new_window=272_000,
+        )
+        ev = getattr(a, "_last_fallback_event", None)
+        assert ev is not None
+        assert ev["old_model"] == "claude-opus-4-8"
+        assert ev["new_model"] == "gpt-5.5"
+        assert ev["new_provider"] == "openai-codex"
+        assert ev["old_provider"] == "claude-app"
+        assert ev["old_window"] == 1_000_000
+        assert ev["new_window"] == 272_000
+        assert ev["turn_id"] == "sess1:default:t1"
+        assert isinstance(ev["monotonic_time"], float)
+        # and it still emitted the fallback line (additive, unchanged behavior)
+        assert any(m.startswith("🔄 Model fallback:") for m in a.emitted)
+
+    def test_noop_transition_records_nothing(self):
+        from agent.chat_completion_helpers import _emit_fallback_announce
+
+        a = _FallbackAgent()
+        _emit_fallback_announce(a, "same", "same", "openai-codex")
+        assert getattr(a, "_last_fallback_event", None) is None
+        assert a.emitted == []
+
+
+# ───────────────────── Task 5: post-fallback linkage ─────────────────────────
+
+class TestPostFallbackLinkage:
+    def _agent_with_fallback(self, *, turn_id, mono, old_window=1_000_000, new_window=272_000):
+        import agent.conversation_compression as cc  # noqa
+
+        class A:
+            pass
+        a = A()
+        a._last_fallback_event = {
+            "old_model": "claude-opus-4-8", "new_model": "gpt-5.5",
+            "old_provider": "claude-app", "new_provider": "openai-codex",
+            "old_window": old_window, "new_window": new_window,
+            "turn_id": turn_id, "monotonic_time": mono,
+        }
+        return a
+
+    def test_same_turn_fallback_before_compaction_links(self):
+        from agent.conversation_compression import _compaction_after_fallback
+
+        a = self._agent_with_fallback(turn_id="T1", mono=100.0)
+        after, wf, wt = _compaction_after_fallback(a, now_monotonic=105.0, current_turn_id="T1")
+        assert after is True
+        assert wf == 1_000_000 and wt == 272_000
+
+    def test_fallback_after_compaction_not_linked(self):
+        # the §0 timeline: compaction happened, THEN fallback (mono later than now)
+        from agent.conversation_compression import _compaction_after_fallback
+
+        a = self._agent_with_fallback(turn_id="T1", mono=200.0)
+        after, _, _ = _compaction_after_fallback(a, now_monotonic=150.0, current_turn_id="T1")
+        assert after is False
+
+    def test_different_turn_not_linked(self):
+        from agent.conversation_compression import _compaction_after_fallback
+
+        a = self._agent_with_fallback(turn_id="T1", mono=100.0)
+        after, _, _ = _compaction_after_fallback(a, now_monotonic=105.0, current_turn_id="T2")
+        assert after is False
+
+    def test_no_turn_id_uses_tight_wallclock_window(self):
+        from agent.conversation_compression import _compaction_after_fallback
+
+        # no turn id on either side → fall back to monotonic window, fallback-before
+        a = self._agent_with_fallback(turn_id=None, mono=100.0)
+        near, _, _ = _compaction_after_fallback(a, now_monotonic=160.0, current_turn_id=None)
+        far, _, _ = _compaction_after_fallback(a, now_monotonic=400.0, current_turn_id=None)
+        assert near is True   # within 60-90s
+        assert far is False   # outside the tight window
+
+    def test_no_fallback_event_returns_false(self):
+        from agent.conversation_compression import _compaction_after_fallback
+
+        class A:
+            pass
+        after, wf, wt = _compaction_after_fallback(A(), now_monotonic=1.0, current_turn_id="T1")
+        assert after is False and wf is None and wt is None
+

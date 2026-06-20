@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -268,6 +269,41 @@ def _emit_compaction_announce(agent: Any, *, dedupe_key, **fmt_kwargs) -> None:
         logger.debug("compaction announce emit failed", exc_info=True)
         return  # key NOT advanced — next real compaction can still announce
     agent._last_compaction_announced = dedupe_key
+
+
+# Tight wall-clock window (seconds) used ONLY when no turn id is available to
+# link a fallback to a following compaction. Real chained fallback→compaction
+# happens within one turn (seconds), not minutes — keep this tight.
+_POST_FALLBACK_WALLCLOCK_SECS = 75.0
+
+
+def _compaction_after_fallback(
+    agent: Any, *, now_monotonic: float, current_turn_id: "str | None"
+) -> "Tuple[bool, Optional[int], Optional[int]]":
+    """Decide whether this compaction follows a model fallback, turn-scoped.
+
+    Returns ``(after_fallback, window_from, window_to)``. The causal signal is
+    *same logical turn AND fallback-before-compaction* — NOT wall-clock
+    proximity (the §0 incident had the fallback AFTER the compaction, which must
+    NOT be labeled). Only when no turn id exists on either side does it fall back
+    to a tight wall-clock window, still requiring fallback-before-compaction.
+    """
+    ev = getattr(agent, "_last_fallback_event", None)
+    if not isinstance(ev, dict):
+        return (False, None, None)
+    fb_mono = ev.get("monotonic_time")
+    if fb_mono is None or fb_mono > now_monotonic:
+        # fallback happened AFTER this compaction (or unknown time) → not causal
+        return (False, None, None)
+    fb_turn = ev.get("turn_id")
+    if fb_turn is not None and current_turn_id is not None:
+        if fb_turn != current_turn_id:
+            return (False, None, None)
+    else:
+        # no turn linkage available → tight wall-clock fallback
+        if (now_monotonic - fb_mono) > _POST_FALLBACK_WALLCLOCK_SECS:
+            return (False, None, None)
+    return (True, ev.get("old_window"), ev.get("new_window"))
 
 
 def _compression_lock_holder(agent: Any) -> str:

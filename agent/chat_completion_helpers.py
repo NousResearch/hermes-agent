@@ -1249,6 +1249,23 @@ def _emit_fallback_announce(
         return
     agent._last_fallback_announced = transition
 
+    # Record a structured fallback event so a compaction shortly afterward, in
+    # the SAME logical turn, can note it was "after model fallback" (turn-scoped
+    # causality, not wall-clock proximity). See conversation_compression.
+    try:
+        agent._last_fallback_event = {
+            "old_model": old_model,
+            "new_model": new_model,
+            "old_provider": old_provider,
+            "new_provider": new_provider,
+            "old_window": old_window,
+            "new_window": new_window,
+            "turn_id": getattr(agent, "_current_turn_id", None),
+            "monotonic_time": time.monotonic(),
+        }
+    except Exception:
+        pass
+
     old_label = f"{old_provider}/{old_model}" if old_provider else old_model
     new_label = f"{new_provider}/{new_model}" if new_provider else new_model
     msg = f"🔄 Model fallback: {old_label} → {new_label}"

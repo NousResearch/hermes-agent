@@ -238,10 +238,18 @@ def audit_skill(skill_dir: Path) -> Optional[AuditResult]:
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.exists():
         return None
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        return AuditResult(
+            skill_path=str(skill_dir),
+            skill_name=skill_dir.name,
+            score=0,
+            issues=[asdict(Issue("error", f"Cannot read file: encoding error — {e}"))],
+            stats={},
+        )
 
-    content = skill_md.read_text(encoding="utf-8")
     lines = content.count("\n") + 1
-
     issues = []
     issues.extend(check_frontmatter(content))
     issues.extend(check_sections(content))

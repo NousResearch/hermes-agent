@@ -302,6 +302,49 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+def build_app_home_view(
+    bot_name: str,
+    command_name: str,
+    commands: list[tuple[str, str]],
+) -> dict:
+    """Build the Slack App Home (Home tab) view — a read-only orientation surface:
+    who the bot is, how to talk to it (DM / @mention / ``/<command>``), and the list
+    of available commands. Especially useful when slash commands are collapsed to a
+    single ``/<command>`` (multi-tenant mode), where this tab restores command
+    discovery. Respects Slack's caps (section text <= 3000 chars; <= 100 blocks).
+    """
+    intro = (
+        f"Hi — I'm *{bot_name}*, your Hermes agent. Talk to me by *DM*, by *@mention* "
+        f"in any channel I'm in, or with `/{command_name} <command> [args]`. In a DM you "
+        f"can just message me normally — no command needed."
+    )
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"👋 {bot_name}", "emoji": True}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": intro}},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Commands* — `/{command_name} <command>`"}},
+    ]
+    # Chunk the command list into section blocks, each within Slack's 3000-char cap.
+    chunk: list[str] = []
+    length = 0
+
+    def _flush() -> None:
+        nonlocal chunk, length
+        if chunk:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(chunk)}})
+            chunk, length = [], 0
+
+    for name, desc in commands:
+        line = f"• `{name}` — {desc}".strip()[:200]
+        if length + len(line) + 1 > 2900 or len(chunk) >= 40:
+            _flush()
+        chunk.append(line)
+        length += len(line) + 1
+    _flush()
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "Hermes · run a command above, or just message me."}]})
+    return {"type": "home", "blocks": blocks[:100]}
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -911,6 +954,27 @@ class SlackAdapter(BasePlatformAdapter):
             @self._app.event("assistant_thread_context_changed")
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
+
+            # App Home tab: publish a read-only orientation view (who I am, how to
+            # reach me, the command list). Closes over `bot_name` from the auth above.
+            @self._app.event("app_home_opened")
+            async def handle_app_home_opened(event, client):
+                if event.get("tab") != "home":
+                    return  # ignore the Messages tab open
+                try:
+                    from hermes_cli.commands import (
+                        gateway_command_summaries,
+                        slack_command_name,
+                    )
+
+                    view = build_app_home_view(
+                        bot_name or "Hermes",
+                        slack_command_name(),
+                        gateway_command_summaries(),
+                    )
+                    await client.views_publish(user_id=event["user"], view=view)
+                except Exception as exc:  # never let a Home-tab open error escalate
+                    logger.warning("[Slack] app_home_opened publish failed: %s", exc)
 
             # Register slash command handler(s)
             #

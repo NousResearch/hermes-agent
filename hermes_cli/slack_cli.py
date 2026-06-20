@@ -49,7 +49,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
         },
         "features": {
             "app_home": {
-                "home_tab_enabled": False,
+                "home_tab_enabled": True,
                 "messages_tab_enabled": True,
                 "messages_tab_read_only_enabled": False,
             },
@@ -85,6 +85,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
         "settings": {
             "event_subscriptions": {
                 "bot_events": [
+                    "app_home_opened",
                     "app_mention",
                     "assistant_thread_context_changed",
                     "assistant_thread_started",

@@ -1152,6 +1152,22 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     return entries
 
 
+def gateway_command_summaries() -> list[tuple[str, str]]:
+    """Return ``(name, description)`` for every gateway-available command (canonical
+    names only, deduped). For surfaces that *list* commands — e.g. the Slack App Home
+    tab — independent of how they are invoked. Honours the same config gates as
+    ``slack_native_slashes``."""
+    overrides = _resolve_config_gates()
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides) or cmd.name in seen:
+            continue
+        seen.add(cmd.name)
+        out.append((cmd.name, cmd.description or ""))
+    return out
+
+
 def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
     """Generate a Slack app manifest with all gateway commands as slashes.
 

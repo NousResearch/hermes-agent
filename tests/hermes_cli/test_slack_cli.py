@@ -10,7 +10,7 @@ class TestSlackFullManifest:
         manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
 
         assert manifest["features"]["app_home"] == {
-            "home_tab_enabled": False,
+            "home_tab_enabled": True,
             "messages_tab_enabled": True,
             "messages_tab_read_only_enabled": False,
         }

@@ -250,6 +250,22 @@ class PhotonAdapter(BasePlatformAdapter):
             else os.getenv("PHOTON_MENTION_PATTERNS")
         )
 
+        # Stateless inbound: when true, the gateway starts a fresh session for
+        # every inbound message (no prior history loaded). Read here only for
+        # operator visibility — enforcement lives in the gateway
+        # (GatewayRunner._inbound_is_stateless reads the same config). Enable
+        # via ``platforms.photon.stateless_inbound: true``.
+        _stateless = extra.get("stateless_inbound")
+        self.stateless_inbound = (
+            _stateless if isinstance(_stateless, bool)
+            else str(_stateless).strip().lower() in {"true", "1", "yes", "on"}
+        )
+        if self.stateless_inbound:
+            logger.info(
+                "photon: stateless_inbound enabled — each inbound starts a "
+                "fresh session with no prior history"
+            )
+
     # -- Group-mention gating (parity with BlueBubbles) -------------------
 
     @staticmethod

@@ -125,6 +125,43 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
 
+### Stateless inbound
+
+By default every inbound from a given chat shares one persistent session
+(`agent:main:photon:dm:<chat_id>`), so each new message reloads the full
+conversation history. For a deployment where Photon inbound must be a strict,
+deterministic router (e.g. a SOUL.md shell-router contract), that accumulated
+history fights the contract — the agent pattern-matches a new message as a
+continuation of prior turns.
+
+Set `stateless_inbound: true` to make the gateway start a **fresh session for
+every inbound message** — no prior history is loaded. The fresh session is a
+brand-new conversation, so it's inherently prompt-cache-safe (nothing is
+rebuilt mid-session and message alternation always starts clean). This is a
+per-platform gateway option (not an env var); default is `false`, so every
+other platform and deployment is unaffected.
+
+```yaml
+# ~/.hermes/profiles/<profile>/config.yaml
+platforms:
+  photon:
+    stateless_inbound: true
+```
+
+Enable it with the CLI:
+
+```bash
+hermes config set platforms.photon.stateless_inbound true
+# then restart the gateway so it reloads config
+```
+
+To clear an already-contaminated session for one chat (without touching any
+other session), use `hermes session wipe`:
+
+```bash
+hermes session wipe --platform photon --chat "+15551234567"
+```
+
 ## Attachments & limitations
 
 - **Inbound attachments and voice notes are downloaded.** The sidecar reads

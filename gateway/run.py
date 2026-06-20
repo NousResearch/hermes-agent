@@ -8670,6 +8670,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    def _inbound_is_stateless(self, source) -> bool:
+        """True when this inbound's platform is configured for stateless inbound.
+
+        Gated per-platform via ``platforms.<platform>.stateless_inbound: true``
+        (bridged into ``PlatformConfig.extra`` by ``load_gateway_config``).
+        Default False everywhere, so existing platforms keep their persistent,
+        history-carrying sessions. When True, the caller forces a fresh session
+        per inbound so a strict router contract (e.g. amper's SOUL.md) isn't
+        fighting accumulated context.
+        """
+        try:
+            platform = getattr(source, "platform", None)
+            if platform is None:
+                return False
+            plat_cfg = self.config.platforms.get(platform)
+            if plat_cfg is None:
+                return False
+            raw = (plat_cfg.extra or {}).get("stateless_inbound")
+            if isinstance(raw, bool):
+                return raw
+            return str(raw).strip().lower() in {"true", "1", "yes", "on"}
+        except Exception:
+            logger.debug("stateless-inbound check failed", exc_info=True)
+            return False
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -8699,7 +8724,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = self.session_store.get_or_create_session(source)
+        # Stateless inbound: when the platform is configured for it, force a
+        # brand-new session for every inbound so no prior turns are loaded. The
+        # fresh session is a new conversation entirely, which is inherently
+        # cache-safe (nothing is rebuilt mid-session; alternation starts clean).
+        _force_fresh = self._inbound_is_stateless(source)
+        if _force_fresh:
+            logger.info(
+                "stateless inbound: forcing fresh session (platform=%s chat=%s)",
+                _platform_name, source.chat_id or "unknown",
+            )
+        session_entry = self.session_store.get_or_create_session(
+            source, force_new=_force_fresh
+        )
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):

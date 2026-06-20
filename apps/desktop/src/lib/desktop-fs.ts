@@ -1,6 +1,11 @@
+import type {
+  HermesConnection,
+  HermesReadDirResult,
+  HermesReadFileTextResult,
+  HermesSelectPathsOptions,
+  HermesWorktreeInfo
+} from '@/global'
 import { $connection } from '@/store/session'
-
-import type { HermesConnection, HermesReadDirResult, HermesReadFileTextResult, HermesSelectPathsOptions } from '@/global'
 
 export interface DesktopFsRemotePicker {
   selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
@@ -73,6 +78,19 @@ export async function desktopGitRoot(path: string): Promise<string | null> {
 
   const result = await desktop.api<{ root: string | null }>({ path: fsPath('git-root', path) })
   return result.root
+}
+
+// Worktree detection runs against the LOCAL filesystem (the electron main
+// process). For a remote backend the session cwds live on another machine, so
+// we can't resolve them here — callers fall back to the path-name heuristic.
+export async function desktopWorktrees(cwds: string[]): Promise<Record<string, HermesWorktreeInfo | null>> {
+  if (isDesktopFsRemoteMode()) {
+    return {}
+  }
+
+  const desktop = bridge()
+
+  return desktop.worktrees ? desktop.worktrees(cwds) : {}
 }
 
 export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string } | null> {

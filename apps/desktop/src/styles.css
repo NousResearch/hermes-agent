@@ -337,8 +337,8 @@
     --file-tree-row-height: 1.375rem;
 
     --composer-width: 48.75rem;
-    --composer-control-size: 1.75rem;
-    --composer-control-primary-size: 1.875rem;
+    --composer-control-size: 1.5rem;
+    --composer-control-primary-size: 1.625rem;
     --composer-control-gap: 0.25rem;
     --composer-row-gap: 0.25rem;
     --composer-ring-strength: 1;
@@ -419,6 +419,10 @@
   body,
   #root {
     height: 100%;
+    /* App shell, not a document: the window itself never scrolls on either axis
+       (panes own their own scroll). Belt to the auto-scroll axis-lock in the
+       sidebar reorder DnD — nothing can drag the whole shell sideways. */
+    overflow: hidden;
   }
 
   html {
@@ -433,7 +437,6 @@
     font-size: 0.8125rem;
     line-height: var(--dt-line-height, 1.55);
     letter-spacing: var(--dt-letter-spacing, 0);
-    overflow: hidden;
     -webkit-user-select: none;
     user-select: none;
     -webkit-font-smoothing: antialiased;
@@ -677,6 +680,7 @@ textarea,
 [contenteditable]:not([contenteditable='false']),
 [data-slot='aui_user-message-root'],
 [data-slot='aui_assistant-message-content'],
+[data-slot='aui_system-message-root'],
 [data-selectable-text='true'],
 [data-selectable-text='true'] * {
   -webkit-user-select: text;
@@ -888,18 +892,25 @@ canvas {
 
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
+  --human-msg-line-height: 1.3;
   font-size: var(--conversation-text-font-size);
 }
 
+[data-slot='aui_user-inline-text'] {
+  line-height: var(--human-msg-line-height);
+}
+
+[data-slot='aui_edit-composer-root'] [data-slot='composer-rich-input'] {
+  line-height: var(--human-msg-line-height);
+}
+
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
-   prompt doesn't dominate the viewport. The clamp lifts on focus only (clicking
-   opens the edit composer, which shows the full text) — not on hover, so the
-   bubble doesn't jump as the pointer passes over it. No transition: the lift
-   happens in the same click that swaps in the edit composer, so animating it
-   just flashes a half-expanded bubble on the way in. */
+   prompt doesn't dominate the viewport. The clamp lifts only in the edit
+   composer; expanding on read-only :focus-within ran on mousedown (before the
+   swap) and fought stick-to-bottom when parked at the bottom. */
 .sticky-human-clamp {
   cursor: pointer;
-  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  max-height: calc(4 * var(--human-msg-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
 }
 
@@ -908,23 +919,16 @@ canvas {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
-.composer-human-message:focus-within .sticky-human-clamp {
-  max-height: min(var(--human-msg-full, 24rem), 24rem);
-  overflow-y: auto;
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-/* The thread renders items in natural document flow (padding spacers, not
-   transforms) and @tanstack/react-virtual already adjusts scrollTop itself
-   when an off-screen turn is measured and its real height differs from the
-   220px estimate. The browser's native scroll anchoring (overflow-anchor:
-   auto) would adjust scrollTop for that SAME size delta, so the two
-   double-correct and the view lurches — most visibly on Windows mouse wheels,
-   whose coarse notches mount/measure several under-estimated turns per tick.
-   Opt out of native anchoring so only the virtualizer compensates. */
+/* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
+   is safe and keeps sticky human edits from shoving the viewport; data-editing
+   enables that path before React swaps in the inline editor. */
 [data-slot='aui_thread-viewport'] {
   overflow-anchor: none;
+}
+
+[data-slot='aui_thread-viewport'][data-following='false'],
+[data-slot='aui_thread-viewport'][data-editing='true'] {
+  overflow-anchor: auto;
 }
 
 [data-slot='aui_thread-content'] {
@@ -998,8 +1002,53 @@ canvas {
 }
 
 [data-slot='composer-root'] {
-  width: min(var(--composer-width), calc(100% - 2rem));
+  /* +10px width compensates the 5px side padding so the visible surface keeps
+     its exact width/position — the inline padding is just transparent grab space
+     for the peel-out drag, matching the floating composer's 5px platform. */
+  width: calc(min(var(--composer-width), calc(100% - 2rem)) + 10px);
+  padding-inline: 5px;
   padding-bottom: var(--composer-shell-pad-block-end);
+}
+
+/* Popped-out (floating) composer: compact width + an even 5px transparent grab
+   platform. The higher-specificity selector resets the base rule's padding-bottom
+   so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */
+[data-slot='composer-root'][data-popped-out] {
+  width: var(--composer-popout-width, 24rem);
+  max-width: calc(100vw - 1.5rem);
+  padding: 5px;
+}
+
+/* Dock glow intensity scale — dimmer in light mode (the primary glow reads
+   much stronger over a light backdrop), full strength in dark mode. */
+:root {
+  --dock-glow-scale: 0.55;
+}
+
+.dark {
+  --dock-glow-scale: 1;
+}
+
+/* Drag-region hatch — a diagonal ///// pattern (Photoshop-style) that fades into
+   the transparent grab margin on hover (and stays while dragging) to signal the
+   composer is draggable. Inherits the root radius so it clips to the corners. */
+[data-slot='composer-drag-region'] {
+  /* Hatch frame radius (tuned by hand). */
+  border-radius: 0.4rem;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--ui-text-tertiary) 38%, transparent) 0,
+    color-mix(in srgb, var(--ui-text-tertiary) 38%, transparent) 1px,
+    transparent 1px,
+    transparent 3.5px
+  );
+}
+
+[data-slot='composer-drag-region']:hover,
+[data-slot='composer-drag-region'][data-dragging] {
+  opacity: 0.33;
 }
 
 [data-slot='composer-root'] > .pointer-events-none {
@@ -1012,6 +1061,12 @@ canvas {
 
 [data-slot='composer-surface'] {
   border-color: var(--ui-stroke-secondary) !important;
+}
+
+/* On focus we don't change the fill — just shift the border ~15% toward the
+   foreground, which darkens it in light mode and lightens it in dark mode. */
+[data-slot='composer-surface']:focus-within {
+  border-color: color-mix(in srgb, var(--ui-stroke-secondary) 85%, var(--dt-foreground)) !important;
 }
 
 [data-slot='composer-fade'] {
@@ -1045,14 +1100,6 @@ canvas {
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
-}
-
-[data-slot='composer-root']:has([data-slot='composer-surface']:focus-within) {
-  --composer-fill: var(--ui-chat-bubble-background);
-}
-
-[data-slot='composer-root']:has([data-slot='composer-completion-drawer']) {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -1154,6 +1201,10 @@ canvas {
   margin-block-end: 0 !important;
 }
 
+[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
+  border-bottom-color: var(--dt-border) !important;
+}
+
 /* Tool / thinking blocks are scaffolding around the model's reply, so we
    keep them transparent and fade them slightly. The reading column (prose)
    stays at full strength; scaffolding lifts back to full opacity on
@@ -1170,6 +1221,12 @@ canvas {
 
 [data-slot='aui_assistant-message-content']
   > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']):is(:hover, :focus-within) {
+  opacity: 1;
+}
+
+/* A generated image is the deliverable, not scaffolding — keep it at full
+   strength instead of dimming it until hover. */
+[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:has([data-slot='aui_generated-image']) {
   opacity: 1;
 }
 
@@ -1255,6 +1312,62 @@ canvas {
   }
 }
 
+/* Floating "jump to bottom" control (see scroll-to-bottom-button.tsx).
+   Directional scale: it contracts toward 1 as it arrives (from 1.1) and keeps
+   contracting to 0.9 as it leaves — always shrinking in the direction of
+   travel, so the motion reads as a soft settle / recede rather than a pop. The
+   X half-offset stays baked into every transform so `left-1/2` centering holds
+   through the animation. */
+.thread-jump-button {
+  opacity: 0;
+  transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+}
+
+.thread-jump-button[data-state='in'] {
+  animation: thread-jump-in 200ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.thread-jump-button[data-state='out'] {
+  animation: thread-jump-out 180ms ease-in forwards;
+}
+
+@keyframes thread-jump-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(1.1);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes thread-jump-out {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-jump-button[data-state='in'],
+  .thread-jump-button[data-state='out'] {
+    animation: none;
+    transition: opacity 120ms linear;
+  }
+
+  .thread-jump-button[data-state='in'] {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
 @keyframes code-card-stream-glow {
   from {
     border-color: color-mix(in srgb, var(--dt-ring) 18%, var(--ui-stroke-tertiary));
@@ -1276,4 +1389,3 @@ canvas {
     animation: none;
   }
 }
-

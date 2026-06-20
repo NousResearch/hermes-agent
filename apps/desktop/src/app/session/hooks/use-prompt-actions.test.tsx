@@ -205,6 +205,67 @@ describe('usePromptActions /title', () => {
   })
 })
 
+describe('usePromptActions slash.exec dispatch payloads', () => {
+  afterEach(() => {
+    cleanup()
+    $busy.set(false)
+    vi.restoreAllMocks()
+  })
+
+  it('submits /goal send directives returned directly by slash.exec instead of rendering no output', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set. Starting now.',
+          message: 'write the implementation plan'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal write the implementation plan')
+
+    expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({
+      command: 'goal write the implementation plan',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(calls[1]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: 'write the implementation plan'
+    })
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('⊙ Goal set. Starting now.')
+    expect(renderedText).not.toContain('/goal: no output')
+  })
+})
+
 describe('usePromptActions desktop slash pickers', () => {
   beforeEach(() => {
     setSessions(() => [sessionInfo({ id: '20260610_120000_abcdef', title: 'Loaded session' })])
@@ -323,6 +384,81 @@ describe('usePromptActions submit / queue drain semantics', () => {
       session_id: RUNTIME_SESSION_ID,
       text: 'queued message'
     })
+  })
+
+  it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
+    // A stale-session 404 must not strand the queued entry: submitPrompt returns
+    // false on failure so the composer keeps it, and the edge-independent
+    // auto-drain re-attempts once the session is idle again. storedSessionId is
+    // null so the session.resume recovery path is skipped and the error surfaces.
+    let attempt = 0
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        attempt += 1
+
+        if (attempt === 1) {
+          throw new Error('404: {"detail":"Session not found"}')
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={null}
+      />
+    )
+
+    const first = await handle!.submitText('please send me', { fromQueue: true })
+    expect(first).toBe(false)
+
+    const second = await handle!.submitText('please send me', { fromQueue: true })
+    expect(second).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'please send me'
+    })
+  })
+
+  it('rides out a transient "session busy" so the user never sees it (retries, no error bubble)', async () => {
+    // A submit racing the settle edge can hit a transient 4009 before the turn
+    // has fully wound down. It must be invisible: retried in place until the
+    // gateway accepts, never a red "session busy" bubble.
+    let attempt = 0
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        attempt += 1
+
+        if (attempt === 1) {
+          throw new Error('4009: session busy')
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.submitText('sent while settling')).toBe(true)
+    expect(attempt).toBe(2) // rode past the busy on the second try
+    // No assistant-error message was appended for the transient busy.
+    expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
+      false
+    )
   })
 
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {
@@ -801,7 +937,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     const requestGateway = vi.fn(async (method: string) => {
       calls.push(method)
       if (method === 'prompt.submit') {
-        throw new Error('session busy')
+        throw new Error('gateway exploded')
       }
       return {} as never
     })

@@ -493,6 +493,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
+        ("nvidia", "qwen/qwen3.5-122b-a10b"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -533,7 +534,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"opencode-zen", "kilocode"}:
+    if provider in {"opencode-zen", "kilocode", "nvidia"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
@@ -1406,3 +1407,72 @@ class TestDoctorStaleMaxIterationsDrift:
             monkeypatch, tmp_path, fix=False, ghost=None, cfg_turns=400,
         )
         assert "shadows" not in out
+
+
+def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path):
+    """`hermes doctor` must not hand users `npm audit fix --workspace <name>`:
+    that exact form crashes npm with "Cannot read properties of null (reading
+    'edgesOut')" (an arborist bug with workspace-filtered audit fix).
+
+    It must not recommend root-level `npm audit fix` for workspace advisories
+    either: current npm can crash there too with "Cannot read properties of null
+    (reading 'isDescendantOf')" on this tree. The safe guidance is that these
+    build-tool advisories clear via the lockfile/package bump.
+
+    Regression for user reports where doctor flagged the web/ui-tui workspaces
+    and the suggested fix command errored out.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    project = tmp_path / "project"
+    (project / "node_modules").mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+
+    # Only npm is "installed" — keeps the rest of run_doctor's external checks
+    # quiet without affecting the npm-audit branch under test.
+    monkeypatch.setattr(
+        doctor_mod.shutil, "which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None
+    )
+
+    def mock_run(cmd, **kwargs):
+        if "audit" in cmd and "--workspace" in cmd:
+            payload = (
+                '{"metadata": {"vulnerabilities": '
+                '{"critical": 0, "high": 2, "moderate": 0}}}'
+            )
+            return SimpleNamespace(returncode=1, stdout=payload, stderr="")
+        if "audit" in cmd:
+            payload = (
+                '{"metadata": {"vulnerabilities": '
+                '{"critical": 0, "high": 0, "moderate": 0}}}'
+            )
+            return SimpleNamespace(returncode=0, stdout=payload, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    # The workspace vulnerability is still reported ...
+    assert "web workspace" in out
+    # ... but the remediation must NOT use the npm-crashing per-workspace form
+    # (`npm audit fix --workspace web` / `--workspace ui-tui`).
+    assert "npm audit fix --workspace web" not in out
+    assert "npm audit fix --workspace ui-tui" not in out
+    # ... and it must not point at the root-level form either: npm can crash
+    # there too with `isDescendantOf` on this monorepo tree.
+    assert "npm audit fix" not in out
+    # ... and explains the workspace advisories are build-time tooling whose
+    # manual remediation may hit a known npm arborist crash, so the user isn't
+    # left thinking a crashing command means a broken Hermes install.
+    assert "build-time tooling" in out
+    assert "known npm bug" in out
+    assert "lockfile bump" in out

@@ -69,6 +69,21 @@ SUMMARY_PREFIX = (
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
+# Metadata key added to context compression summary messages so that frontends
+# (CLI, Desktop, gateway, TUI) can distinguish them from real assistant/user
+# messages and filter or render them appropriately without content-prefix
+# heuristics. See https://github.com/NousResearch/hermes-agent/issues/38389
+#
+# Underscore-prefixed ON PURPOSE: the wire sanitizers
+# (agent/transports/chat_completions.py convert_messages and the summary-path
+# mirror in agent/chat_completion_helpers.py) strip every top-level message
+# key starting with "_" before the request leaves the process. Strict
+# OpenAI-compatible gateways (Fireworks, Mistral, Moonshot/Kimi, opencode-go)
+# reject payloads carrying unknown keys with "Extra inputs are not permitted",
+# poisoning every subsequent request in the session — a bare key like
+# "is_compressed_summary" would reach the wire and trip exactly that.
+COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
 # Without it, weak models read the verbatim "## Active Task" quote as fresh
@@ -156,6 +171,11 @@ _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
+# Keep a short run of recent messages verbatim even when the token budget is
+# already exhausted.  The public ``protect_last_n`` default is intentionally
+# high for small/light tails, but using all 20 as a hard floor here would bring
+# back the old large-tool-output case where nothing can be compacted.
+_MAX_TAIL_MESSAGE_FLOOR = 8
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -1648,6 +1668,19 @@ This compaction should PRIORITISE preserving all information related to the focu
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
 
+    @staticmethod
+    def _has_compressed_summary_metadata(message: Any) -> bool:
+        """Return True if *message* carries the compressed-summary flag.
+
+        Callers (frontends, CLI, gateway) can use this to distinguish context
+        compaction summaries from real assistant or user messages without
+        relying on content-prefix heuristics.  The flag is in-process only —
+        the wire sanitizers strip underscore-prefixed keys before API calls.
+        """
+        if not isinstance(message, dict):
+            return False
+        return bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
+
     @classmethod
     def _derive_auto_focus_topic(
         cls,
@@ -1990,11 +2023,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         derived from ``summary_target_ratio * context_length``, so it
         scales automatically with the model's context window.
 
-        Token budget is the primary criterion.  A hard minimum of 3 messages
-        is always protected, but the budget is allowed to exceed by up to
-        1.5x to avoid cutting inside an oversized message (tool output, file
-        read, etc.).  If even the minimum 3 messages exceed 1.5x the budget
-        the cut is placed right after the head so compression still runs.
+        Token budget is the primary criterion.  A bounded message-count floor
+        keeps a short run of recent turns verbatim even when the budget is
+        exhausted, but the budget is allowed to exceed by up to 1.5x to avoid
+        cutting inside an oversized message (tool output, file read, etc.). If
+        even that floor exceeds 1.5x the budget, the cut is placed right after
+        the head so compression still runs.
 
         Never cuts inside a tool_call/result group.  Always ensures the most
         recent user message is in the tail (see ``_ensure_last_user_message_in_tail``).
@@ -2002,8 +2036,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         if token_budget is None:
             token_budget = self.tail_token_budget
         n = len(messages)
-        # Hard minimum: always keep at least 3 messages in the tail
-        min_tail = min(3, n - head_end - 1) if n - head_end > 1 else 0
+        # Hard minimum: always keep a bounded recent-message floor in the tail.
+        # ``protect_last_n`` remains a minimum up to the cap; the cap avoids
+        # preserving a whole run of bulky tool outputs on every compaction.
+        available_tail = max(0, n - head_end - 1)
+        min_tail_floor = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+        # Leave at least two non-head messages available to summarize on short
+        # transcripts; otherwise compression can replace a tiny middle with a
+        # summary and save no messages at all.
+        compressible_tail_cap = max(3, available_tail - 2)
+        min_tail = (
+            min(min_tail_floor, compressible_tail_cap, available_tail)
+            if available_tail > 1 else 0
+        )
         soft_ceiling = int(token_budget * 1.5)
         accumulated = 0
         cut_idx = n  # start from beyond the end
@@ -2324,7 +2369,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary = summary + "\n\n" + _SUMMARY_END_MARKER
 
         if not _merge_summary_into_tail:
-            compressed.append({"role": summary_role, "content": summary})
+            compressed.append({
+                "role": summary_role,
+                "content": summary,
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+            })
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
@@ -2335,6 +2384,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                     merged_prefix,
                     prepend=True,
                 )
+                # Mark the merged message so frontends can identify it as
+                # containing a compression summary prefix.
+                msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

@@ -1804,6 +1804,40 @@ class TestTokenBudgetTailProtection:
         tail_size = len(messages) - cut
         assert tail_size >= 3, f"Tail is only {tail_size} messages, min should be 3"
 
+    def test_tiny_budget_preserves_bounded_recent_turns(self, budget_compressor):
+        """A token-exhausted tail must preserve more than just the latest ask.
+
+        Regression for #9413: the previous hard-coded 3-message floor could
+        leave the latest user message live while summarizing the assistant/tool
+        context immediately before it, which made the post-compression turn feel
+        like a fresh conversation.
+        """
+        c = budget_compressor
+        c.tail_token_budget = 10
+        c.protect_last_n = 20
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "old start"},
+            {"role": "assistant", "content": "old ack"},
+            {"role": "user", "content": "middle work"},
+            {"role": "assistant", "content": "middle ack"},
+            {"role": "user", "content": "middle ask 2"},
+            {"role": "assistant", "content": "middle answer 2"},
+            {"role": "user", "content": "middle ask 3"},
+            {"role": "assistant", "content": "middle answer 3"},
+            {"role": "user", "content": "recent ask 1"},
+            {"role": "assistant", "content": "recent answer 1"},
+            {"role": "user", "content": "recent ask 2"},
+            {"role": "assistant", "content": "recent answer 2"},
+            {"role": "user", "content": "latest ask"},
+        ]
+
+        cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+
+        assert len(messages) - cut >= 8
+        assert messages[cut]["content"] == "middle answer 2"
+        assert messages[-1]["content"] == "latest ask"
+
     def test_soft_ceiling_allows_oversized_message(self, budget_compressor):
         """The 1.5x soft ceiling allows an oversized message to be included
         rather than splitting it."""

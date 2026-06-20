@@ -30,6 +30,7 @@ import {
   Package,
   Palette,
   Plus,
+  RefreshCw,
   Settings,
   Settings2,
   Sun,
@@ -41,6 +42,7 @@ import {
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
+import { runGatewayRestart } from '@/store/system-actions'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -117,6 +119,10 @@ const paletteFilter = (value: string, search: string, keywords?: string[]): numb
 
   return needle.split(/\s+/).every(term => haystack.includes(term)) ? 1 : 0
 }
+
+// Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
+// "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
+const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
 
 type SessionRow = Awaited<ReturnType<typeof listAllProfileSessions>>['sessions'][number]
 
@@ -356,6 +362,13 @@ export function CommandPalette() {
             keywords: ['command center', 'usage', 'tokens', 'cost'],
             label: cc.sections.usage,
             run: go(`${COMMAND_CENTER_ROUTE}?section=usage`)
+          },
+          {
+            icon: RefreshCw,
+            id: 'cc-restart-gateway',
+            keywords: ['gateway', 'restart', 'messaging', 'reconnect', 'system'],
+            label: cc.restartGateway,
+            run: () => void runGatewayRestart()
           }
         ]
       },
@@ -412,6 +425,24 @@ export function CommandPalette() {
     }
 
     const result: PaletteGroup[] = []
+
+    // Paste a raw session id → jump straight to it, even if it predates the
+    // recent-200 window the lists below are built from.
+    const directId = search.trim()
+
+    if (SESSION_ID_RE.test(directId)) {
+      result.push({
+        items: [
+          {
+            icon: MessageCircle,
+            id: `goto-${directId}`,
+            keywords: ['session', 'id', 'go to', directId],
+            label: `${t.commandCenter.goToSession} ${directId}`,
+            run: go(sessionRoute(directId))
+          }
+        ]
+      })
+    }
 
     if (sessions.length > 0) {
       result.push({

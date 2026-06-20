@@ -617,7 +617,74 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-check_teams_requirements = check_requirements
+# NOTE: ``check_requirements`` is the PASSIVE probe (used as the registry
+# ``check_fn`` and by ``gateway status``) — it must never trigger a pip
+# install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
+# from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
+# SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+def check_teams_requirements() -> bool:
+    """Ensure the Teams SDK is importable, lazy-installing it on first use.
+
+    Lazy-installs ``microsoft-teams-apps`` via
+    ``tools.lazy_deps.ensure("platform.teams")`` if not present, then rebinds
+    all module-level SDK globals on success. Returns True once the SDK (and
+    aiohttp) are importable, False if they couldn't be installed/imported.
+    """
+    if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
+        return True
+
+    def _import() -> dict:
+        from aiohttp import web as _web
+        from microsoft_teams.apps import App, ActivityContext
+        from microsoft_teams.common.http.client import ClientOptions
+        from microsoft_teams.api import MessageActivity, ConversationReference
+        from microsoft_teams.api.activities.typing import TypingActivityInput
+        from microsoft_teams.api.activities.invoke.adaptive_card import (
+            AdaptiveCardInvokeActivity,
+        )
+        from microsoft_teams.api.models.adaptive_card import (
+            AdaptiveCardActionCardResponse,
+            AdaptiveCardActionMessageResponse,
+        )
+        from microsoft_teams.api.models.invoke_response import (
+            InvokeResponse,
+            AdaptiveCardInvokeResponse,
+        )
+        from microsoft_teams.apps.http.adapter import (
+            HttpMethod,
+            HttpRequest,
+            HttpResponse,
+            HttpRouteHandler,
+        )
+        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+        return {
+            "web": _web,
+            "AIOHTTP_AVAILABLE": True,
+            "App": App,
+            "ActivityContext": ActivityContext,
+            "ClientOptions": ClientOptions,
+            "MessageActivity": MessageActivity,
+            "ConversationReference": ConversationReference,
+            "TypingActivityInput": TypingActivityInput,
+            "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
+            "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
+            "AdaptiveCardActionMessageResponse": AdaptiveCardActionMessageResponse,
+            "InvokeResponse": InvokeResponse,
+            "AdaptiveCardInvokeResponse": AdaptiveCardInvokeResponse,
+            "HttpMethod": HttpMethod,
+            "HttpRequest": HttpRequest,
+            "HttpResponse": HttpResponse,
+            "HttpRouteHandler": HttpRouteHandler,
+            "AdaptiveCard": AdaptiveCard,
+            "ExecuteAction": ExecuteAction,
+            "TextBlock": TextBlock,
+            "TEAMS_SDK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+
+    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
 
 
 class TeamsAdapter(BasePlatformAdapter):
@@ -642,10 +709,13 @@ class TeamsAdapter(BasePlatformAdapter):
         self._conv_refs: Dict[str, Any] = {}
 
     async def connect(self) -> bool:
+        # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
+        # then re-check the module globals it rebinds.
+        check_teams_requirements()
         if not TEAMS_SDK_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "microsoft-teams-apps not installed. Run: pip install microsoft-teams-apps",
+                "microsoft-teams-apps could not be installed. Run: pip install microsoft-teams-apps",
                 retryable=False,
             )
             return False
@@ -1119,14 +1189,22 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-    async def send_image(
+    async def _send_media_attachment(
         self,
         chat_id: str,
-        image_url: str,
+        source: str,
+        default_mime: str,
         caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        media_label: str = "media",
     ) -> SendResult:
+        """Send any media file/URL as a Teams attachment.
+
+        Remote ``http(s)://`` URLs are attached by reference; local paths
+        (with optional ``file://`` prefix) are base64-encoded into a data
+        URI. MIME type is guessed from the path/extension, falling back to
+        ``default_mime``. Shared by send_image / send_video / send_voice /
+        send_document so every media kind uses the same Attachment path.
+        """
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
@@ -1135,13 +1213,13 @@ class TeamsAdapter(BasePlatformAdapter):
             import mimetypes
             from microsoft_teams.api import Attachment, MessageActivityInput
 
-            if image_url.startswith("http://") or image_url.startswith("https://"):
-                content_url = image_url
-                mime_type = "image/png"
+            if source.startswith("http://") or source.startswith("https://"):
+                content_url = source
+                mime_type = mimetypes.guess_type(source.split("?")[0])[0] or default_mime
             else:
                 # Local path — encode as base64 data URI
-                path = image_url.removeprefix("file://")
-                mime_type = mimetypes.guess_type(path)[0] or "image/png"
+                path = source.removeprefix("file://")
+                mime_type = mimetypes.guess_type(path)[0] or default_mime
                 with open(path, "rb") as f:
                     content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
 
@@ -1158,8 +1236,24 @@ class TeamsAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_image failed: %s", e, exc_info=True)
+            logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=image_url,
+            default_mime="image/png",
+            caption=caption,
+            media_label="image",
+        )
 
     async def send_image_file(
         self,
@@ -1174,6 +1268,58 @@ class TeamsAdapter(BasePlatformAdapter):
             image_url=image_path,
             caption=caption,
             reply_to=reply_to,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=video_path,
+            default_mime="video/mp4",
+            caption=caption,
+            media_label="video",
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=audio_path,
+            default_mime="audio/mpeg",
+            caption=caption,
+            media_label="voice",
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=file_path,
+            default_mime="application/octet-stream",
+            caption=caption,
+            media_label="document",
         )
 
     async def get_chat_info(self, chat_id: str) -> dict:

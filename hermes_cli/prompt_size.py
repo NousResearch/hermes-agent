@@ -29,15 +29,20 @@ def _build_inspection_agent(platform: str) -> Any:
     """Construct an offline AIAgent for prompt inspection.
 
     Dummy ``api_key`` + ``base_url`` force the direct-construction path in
-    ``run_agent.py`` (no provider auto-detection, no network). Toolsets and
-    platform come from the caller so the breakdown matches a real session.
+    ``run_agent.py`` (no provider auto-detection, no network).  Resolve the
+    platform's configured toolsets the same way normal CLI/gateway startup
+    does; otherwise ``AIAgent`` receives ``enabled_toolsets=None`` and
+    ``get_tool_definitions`` falls back to every available toolset, overstating
+    tool-schema size for narrowed profiles.
     """
     from run_agent import AIAgent
     from hermes_cli.config import load_config
+    from hermes_cli.tools_config import _get_platform_tools
 
     cfg = load_config()
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     model = model_cfg.get("default") or model_cfg.get("model") or ""
+    enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
 
     return AIAgent(
         model=model,
@@ -46,6 +51,7 @@ def _build_inspection_agent(platform: str) -> Any:
         quiet_mode=True,
         save_trajectories=False,
         platform=platform,
+        enabled_toolsets=enabled_toolsets,
     )
 
 

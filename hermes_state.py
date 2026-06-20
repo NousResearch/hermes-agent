@@ -3395,6 +3395,7 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -3419,6 +3420,12 @@ class SessionDB:
 
         Rewound (``active=0``) rows are excluded by default. Pass
         ``include_inactive=True`` to search every row.
+
+        Soft-archived sessions are excluded by default so session_search can be
+        used as a context-governance control: archived historical project
+        sessions remain recoverable by direct id/listing, but no longer poison
+        broad full-text discovery. Pass ``include_archived=True`` for admin or
+        forensic searches.
         """
         if not self._fts_enabled:
             return []
@@ -3454,6 +3461,8 @@ class SessionDB:
         params: list = [query]
         if not include_inactive:
             where_clauses.append("m.active = 1")
+        if not include_archived:
+            where_clauses.append("s.archived = 0")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -3536,6 +3545,8 @@ class SessionDB:
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("m.active = 1")
+                if not include_archived:
+                    tri_where.append("s.archived = 0")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -3593,6 +3604,10 @@ class SessionDB:
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
                 like_where = [f"({' OR '.join(token_clauses)})"]
+                if not include_inactive:
+                    like_where.append("m.active = 1")
+                if not include_archived:
+                    like_where.append("s.archived = 0")
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)

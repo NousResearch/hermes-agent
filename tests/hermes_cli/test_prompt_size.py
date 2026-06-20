@@ -116,3 +116,16 @@ def test_json_serializable(isolated_home):
     data = compute_prompt_breakdown("cli")
     # Round-trips cleanly for ``--json`` output.
     assert json.loads(json.dumps(data)) == json.loads(json.dumps(data))
+
+
+def test_prompt_size_respects_platform_toolsets(isolated_home):
+    """Narrow platform toolsets should reduce the inspected tool schema."""
+    import yaml
+
+    (isolated_home / "config.yaml").write_text(
+        yaml.safe_dump({"platform_toolsets": {"cli": ["skills", "todo"]}}),
+        encoding="utf-8",
+    )
+
+    data = compute_prompt_breakdown("cli")
+    assert data["tools"]["count"] == 4

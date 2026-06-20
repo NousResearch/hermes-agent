@@ -1031,6 +1031,19 @@ class TestFTS5Search:
         found_sources = {r["source"] for r in results}
         assert found_sources == {"cli", "telegram", "signal", "homeassistant", "acp", "matrix"}
 
+    def test_search_excludes_archived_sessions_by_default(self, db):
+        db.create_session(session_id="active", source="cli")
+        db.append_message("active", role="user", content="needle active")
+        db.create_session(session_id="archived", source="cli")
+        db.append_message("archived", role="user", content="needle archived")
+        db.set_session_archived("archived", True)
+
+        default_results = db.search_messages("needle")
+        assert {r["session_id"] for r in default_results} == {"active"}
+
+        all_results = db.search_messages("needle", include_archived=True)
+        assert {r["session_id"] for r in all_results} == {"active", "archived"}
+
     def test_search_with_role_filter(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="What is FastAPI?")

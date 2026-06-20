@@ -4284,6 +4284,12 @@ _PLATFORMS = [
     # discovered dynamically via the platform registry entries registered by
     # plugins/platforms/{email,sms}/adapter.py::register(). #41112.
     {
+        "key": "webhook",
+        "label": "Webhook",
+        "emoji": "🔗",
+        "token_var": "WEBHOOK_ENABLED",
+    },
+    {
         "key": "weixin",
         "label": "Weixin / WeChat",
         "emoji": "💬",
@@ -5274,6 +5280,7 @@ def _builtin_setup_fn(key: str):
         # plugins/platforms/mattermost/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
         "bluebubbles": _s._setup_bluebubbles,
+        "webhook": _s._setup_webhooks,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
         # whatsapp + dingtalk moved into plugins: setup_fn registered by

@@ -440,6 +440,25 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
+        # Oneshot bypasses the interactive CLI's atexit/_run_cleanup wiring, so
+        # memory providers (e.g. Honcho) whose daemon worker threads are still
+        # blocked in HTTP recv at interpreter exit never get shutdown() called.
+        # CPython then abandons those threads at Py_FinalizeEx and tears the
+        # interpreter down around them, producing SIGABRT (exit 134) with no
+        # Python traceback. The ``finally`` below handles the normal path;
+        # register a direct atexit hook as a fallback for exit paths that
+        # skip it.
+        import atexit as _atexit
+
+        def _shutdown_oneshot_and_exit() -> None:
+            try:
+                if hasattr(agent, "shutdown_memory_provider"):
+                    agent.shutdown_memory_provider()
+            except Exception:
+                pass
+
+        _atexit.register(_shutdown_oneshot_and_exit)
+
         result = agent.run_conversation(prompt)
         return (result.get("final_response") or "", result)
     finally:

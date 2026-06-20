@@ -1085,16 +1085,19 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         Combined reasoning text, or None if no reasoning found
     """
     reasoning_parts = []
-    
+
     # Check direct reasoning field
     if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-        reasoning_parts.append(assistant_message.reasoning)
-    
+        val = assistant_message.reasoning
+        if isinstance(val, str):
+            reasoning_parts.append(val)
+
     # Check reasoning_content field (alternative name used by some providers)
     if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+        val = assistant_message.reasoning_content
         # Don't duplicate if same as reasoning
-        if assistant_message.reasoning_content not in reasoning_parts:
-            reasoning_parts.append(assistant_message.reasoning_content)
+        if isinstance(val, str) and val not in reasoning_parts:
+            reasoning_parts.append(val)
     
     # Check reasoning_details array (OpenRouter unified format)
     # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
@@ -1108,7 +1111,7 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                     or detail.get('content')
                     or detail.get('text')
                 )
-                if summary and summary not in reasoning_parts:
+                if summary and isinstance(summary, str) and summary not in reasoning_parts:
                     reasoning_parts.append(summary)
 
     # Some providers embed reasoning directly inside assistant content
@@ -2037,7 +2040,38 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     Runs unconditionally — not gated on whether the context compressor
     is present — so orphans from session loading or manual message
     manipulation are always caught.
+
+    Also strips internal-only metadata fields (``timestamp``, ``tool_name``,
+    ``observed``, ``message_id``, ``platform_message_id``) that the session
+    DB attaches for bookkeeping but strict API validators (e.g. CLIProxy
+    fronting GLM) reject as "Extra inputs are not permitted" (HTTP 400).
     """
+    # --- Field allowlist: strip internal metadata before API call ---
+    # These are the only fields the OpenAI Chat Completions schema accepts.
+    # Provider-specific reasoning fields are included because they are part
+    # of the API contract for those providers (DeepSeek, OpenRouter, etc.).
+    _API_FIELDS = frozenset({
+        "role", "content", "tool_calls", "tool_call_id", "name",
+        "function_call",  # deprecated but some providers still accept
+        "reasoning", "reasoning_content", "reasoning_details",
+        "codex_reasoning_items", "codex_message_items",
+    })
+    stripped_count = 0
+    cleaned = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            extra = set(msg.keys()) - _API_FIELDS
+            if extra:
+                stripped_count += 1
+                msg = {k: v for k, v in msg.items() if k in _API_FIELDS}
+        cleaned.append(msg)
+    if stripped_count:
+        _ra().logger.debug(
+            "Pre-call sanitizer: stripped internal fields from %d message(s)",
+            stripped_count,
+        )
+    messages = cleaned
+
     # --- Role allowlist: drop messages with roles the API won't accept ---
     filtered = []
     for msg in messages:

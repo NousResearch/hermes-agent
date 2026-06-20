@@ -2314,6 +2314,11 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Default model for cron jobs when no per-job model override is set.
+        # When empty, falls back to the main model.default from config (same as chat).
+        "model": "",
+        # Default provider for cron jobs, paired with cron.model above.
+        "provider": "",
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

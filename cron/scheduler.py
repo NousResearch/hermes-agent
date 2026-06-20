@@ -1672,6 +1672,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 except Exception:
                     pass
                 _cfg = _expand_env_vars(_cfg)
+
+                # Check cron-specific default before falling back to the main model
+                if not job.get("model"):
+                    _cron_cfg = _cfg.get("cron", {})
+                    if isinstance(_cron_cfg, dict):
+                        _cron_model = (_cron_cfg.get("model") or "").strip()
+                        _cron_provider = (_cron_cfg.get("provider") or "").strip()
+                        if _cron_model:
+                            model = _cron_model
+                            if _cron_provider:
+                                provider = _cron_provider
+
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
                     if isinstance(_model_cfg, str):

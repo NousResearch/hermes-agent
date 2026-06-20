@@ -516,3 +516,45 @@ class TestSourceGuardrail:
 
     def test_issue_number_referenced(self, source):
         assert "#29824" in source
+
+
+class TestFallbackSummaryNoAskDuplication:
+    """Regression for #49307: the deterministic fallback summary must keep the
+    latest user ask under the Historical Task Snapshot only, not echo it
+    verbatim under the In-Progress and Pending headings. The triplication gave
+    the model a strong structural signal to re-answer the (already-answered or
+    superseded) ask after a failed compaction, causing answer repetition and
+    new-instruction loss."""
+
+    @staticmethod
+    def _section(summary: str, heading: str) -> str:
+        """Body text under ``heading`` (matched as a standalone section header,
+        not the quoted mention inside SUMMARY_PREFIX)."""
+        import re
+
+        marker = "\n" + heading + "\n"
+        start = summary.index(marker) + len(marker)
+        rest = summary[start:]
+        m = re.search(r"\n#{2,} ", rest)
+        return rest[: m.start()] if m else rest
+
+    def test_latest_ask_not_duplicated_under_in_progress_or_pending(self, compressor):
+        from agent.context_compressor import (
+            HISTORICAL_IN_PROGRESS_HEADING,
+            HISTORICAL_PENDING_ASKS_HEADING,
+            HISTORICAL_TASK_HEADING,
+        )
+
+        ask = "Refactor the auth module to use JWT instead of sessions"
+        turns = [
+            {"role": "user", "content": ask},
+            {"role": "assistant", "content": "Looking into it."},
+        ]
+
+        summary = compressor._build_static_fallback_summary(turns)
+
+        # Preserved exactly where it belongs: the single most-important field.
+        assert ask in self._section(summary, HISTORICAL_TASK_HEADING)
+        # NOT echoed under In-Progress / Pending (the re-answer trigger).
+        assert ask not in self._section(summary, HISTORICAL_IN_PROGRESS_HEADING)
+        assert ask not in self._section(summary, HISTORICAL_PENDING_ASKS_HEADING)

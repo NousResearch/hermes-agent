@@ -1245,7 +1245,7 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 {HISTORICAL_IN_PROGRESS_HEADING}
-{active_task}
+Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 ## Blocked
 {_bullets(blockers, limit=5)}
@@ -1257,7 +1257,7 @@ None recoverable from deterministic fallback.
 None recoverable from deterministic fallback.
 
 {HISTORICAL_PENDING_ASKS_HEADING}
-{active_task}
+None recoverable from deterministic fallback.
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}

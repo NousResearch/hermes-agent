@@ -401,7 +401,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def get_config_schema(self):
         return [
-            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "api_key", "description": "Mem0 Platform (cloud) API key. Required for cloud mode; leave empty for a self-hosted server (set host + admin_api_key instead).", "secret": True, "required": False, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "host", "description": "Self-hosted Mem0 OSS server URL (direct REST mode)", "default": "", "env_var": "MEM0_HOST"},
             {"key": "admin_api_key", "description": "Self-hosted Mem0 OSS server admin API key", "secret": True, "required": False, "env_var": "MEM0_ADMIN_API_KEY"},
             {"key": "ca_bundle", "description": "Path to a CA bundle PEM for verifying a self-hosted HTTPS endpoint signed by a private CA (e.g. mem0.ace). Empty = system trust store.", "default": "", "env_var": "MEM0_CA_BUNDLE"},

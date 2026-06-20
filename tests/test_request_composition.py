@@ -342,21 +342,25 @@ def test_fixed_divisor_env_override(monkeypatch):
         importlib.reload(mm)
 
 
-def test_fixed_divisor_default_and_out_of_range_fallback():
+def test_fixed_divisor_default_and_out_of_range_fallback(monkeypatch):
     import importlib
     import agent.model_metadata as mm
-    import os
-    # Default (no env) is 4.5.
-    os.environ.pop("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", None)
-    importlib.reload(mm)
-    assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.5, "default fixed divisor must be 4.5"
-    # Absurd / malformed values (typo guard) fall back to the 4.5 default.
-    for bad in ("0", "999", "-3", "notanumber", ""):
-        os.environ["HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED"] = bad
+    # Use monkeypatch (not raw os.environ) so a mid-loop assertion failure can't
+    # leak HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED into later tests — monkeypatch
+    # restores the env and the try/finally restores the module's default 4.5.
+    try:
+        # Default (no env) is 4.5.
+        monkeypatch.delenv("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", raising=False)
         importlib.reload(mm)
-        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.5, f"{bad!r} should fall back to 4.5"
-    os.environ.pop("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", None)
-    importlib.reload(mm)
+        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.5, "default fixed divisor must be 4.5"
+        # Absurd / malformed values (typo guard) fall back to the 4.5 default.
+        for bad in ("0", "999", "-3", "notanumber", ""):
+            monkeypatch.setenv("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", bad)
+            importlib.reload(mm)
+            assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.5, f"{bad!r} should fall back to 4.5"
+    finally:
+        monkeypatch.delenv("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", raising=False)
+        importlib.reload(mm)  # restore default 4.5 for other tests
 
 
 # --------------------------------------------------------------------------- #

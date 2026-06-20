@@ -492,3 +492,46 @@ def test_ca_bundle_builds_ssl_context_for_https_private_ca(tmp_path):
         ca_bundle=str(ca_pem),
     )
     assert c3._ssl_context is None
+
+
+def _clear_mem0_env(monkeypatch):
+    for var in (
+        "MEM0_API_KEY", "MEM0_HOST", "MEM0_ADMIN_API_KEY",
+        "MEM0_CA_BUNDLE", "MEM0_USER_ID", "MEM0_AGENT_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_api_key_not_required_in_schema_so_selfhost_setup_is_not_blocked():
+    """The config schema must NOT mark ``api_key`` as required.
+
+    ``is_available()`` bypasses ``api_key`` entirely when ``host`` is set
+    (self-hosted mode is gated on ``admin_api_key``). A schema that marks
+    ``api_key`` required would force any validation/setup UI to demand a cloud
+    key even for a self-hosted server that never uses one. Behavior contract,
+    not a value snapshot: api_key is optional; the host/admin pair carries
+    self-hosted availability.
+    """
+    provider = Mem0MemoryProvider()
+    schema = {field["key"]: field for field in provider.get_config_schema()}
+    assert schema["api_key"].get("required", False) is False, (
+        "api_key must be optional — is_available() bypasses it in self-hosted mode"
+    )
+
+
+def test_is_available_selfhost_without_api_key(monkeypatch, tmp_path):
+    """Self-hosted (host + admin_api_key, NO api_key) must report available."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    _clear_mem0_env(monkeypatch)
+    monkeypatch.setenv("MEM0_HOST", "https://mem0.ace")
+    monkeypatch.setenv("MEM0_ADMIN_API_KEY", "admin-secret")
+    assert Mem0MemoryProvider().is_available() is True
+
+
+def test_is_available_cloud_requires_api_key(monkeypatch, tmp_path):
+    """Cloud mode (no host) still requires api_key — fix doesn't weaken that path."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    _clear_mem0_env(monkeypatch)
+    assert Mem0MemoryProvider().is_available() is False
+    monkeypatch.setenv("MEM0_API_KEY", "cloud-key")
+    assert Mem0MemoryProvider().is_available() is True

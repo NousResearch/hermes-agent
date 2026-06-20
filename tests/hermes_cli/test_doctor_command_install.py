@@ -167,6 +167,9 @@ class TestDoctorCommandInstallation:
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Ensure the sys.prefix fallback doesn't find a real venv
+        monkeypatch.setattr(sys, "prefix", str(project))
+        monkeypatch.setattr(sys, "base_prefix", str(project))
 
         fake_model_tools = types.SimpleNamespace(
             check_tool_availability=lambda *a, **kw: ([], []),
@@ -206,6 +209,53 @@ class TestDoctorCommandInstallation:
         out = _run_doctor(fix=False)
         assert "Venv entry point exists" in out
         assert ".venv/bin/hermes" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_pip_install_finds_venv_via_sys_prefix(self, monkeypatch, tmp_path):
+        """When installed via PyPI wheel, sys.prefix/bin/hermes is found."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+        # No venv under PROJECT_ROOT — simulating a PyPI wheel install.
+
+        # Create hermes entry point under sys.prefix
+        fake_prefix = tmp_path / "venv"
+        fake_prefix_bin = fake_prefix / "bin"
+        fake_prefix_bin.mkdir(parents=True)
+        hermes_bin = fake_prefix_bin / "hermes"
+        hermes_bin.write_text("#!/usr/bin/env python\n# entry point\n")
+        hermes_bin.chmod(0o755)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Simulate being inside a venv (prefix != base_prefix)
+        monkeypatch.setattr(sys, "prefix", str(fake_prefix))
+        monkeypatch.setattr(sys, "base_prefix", str(project / "base_python"))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        except Exception:
+            pass
+        try:
+            import httpx
+            monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
+        except Exception:
+            pass
+
+        out = _run_doctor(fix=False)
+        assert "Venv entry point exists" in out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_non_symlink_regular_file_shows_ok(self, monkeypatch, tmp_path):

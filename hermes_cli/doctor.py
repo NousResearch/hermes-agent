@@ -1311,6 +1311,14 @@ def run_doctor(args):
                 _venv_bin = _candidate
                 break
 
+        # When installed via PyPI wheel (not editable), PROJECT_ROOT is inside
+        # site-packages.  Check sys.prefix/bin/hermes as a fallback so
+        # `hermes doctor` doesn't false-positive on normal pip installs.
+        if _venv_bin is None and sys.prefix != sys.base_prefix:
+            _candidate = Path(sys.prefix) / "bin" / "hermes"
+            if _candidate.exists():
+                _venv_bin = _candidate
+
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
         _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
@@ -1331,7 +1339,11 @@ def run_doctor(args):
                 f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
             )
         else:
-            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
+            try:
+                _rel = _venv_bin.relative_to(PROJECT_ROOT)
+            except ValueError:
+                _rel = _venv_bin
+            check_ok(f"Venv entry point exists ({_rel})")
 
             # Check the symlink at the command link location
             if _cmd_link.is_symlink():

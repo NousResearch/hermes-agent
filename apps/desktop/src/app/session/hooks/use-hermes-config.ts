@@ -10,7 +10,8 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setIntroPersonality
+  setIntroPersonality,
+  setShowReasoning
 } from '@/store/session'
 
 const DEFAULT_VOICE_SECONDS = 120
@@ -48,6 +49,11 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
           ...personalityNamesFromConfig(config)
         ])
       ])
+
+      // Honor display.show_reasoning in the renderer. An unset key resolves to
+      // `false`, matching the Settings toggle (Boolean of the same /api/config
+      // value) and the gateway/CLI default (suppress).
+      setShowReasoning(Boolean(config.display?.show_reasoning))
 
       const cwd = (config.terminal?.cwd ?? '').trim()
 

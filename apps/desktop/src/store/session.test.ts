@@ -7,6 +7,7 @@ import {
   $attentionSessionIds,
   $connection,
   $currentCwd,
+  $showReasoning,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
@@ -15,6 +16,7 @@ import {
   setCurrentCwd,
   setSessionAttention,
   setSessionWorking,
+  setShowReasoning,
   workspaceCwdForNewSession
 } from './session'
 
@@ -35,6 +37,24 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...over
+})
+
+describe('setShowReasoning', () => {
+  afterEach(() => {
+    $showReasoning.set(false)
+  })
+
+  it('defaults to false so reasoning is suppressed until config resolves it', () => {
+    expect($showReasoning.get()).toBe(false)
+  })
+
+  it('reflects the boolean resolved from display.show_reasoning', () => {
+    setShowReasoning(true)
+    expect($showReasoning.get()).toBe(true)
+
+    setShowReasoning(false)
+    expect($showReasoning.get()).toBe(false)
+  })
 })
 
 describe('setSessionAttention', () => {

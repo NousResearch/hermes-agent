@@ -257,6 +257,11 @@ export const $turnStartedAt = atom<number | null>(null)
 export const $introPersonality = atom('')
 export const $currentPersonality = atom('')
 export const $availablePersonalities = atom<string[]>([])
+// Mirrors display.show_reasoning from the gateway config. Defaults to `false`
+// (reasoning suppressed) so an unset key or a failed config read matches the
+// Settings toggle and the gateway/CLI default; refreshHermesConfig overwrites it
+// with Boolean(config.display?.show_reasoning) once the config loads.
+export const $showReasoning = atom(false)
 export const $introSeed = atom(0)
 export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
@@ -328,6 +333,7 @@ export const setTurnStartedAt = (next: Updater<number | null>) => updateAtom($tu
 export const setIntroPersonality = (next: Updater<string>) => updateAtom($introPersonality, next)
 export const setCurrentPersonality = (next: Updater<string>) => updateAtom($currentPersonality, next)
 export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom($availablePersonalities, next)
+export const setShowReasoning = (next: Updater<boolean>) => updateAtom($showReasoning, next)
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)

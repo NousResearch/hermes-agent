@@ -11454,6 +11454,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- reader task: PTY master → WebSocket ----------------------------
     async def pump_pty_to_ws() -> None:
+        backoff = 0.005
         while True:
             chunk = await loop.run_in_executor(
                 None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
@@ -11461,8 +11462,10 @@ async def pty_ws(ws: WebSocket) -> None:
             if chunk is None:  # EOF
                 return
             if not chunk:  # no data this tick; yield control and retry
-                await asyncio.sleep(0)
+                await asyncio.sleep(backoff)
+                backoff = min(0.5, backoff * 2)
                 continue
+            backoff = 0.005
             try:
                 await ws.send_bytes(chunk)
             except Exception:

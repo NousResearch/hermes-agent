@@ -620,17 +620,27 @@ class SignalAdapter(BasePlatformAdapter):
                     "Signal: ignoring group message (require_mention=true, bot not mentioned)"
                 )
                 return
-            # Strip the bot's own @mention from the message text so the agent
-            # doesn't misinterpret "@+155****4567 say hello" as a directive to
-            # contact that phone number. _render_mentions replaces the Signal
-            # ￼ placeholder with @<number-or-uuid>, which looks like an
-            # addressee to the LLM rather than a self-reference.
+
+        # Strip the bot's own @mention from any group message so the agent
+        # doesn't misinterpret "@+155****4567 say hello" as a directive to
+        # contact that phone number. _render_mentions replaces the Signal
+        # ￼ placeholder with @<number-or-uuid>, which looks like an
+        # addressee to the LLM rather than a self-reference. Applies to every
+        # group (not just require_mention groups) so the self-mention is
+        # cleaned wherever it appears.
+        if is_group and text:
+            account_norm = self._account_normalized
             if account_norm:
-                text = text.replace(f"@{account_norm}", "").strip()
+                text = text.replace(f"@{account_norm}", "")
                 # Also strip if the mention was rendered using the bot's UUID
                 bot_uuid = self._recipient_uuid_by_number.get(account_norm)
                 if bot_uuid:
-                    text = text.replace(f"@{bot_uuid}", "").strip()
+                    text = text.replace(f"@{bot_uuid}", "")
+                # Tidy the spacing the removed mention left behind: collapse the
+                # double-space at a mid-sentence removal and trim the ends.
+                # Only touches the doubled space the removal introduced, so
+                # intentional newlines in a multi-line message are preserved.
+                text = text.replace("  ", " ").strip()
 
         # Extract quote (reply-to) context from Signal dataMessage. Signal's
         # quote.id is the timestamp of the quoted message; quote.author points

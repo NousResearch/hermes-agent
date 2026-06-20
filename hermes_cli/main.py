@@ -293,6 +293,7 @@ from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.agentcyber import build_agentcyber_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
@@ -11126,7 +11127,7 @@ def cmd_logs(args):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "agentcyber", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -11535,6 +11536,13 @@ def cmd_acp(args):
         sys.exit(1)
 
 
+def cmd_agentcyber(args):
+    """AgentCyber status/setup helpers."""
+    from hermes_cli.agentcyber import agentcyber_command
+
+    return agentcyber_command(args)
+
+
 def cmd_tools(args):
     action = getattr(args, "tools_action", None)
     if action in {"list", "disable", "enable"}:
@@ -11843,6 +11851,11 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+
+    # =========================================================================
+    # agentcyber command — downstream AgentCyber status/setup
+    # =========================================================================
+    build_agentcyber_parser(subparsers, cmd_agentcyber=cmd_agentcyber)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

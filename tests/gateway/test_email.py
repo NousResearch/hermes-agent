@@ -1392,5 +1392,64 @@ class TestConnectSmtp(unittest.TestCase):
         self.assertIs(_socket.getaddrinfo, original_getaddrinfo)
 
 
+class TestHostNormalization(unittest.TestCase):
+    """Mail-server hosts are sanitized before connecting (regression for #49736)."""
+
+    def test_normalize_host_strips_junk(self):
+        from plugins.platforms.email.adapter import _normalize_host
+
+        cases = {
+            "imap.mail.me.com": "imap.mail.me.com",
+            "  imap.mail.me.com  ": "imap.mail.me.com",
+            "imap.mail.me.com\n": "imap.mail.me.com",
+            '"imap.mail.me.com"': "imap.mail.me.com",
+            "'imap.mail.me.com'": "imap.mail.me.com",
+            "IMAP.Mail.ME.com": "imap.mail.me.com",
+            "imaps://imap.mail.me.com": "imap.mail.me.com",
+            "imap.mail.me.com:993": "imap.mail.me.com",
+            "imaps://imap.mail.me.com:993/INBOX": "imap.mail.me.com",
+            "imaps://user:pass@imap.mail.me.com:993/INBOX": "imap.mail.me.com",
+            "[::1]": "::1",
+            "[::1]:993": "::1",
+            "imaps://[2001:db8::1]:993": "2001:db8::1",
+            "": "",
+        }
+        for value, expected in cases.items():
+            self.assertEqual(_normalize_host(value), expected, msg=repr(value))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": " imaps://imap.mail.me.com:993 ",
+        "EMAIL_SMTP_HOST": "smtp.mail.me.com\n",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def test_adapter_init_normalizes_hosts(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        adapter = EmailAdapter(PlatformConfig(enabled=True))
+        self.assertEqual(adapter._imap_host, "imap.mail.me.com")
+        self.assertEqual(adapter._smtp_host, "smtp.mail.me.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imaps://user:s3cr3t@imap.mail.me.com:993/INBOX",
+        "EMAIL_SMTP_HOST": "smtp.mail.me.com",
+    }, clear=False)
+    def test_normalize_host_does_not_log_credentials(self):
+        from plugins.platforms.email import adapter as email_mod
+        from gateway.config import PlatformConfig
+
+        with self.assertLogs(email_mod.logger, level="WARNING") as cm:
+            adapter = email_mod.EmailAdapter(PlatformConfig(enabled=True))
+        self.assertEqual(adapter._imap_host, "imap.mail.me.com")
+        joined = "\n".join(cm.output)
+        self.assertNotIn("s3cr3t", joined)
+        self.assertNotIn("user:", joined)
+
+
 if __name__ == "__main__":
     unittest.main()

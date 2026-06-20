@@ -32,6 +32,7 @@ from email.mime.base import MIMEBase
 from email.utils import formatdate
 from email import encoders
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import (
@@ -65,6 +66,29 @@ _AUTOMATED_HEADERS = {
 MAX_MESSAGE_LENGTH = 50_000
 
 SMTP_CONNECT_TIMEOUT = 30
+
+
+def _normalize_host(host: str) -> str:
+    """Sanitize a mail-server host read from env/config before connecting.
+
+    Hosts entered via ``hermes gateway setup`` or copied into config files
+    occasionally carry stray whitespace, surrounding quotes, a URL scheme,
+    userinfo, or an appended ``:port``. Any of these makes
+    ``socket.getaddrinfo`` reject an otherwise valid host with
+    ``[Errno 8] nodename nor servname provided`` (EAI_NONAME), so reduce the
+    value to a bare hostname.
+    """
+    cleaned = host.strip().strip("\"'").strip()
+    if not cleaned:
+        return cleaned
+    # Parse via urlsplit so a scheme, userinfo, port, path, or IPv6 literal are
+    # all handled uniformly; urlsplit needs a "//" prefix to populate netloc.
+    to_parse = cleaned if "://" in cleaned else "//" + cleaned
+    try:
+        hostname = urlsplit(to_parse).hostname
+    except ValueError:
+        hostname = None
+    return hostname or cleaned
 
 
 def _create_ipv4_connection(
@@ -309,10 +333,24 @@ class EmailAdapter(BasePlatformAdapter):
 
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
+        raw_imap_host = os.getenv("EMAIL_IMAP_HOST", "")
+        self._imap_host = _normalize_host(raw_imap_host)
         self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
-        self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
+        raw_smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
+        self._smtp_host = _normalize_host(raw_smtp_host)
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
+        for _var, _raw, _norm in (
+            ("EMAIL_IMAP_HOST", raw_imap_host, self._imap_host),
+            ("EMAIL_SMTP_HOST", raw_smtp_host, self._smtp_host),
+        ):
+            if _norm != _raw:
+                # Log only the normalized host; the raw value may embed userinfo.
+                logger.warning(
+                    "[Email] Normalized %s to %r before connecting "
+                    "(stripped whitespace/quotes/scheme/userinfo/port)",
+                    _var,
+                    _norm,
+                )
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
@@ -915,7 +953,7 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    smtp_host = _normalize_host(extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", ""))
     try:
         smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
     except (ValueError, TypeError):

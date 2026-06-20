@@ -2424,8 +2424,19 @@ This compaction should PRIORITISE preserving all information related to the focu
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
             })
 
+        _prev_tail_content = None
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
+            # Deduplicate consecutive identical assistant messages in tail.
+            # In tool-calling loops, the model often produces identical text
+            # ("103 passed!") across turns. After _hyg_msgs strips tool_calls,
+            # these become consecutive identical entries that compound across
+            # compression cycles.
+            if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+                _msg_content = msg.get("content")
+                if _msg_content == _prev_tail_content:
+                    continue
+                _prev_tail_content = _msg_content
             if _merge_summary_into_tail and i == compress_end:
                 merged_prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
                 msg["content"] = _append_text_to_content(

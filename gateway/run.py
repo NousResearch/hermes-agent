@@ -10522,7 +10522,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not mgr.is_active():
             return
 
-        decision = mgr.evaluate_after_turn(final_response or "", user_initiated=True)
+        # evaluate_after_turn calls judge_goal() which makes a synchronous
+        # HTTP request to the auxiliary LLM.  Running it on the event-loop
+        # thread would block Discord heartbeats for 10-40 s and cause
+        # connection flaps, so we offload it to the default thread-pool executor.
+        loop = asyncio.get_event_loop()
+        decision = await loop.run_in_executor(
+            None,
+            lambda: mgr.evaluate_after_turn(final_response or "", user_initiated=True),
+        )
         msg = decision.get("message") or ""
 
         # Defer the status line until after the adapter has delivered the

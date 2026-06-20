@@ -1544,6 +1544,36 @@ class TestRunJobConfigLogging:
         assert any("failed to parse prefill messages" in r.message for r in caplog.records), \
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
 
+    def test_run_one_job_marks_prerun_script_failure_as_error(self, tmp_path):
+        """A failed pre-run script must short-circuit the agent path and mark the job failed."""
+        from cron.scheduler import run_one_job
+
+        job = {
+            "id": "script-fail-job",
+            "name": "script fail test",
+            "prompt": "summarize the collected data",
+            "script": "collect.py",
+            "deliver": "local",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("cron.scheduler._run_job_script", return_value=(False, "collector exploded")), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.mark_job_run") as mark_job_run_mock, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            processed = run_one_job(job, verbose=False)
+
+        assert processed is True
+        mock_agent_cls.assert_not_called()
+        mark_job_run_mock.assert_called_once()
+        assert mark_job_run_mock.call_args.args[0] == "script-fail-job"
+        assert mark_job_run_mock.call_args.args[1] is False
+        assert "pre-run script failed" in mark_job_run_mock.call_args.args[2]
+        assert "collector exploded" in mark_job_run_mock.call_args.args[2]
+
 
 class TestRunJobConfigEnvVarExpansion:
     """Verify that ${VAR} references in config.yaml are expanded when running cron jobs."""

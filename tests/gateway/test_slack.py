@@ -706,6 +706,57 @@ class TestSlackProxyBehavior:
                 ]
             )
 
+    def test_build_socket_mode_handler_prefers_websockets_without_proxy(self):
+        created = []
+
+        class FakeWsHandler:
+            def __init__(self, app, app_token):
+                self.app = app
+                self.app_token = app_token
+                self.client = MagicMock(proxy="constructor-default")
+                created.append(self)
+
+        fake_module = MagicMock(AsyncSocketModeHandler=FakeWsHandler)
+
+        with patch.object(
+            _slack_mod.importlib, "import_module", return_value=fake_module
+        ):
+            handler, backend = _slack_mod._build_socket_mode_handler(
+                MagicMock(),
+                "xapp-fake",
+                None,
+            )
+
+        assert isinstance(handler, FakeWsHandler)
+        assert backend == "websockets"
+        assert created[0].app_token == "xapp-fake"
+
+    def test_build_socket_mode_handler_uses_aiohttp_when_proxy_configured(self):
+        created = []
+
+        class FakeAioHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy="constructor-default")
+                created.append(self)
+
+        with (
+            patch.object(_slack_mod, "AsyncSocketModeHandler", FakeAioHandler),
+            patch.object(_slack_mod.importlib, "import_module") as mock_import,
+        ):
+            handler, backend = _slack_mod._build_socket_mode_handler(
+                MagicMock(),
+                "xapp-fake",
+                "http://proxy.example.com:3128",
+            )
+
+        assert isinstance(handler, FakeAioHandler)
+        assert backend == "aiohttp"
+        assert created[0].proxy == "http://proxy.example.com:3128"
+        mock_import.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_connect_uses_proxy_when_not_bypassed(self):
         created_apps = []

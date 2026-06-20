@@ -346,7 +346,7 @@ Preview without writing files:
 hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 ```
 
-**Config:** `$HERMES_HOME/mem0.json`
+**Config:** `$HERMES_HOME/mem0.json` (behavioral settings). Only the secret `MEM0_API_KEY` belongs in `~/.hermes/.env`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -364,14 +364,6 @@ hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 | Vector Store | qdrant (local/server), pgvector |
 
 **Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|oss>` or edit `mem0.json` directly.
-
-**Telemetry:** The Mem0 plugin collects anonymous usage telemetry via PostHog (no PII) to help improve the integration. To opt out:
-
-```bash
-export MEM0_TELEMETRY=false
-# Or persist in your profile env:
-echo "MEM0_TELEMETRY=false" >> ~/.hermes/.env
-```
 
 ---
 

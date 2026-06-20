@@ -21,10 +21,11 @@ echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 
 ## Config
 
-Config file: `$HERMES_HOME/mem0.json`
+Behavioral settings live in `$HERMES_HOME/mem0.json` (set them via `hermes memory setup`). Only the secret `MEM0_API_KEY` belongs in `~/.hermes/.env`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-hosted) |
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `true` | Rerank search results for relevance (platform mode only) |
@@ -110,24 +111,6 @@ hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 | `mem0_add` | Store a fact verbatim (no LLM extraction) |
 | `mem0_update` | Update a memory's text by ID |
 | `mem0_delete` | Delete a memory by ID |
-
-## Telemetry
-
-Anonymous usage telemetry is collected via PostHog to help improve the plugin. Events contain no personally identifiable information.
-
-To disable telemetry:
-
-```bash
-export MEM0_TELEMETRY=false
-# Or add to your .env:
-echo "MEM0_TELEMETRY=false" >> ~/.hermes/.env
-```
-
-You can also adjust the sample rate:
-
-```bash
-export MEM0_TELEMETRY_SAMPLE_RATE=0.0  # capture no events
-```
 
 ## Troubleshooting
 

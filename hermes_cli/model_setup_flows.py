@@ -325,6 +325,9 @@ def _model_flow_nous(config, current_model="", args=None):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
+        # Reload after the auth helper writes provider state. The incoming
+        # config object may still contain stale custom-provider fields.
+        config = load_config()
         current_model_cfg = config.get("model")
         if isinstance(current_model_cfg, dict):
             model_cfg = dict(current_model_cfg)

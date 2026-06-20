@@ -71,6 +71,36 @@ def test_env_enablement_home_channel_defaults_name(monkeypatch: pytest.MonkeyPat
     }
 
 
+def test_status_refreshes_cached_assignment_even_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`hermes photon status` should not trust stale shared-line metadata.
+
+    Photon shared-line assignments can change after setup/user cleanup.  A
+    cached assigned number is only a status hint, so status must refresh from
+    Spectrum whenever credentials are available instead of returning early.
+    """
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "load_user_numbers",
+        lambda: ("+155****4567", "+141****0000"),
+    )
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "load_project_credentials",
+        lambda: ("project_123", "secret_123"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "refresh_user_numbers",
+        lambda project_id, secret: calls.append((project_id, secret)),
+    )
+
+    cli._refresh_status_numbers()
+
+    assert calls == [("project_123", "secret_123")]
+
 def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
     # The dashboard id *is* the Spectrum project id (ids unified), so setup no

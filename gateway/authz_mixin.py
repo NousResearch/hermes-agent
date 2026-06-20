@@ -28,6 +28,29 @@ from gateway.whatsapp_identity import (
 )
 
 
+def _auth_env_value(name: str) -> str:
+    """Return an authorization env value from the live env or Hermes .env.
+
+    Built-in platforms normally have their allowlists in ``os.environ`` because
+    the gateway loads ``~/.hermes/.env`` at startup.  Plugin platform auth env
+    names are discovered later through the registry, and some service-managed
+    deployments can reach this authorization path with those plugin-specific
+    keys absent from the process environment even though they are present in
+    Hermes' canonical .env file.  Falling back to ``get_env_value`` keeps
+    plugin platform authorization consistent with CLI/status helpers without
+    weakening precedence: an explicit process env value still wins.
+    """
+    if not name:
+        return ""
+    if name in os.environ:
+        return os.getenv(name, "").strip()
+    try:
+        from hermes_cli.config import get_env_value
+    except Exception:
+        return ""
+    return (get_env_value(name) or "").strip()
+
+
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
@@ -211,7 +234,7 @@ class GatewayAuthorizationMixin:
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
-                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                raw_chat_allowlist = _auth_env_value(chat_allowlist_env)
                 if raw_chat_allowlist:
                     allowed_group_ids = {
                         cid.strip()
@@ -292,7 +315,7 @@ class GatewayAuthorizationMixin:
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+        if platform_allow_all_var and _auth_env_value(platform_allow_all_var).lower() in {"true", "1", "yes"}:
             return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
@@ -314,13 +337,13 @@ class GatewayAuthorizationMixin:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        platform_allowlist = _auth_env_value(platform_env_map.get(source.platform, ""))
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
-            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
-            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            group_user_allowlist = _auth_env_value(platform_group_user_env_map.get(source.platform, ""))
+            group_chat_allowlist = _auth_env_value(platform_group_chat_env_map.get(source.platform, ""))
+        global_allowlist = _auth_env_value("GATEWAY_ALLOWED_USERS")
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No env allowlist configured. Adapters that own their own
@@ -359,7 +382,7 @@ class GatewayAuthorizationMixin:
                 if effective_policy == "allowlist":
                     return True
             # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+            return _auth_env_value("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
         # Telegram can optionally authorize group traffic by chat ID.
         # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
@@ -524,13 +547,22 @@ class GatewayAuthorizationMixin:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
-            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+            if platform not in platform_env_map:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    entry = platform_registry.get(platform.value)
+                    if entry and entry.allowed_users_env:
+                        platform_env_map[platform] = entry.allowed_users_env
+                except Exception:
+                    pass
+
+            if _auth_env_value(platform_env_map.get(platform, "")):
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):
-                if os.getenv(env_key, "").strip():
+                if _auth_env_value(env_key):
                     return "ignore"
 
-        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+        if _auth_env_value("GATEWAY_ALLOWED_USERS"):
             return "ignore"
 
         return "pair"

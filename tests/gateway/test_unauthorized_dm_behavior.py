@@ -203,6 +203,142 @@ def test_simplex_allowlist_denies_unlisted(monkeypatch):
     assert runner._is_user_authorized(source) is False
 
 
+def test_plugin_allowlist_reads_hermes_env_file_when_process_env_missing(monkeypatch, tmp_path):
+    """Plugin platform allowlists should work from Hermes' canonical .env.
+
+    Reproduces Photon/iMessage service deployments where the plugin's
+    ``*_ALLOWED_USERS`` key is present in ``~/.hermes/.env`` (and visible to
+    setup/status helpers) but absent from the gateway process environment at
+    authorization time.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("TEST_PLUGIN_ALLOWED_USERS", raising=False)
+
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_cli.config import save_env_value
+
+    save_env_value("TEST_PLUGIN_ALLOWED_USERS", "+155****4567")
+    platform_registry.register(PlatformEntry(
+        name="testplugdotenv",
+        label="Test Plugin Dotenv",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="TEST_PLUGIN_ALLOWED_USERS",
+        allow_all_env="TEST_PLUGIN_ALLOW_ALL_USERS",
+    ))
+
+    platform = Platform("testplugdotenv")
+    runner, _adapter = _make_runner(
+        platform,
+        GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=platform,
+        user_id="+155****4567",
+        chat_id="+155****4567",
+        user_name="+155****4567",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+
+def test_empty_process_env_overrides_hermes_env_file(monkeypatch, tmp_path):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_cli.config import save_env_value
+
+    save_env_value("TEST_PLUGIN_EMPTY_ALLOWED_USERS", "+155****4567")
+    monkeypatch.setenv("TEST_PLUGIN_EMPTY_ALLOWED_USERS", "")
+    platform_registry.register(PlatformEntry(
+        name="testplugempty",
+        label="Test Plugin Empty Env",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="TEST_PLUGIN_EMPTY_ALLOWED_USERS",
+        allow_all_env="TEST_PLUGIN_EMPTY_ALLOW_ALL_USERS",
+    ))
+
+    platform = Platform("testplugempty")
+    runner, _adapter = _make_runner(
+        platform,
+        GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=platform,
+        user_id="+155****4567",
+        chat_id="+155****4567",
+        user_name="+155****4567",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is False
+
+def test_plugin_allow_all_reads_hermes_env_file_when_process_env_missing(monkeypatch, tmp_path):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("TEST_PLUGIN2_ALLOW_ALL_USERS", raising=False)
+
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_cli.config import save_env_value
+
+    save_env_value("TEST_PLUGIN2_ALLOW_ALL_USERS", "true")
+    platform_registry.register(PlatformEntry(
+        name="testplugdotenv2",
+        label="Test Plugin Dotenv 2",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="TEST_PLUGIN2_ALLOWED_USERS",
+        allow_all_env="TEST_PLUGIN2_ALLOW_ALL_USERS",
+    ))
+
+    platform = Platform("testplugdotenv2")
+    runner, _adapter = _make_runner(
+        platform,
+        GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=platform,
+        user_id="stranger",
+        chat_id="stranger",
+        user_name="stranger",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+
+def test_plugin_dotenv_allowlist_makes_unauthorized_dm_ignored(monkeypatch, tmp_path):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("TEST_PLUGIN3_ALLOWED_USERS", raising=False)
+
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_cli.config import save_env_value
+
+    save_env_value("TEST_PLUGIN3_ALLOWED_USERS", "+155****4567")
+    platform_registry.register(PlatformEntry(
+        name="testplugdotenv3",
+        label="Test Plugin Dotenv 3",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="TEST_PLUGIN3_ALLOWED_USERS",
+        allow_all_env="TEST_PLUGIN3_ALLOW_ALL_USERS",
+    ))
+
+    platform = Platform("testplugdotenv3")
+    runner, _adapter = _make_runner(
+        platform,
+        GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+    )
+
+    assert runner._get_unauthorized_dm_behavior(platform) == "ignore"
+
 def test_star_wildcard_in_allowlist_authorizes_any_user(monkeypatch):
     """WHATSAPP_ALLOWED_USERS=* should act as allow-all wildcard."""
     _clear_auth_env(monkeypatch)

@@ -545,22 +545,55 @@ def run_conversation(
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    _runtime_result_extras: Dict[str, Any] = {}
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
-    # all run inside Codex). Default Hermes path is bypassed entirely.
+    # all run inside Codex). Unlike the normal provider loop, the helper
+    # already returns the final message list and status shape. We still
+    # run the shared tail below so persistence, turn-end diagnostics, and
+    # post-turn hooks stay identical to every other runtime.
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
+        _codex_result = agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+        messages = _codex_result.get("messages") or messages
+        api_call_count = int(_codex_result.get("api_calls") or 1)
+        agent._api_call_count = api_call_count
+        final_response = _codex_result.get("final_response")
+        interrupted = bool(_codex_result.get("interrupted"))
+        failed = not bool(_codex_result.get("completed"))
+        _runtime_result_extras = {
+            "partial": bool(_codex_result.get("partial")),
+            "error": _codex_result.get("error"),
+            "codex_thread_id": _codex_result.get("codex_thread_id"),
+            "codex_turn_id": _codex_result.get("codex_turn_id"),
+        }
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        _codex_error = _codex_result.get("error")
+        if interrupted:
+            _turn_exit_reason = "codex_app_server_interrupted"
+        elif _codex_error:
+            _codex_error_preview = str(_codex_error).splitlines()[0][:80]
+            _turn_exit_reason = (
+                f"codex_app_server_error({_codex_error_preview})"
+            )
+        else:
+            _turn_exit_reason = "codex_app_server_turn_completed"
+
+    while (
+        agent.api_mode != "codex_app_server"
+        and (
+            (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0)
+            or agent._budget_grace_call
+        )
+    ):
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
@@ -4479,6 +4512,7 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        _runtime_result_extras=_runtime_result_extras,
     )
 
 

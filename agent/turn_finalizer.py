@@ -42,6 +42,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    _runtime_result_extras=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -322,6 +323,8 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
+    runtime_result_extras = dict(_runtime_result_extras or {})
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
@@ -331,7 +334,7 @@ def finalize_turn(
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
-        "partial": False,  # True only when stopped due to invalid tool calls
+        "partial": bool(runtime_result_extras.get("partial", False)),
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
@@ -352,6 +355,12 @@ def finalize_turn(
         "cost_source": agent.session_cost_source,
         "session_id": agent.session_id,
     }
+    if "error" in runtime_result_extras:
+        result["error"] = runtime_result_extras.get("error")
+    if runtime_result_extras.get("codex_thread_id"):
+        result["codex_thread_id"] = runtime_result_extras["codex_thread_id"]
+    if runtime_result_extras.get("codex_turn_id"):
+        result["codex_turn_id"] = runtime_result_extras["codex_turn_id"]
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # If a /steer landed after the final assistant turn (no more tool

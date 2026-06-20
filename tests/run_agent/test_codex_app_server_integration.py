@@ -148,6 +148,26 @@ class TestRunConversationCodexPath:
                  and m.get("content") == "echo: hello"]
         assert final, f"expected final assistant message in {msgs}"
 
+    def test_codex_path_persists_projected_assistant_message(self, fake_session):
+        agent = _make_codex_agent()
+        persisted = {}
+
+        def capture_persist(messages, conversation_history=None):
+            persisted["messages"] = list(messages)
+            persisted["conversation_history"] = conversation_history
+
+        with patch.object(agent, "_persist_session", side_effect=capture_persist):
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("persist me")
+
+        saved = persisted.get("messages")
+        assert saved, "codex runtime should still flow through _persist_session()"
+        assert saved == result["messages"]
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == "echo: persist me"
+            for m in saved
+        ), f"expected projected assistant message in persisted transcript: {saved}"
+
     def test_projected_messages_are_synced_to_external_memory(self, fake_session):
         agent = _make_codex_agent()
         agent._memory_manager = MagicMock()

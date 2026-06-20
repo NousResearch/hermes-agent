@@ -73,9 +73,11 @@ const {
   tokenPreview
 } = require('./connection-config.cjs')
 const {
+  COMPOSER_IMAGE_MAX_BYTES,
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  composerImageBufferFromPayloadData,
   encryptDesktopSecret: encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
@@ -3103,6 +3105,14 @@ async function saveImageFromUrl(rawUrl) {
 }
 
 async function writeComposerImage(buffer, ext = '.png') {
+  if (buffer.byteLength > COMPOSER_IMAGE_MAX_BYTES) {
+    const error = new Error(
+      `saveImageBuffer failed: image data is too large (${buffer.byteLength} bytes; limit ${COMPOSER_IMAGE_MAX_BYTES} bytes).`
+    )
+    error.code = 'EFBIG'
+    throw error
+  }
+
   const rawExt = String(ext || '.png')
     .trim()
     .toLowerCase()
@@ -5728,10 +5738,7 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
 ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
-  const data = payload?.data
-  if (!data) throw new Error('saveImageBuffer: missing data')
-
-  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
+  const buffer = composerImageBufferFromPayloadData(payload?.data)
   return writeComposerImage(buffer, payload?.ext || '.png')
 })
 

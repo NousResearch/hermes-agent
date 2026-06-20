@@ -6,6 +6,7 @@ const { fileURLToPath } = require('node:url')
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
+const COMPOSER_IMAGE_MAX_BYTES = 16 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
@@ -111,6 +112,61 @@ function ipcPathError(code, message) {
   const error = new Error(message)
   error.code = code
   return error
+}
+
+function assertComposerImageByteLength(byteLength, maxBytes = COMPOSER_IMAGE_MAX_BYTES) {
+  const limit = Number.isFinite(maxBytes) && Number(maxBytes) > 0 ? Number(maxBytes) : COMPOSER_IMAGE_MAX_BYTES
+  const size = Number(byteLength)
+
+  if (!Number.isFinite(size) || size <= 0) {
+    throw ipcPathError('invalid-image-data', 'saveImageBuffer failed: image data is required.')
+  }
+
+  if (size > limit) {
+    throw ipcPathError('EFBIG', `saveImageBuffer failed: image data is too large (${size} bytes; limit ${limit} bytes).`)
+  }
+}
+
+function composerImageBufferFromPayloadData(data, options = {}) {
+  const maxBytes = options.maxBytes
+
+  if (!data) {
+    throw ipcPathError('invalid-image-data', 'saveImageBuffer failed: image data is required.')
+  }
+
+  if (Buffer.isBuffer(data)) {
+    assertComposerImageByteLength(data.byteLength, maxBytes)
+    return data
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    assertComposerImageByteLength(data.byteLength, maxBytes)
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  }
+
+  if (data instanceof ArrayBuffer) {
+    assertComposerImageByteLength(data.byteLength, maxBytes)
+    return Buffer.from(data)
+  }
+
+  if (Array.isArray(data)) {
+    assertComposerImageByteLength(data.length, maxBytes)
+    return Buffer.from(data)
+  }
+
+  if (typeof data === 'string') {
+    const byteLength = Buffer.byteLength(data)
+    assertComposerImageByteLength(byteLength, maxBytes)
+    return Buffer.from(data)
+  }
+
+  try {
+    const buffer = Buffer.from(data)
+    assertComposerImageByteLength(buffer.byteLength, maxBytes)
+    return buffer
+  } catch {
+    throw ipcPathError('invalid-image-data', 'saveImageBuffer failed: image data must be bytes.')
+  }
 }
 
 function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
@@ -266,9 +322,11 @@ async function resolveReadableFileForIpc(filePath, options = {}) {
 }
 
 module.exports = {
+  COMPOSER_IMAGE_MAX_BYTES,
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  composerImageBufferFromPayloadData,
   encryptDesktopSecret,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,

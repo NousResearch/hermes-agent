@@ -6,7 +6,9 @@ const test = require('node:test')
 const { pathToFileURL } = require('node:url')
 
 const {
+  COMPOSER_IMAGE_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
+  composerImageBufferFromPayloadData,
   encryptDesktopSecret,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
@@ -51,6 +53,31 @@ test('encryptDesktopSecret stores safeStorage base64 payload', () => {
     encoding: 'safeStorage',
     value: Buffer.from('enc:token-123', 'utf8').toString('base64')
   })
+})
+
+test('composerImageBufferFromPayloadData accepts normal byte payloads', () => {
+  const source = Uint8Array.from([137, 80, 78, 71])
+  const buffer = composerImageBufferFromPayloadData(source)
+
+  assert.ok(Buffer.isBuffer(buffer))
+  assert.deepEqual([...buffer], [137, 80, 78, 71])
+})
+
+test('composerImageBufferFromPayloadData rejects missing empty and oversized payloads', () => {
+  assert.throws(() => composerImageBufferFromPayloadData(null), error => {
+    assert.equal(error?.code, 'invalid-image-data')
+    return true
+  })
+  assert.throws(() => composerImageBufferFromPayloadData(Buffer.alloc(0)), error => {
+    assert.equal(error?.code, 'invalid-image-data')
+    return true
+  })
+  assert.throws(() => composerImageBufferFromPayloadData(Buffer.alloc(5), { maxBytes: 4 }), error => {
+    assert.equal(error?.code, 'EFBIG')
+    assert.match(error.message, /limit 4 bytes/)
+    return true
+  })
+  assert.equal(COMPOSER_IMAGE_MAX_BYTES, 16 * 1024 * 1024)
 })
 
 test('sensitiveFileBlockReason blocks obvious secret file patterns', () => {

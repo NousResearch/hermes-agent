@@ -953,3 +953,386 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+# ── Native draft streaming (WeCom stream API) ───────────────────────────
+
+
+class TestWeComDraftStreaming:
+    """Tests for WeCom native draft streaming via aibot_respond_msg."""
+
+    @pytest.mark.asyncio
+    async def test_supports_draft_streaming_returns_true(self):
+        """supports_draft_streaming() must return True for all chat types."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter.supports_draft_streaming() is True
+        assert adapter.supports_draft_streaming(chat_type="dm") is True
+        assert adapter.supports_draft_streaming(chat_type="group") is True
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_registers_stream_and_fires_init(self):
+        """_start_thinking registers a stream slot and creates a background
+        task that sends the initial finish=false frame."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_json = AsyncMock()
+
+        chat_id = "chat-123"
+        req_id = "req-abc"
+
+        adapter._start_thinking(chat_id, req_id)
+
+        # Stream must be registered
+        assert chat_id in adapter._active_streams
+        stream_id, stored_req_id, draft_id, draft_sent = adapter._active_streams[chat_id]
+        assert stored_req_id == req_id
+        assert draft_id == 0
+        assert draft_sent is False
+        assert stream_id.startswith("think-")
+
+        # Let the background task run
+        await asyncio.sleep(0.05)
+
+        # Verify the init frame was sent fire-and-forget
+        adapter._ws.send_json.assert_awaited()
+        sent_payload = adapter._ws.send_json.call_args[0][0]
+        assert sent_payload["cmd"] == "aibot_respond_msg"
+        assert sent_payload["body"]["msgtype"] == "stream"
+        assert sent_payload["body"]["stream"]["id"] == stream_id
+        assert sent_payload["body"]["stream"]["finish"] is False
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_skips_when_no_reply_req_id(self):
+        """_start_thinking skips entirely when reply_req_id is empty."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.send_json = AsyncMock()
+
+        adapter._start_thinking("chat-123", "")
+        assert "chat-123" not in adapter._active_streams
+        adapter._ws.send_json.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_skips_when_already_active(self):
+        """_start_thinking skips if chat already has an active stream."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_json = AsyncMock()
+
+        # First call registers
+        adapter._start_thinking("chat-123", "req-1")
+        first_stream_id = adapter._active_streams["chat-123"][0]
+
+        # Second call must skip
+        adapter._start_thinking("chat-123", "req-2")
+        assert adapter._active_streams["chat-123"][0] == first_stream_id
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_cancels_stale_waiter(self):
+        """_start_thinking cancels any stale inter-segment waiter from a
+        previous response chain."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_json = AsyncMock()
+
+        # Simulate a stale waiter
+        async def stale_waiter():
+            await asyncio.sleep(10)
+        stale_task = asyncio.create_task(stale_waiter())
+        adapter._segment_waiters["chat-123"] = stale_task
+
+        adapter._start_thinking("chat-123", "req-new")
+        # The stale waiter must be cancelled
+        await asyncio.sleep(0)  # Let cancellation propagate
+        assert stale_task.cancelled() or stale_task.done()
+
+    def test_stream_expired_error_message(self):
+        """StreamExpiredError carries the WeCom errcode in its message."""
+        from gateway.platforms.wecom import StreamExpiredError
+
+        err = StreamExpiredError()
+        assert "846608" in str(err)
+
+        err2 = StreamExpiredError("custom msg")
+        assert "custom msg" in str(err2)
+
+    @pytest.mark.asyncio
+    async def test_send_draft_adopts_thinking_stream(self):
+        """send_draft with draft_id=0 must adopt the thinking stream seeded
+        by _start_thinking."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_json = AsyncMock()
+        adapter._last_chat_req_ids["chat-1"] = "req-abc"
+
+        # Seed thinking stream
+        adapter._start_thinking("chat-1", "req-abc")
+        original_stream_id = adapter._active_streams["chat-1"][0]
+        await asyncio.sleep(0.05)  # Let init frame fire
+
+        # send_draft must adopt it
+        result = await adapter.send_draft("chat-1", 0, "Hello")
+        assert result.success is True
+
+        _sid, _rid, _did, _ds = adapter._active_streams["chat-1"]
+        assert _sid == original_stream_id  # Must reuse same stream
+        assert _did == 0
+        assert _ds is True  # draft_sent must be set
+
+    @pytest.mark.asyncio
+    async def test_send_draft_creates_new_stream_when_none_active(self):
+        """send_draft creates a fresh stream when no active stream exists."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_json = AsyncMock()
+        adapter._last_chat_req_ids["chat-2"] = "req-def"
+
+        # No prior _start_thinking — no active stream
+        result = await adapter.send_draft("chat-2", 1, "Hello")
+        assert result.success is True
+        assert "chat-2" in adapter._active_streams
+        assert adapter._active_streams["chat-2"][2] == 1  # draft_id
+
+    @pytest.mark.asyncio
+    async def test_send_draft_fails_without_reply_req_id(self):
+        """send_draft returns failure when there is no reply_req_id for the
+        chat and no active stream to adopt."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.send_json = AsyncMock()
+        # No _last_chat_req_ids set — no reply_req_id
+
+        result = await adapter.send_draft("chat-3", 0, "Hello")
+        assert result.success is False
+        assert "no reply_req_id" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_send_finalises_active_stream(self):
+        """send() pops an active stream and finalises it with finish=true."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_json = AsyncMock()
+
+        # Simulate a stream that has already had send_draft called on it
+        adapter._active_streams["chat-1"] = ("sid-1", "req-1", 0, True)
+
+        # Mock _send_reply_request so the stream reply succeeds
+        adapter._send_reply_request = AsyncMock(
+            return_value={"errcode": 0, "body": {"stream_id": "sid-1"}}
+        )
+
+        result = await adapter.send("chat-1", "Final answer")
+        assert result.success is True
+        assert "chat-1" not in adapter._active_streams  # Must be popped
+
+        # Verify finish=true was sent
+        call = adapter._send_reply_request.call_args
+        assert call[0][1]["msgtype"] == "stream"
+        assert call[0][1]["stream"]["finish"] is True
+        assert call[0][1]["stream"]["content"] == "Final answer"
+
+    @pytest.mark.asyncio
+    async def test_send_seeds_before_finalising_when_no_draft(self):
+        """send() sends a finish=false seed before finish=true when no draft
+        was previously sent."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+        adapter._ws.send_json = AsyncMock()
+
+        # Active stream with draft_sent=False
+        adapter._active_streams["chat-1"] = ("sid-2", "req-2", 0, False)
+        adapter._send_reply_request = AsyncMock(
+            return_value={"errcode": 0, "body": {"stream_id": "sid-2"}}
+        )
+
+        result = await adapter.send("chat-1", "Quick response")
+        assert result.success is True
+        # Must have called _send_reply_request twice: seed + final
+        assert adapter._send_reply_request.await_count == 2
+
+        # First call: seed (finish=false)
+        seed_call = adapter._send_reply_request.call_args_list[0]
+        assert seed_call[0][1]["stream"]["finish"] is False
+
+        # Second call: final (finish=true)
+        final_call = adapter._send_reply_request.call_args_list[1]
+        assert final_call[0][1]["stream"]["finish"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_on_stream_expiry(self):
+        """send() falls back to proactive send when the stream has expired
+        (errcode 846608)."""
+        from gateway.platforms.wecom import APP_CMD_SEND, StreamExpiredError, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+
+        # Active stream — _send_reply_request raises StreamExpiredError
+        adapter._active_streams["chat-1"] = ("sid-3", "req-3", 0, True)
+
+        async def raise_expired(*args, **kwargs):
+            raise StreamExpiredError("stream expired")
+        adapter._send_reply_request = AsyncMock(side_effect=raise_expired)
+
+        # Fallback: _send_request must succeed
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-fallback"}, "errcode": 0}
+        )
+
+        result = await adapter.send("chat-1", "Fallback message")
+        assert result.success is True
+        assert "chat-1" not in adapter._active_streams  # Stream was popped
+
+        # Must have called proactive send
+        adapter._send_request.assert_awaited_once_with(
+            APP_CMD_SEND,
+            {
+                "chatid": "chat-1",
+                "msgtype": "markdown",
+                "markdown": {"content": "Fallback message"},
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_falls_through_without_active_stream(self):
+        """send() falls through to normal send path when no active stream
+        exists for the chat."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-normal"}, "errcode": 0}
+        )
+
+        result = await adapter.send("chat-9", "Normal message")
+        assert result.success is True
+        adapter._send_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_draft_state_clears_waiter_and_stream(self):
+        """_cleanup_draft_state cancels pending waiters and clears residual
+        streams."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        # Simulate residual state
+        adapter._active_streams["chat-x"] = ("sid-x", "req-x", 0, False)
+
+        async def waiter():
+            await asyncio.sleep(10)
+        waiter_task = asyncio.create_task(waiter())
+        adapter._segment_waiters["chat-x"] = waiter_task
+
+        adapter._cleanup_draft_state("chat-x")
+
+        # Everything must be cleared
+        await asyncio.sleep(0)  # Let cancellation propagate
+        assert "chat-x" not in adapter._active_streams
+        assert "chat-x" not in adapter._segment_waiters
+        assert waiter_task.cancelled() or waiter_task.done()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_draft_state_noop_when_empty(self):
+        """_cleanup_draft_state is a no-op when there is nothing to clean."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # Must not raise
+        adapter._cleanup_draft_state("no-such-chat")
+
+    @pytest.mark.asyncio
+    async def test_media_source_clears_thinking_stream(self):
+        """_send_media_source pops and clears a pending thinking stream before
+        sending media."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = MagicMock()
+        adapter._ws.closed = False
+
+        # Active thinking stream
+        adapter._active_streams["chat-1"] = ("sid-med", "req-med", 0, False)
+
+        adapter._send_reply_request = AsyncMock(
+            return_value={"errcode": 0, "body": {"stream_id": "sid-med"}}
+        )
+        adapter._prepare_outbound_media = AsyncMock(
+            return_value={
+                "data": b"fake-image",
+                "content_type": "image/png",
+                "file_name": "test.png",
+                "detected_type": "image",
+                "final_type": "image",
+                "rejected": False,
+                "reject_reason": None,
+                "downgraded": False,
+                "downgrade_note": None,
+            }
+        )
+        adapter._upload_media_bytes = AsyncMock(
+            return_value={"media_id": "media-99", "type": "image"}
+        )
+        adapter._send_media_message = AsyncMock(
+            return_value={"headers": {"req_id": "req-media"}, "errcode": 0}
+        )
+
+        result = await adapter._send_media_source("chat-1", "/tmp/test.png")
+        assert result.success is True
+        # Thinking stream must be popped
+        assert "chat-1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_disconnect_clears_all_streaming_state(self):
+        """disconnect() clears _active_streams, _stream_locks, and cancels
+        all _segment_waiters."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        adapter._mark_disconnected = MagicMock()
+
+        # Populate streaming state
+        adapter._active_streams["a"] = ("s1", "r1", 0, False)
+        adapter._stream_locks["r1"] = asyncio.Lock()
+
+        async def w():
+            await asyncio.sleep(10)
+        t = asyncio.create_task(w())
+        adapter._segment_waiters["a"] = t
+
+        await adapter.disconnect()
+
+        await asyncio.sleep(0)  # Let cancellation propagate
+        assert len(adapter._active_streams) == 0
+        assert len(adapter._stream_locks) == 0
+        assert len(adapter._segment_waiters) == 0
+        assert t.cancelled() or t.done()

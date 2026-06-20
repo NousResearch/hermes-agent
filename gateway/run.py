@@ -15175,14 +15175,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
                         # Platforms that don't support editing sent messages
-                        # (e.g. QQ, WeChat) should skip streaming entirely —
-                        # without edit support, the consumer sends a partial
-                        # first message that can never be updated, resulting in
-                        # duplicate messages (partial + final).
+                        # should skip edit-based streaming — but adapters with
+                        # native draft streaming (e.g. WeCom stream API) don't
+                        # need edit support; they push progressive frames via
+                        # their own protocol (finish=false → finish=true).
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        if not _adapter_supports_edit:
+                        _adapter_has_draft = (
+                            callable(getattr(_adapter, "supports_draft_streaming", None))
+                            and _adapter.supports_draft_streaming(
+                                chat_type=getattr(source, "chat_type", ""),
+                            )
+                        )
+                        if not _adapter_supports_edit and not _adapter_has_draft:
                             raise RuntimeError("skip streaming for non-editable platform")
-                        _effective_cursor = _scfg.cursor
+                        # Draft-driven platforms (WeCom stream API) don't need
+                        # a visible streaming cursor — the platform handles its
+                        # own typing animation.  Without this, the cursor glyph
+                        # (▉) ends up as a visible tofu/square in the output.
+                        _effective_cursor = "" if _adapter_has_draft else _scfg.cursor
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.
@@ -16839,6 +16849,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _content_delivered,
                 )
                 response["already_sent"] = True
+                # Clean up draft-streaming state: cancel any residual
+                # inter-segment waiter and clear stuck thinking animations.
+                _adapter = self.adapters.get(source.platform)
+                if _adapter:
+                    _cleanup = getattr(_adapter, "_cleanup_draft_state", None)
+                    if _cleanup:
+                        try:
+                            _cleanup(source.chat_id)
+                        except Exception:
+                            pass
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.

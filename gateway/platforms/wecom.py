@@ -79,6 +79,19 @@ APP_CMD_LEGACY_CALLBACK = "aibot_callback"
 APP_CMD_EVENT_CALLBACK = "aibot_event_callback"
 APP_CMD_SEND = "aibot_send_msg"
 APP_CMD_RESPONSE = "aibot_respond_msg"
+
+# Stream reply expires after ~6 minutes of inactivity on the WeCom side.
+# When the server returns errcode 846608 the stream can no longer be
+# updated and we must fall back to proactive send (aibot_send_msg).
+_STREAM_EXPIRED_ERRCODE = 846608
+
+
+class StreamExpiredError(RuntimeError):
+    """Raised when the WeCom stream reply has expired (errcode 846608)."""
+
+    def __init__(self, message: str = "") -> None:
+        errmsg = message or f"Stream reply expired (errcode={_STREAM_EXPIRED_ERRCODE})"
+        super().__init__(errmsg)
 APP_CMD_PING = "ping"
 APP_CMD_UPLOAD_MEDIA_INIT = "aibot_upload_media_init"
 APP_CMD_UPLOAD_MEDIA_CHUNK = "aibot_upload_media_chunk"
@@ -192,6 +205,20 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+        # (stream_id, reply_req_id, draft_id, draft_sent).
+        # draft_id tracks which stream-consumer draft this belongs to;
+        # multi-segment responses get a fresh stream per draft_id.
+        self._active_streams: Dict[str, Tuple[str, str, int, bool]] = {}
+        # Serialize aibot_respond_msg calls per reply_req_id — the WeCom WS
+        # protocol correlates responses by req_id, so concurrent sends for
+        # the same req_id would race on self._pending_responses.
+        self._stream_locks: Dict[str, asyncio.Lock] = {}
+        # Per-chat 2s delayed-thinking tasks for inter-segment gaps.
+        # When send() finishes a segment, a 2s timer starts.  If send_draft
+        # arrives before the timer fires (gap < 2s), the timer is cancelled
+        # and streaming continues immediately.  If the timer fires first,
+        # a new thinking animation appears until the next segment lands.
+        self._segment_waiters: Dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -240,6 +267,11 @@ class WeComAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from WeCom."""
         self._running = False
+        self._active_streams.clear()
+        self._stream_locks.clear()
+        for task in self._segment_waiters.values():
+            task.cancel()
+        self._segment_waiters.clear()
         self._mark_disconnected()
 
         if self._listen_task:
@@ -538,6 +570,13 @@ class WeComAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             logger.debug("[%s] Empty WeCom message skipped", self.name)
             return
+
+        # Start the thinking indicator so the user sees the animation immediately.
+        # Fire-and-forget: we cannot await here because _on_message runs inside
+        # the WS read loop and awaiting would block the loop from receiving the
+        # response to our own stream frame (deadlock).  The asyncio.Lock in
+        # _send_stream_reply serialises concurrent sends on the same reply_req_id.
+        self._start_thinking(chat_id, self._payload_req_id(payload))
 
         source = self.build_source(
             chat_id=chat_id,
@@ -1246,6 +1285,284 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_stream_reply(
+        self,
+        reply_req_id: str,
+        text: str,
+        stream_id: str,
+        finish: bool = False,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        """Send a stream reply via aibot_respond_msg with stream id and finish flags.
+
+        Serialises on a per-reply_req_id lock to prevent concurrent WS
+        requests from racing on self._pending_responses (which is keyed by
+        req_id).
+        """
+        lock = self._stream_locks.setdefault(reply_req_id, asyncio.Lock())
+        async with lock:
+            response = await self._send_reply_request(
+                reply_req_id,
+                {
+                    "msgtype": "stream",
+                    "stream": {
+                        "id": stream_id,
+                        "finish": finish,
+                        "content": text[:self.MAX_MESSAGE_LENGTH],
+                    },
+                },
+                timeout=timeout,
+            )
+        errcode = response.get("errcode", 0)
+        if errcode == _STREAM_EXPIRED_ERRCODE:
+            raise StreamExpiredError(response.get("errmsg", ""))
+        return response
+
+    def _start_thinking(self, chat_id: str, reply_req_id: str) -> None:
+        """Register a stream slot and fire an initial finish=false frame
+        (as a background task) so the WeCom client shows the "thinking"
+        animation immediately.
+
+        The init frame is sent via asyncio.create_task to avoid deadlocking
+        the WS read loop (which called _on_message).  The asyncio.Lock in
+        _send_stream_reply serialises concurrent sends on the same
+        reply_req_id so the init cannot race with send_draft or send().
+        """
+        if not reply_req_id:
+            logger.debug("[%s] _start_thinking: no reply_req_id, skipping for %s", self.name, chat_id)
+            return
+        # Cancel any stale inter-segment waiter — a new user message means
+        # the old response chain is obsolete and we're starting fresh.
+        waiter = self._segment_waiters.pop(chat_id, None)
+        if waiter:
+            waiter.cancel()
+        if chat_id in self._active_streams:
+            logger.debug("[%s] _start_thinking: already active for %s, skipping", self.name, chat_id)
+            return
+        stream_id = f"think-{uuid.uuid4().hex[:16]}"
+        self._active_streams[chat_id] = (stream_id, reply_req_id, 0, False)
+        logger.info("[%s] _start_thinking: registered stream for %s (stream_id=%s)", self.name, chat_id, stream_id)
+        asyncio.create_task(
+            self._send_thinking_init(chat_id, reply_req_id, stream_id)
+        )
+
+    async def _send_thinking_init(
+        self, chat_id: str, reply_req_id: str, stream_id: str
+    ) -> None:
+        """Send the initial stream frame (finish=false) to activate the
+        thinking animation on the WeCom client.
+
+        Fire-and-forget at the WS level — we only call _send_json, not
+        _send_reply_request, because the WS read loop is currently blocked
+        inside _on_message and cannot deliver the response.  The frame
+        still reaches WeCom (WS send is full-duplex) and triggers the
+        animation; we just don't wait for the ack.
+        """
+        try:
+            active = self._active_streams.get(chat_id)
+            if not active or self._ws is None or self._ws.closed:
+                return
+            _sid, _rid, _draft_id, draft_sent = active
+            if draft_sent:
+                logger.debug("[%s] _send_thinking_init: draft already sent for %s, skipping", self.name, chat_id)
+                return
+            await self._send_json({
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": str(reply_req_id or "").strip()},
+                "body": {
+                    "msgtype": "stream",
+                    "stream": {
+                        "id": stream_id,
+                        "finish": False,
+                        "content": " ",
+                    },
+                },
+            })
+            logger.info("[%s] _send_thinking_init: fire-and-forget init frame sent for %s (stream_id=%s)", self.name, chat_id, stream_id)
+        except Exception as exc:
+            # Only pop if the stream hasn't been adopted by send_draft in
+            # the meantime — otherwise we'd clobber a live draft stream.
+            current = self._active_streams.get(chat_id)
+            if current and current[0] == stream_id and current[2] == 0:
+                self._active_streams.pop(chat_id, None)
+            logger.warning(
+                "[%s] Failed to send thinking init for %s: %s", self.name, chat_id, exc
+            )
+
+    def _cleanup_draft_state(self, chat_id: str) -> None:
+        """Called by the gateway after the final response is delivered.
+
+        Cancels any pending inter-segment waiter and clears residual
+        thinking animations so the user doesn't see a stuck indicator
+        after the conversation turn is complete."""
+        waiter = self._segment_waiters.pop(chat_id, None)
+        if waiter:
+            waiter.cancel()
+            logger.debug("[%s] _cleanup_draft_state: cancelled waiter for %s", self.name, chat_id)
+        pending = self._active_streams.pop(chat_id, None)
+        if pending:
+            logger.debug("[%s] _cleanup_draft_state: cleared residual stream for %s", self.name, chat_id)
+
+    # ── Inter-segment thinking animation ─────────────────────────────────
+
+    async def _show_segment_thinking(self, chat_id: str) -> None:
+        """Called after a 2s gap with no new segment — show a thinking
+        animation so the user knows the agent is still working between
+        tool calls.
+
+        Fires a new finish=false stream frame (fire-and-forget) so the
+        WeCom client displays the typing indicator.  When send_draft
+        arrives for the next segment, it clears this animation and
+        starts streaming real content."""
+        reply_req_id = self._last_chat_req_ids.get(chat_id)
+        if not reply_req_id or not self._ws or self._ws.closed:
+            self._segment_waiters.pop(chat_id, None)
+            return
+        stream_id = f"think-{uuid.uuid4().hex[:16]}"
+        self._active_streams[chat_id] = (stream_id, reply_req_id, 0, False)
+        try:
+            await self._send_json({
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": str(reply_req_id).strip()},
+                "body": {
+                    "msgtype": "stream",
+                    "stream": {
+                        "id": stream_id,
+                        "finish": False,
+                        "content": " ",
+                    },
+                },
+            })
+            logger.info("[%s] _show_segment_thinking: delayed thinking shown for %s (stream_id=%s)",
+                        self.name, chat_id, stream_id)
+        except Exception as exc:
+            # Only pop if the stream hasn't been adopted by send_draft in
+            # the meantime — otherwise we'd clobber a live draft stream.
+            current = self._active_streams.get(chat_id)
+            if current and current[0] == stream_id and current[2] == 0:
+                self._active_streams.pop(chat_id, None)
+            logger.debug("[%s] _show_segment_thinking failed for %s: %s", self.name, chat_id, exc)
+        finally:
+            self._segment_waiters.pop(chat_id, None)
+
+    # ── Native draft streaming (WeCom stream API) ───────────────────────
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """WeCom supports native streaming drafts via the ``aibot_respond_msg``
+        stream API (``msgtype: "stream"``, ``finish: false``).
+
+        Draft frames progressively update the stream content while the agent
+        is still working, giving the user a live typing animation.
+        """
+        return True
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Push a progressive stream frame to the WeCom client.
+
+        Matches on ``draft_id`` so multi-segment responses (text → tool →
+        text) each get their own stream.  The initial stream is seeded by
+        :meth:`_start_thinking` with ``draft_id=0`` and adopted by the
+        first ``send_draft`` call.
+
+        Returns a failed SendResult when no active stream exists for this
+        chat so the stream consumer can fall back to buffering.
+        """
+        del metadata
+        # Cancel any pending inter-segment waiter — new content is arriving
+        # now, so the delayed thinking animation isn't needed.  If the waiter
+        # already fired and created a thinking stream, we'll find it below
+        # as an active stream with draft_id=0 and adopt it.
+        waiter = self._segment_waiters.pop(chat_id, None)
+        if waiter:
+            waiter.cancel()
+            logger.debug("[%s] send_draft: cancelled inter-segment waiter for %s", self.name, chat_id)
+        active = self._active_streams.get(chat_id)
+        existing_stream_id: Optional[str] = None
+        existing_reply_id: Optional[str] = None
+
+        if active:
+            _sid, _rid, _existing_did, _ds = active
+            # draft_id==0 means _start_thinking seeded it, not yet adopted
+            if _existing_did in (0, draft_id):
+                existing_stream_id = _sid
+                existing_reply_id = _rid
+
+        if existing_stream_id is None:
+            # Fresh stream needed (first draft, or new segment after tool).
+            reply_req_id = self._last_chat_req_ids.get(chat_id)
+            if not reply_req_id:
+                return SendResult(success=False, error="no reply_req_id for chat")
+            stream_id = f"draft-{uuid.uuid4().hex[:16]}"
+            existing_reply_id = reply_req_id
+            existing_stream_id = stream_id
+            # Seed the new stream with a finish=false frame so the
+            # animation starts immediately (mirrors _start_thinking).
+            # (existing_reply_id is guaranteed non-None by the reply_req_id
+            # check above — it's set from reply_req_id on L1498.)
+            # Fire-and-forget via _send_json (same pattern as _send_thinking_init)
+            # to avoid deadlocking the event loop — we cannot wait for a WS
+            # response because the stream consumer runs inside the agent's
+            # async task tree and awaiting _send_stream_reply here would
+            # block the WS read loop from delivering the response.
+            try:
+                await self._send_json({
+                    "cmd": "aibot_respond_msg",
+                    "headers": {"req_id": str(reply_req_id).strip()},
+                    "body": {
+                        "msgtype": "stream",
+                        "stream": {
+                            "id": stream_id,
+                            "finish": False,
+                            "content": content[:self.MAX_MESSAGE_LENGTH],
+                        },
+                    },
+                })
+                logger.info("[%s] send_draft: fire-and-forget new stream for %s (stream_id=%s)",
+                            self.name, chat_id, stream_id)
+            except Exception as exc:
+                logger.warning("[%s] send_draft: failed to seed new stream for %s: %s",
+                               self.name, chat_id, exc)
+                return SendResult(success=False, error=str(exc))
+        else:
+            # Existing stream — push an update frame via fire-and-forget
+            # _send_json (no WS response wait).  We still acquire the
+            # per-reply_req_id lock so concurrent send_draft and send()
+            # calls on the same stream are serialised.
+            try:
+                lock = self._stream_locks.setdefault(existing_reply_id, asyncio.Lock())
+                async with lock:
+                    await self._send_json({
+                        "cmd": APP_CMD_RESPONSE,
+                        "headers": {"req_id": str(existing_reply_id).strip()},
+                        "body": {
+                            "msgtype": "stream",
+                            "stream": {
+                                "id": existing_stream_id,
+                                "finish": False,
+                                "content": content[:self.MAX_MESSAGE_LENGTH],
+                            },
+                        },
+                    })
+            except Exception as exc:
+                logger.warning("[%s] send_draft: frame push failed for %s: %s",
+                               self.name, chat_id, exc)
+                return SendResult(success=False, error=str(exc))
+
+        self._active_streams[chat_id] = (
+            existing_stream_id, existing_reply_id or "", draft_id, True
+        )
+        return SendResult(success=True, raw_response=None)
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1285,6 +1602,37 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
+
+        # Cancel any pending inter-segment waiter — media delivery is
+        # the next visible output, no need for a delayed thinking animation.
+        waiter = self._segment_waiters.pop(chat_id, None)
+        if waiter:
+            waiter.cancel()
+
+        # Clear any pending thinking stream with finish=True so the
+        # indicator doesn't get stuck.  Media replies travel through a
+        # different channel (replyMedia / aibot_send_msg) and can't
+        # replace a stream message — the thinking must be cleared first.
+        pending = self._active_streams.pop(chat_id, None)
+        if pending:
+            stream_id, think_reply_req_id, _draft_id, draft_sent = pending
+            # Seed the stream first if no draft was ever sent, matching
+            # the official plugin's buildStreamPlaceholderReply pattern.
+            if not draft_sent:
+                try:
+                    await self._send_stream_reply(
+                        think_reply_req_id, "📎", stream_id, finish=False
+                    )
+                except (StreamExpiredError, Exception):
+                    logger.info("[%s] _send_media_source: failed to seed stream for %s, clearing anyway", self.name, chat_id)
+            try:
+                await self._send_stream_reply(
+                    think_reply_req_id, "📎", stream_id, finish=True
+                )
+            except StreamExpiredError:
+                logger.info("[%s] _send_media_source: thinking expired for %s, continuing with media send", self.name, chat_id)
+            except Exception as exc:
+                logger.warning("[%s] _send_media_source: failed to clear thinking for %s: %s", self.name, chat_id, exc)
 
         try:
             prepared = await self._prepare_outbound_media(media_source, file_name=file_name)
@@ -1365,13 +1713,71 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
+        """Send markdown to a WeCom chat.
+
+        If there is an active thinking stream for this chat, the final content
+        is sent via the stream reply (finish=True) to clear the thinking indicator.
+        Otherwise falls back to proactive ``aibot_send_msg`` or plain reply.
+        """
         del metadata
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
         try:
+            # Cancel any pending inter-segment waiter — we're delivering
+            # real content now, so the delayed thinking animation isn't needed.
+            waiter = self._segment_waiters.pop(chat_id, None)
+            if waiter:
+                waiter.cancel()
+
+            # If we have an active thinking stream for this chat, clear it
+            # with the real content via finish=True.  Always clear regardless
+            # of reply_to — the thinking was started on the original inbound
+            # req_id and must be cleared with that same req_id; letting it
+            # linger (even for quoted replies) leaves a stuck indicator.
+            pending = self._active_streams.pop(chat_id, None)
+            if pending:
+                stream_id, think_reply_req_id, _draft_id, draft_sent = pending
+                # Ensure at least one finish=false frame seeds the stream
+                # before we close it with finish=true.  Matches the official
+                # plugin's buildStreamPlaceholderReply in the webhook response.
+                if not draft_sent:
+                    try:
+                        await self._send_stream_reply(
+                            think_reply_req_id, content, stream_id, finish=False
+                        )
+                    except StreamExpiredError:
+                        logger.info("[%s] send: stream expired during seed for %s, falling back", self.name, chat_id)
+                        # Fall through to normal send below
+                        pending = None
+                    except Exception as exc:
+                        logger.warning("[%s] send: failed to seed stream for %s: %s", self.name, chat_id, exc)
+                        pending = None
+                if pending:
+                    logger.info("[%s] send: finalising stream for %s (stream_id=%s, content=%d chars)", self.name, chat_id, stream_id, len(content))
+                    try:
+                        response = await self._send_stream_reply(
+                            think_reply_req_id, content, stream_id, finish=True
+                        )
+                        logger.info("[%s] send: stream finalised for %s, response=%s", self.name, chat_id, str(response)[:200])
+                        # Schedule inter-segment waiter: if no new content
+                        # arrives within 2s, show thinking animation so the
+                        # user knows the agent is still working on tools.
+                        # The gateway calls _cleanup_draft_state() after the
+                        # final response is delivered, which cancels this
+                        # waiter and clears any residual animation.
+                        async def _waiter_task(cid: str) -> None:
+                            await asyncio.sleep(2.0)
+                            if self._segment_waiters.get(cid) is asyncio.current_task():
+                                await self._show_segment_thinking(cid)
+                        self._segment_waiters[chat_id] = asyncio.create_task(_waiter_task(chat_id))
+                        return self._stream_send_result(response)
+                    except StreamExpiredError:
+                        logger.info("[%s] send: stream expired for %s, falling back to proactive send", self.name, chat_id)
+                        # Fall through to normal send below
+            logger.info("[%s] send: no pending stream for %s, fall through to normal send", self.name, chat_id)
+
             reply_req_id = self._reply_req_id_for_message(reply_to)
 
             if not reply_req_id and chat_id in self._last_chat_req_ids:
@@ -1401,6 +1807,16 @@ class WeComAdapter(BasePlatformAdapter):
         return SendResult(
             success=True,
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
+            raw_response=response,
+        )
+
+    @staticmethod
+    def _stream_send_result(response: Dict[str, Any]) -> SendResult:
+        """Build a SendResult from a stream reply response."""
+        stream_body = response.get("body") if isinstance(response.get("body"), dict) else {}
+        return SendResult(
+            success=True,
+            message_id=str(stream_body.get("stream_id") or WeComAdapter._payload_req_id(response) or uuid.uuid4().hex[:12]),
             raw_response=response,
         )
 

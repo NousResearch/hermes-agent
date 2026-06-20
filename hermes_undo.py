@@ -13,6 +13,7 @@ event-loop thread (or adds an ``await`` inside it) must add a per-session lock.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +32,13 @@ class UndoRedoState:
     redo_stack: List[UndoOp] = field(default_factory=list)
 
 
-_states: Dict[str, UndoRedoState] = {}
+# Bound the in-memory undo/redo holder so a long-running gateway that touches
+# many distinct session_ids doesn't grow _states without limit. The state is
+# purely an in-memory redo branch that already does not survive a restart, so
+# evicting the least-recently-used session is graceful: a later /redo on an
+# evicted session behaves exactly like /redo after a restart (handled in redo()).
+_STATE_CAP = 2048
+_states: "OrderedDict[str, UndoRedoState]" = OrderedDict()
 _session_db: Optional[SessionDB] = None
 
 
@@ -43,7 +50,17 @@ def _get_db() -> SessionDB:
 
 
 def get_state(session_id: str) -> UndoRedoState:
-    return _states.setdefault(session_id, UndoRedoState())
+    state = _states.get(session_id)
+    if state is None:
+        state = UndoRedoState()
+        _states[session_id] = state
+        # Evict the least-recently-used entries beyond the cap.
+        while len(_states) > _STATE_CAP:
+            _states.popitem(last=False)
+    else:
+        # Refresh recency on access (LRU).
+        _states.move_to_end(session_id)
+    return state
 
 
 def clear_state(session_id: Optional[str] = None) -> None:
@@ -182,6 +199,8 @@ def redo(session_id: str, m: int) -> Dict[str, Any]:
         }
 
     reactivated_total = 0
+    ops_redone = 0
+    transcript_changed = False
     for _ in range(k):
         op = state.undo_stack.pop()
         reactivated = db.restore_ids(session_id, op.rewound_ids)
@@ -189,10 +208,36 @@ def redo(session_id: str, m: int) -> Dict[str, Any]:
             # NONE of this op's rows could be restored — the transcript was
             # rewritten out from under the stack (/compress, /retry, and any
             # other replace_messages flow hard-delete + renumber rows). The redo
-            # branch is meaningless now, so discard the whole stack rather than
-            # raising: redo across a transcript rewrite is impossible, same as
-            # redo after a restart.
-            state.undo_stack.clear()
+            # branch is dead from here on, so stop and discard the rest of the
+            # stack rather than raising: redo across a transcript rewrite is
+            # impossible, same as redo after a restart.
+            #
+            # Crucially, do NOT throw away progress from EARLIER ops in this same
+            # /redo. If we already reactivated rows (reactivated_total > 0), those
+            # rows are live in the DB now; returning reactivated_count:0 here
+            # would make the caller skip its history reload (screen/DB desync)
+            # and leave redo_count un-bumped despite real work. Break and report
+            # the partial result honestly instead.
+            transcript_changed = True
+            break
+        if reactivated != len(op.rewound_ids):
+            # PARTIAL restore of a SINGLE op — some rows came back, some didn't.
+            # This is a genuine desync (not a clean transcript rewrite), so fail
+            # loud to surface latent corruption rather than silently half-redoing.
+            raise RuntimeError(
+                "redo invariant violated: restored "
+                f"{reactivated} of {len(op.rewound_ids)} rewound rows"
+            )
+        reactivated_total += reactivated
+        ops_redone += 1
+        state.redo_stack.append(op)
+
+    if transcript_changed:
+        # The remaining (older) ops can't be redone across the rewrite — drop them.
+        state.undo_stack.clear()
+        if reactivated_total == 0:
+            # No work done at all → pure no-op; leave redo_count untouched and
+            # clear the now-meaningless redo history too.
             state.redo_stack.clear()
             return {
                 "reactivated_count": 0,
@@ -200,34 +245,26 @@ def redo(session_id: str, m: int) -> Dict[str, Any]:
                 "prefill_text": None,
                 "message": "nothing to redo (transcript changed since undo)",
             }
-        if reactivated != len(op.rewound_ids):
-            # PARTIAL restore — some rows came back, some didn't. This is a
-            # genuine desync (not a clean transcript rewrite), so fail loud to
-            # surface latent corruption rather than silently half-redoing.
-            raise RuntimeError(
-                "redo invariant violated: restored "
-                f"{reactivated} of {len(op.rewound_ids)} rewound rows"
-            )
-        reactivated_total += reactivated
-        state.redo_stack.append(op)
+        # else: earlier ops did real work — fall through to commit + report it.
 
     # Counter asymmetry is intentional: rewind_count increments per low-level
-    # rewind_to_message call; redo_count increments once per /redo command.
-    db._execute_write(
-        lambda conn: conn.execute(
-            "UPDATE sessions SET redo_count = COALESCE(redo_count, 0) + 1 "
-            "WHERE id = ?",
-            (session_id,),
-        )
-    )
+    # rewind_to_message call; redo_count increments once per /redo command that
+    # did real work (regardless of M).
+    db.bump_redo_count(session_id)
 
     active_after = db.get_messages(session_id, include_inactive=False)
     tail = _new_tail(active_after)
-    return {
+    result: Dict[str, Any] = {
         "reactivated_count": reactivated_total,
         "new_tail_id": tail["id"] if tail else None,
         "prefill_text": None,
     }
+    if transcript_changed:
+        result["message"] = (
+            f"redid {ops_redone} operation(s); the rest can't be redone "
+            "(transcript changed since undo)"
+        )
+    return result
 
 
 def on_user_message_appended(session_id: str) -> None:

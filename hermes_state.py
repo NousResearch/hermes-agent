@@ -3285,6 +3285,23 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def bump_redo_count(self, session_id: str) -> None:
+        """Increment ``sessions.redo_count`` by one (once per /redo command).
+
+        Public helper so the shared undo/redo core doesn't reach into the
+        private ``_execute_write``. Counter asymmetry is intentional:
+        ``rewind_count`` bumps per low-level ``rewind_to_message`` call;
+        ``redo_count`` bumps once per /redo command, regardless of M.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET redo_count = COALESCE(redo_count, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+
+        self._execute_write(_do)
+
     def list_recent_user_messages(
         self,
         session_id: str,

@@ -7443,6 +7443,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except ValueError:
                     print(f"(._.) Invalid count {_redo_parts[1]!r} — use /redo or /redo N.")
                     return
+                if _redo_n < 1:
+                    # Match /undo: a non-positive count clamps to 1 rather than
+                    # falling through to a misleading "nothing to redo".
+                    _redo_n = 1
             self.redo_last(_redo_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)

@@ -348,3 +348,82 @@ def test_redo_fail_loud_requires_each_op_restore_all_rewound_ids(monkeypatch, db
     with pytest.raises(RuntimeError, match="restored 1 of 2 rewound rows"):
         hermes_undo.redo(sid, 1)
     assert calls == [[ids[2], ids[3]]]
+
+
+def test_multi_redo_preserves_earlier_progress_when_later_op_hits_rewrite(monkeypatch, db):
+    """A /redo N must not throw away rows an EARLIER op already reactivated.
+
+    Bug (Greptile, merged PR #49): in a multi-op /redo, the first op pops and
+    restores rows (real DB work, redo_stack grows), then a later op hits the
+    transcript-rewrite path (restore_ids -> 0). The old code discarded the whole
+    stack and returned reactivated_count:0, so the caller printed "Nothing to
+    redo" and SKIPPED its history reload — screen/DB desync — and redo_count was
+    never bumped despite the committed first op. The fix reports the partial
+    progress honestly and still commits it.
+    """
+    sid = _make_session(db)
+    ids = _seed_three_half_turns(db, sid)  # u1,a1,u2,a2
+    # Two single-half-turn undos -> two ops on the stack (LIFO: a2 then u2 group).
+    hermes_undo.undo(sid, 1)
+    hermes_undo.undo(sid, 1)
+    state = hermes_undo.get_state(sid)
+    assert len(state.undo_stack) == 2
+    first_op_ids = list(state.undo_stack[-1].rewound_ids)  # the op redo pops FIRST
+
+    real_restore = db.restore_ids
+    seen = {"n": 0}
+
+    def restore_first_then_rewrite(_sid, rewound_ids):
+        # First op: genuinely restore. Second op: simulate transcript rewrite.
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return real_restore(_sid, rewound_ids)
+        return 0
+
+    monkeypatch.setattr(db, "restore_ids", restore_first_then_rewrite)
+
+    r = hermes_undo.redo(sid, 2)
+
+    # Earlier op's work is preserved and reported, not silently dropped.
+    assert r["reactivated_count"] == len(first_op_ids)
+    assert r["reactivated_count"] > 0
+    assert "transcript changed" in r["message"]
+    # The op that succeeded moved to redo_stack; the dead remainder is dropped.
+    assert len(state.redo_stack) == 1
+    assert state.undo_stack == []
+    # redo_count WAS bumped because real work committed (not left at None).
+    assert db.get_session(sid)["redo_count"] == 1
+
+
+def test_redo_uses_public_bump_redo_count_not_private_execute_write():
+    """The shared core must call the public SessionDB.bump_redo_count helper,
+    not reach into the private _execute_write (Greptile PR #49 finding)."""
+    source = inspect.getsource(hermes_undo)
+    assert "bump_redo_count" in source
+    assert "_execute_write" not in source, (
+        "hermes_undo must not access the private SessionDB._execute_write"
+    )
+    # And the helper actually exists on SessionDB.
+    assert callable(getattr(SessionDB, "bump_redo_count", None))
+
+
+def test_states_holder_is_lru_bounded(monkeypatch):
+    """_states must evict least-recently-used sessions instead of growing forever
+    (Greptile PR #49: unbounded module-global dict = gateway memory leak)."""
+    hermes_undo.clear_state()
+    monkeypatch.setattr(hermes_undo, "_STATE_CAP", 3)
+    try:
+        for i in range(5):
+            hermes_undo.get_state(f"s{i}")
+        assert len(hermes_undo._states) == 3
+        # The three most-recent survive; the two oldest were evicted.
+        assert set(hermes_undo._states.keys()) == {"s2", "s3", "s4"}
+
+        # Accessing an existing session refreshes its recency (LRU, not FIFO).
+        hermes_undo.get_state("s2")          # s2 -> most recent
+        hermes_undo.get_state("s5")          # inserts s5, evicts the now-oldest (s3)
+        assert "s2" in hermes_undo._states
+        assert "s3" not in hermes_undo._states
+        assert len(hermes_undo._states) == 3
+    finally:
+        hermes_undo.clear_state()

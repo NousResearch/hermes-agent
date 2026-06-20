@@ -106,3 +106,36 @@ def test_clear_redo_on_send_leaves_undo_stack_available(db):
 
     assert state.redo_stack == []
     assert state.undo_stack == []
+
+
+@pytest.mark.parametrize(
+    "command, expected_n",
+    [
+        ("/redo", 1),
+        ("/redo 2", 2),
+        ("/redo 0", 1),    # non-positive clamps to 1 (parity with /undo)
+        ("/redo -3", 1),   # negative clamps to 1
+    ],
+)
+def test_redo_command_clamps_non_positive_count_to_one(command, expected_n):
+    """/redo 0 and /redo -N must clamp to 1 like /undo, not fall through to a
+    misleading 'nothing to redo' (Greptile PR #49 finding)."""
+    captured = {}
+    cli_obj = SimpleNamespace(
+        _pending_resume_sessions=None,
+        redo_last=lambda n=1: captured.__setitem__("n", n),
+    )
+    cont = HermesCLI.process_command(cli_obj, command)
+    assert cont is True
+    assert captured.get("n") == expected_n
+
+
+def test_redo_command_rejects_non_numeric_count():
+    """A non-numeric /redo argument is rejected, not silently treated as 1."""
+    captured = {}
+    cli_obj = SimpleNamespace(
+        _pending_resume_sessions=None,
+        redo_last=lambda n=1: captured.__setitem__("n", n),
+    )
+    HermesCLI.process_command(cli_obj, "/redo abc")
+    assert "n" not in captured  # redo_last never called on a parse error

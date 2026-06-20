@@ -2307,12 +2307,12 @@ class MCPServerTask:
             # before surfacing an opaque CancelledError. Probing here — once,
             # outside the SDK task group — fails fast and non-retryably with
             # an actionable message, mirroring the URL-validation path above.
-            # Skip the probe when _ready is already set: that only happens
-            # after a prior successful connect, so this run() invocation is a
-            # reconnect (OAuth recovery / manual refresh). The endpoint was
-            # already validated once; re-probing burns a redundant network
-            # round-trip against a known-good server on every reconnect.
-            if config.get("transport") != "sse" and not self._ready.is_set():
+            # Skip the probe when _ready is already set (reconnect after a
+            # prior successful connect) — the endpoint was validated once,
+            # re-probing is a redundant round-trip. Also skip for OAuth servers:
+            # without a cached token the endpoint returns HTML or 401, which
+            # would incorrectly block the OAuth flow before it can run.
+            if config.get("transport") != "sse" and not self._ready.is_set() and self._auth_type != "oauth":
                 try:
                     _probe_headers = dict(config.get("headers") or {})
                     await self._preflight_content_type(

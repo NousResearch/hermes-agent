@@ -972,6 +972,36 @@ class TestResetBundledSkill:
             # User's edited copy is intact.
             assert "user-edited" in (dest / "SKILL.md").read_text()
 
+    def test_reset_no_bundled_source_reports_no_bundled_action(self, tmp_path):
+        """A plain `reset` on a manifest-tracked skill that has NO bundled
+        source (removed upstream / bundled unavailable) must not be reported as
+        a 'local differs from bundled' divergence, and must not point at
+        --restore (which would fail with bundled_missing). It gets a dedicated
+        `manifest_cleared_no_bundled` action."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # 'orphan-skill' is tracked in the manifest and present on disk, but is
+        # NOT in the bundled tree (only google-workspace is bundled).
+        dest = skills_dir / "productivity" / "orphan-skill"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("---\nname: orphan-skill\n---\n# Orphan\n")
+        manifest_file.write_text("orphan-skill:OLDHASH00000000000000000000000000\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("orphan-skill", restore=False)
+
+            assert result["ok"] is True
+            assert result["action"] == "manifest_cleared_no_bundled"
+            # The message must be honest about the missing bundled source and
+            # must NOT recommend running --restore to recover (it can't).
+            assert "no bundled source" in result["message"]
+            assert "reset --restore" not in result["message"]
+            # Manifest entry is gone; the local copy is preserved untouched.
+            assert "orphan-skill" not in _read_manifest()
+            assert "Orphan" in (dest / "SKILL.md").read_text()
+
     def test_reset_no_op_when_already_clean(self, tmp_path):
         """If manifest has skill but user copy is in-sync, reset still safely clears + re-baselines."""
         bundled = self._setup_bundled(tmp_path)

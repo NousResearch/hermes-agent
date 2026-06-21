@@ -1591,6 +1591,22 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
+            # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels)
+            # return a well-formed HTTP 200 with an empty or whitespace-only
+            # ``content`` instead of an error or empty ``choices``. That payload
+            # passes ``_validate_llm_response`` (a ``message`` exists), so it
+            # reaches here and would otherwise be stored as a prefix-only
+            # summary with no body — silently wiping the compacted turns and
+            # making the model forget the in-progress task (#11978, #11914).
+            # Treat empty content as a failure so it routes through the same
+            # main-model fallback + cooldown machinery as a transport error,
+            # rather than replacing real context with an empty summary.
+            if not content.strip():
+                raise RuntimeError(
+                    "Context compression LLM returned empty content "
+                    f"(provider={self.provider or 'auto'} "
+                    f"model={self.summary_model or self.model})"
+                )
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
@@ -1601,16 +1617,27 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_error = None
             self._last_summary_auth_failure = False
             return self._with_summary_prefix(summary)
-        except RuntimeError:
-            # No provider configured — long cooldown, unlikely to self-resolve
-            self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
-            self._last_summary_error = "no auxiliary LLM provider configured"
-            logger.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary "
-                            "for %d seconds.",
-                            _SUMMARY_FAILURE_COOLDOWN_SECONDS)
-            return None
         except Exception as e:
+            # ``call_llm`` raises ``RuntimeError`` for two very different cases:
+            #   1. No provider configured ("No LLM provider configured ...") —
+            #      a permanent misconfiguration, long cooldown is correct.
+            #   2. An empty/invalid response from a configured provider
+            #      (``_validate_llm_response`` empty-``choices``/``None``, or our
+            #      empty-``content`` guard above) — a transient/proxy fault that
+            #      should fall back to the main model first, exactly like the
+            #      transport errors handled below.
+            # Only (1) belongs in the long no-provider cooldown; (2) and every
+            # other exception flow into the generic fallback logic so they get
+            # a main-model retry before any cooldown. (#11978, #11914)
+            if isinstance(e, RuntimeError) and "no llm provider configured" in str(e).lower():
+                # No provider configured — long cooldown, unlikely to self-resolve
+                self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+                self._last_summary_error = "no auxiliary LLM provider configured"
+                logger.warning("Context compression: no provider available for "
+                                "summary. Middle turns will be dropped without summary "
+                                "for %d seconds.",
+                                _SUMMARY_FAILURE_COOLDOWN_SECONDS)
+                return None
             # If the summary model is different from the main model and the
             # error looks permanent (model not found, 503, 404), fall back to
             # using the main model instead of entering cooldown that leaves

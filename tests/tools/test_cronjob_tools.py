@@ -453,6 +453,62 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
 
+    def test_create_with_max_turns_persists_value(self):
+        """create with max_turns=150 stores max_turns=150 on the job record."""
+        from cron.jobs import get_job
+
+        result = json.loads(
+            cronjob(action="create", prompt="long job", schedule="every 1h", max_turns=150)
+        )
+        assert result["success"] is True
+        stored = get_job(result["job_id"])
+        assert stored["max_turns"] == 150
+
+    def test_create_without_max_turns_omits_field(self):
+        """create without max_turns does not add the key to the job record."""
+        from cron.jobs import get_job
+
+        result = json.loads(
+            cronjob(action="create", prompt="normal job", schedule="every 1h")
+        )
+        assert result["success"] is True
+        stored = get_job(result["job_id"])
+        assert "max_turns" not in stored
+
+    def test_create_max_turns_zero_ignored(self):
+        """create with max_turns=0 is not a positive int — field must be absent."""
+        from cron.jobs import get_job
+
+        result = json.loads(
+            cronjob(action="create", prompt="job", schedule="every 1h", max_turns=0)
+        )
+        assert result["success"] is True
+        stored = get_job(result["job_id"])
+        assert "max_turns" not in stored
+
+    def test_create_max_turns_negative_ignored(self):
+        """create with max_turns=-1 is not positive — field must be absent."""
+        from cron.jobs import get_job
+
+        result = json.loads(
+            cronjob(action="create", prompt="job", schedule="every 1h", max_turns=-1)
+        )
+        assert result["success"] is True
+        stored = get_job(result["job_id"])
+        assert "max_turns" not in stored
+
+    def test_update_max_turns_sets_value(self):
+        """update with max_turns=75 stores max_turns=75 on the job record."""
+        from cron.jobs import get_job
+
+        created = json.loads(cronjob(action="create", prompt="job", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        updated = json.loads(cronjob(action="update", job_id=job_id, max_turns=75))
+        assert updated["success"] is True
+        stored = get_job(job_id)
+        assert stored["max_turns"] == 75
+
 
 # =========================================================================
 # Per-job model/provider override resolution

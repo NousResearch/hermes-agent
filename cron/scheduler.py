@@ -1719,8 +1719,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations (a job-record "max_turns" overrides the global config —
+        # long-form worker jobs need a bigger budget than interactive turns).
+        # `bool` is a subclass of `int`, so exclude it explicitly: `max_turns:
+        # true` must fall back to the default, not silently set a 1-turn budget.
+        _job_max_turns = job.get("max_turns")
+        _job_max_turns_valid = (
+            isinstance(_job_max_turns, int)
+            and not isinstance(_job_max_turns, bool)
+            and _job_max_turns > 0
+        )
+        max_iterations = (
+            (_job_max_turns if _job_max_turns_valid else None)
+            or _cfg.get("agent", {}).get("max_turns")
+            or _cfg.get("max_turns")
+            or 90
+        )
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
@@ -1942,12 +1956,41 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # job's `last_status` set to "ok". Raise so the except handler below
         # builds the proper failure tuple. (issue #17855)
         if result.get("failed") is True or result.get("completed") is False:
-            _err_text = (
-                result.get("error")
-                or (result.get("final_response") or "").strip()
-                or "agent reported failure"
-            )
-            raise RuntimeError(_err_text)
+            _exit_reason = str(result.get("turn_exit_reason") or "")
+            _final_text = (result.get("final_response") or "").strip()
+            # Iteration-budget stops that still produced a substantive report
+            # are partial work, not failures. Wrapping them in RuntimeError
+            # buried multi-KB handoff briefs in `last_error` and made them
+            # indistinguishable from a turn-1 crash in the dashboard.
+            # The >=300-char floor rejects the short turn-completion explainer
+            # boilerplate that finalize_turn injects when the post-budget
+            # summary call itself fails — that's a real failure (no work
+            # record), not a partial.
+            # ("budget_exhausted" is normally rewritten to
+            # "max_iterations_reached(...)" by finalize_turn before it reaches
+            # here; it is matched too so a directly-surfaced budget stop is
+            # still treated as partial.)
+            if (
+                result.get("failed") is not True
+                and _exit_reason.startswith(("max_iterations_reached", "budget_exhausted"))
+                and len(_final_text) >= 300
+            ):
+                logger.warning(
+                    "Job '%s' hit iteration budget (%s) — recording as partial success",
+                    job_name, _exit_reason,
+                )
+                result["final_response"] = (
+                    f"⚠️ PARTIAL — iteration budget hit ({_exit_reason}). "
+                    "Work may be incomplete; treat the report below as a handoff brief.\n\n"
+                    + _final_text
+                )
+            else:
+                _err_text = (
+                    result.get("error")
+                    or _final_text
+                    or "agent reported failure"
+                )
+                raise RuntimeError(_err_text)
 
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.

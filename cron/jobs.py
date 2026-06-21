@@ -626,6 +626,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    max_turns: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -670,6 +671,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        max_turns: Optional per-job agent iteration budget. When a positive int,
+                   overrides the global config default for this job's runs.
+                   Values that are not a positive non-boolean int are ignored
+                   (field is omitted from the record).
 
     Returns:
         The created job dict
@@ -704,6 +709,14 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    # max_turns: only store when it is a positive non-boolean int; omit otherwise
+    # so existing records without the field are not affected.
+    _max_turns_valid = (
+        isinstance(max_turns, int)
+        and not isinstance(max_turns, bool)
+        and max_turns > 0
+    )
+    normalized_max_turns = max_turns if _max_turns_valid else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -758,6 +771,8 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    if normalized_max_turns is not None:
+        job["max_turns"] = normalized_max_turns
 
     with _jobs_lock():
         jobs = load_jobs()

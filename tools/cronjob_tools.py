@@ -492,6 +492,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    max_turns: Optional[int] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -558,6 +559,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                max_turns=max_turns,
             )
             _notify_provider_jobs_changed_safe()
             return json.dumps(
@@ -715,6 +717,14 @@ def cronjob(
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
+            if max_turns is not None:
+                # Only accept positive non-boolean ints; clear (None) otherwise.
+                _mt_valid = (
+                    isinstance(max_turns, int)
+                    and not isinstance(max_turns, bool)
+                    and max_turns > 0
+                )
+                updates["max_turns"] = max_turns if _mt_valid else None
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
                 updates["schedule"] = parsed_schedule
@@ -848,6 +858,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+            },
+            "max_turns": {
+                "type": "integer",
+                "description": "Maximum agent turns (iteration budget) for this job's runs; overrides the global default. Useful for long-running worker jobs. Must be a positive integer. Invalid values (0, negative, or non-integer) are ignored and the global default is used instead. On update, set to a positive integer to override or omit to leave unchanged."
             },
         },
         "required": ["action"]

@@ -849,6 +849,44 @@ class TestGetDueJobs:
         assert recovered_dt > now
 
 
+class TestMaxTurns:
+    def test_max_turns_stored_when_positive_int(self, tmp_cron_dir):
+        job = create_job(prompt="worker", schedule="every 1h", max_turns=150)
+        assert job["max_turns"] == 150
+
+    def test_max_turns_persisted(self, tmp_cron_dir):
+        job = create_job(prompt="worker", schedule="every 1h", max_turns=150)
+        fetched = get_job(job["id"])
+        assert fetched["max_turns"] == 150
+
+    def test_max_turns_omitted_when_not_provided(self, tmp_cron_dir):
+        job = create_job(prompt="worker", schedule="every 1h")
+        assert "max_turns" not in job
+
+    def test_max_turns_omitted_for_zero(self, tmp_cron_dir):
+        job = create_job(prompt="worker", schedule="every 1h", max_turns=0)
+        assert "max_turns" not in job
+
+    def test_max_turns_omitted_for_negative(self, tmp_cron_dir):
+        job = create_job(prompt="worker", schedule="every 1h", max_turns=-5)
+        assert "max_turns" not in job
+
+    def test_max_turns_omitted_for_bool_true(self, tmp_cron_dir):
+        # bool is a subclass of int — True == 1 but must be excluded
+        job = create_job(prompt="worker", schedule="every 1h", max_turns=True)
+        assert "max_turns" not in job
+
+    def test_max_turns_omitted_for_bool_false(self, tmp_cron_dir):
+        job = create_job(prompt="worker", schedule="every 1h", max_turns=False)
+        assert "max_turns" not in job
+
+    def test_max_turns_updated_via_update_job(self, tmp_cron_dir):
+        job = create_job(prompt="worker", schedule="every 1h")
+        update_job(job["id"], {"max_turns": 200})
+        fetched = get_job(job["id"])
+        assert fetched["max_turns"] == 200
+
+
 class TestEnabledToolsets:
     def test_enabled_toolsets_stored(self, tmp_cron_dir):
         job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])

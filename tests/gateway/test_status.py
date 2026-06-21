@@ -531,6 +531,73 @@ class TestScopedLocks:
         assert acquired is False
         assert existing["pid"] == 99999
 
+    def test_get_process_start_time_falls_back_to_psutil_without_proc(self, monkeypatch):
+        """Windows/macOS have no /proc, but the PID-reuse guard still needs a
+        real start time. Without the psutil fallback every gateway record stored
+        ``start_time: null`` and a stale per-token lock left by a crashed gateway
+        was never recognised as stale once the OS reused its PID — startup then
+        failed with a spurious "bot token already in use" until the lock was
+        deleted by hand.
+        """
+        import sys
+
+        # PID with no /proc entry on Linux forces the psutil fallback; on
+        # Windows/macOS the /proc read fails for every PID anyway.
+        fake_proc = SimpleNamespace(create_time=lambda: 1717000000.5)
+        fake_psutil = SimpleNamespace(Process=lambda pid: fake_proc)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        assert status._get_process_start_time(999999) == 1717000000.5
+
+    def test_get_process_start_time_returns_none_when_psutil_unavailable(self, monkeypatch):
+        """Stay defensive: an unreadable /proc and a failing psutil yield None,
+        and callers fall back to the cmdline-based staleness heuristics."""
+        import sys
+
+        def _raise(pid):
+            raise RuntimeError("no such process")
+
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_raise))
+
+        assert status._get_process_start_time(999999) is None
+
+    def test_acquire_scoped_lock_replaces_reused_pid_via_psutil_start_time(self, tmp_path, monkeypatch):
+        """End-to-end fix: on a no-/proc platform a lock whose owning PID has been
+        reused is recognised as stale because psutil reports a *different*
+        create_time than the one recorded in the lock — even when the live PID
+        also happens to look like a gateway. Before the psutil fallback this was
+        impossible (start_time was always None on Windows), which is what made
+        the Discord/Telegram "token already in use" error wedge restarts.
+        """
+        import sys
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,  # written by the now-dead gateway
+            "kind": "hermes-gateway",
+            "argv": ["hermes_cli/main.py", "gateway", "run"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        # Worst case: the reused PID even looks like a gateway, so only the
+        # start_time mismatch can mark the lock stale.
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+        # No /proc: the real _get_process_start_time routes through psutil,
+        # which reports the *current* (different) process generation.
+        fake_proc = SimpleNamespace(create_time=lambda: 2000.0)
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=lambda pid: fake_proc))
+
+        acquired, _existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", metadata={"platform": "telegram"}
+        )
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+
     def test_acquire_scoped_lock_replaces_stale_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"

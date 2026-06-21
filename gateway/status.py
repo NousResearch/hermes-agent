@@ -109,17 +109,38 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
-def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+def _get_process_start_time(pid: int) -> Optional[float]:
+    """Return the start time for a process when available.
+
+    Linux: field 22 of ``/proc/<pid>/stat`` (start time in clock ticks since
+    boot) — a stable integer that, paired with the PID, uniquely identifies a
+    process generation and so detects PID reuse.
+
+    Windows / macOS have no ``/proc``.  Fall back to ``psutil.Process.create_time()``
+    (a float, seconds since the epoch).  psutil is a hard dependency and is
+    already used by ``_pid_exists`` below.  Without this fallback the PID-reuse
+    guard was silently disabled on those platforms: every gateway record stored
+    ``start_time: null``, so a stale per-token lock left behind by a crashed
+    gateway was never recognised as stale once the OS reused its PID, and
+    startup failed with a spurious "<platform> bot token already in use"
+    (e.g. Discord) until the lock file was deleted by hand.
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    # No /proc (Windows, macOS) or it was unreadable — ask psutil.
+    try:
+        import psutil  # type: ignore
+        return float(psutil.Process(int(pid)).create_time())
+    except Exception:
         return None
 
 
-def get_process_start_time(pid: int) -> Optional[int]:
+def get_process_start_time(pid: int) -> Optional[float]:
     """Public wrapper for retrieving a process start time when available."""
     return _get_process_start_time(pid)
 

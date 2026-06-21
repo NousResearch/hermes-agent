@@ -1,0 +1,24 @@
+# Gitleaks configuration for the hermes-agent fork.
+#
+# Extends the stock gitleaks ruleset and allowlists the obviously-fake credential
+# *fixtures* the test suite uses (mocked clients / redaction tests, never real).
+# They surfaced only because the diff-scoped scan re-reads them as "added" lines
+# when a large test file is split/moved (PR #66).
+#
+# gitleaks `stopwords` allowlist a finding when its detected SECRET contains one
+# of these substrings (case-insensitive). gitleaks strips the literal "..." from
+# the secret it evaluates, so we match the distinctive ALPHANUMERIC token of each
+# fake fixture. These tails are specific to the known fakes; a real high-entropy
+# key does not contain them (verified with an sk-ant-api03 injection negative
+# test that is still CAUGHT with this config).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake test-fixture API keys (mocked clients / redaction tests, never real)."
+stopwords = [
+  "1234567890",  # test-key-1234567890 (AIAgent constructor stub) / test-k...7890
+  "2mno",        # gsk_ab...2mno / sk-ant...2mno (redaction fixtures)
+  "mnop",        # sk-or-...mnop (key-masking fixture)
+]

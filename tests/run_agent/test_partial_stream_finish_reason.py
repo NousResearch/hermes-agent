@@ -310,7 +310,7 @@ class TestConversationLoopPartialStreamContinuation:
         through length_continue_retries — the loop persists the partial
         content and asks the model to continue."""
 
-        from tests.run_agent.test_run_agent import _mock_response, _mock_assistant_msg
+        from tests.run_agent._run_agent_helpers import _mock_response, _mock_assistant_msg
 
         # First API call: the partial-stream stub (length on partial-stream-stub id).
         partial_stub = SimpleNamespace(

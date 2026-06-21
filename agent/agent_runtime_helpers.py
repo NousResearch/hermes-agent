@@ -1436,6 +1436,12 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
+    # Credential broker (opt-in): hold the real API key off the SDK client and
+    # resolve it only at the HTTP layer. No-op unless
+    # `security.credential_broker.enabled` is set; fail-open otherwise.
+    from agent.secret_broker import apply_to_client_kwargs as _broker_apply
+
+    _broker_apply(client_kwargs)
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

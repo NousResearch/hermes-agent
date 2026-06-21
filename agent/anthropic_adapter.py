@@ -817,6 +817,32 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    # Credential-broker hook — keep the real Anthropic API key off the
+    # constructed SDK client. When the broker is enabled the SDK sees an
+    # opaque placeholder; an httpx request hook on a Hermes-managed client
+    # swaps the placeholder for the real key just before each request
+    # leaves the process. Mirrors the precedent in
+    # ``_build_anthropic_client_with_bearer_hook`` (which feeds the SDK a
+    # custom httpx.Client for Entra ID JWT minting) and ``secret_broker``'s
+    # ``apply_to_client_kwargs`` for OpenAI-compatible clients. Fail-open:
+    # any error here degrades to "use the real key directly".
+    try:
+        from agent.secret_broker import broker_enabled, get_broker, install_request_hook
+        import httpx as _httpx
+        _real_key = kwargs.get("api_key") or kwargs.get("auth_token")
+        if broker_enabled() and isinstance(_real_key, str) and _real_key:
+            _broker = get_broker()
+            _placeholder = _broker.register(_real_key)
+            if "api_key" in kwargs:
+                kwargs["api_key"] = _placeholder
+            elif "auth_token" in kwargs:
+                kwargs["auth_token"] = _placeholder
+            _http = _httpx.Client(timeout=kwargs.get("timeout"))
+            install_request_hook(_http, _broker)
+            kwargs["http_client"] = _http
+    except Exception:
+        pass  # fail-open — never break Anthropic client construction
+
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
@@ -835,6 +861,15 @@ def build_anthropic_bedrock_client(region: str):
     serves them with 1M natively.
 
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
+    ``AnthropicBedrock`` exposes no ``api_key`` / ``auth_token`` knobs; auth
+    is performed entirely by an internal boto3 session signing SigV4 (or
+    using ``AWS_BEARER_TOKEN_BEDROCK``). Credential-broker coverage on this
+    path therefore depends on the boto3-level handler installed by
+    ``bedrock_adapter._wire_broker`` — when the Bedrock provider is routed
+    through that module, broker semantics apply transitively. The Anthropic
+    SDK's ``http_client=`` accepts a custom httpx client but botocore writes
+    the real ``Authorization`` header itself, so a Hermes httpx hook on this
+    client would have no placeholder to swap.
     """
     _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
@@ -1382,13 +1417,33 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
 
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
-    """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
+    """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json.
+
+    ``.anthropic_oauth.json`` is a ``credential``-kind target of the
+    encryption-at-rest layer (see ``hermes_crypto/migrate.py``), so when
+    ``security.encryption.encrypt_credentials`` is enabled the file on disk is
+    an AES-GCM envelope (binary), not UTF-8 JSON. Read the raw bytes and
+    decrypt-if-encrypted before decoding — mirrors
+    ``agent/google_oauth.load_credentials``. The previous plain
+    ``read_text(encoding="utf-8")`` raised ``UnicodeDecodeError`` on an
+    encrypted blob, which was *not* in the caught tuple and escaped to the
+    caller. Fail-soft: any read/decrypt/parse error returns None (no
+    credentials), never an exception.
+    """
     if _HERMES_OAUTH_FILE.exists():
         try:
-            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
-            if data.get("accessToken"):
+            blob = _HERMES_OAUTH_FILE.read_bytes()
+            try:
+                from hermes_crypto import decrypt_if_encrypted, is_encrypted
+
+                if is_encrypted(blob):
+                    blob = decrypt_if_encrypted(blob)
+            except ImportError:
+                pass
+            data = json.loads(blob.decode("utf-8"))
+            if isinstance(data, dict) and data.get("accessToken"):
                 return data
-        except (json.JSONDecodeError, OSError, IOError) as e:
+        except Exception as e:
             logger.debug("Failed to read Hermes OAuth credentials: %s", e)
     return None
 

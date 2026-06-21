@@ -186,6 +186,17 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.2.0",),
+    # Encryption-at-rest (`hermes encrypt`). Split in two so credential-file
+    # encryption never depends on a SQLCipher wheel being available for the
+    # platform: `tool.encryption` covers the always-needed crypto, and
+    # `tool.encryption_db` is installed only when database encryption
+    # (`encrypt_databases`) is turned on.
+    "tool.encryption": (
+        "cryptography==46.0.7",
+        "argon2-cffi==25.1.0",
+        "keyring==25.6.0",
+    ),
+    "tool.encryption_db": ("sqlcipher3-wheels==0.5.7",),
 }
 
 

@@ -2276,6 +2276,48 @@ DEFAULT_CONFIG = {
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
         "allow_lazy_installs": True,
+        # Opt-in encryption-at-rest. When enabled, the sensitive files under
+        # HERMES_HOME (.env, auth.json, OAuth tokens and — when
+        # encrypt_databases is on — state.db / kanban.db) are stored
+        # AES-256-GCM encrypted and decrypted into memory at runtime. This
+        # protects data on a cold disk (stolen laptop, leaked backup,
+        # decommissioned VPS); it does NOT protect a running process. Manage
+        # it with `hermes encrypt` — do not flip `enabled` here by hand, the
+        # files on disk must be migrated to match. See SECURITY.md.
+        "encryption": {
+            "enabled": False,
+            # keyring | passphrase | keyfile. keyring uses the OS keyring
+            # (Windows Credential Manager / macOS Keychain / Secret Service);
+            # passphrase derives the key via Argon2id (works headless);
+            # keyfile stores the key beside the data (weakest, for automation).
+            "key_source": "keyring",
+            # .env, auth.json, and the OAuth token files.
+            "encrypt_credentials": True,
+            # state.db and kanban.db via SQLCipher (needs sqlcipher3-wheels).
+            "encrypt_databases": False,
+            # Encrypt rotated log segments (the live log stays redacted plaintext).
+            "encrypt_logs": False,
+            # Argon2id cost for passphrase mode. memory_cost_kib is in KiB;
+            # 131072 = 128 MiB keeps a one-off unlock within a small VPS's RAM.
+            "argon2": {
+                "time_cost": 3,
+                "memory_cost_kib": 131072,
+                "parallelism": 4,
+            },
+        },
+        # Keep credentials out of broad process state (inspired by NVIDIA
+        # OpenShell). `scrub_subprocess_env` (opt-in, off by default) adds a
+        # credential-shape sweep (`*_API_KEY`, `*_TOKEN`, ...) on top of the
+        # always-on provider blocklist; enable it to also strip secrets the
+        # blocklist doesn't enumerate from terminal/code-exec subprocesses. The
+        # explicit provider blocklist and the unconditional encryption-passphrase
+        # strip remain always-on regardless of this flag. `enabled` turns on the
+        # egress broker: the real LLM API key is held in memory and injected only
+        # at the HTTP layer, never placed on the SDK client or in os.environ.
+        "credential_broker": {
+            "enabled": False,
+            "scrub_subprocess_env": False,
+        },
     },
 
     "cron": {
@@ -5970,6 +6012,69 @@ def save_config(config: Dict[str, Any]):
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
+# ─── Encrypted-.env helpers ──────────────────────────────────────────────────
+# When ``security.encryption`` is enabled the .env file on disk is an
+# AES-256-GCM envelope (see the hermes_crypto package). These two helpers are
+# the single read/write chokepoint so every .env mutator below (load_env,
+# sanitize_env_file, save_env_value, remove_env_value) transparently handles
+# the plaintext and the encrypted form alike.
+
+
+def _read_env_lines(env_path: Path) -> List[str]:
+    """Return the .env file's lines, decrypting first when it is encrypted.
+
+    Returns ``[]`` when the file does not exist. A genuine decryption failure
+    (locked keystore, wrong key) is allowed to propagate — an unreadable
+    encrypted .env must fail loudly rather than silently read as empty.
+    """
+    if not env_path.exists():
+        return []
+    raw = env_path.read_bytes()
+    try:
+        from hermes_crypto import decrypt_if_encrypted, is_encrypted
+    except ImportError:
+        decrypt_if_encrypted = is_encrypted = None  # type: ignore[assignment]
+    if is_encrypted is not None and is_encrypted(raw):
+        raw = decrypt_if_encrypted(raw)
+    text = raw.decode("utf-8-sig", errors="replace")
+    # Match a text-mode readlines(): collapse CRLF/CR to LF (universal
+    # newlines) so callers comparing against re-sanitised lines see no
+    # spurious diff on Windows-authored .env files.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.splitlines(keepends=True)
+
+
+def _write_env_lines(
+    env_path: Path, lines: List[str], *, original_mode: Optional[int] = None
+) -> None:
+    """Atomically write .env *lines*, encrypting when credential encryption is on."""
+    payload = "".join(lines).encode("utf-8")
+    try:
+        from hermes_crypto import encrypt_if_enabled
+
+        payload = encrypt_if_enabled(payload, env=True)
+    except ImportError:
+        pass
+    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, env_path)
+        if original_mode is not None:
+            try:
+                os.chmod(env_path, original_mode)
+            except OSError:
+                pass
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def load_env() -> Dict[str, str]:
     """Load environment variables from ~/.hermes/.env.
 
@@ -6006,12 +6111,9 @@ def load_env() -> Dict[str, str]:
     env_vars: Dict[str, str] = {}
 
     if env_path.exists():
-        # On Windows, open() defaults to the system locale (cp1252) which can
-        # fail on UTF-8 .env files. Always use explicit UTF-8; tolerate BOM
-        # via utf-8-sig since users may edit .env in Notepad which adds one.
-        open_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-        with open(env_path, **open_kw) as f:
-            raw_lines = f.readlines()
+        # _read_env_lines transparently decrypts an encrypted .env; for a
+        # plaintext file it reads UTF-8 and tolerates a BOM (Notepad edits).
+        raw_lines = _read_env_lines(env_path)
         # Sanitize before parsing: split concatenated lines & drop stale
         # placeholders so corrupted .env files don't produce invalid tokens.
         lines = _sanitize_env_lines(raw_lines)
@@ -6117,11 +6219,7 @@ def sanitize_env_file() -> int:
     if not env_path.exists():
         return 0
 
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
-    with open(env_path, **read_kw) as f:
-        original_lines = f.readlines()
+    original_lines = _read_env_lines(env_path)
 
     sanitized = _sanitize_env_lines(original_lines)
 
@@ -6135,19 +6233,7 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
-    try:
-        with os.fdopen(fd, "w", **write_kw) as f:
-            f.writelines(sanitized)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _write_env_lines(env_path, sanitized)
     _secure_file(env_path)
     invalidate_env_cache()
     return fixes
@@ -6220,17 +6306,11 @@ def save_env_value(key: str, value: str):
     ensure_hermes_home()
     env_path = get_env_path()
 
-    # On Windows, open() defaults to the system locale (cp1252) which can
-    # cause OSError errno 22 on UTF-8 .env files.
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
-    lines = []
-    if env_path.exists():
-        with open(env_path, **read_kw) as f:
-            lines = f.readlines()
-        # Sanitize on every read: split concatenated keys, drop stale placeholders
-        lines = _sanitize_env_lines(lines)
+    # _read_env_lines decrypts an encrypted .env transparently and tolerates
+    # a BOM on a plaintext one.
+    lines = _read_env_lines(env_path)
+    # Sanitize on every read: split concatenated keys, drop stale placeholders
+    lines = _sanitize_env_lines(lines)
 
     # Find and update or append
     found = False
@@ -6245,8 +6325,7 @@ def save_env_value(key: str, value: str):
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
-    
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+
     # Preserve original permissions so Docker volume mounts aren't clobbered.
     original_mode = None
     if env_path.exists():
@@ -6254,27 +6333,10 @@ def save_env_value(key: str, value: str):
             original_mode = stat.S_IMODE(env_path.stat().st_mode)
         except OSError:
             pass
-    try:
-        with os.fdopen(fd, 'w', **write_kw) as f:
-            f.writelines(lines)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
-        # instead of letting _secure_file unconditionally tighten to 0600.
-        if original_mode is not None:
-            try:
-                os.chmod(env_path, original_mode)
-            except OSError:
-                pass
-        else:
-            _secure_file(env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    # _write_env_lines re-encrypts when credential encryption is active.
+    _write_env_lines(env_path, lines, original_mode=original_mode)
+    if original_mode is None:
+        _secure_file(env_path)
 
     os.environ[key] = value
     invalidate_env_cache()
@@ -6307,46 +6369,21 @@ def remove_env_value(key: str) -> bool:
         os.environ.pop(key, None)
         return False
 
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
-    with open(env_path, **read_kw) as f:
-        lines = f.readlines()
-    lines = _sanitize_env_lines(lines)
+    lines = _sanitize_env_lines(_read_env_lines(env_path))
 
     new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]
     found = len(new_lines) < len(lines)
 
     if found:
-        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
         # Preserve original permissions so Docker volume mounts aren't clobbered.
         original_mode = None
         try:
             original_mode = stat.S_IMODE(env_path.stat().st_mode)
         except OSError:
             pass
-        try:
-            with os.fdopen(fd, 'w', **write_kw) as f:
-                f.writelines(new_lines)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, env_path)
-            # Preserve the original file mode (e.g. 0640 for Docker volume
-            # mounts) instead of letting _secure_file unconditionally tighten
-            # to 0600. Mirrors save_env_value().
-            if original_mode is not None:
-                try:
-                    os.chmod(env_path, original_mode)
-                except OSError:
-                    pass
-            else:
-                _secure_file(env_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _write_env_lines(env_path, new_lines, original_mode=original_mode)
+        if original_mode is None:
+            _secure_file(env_path)
 
     os.environ.pop(key, None)
     invalidate_env_cache()

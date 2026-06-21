@@ -1142,6 +1142,44 @@ def run_doctor(args):
     except Exception:
         pass
 
+    _section("Encryption at Rest")
+    try:
+        from hermes_crypto import audit as _enc_audit
+        from hermes_crypto import is_encryption_enabled, running_under_openshell
+
+        if is_encryption_enabled():
+            from hermes_crypto import keystore as _enc_ks
+
+            slot = _enc_ks.primary_slot_type() or "?"
+            check_ok("Encryption at rest", f"(enabled, key source: {slot})")
+            if slot == "passphrase" and not _enc_ks.has_recovery_slot():
+                check_warn(
+                    "No recovery code set",
+                    "run `hermes encrypt add-recovery` — a lost passphrase = lost data",
+                )
+        else:
+            check_info(
+                "Encryption at rest is off — enable with `hermes encrypt enable`"
+            )
+        if running_under_openshell():
+            check_ok("Running inside an OpenShell sandbox", "(runtime isolation active)")
+        else:
+            check_info(
+                "Not sandboxed — pair encryption with a runtime sandbox "
+                "(e.g. NVIDIA OpenShell) to confine the running agent"
+            )
+        recent_fails = [
+            e for e in _enc_audit.read_recent(50)
+            if e.get("activity") == "keystore_unlock_failed"
+        ]
+        if recent_fails:
+            check_warn(
+                f"{len(recent_fails)} failed keystore unlock(s) in the audit log",
+                "review ~/.hermes/logs/security-audit.jsonl",
+            )
+    except Exception:
+        pass
+
     _section("Directory Structure")
     hermes_home = HERMES_HOME
     if hermes_home.exists():
@@ -1216,8 +1254,14 @@ def run_doctor(args):
     state_db_path = hermes_home / "state.db"
     if state_db_path.exists():
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
+            # hermes_state rebinds sqlite3 to the keyed sqlcipher3 module when
+            # database encryption is on; _apply_db_key is a no-op otherwise.
+            # A plain sqlite3.connect here would misreport a healthy encrypted
+            # state.db as "has issues: file is not a database".
+            from hermes_state import _apply_db_key
+            from hermes_state import sqlite3 as _state_sqlite3
+            conn = _state_sqlite3.connect(str(state_db_path))
+            _apply_db_key(conn)
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
             conn.close()
@@ -1284,8 +1328,10 @@ def run_doctor(args):
                     "(may indicate missed checkpoints)"
                 )
                 if should_fix:
-                    import sqlite3
-                    conn = sqlite3.connect(str(state_db_path))
+                    from hermes_state import _apply_db_key
+                    from hermes_state import sqlite3 as _state_sqlite3
+                    conn = _state_sqlite3.connect(str(state_db_path))
+                    _apply_db_key(conn)
                     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     conn.close()
                     new_size = wal_path.stat().st_size if wal_path.exists() else 0

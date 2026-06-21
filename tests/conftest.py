@@ -196,6 +196,9 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_EPHEMERAL_SYSTEM_PROMPT",
     "HERMES_TIMEZONE",
     "HERMES_REDACT_SECRETS",
+    # Encryption-at-rest passphrase — a developer's real passphrase must
+    # never leak into a test process and unlock a stray keystore.
+    "HERMES_ENCRYPTION_PASSPHRASE",
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",

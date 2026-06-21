@@ -307,6 +307,27 @@ that:
   permissions, never in the main config, never in version control.
   Under OpenShell, use the Provider store rather than an on-disk
   credential file.
+- Optionally enable **encryption at rest** with `hermes encrypt
+  enable`. This stores the sensitive files under `HERMES_HOME`
+  (`.env`, `auth.json`, the OAuth token files and — opt-in — the
+  `state.db` / `kanban.db` databases) as AES-256-GCM ciphertext,
+  decrypted into process memory only at runtime. Its threat model is
+  narrow and worth stating plainly: it protects data on a **cold
+  disk** — a stolen laptop, a leaked or cloud-synced backup, a
+  decommissioned VPS volume. It is **not** a boundary against a
+  running agent process or in-process code (§2.3, §2.5): a skill,
+  plugin, or the agent itself necessarily holds the decrypted
+  credentials in memory while running. The key is held in the OS
+  keyring or derived from an operator passphrase (Argon2id); losing
+  it makes the data unrecoverable, so set a recovery code. This
+  feature is defense-in-depth layered on top of file permissions and
+  OS-level isolation — not a replacement for either. It covers the
+  cold-disk half of the problem; pair it with a whole-process sandbox
+  (§2.2 — e.g. OpenShell) to also confine the running agent.
+  Encryption operations are recorded to a structured audit log at
+  `~/.hermes/logs/security-audit.jsonl` (events only, never key
+  material) — repeated failed-unlock entries indicate someone is
+  trying keys against your encrypted data.
 - Do not expose the gateway or API to the public internet without
   VPN, Tailscale, or firewall protection. Under OpenShell, use the
   network policy layer to restrict egress.

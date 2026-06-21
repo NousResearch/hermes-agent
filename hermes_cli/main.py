@@ -11861,6 +11861,33 @@ def main():
     secrets_parser.set_defaults(func=_dispatch_secrets)
 
     # =========================================================================
+    # encrypt command — opt-in encryption-at-rest for HERMES_HOME
+    # =========================================================================
+    encrypt_parser = subparsers.add_parser(
+        "encrypt",
+        help="Encrypt credentials and history at rest (opt-in encryption-at-rest)",
+        description=(
+            "Opt-in encryption-at-rest. Encrypts .env, auth.json, the OAuth "
+            "token files and — optionally — the SQLite databases under "
+            "HERMES_HOME so a stolen disk or leaked backup does not expose "
+            "them. See SECURITY.md for the threat model."
+        ),
+    )
+
+    # Lazy import — only pays for itself when this subcommand is actually used.
+    from hermes_cli import encrypt_cmd as _encrypt_cmd
+
+    _encrypt_cmd.register_cli(encrypt_parser)
+
+    def _dispatch_encrypt(args):  # noqa: ANN001
+        # Reached only for a bare `hermes encrypt` — every subcommand sets its
+        # own func via set_defaults and overrides this default.
+        encrypt_parser.print_help()
+        return 0
+
+    encrypt_parser.set_defaults(func=_dispatch_encrypt)
+
+    # =========================================================================
     # migrate command
     # =========================================================================
     from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai

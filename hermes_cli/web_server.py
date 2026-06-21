@@ -6198,12 +6198,19 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "expiresAt": expires_at_ms,
     }
     _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    blob = json.dumps(payload, indent=2).encode("utf-8")
+    try:
+        from hermes_crypto import encrypt_if_enabled
+
+        blob = encrypt_if_enabled(blob)
+    except ImportError:
+        pass
     tmp_path = _HERMES_OAUTH_FILE.with_name(
         f"{_HERMES_OAUTH_FILE.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
     )
     try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2))
+        with tmp_path.open("wb") as handle:
+            handle.write(blob)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_path, _HERMES_OAUTH_FILE)

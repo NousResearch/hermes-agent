@@ -190,6 +190,59 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+# Credential-shaped env-var suffixes — a defense-in-depth sweep that strips
+# secrets the explicit blocklist above does not enumerate (a brand-new
+# provider, or the operator's own ``*_API_KEY`` placed in ~/.hermes/.env).
+# This sweep is OPT-IN and off by default; enable it with
+# ``security.credential_broker.scrub_subprocess_env: true`` to mirror a real
+# sandbox's strip-by-default posture.
+_CREDENTIAL_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY")
+
+# Always stripped from every subprocess, regardless of config or passthrough —
+# the encryption passphrase must never reach a child process.
+_ALWAYS_STRIP_ENV = frozenset({"HERMES_ENCRYPTION_PASSPHRASE"})
+
+
+def _shape_scrub_enabled() -> bool:
+    """Whether the credential-shape sweep is on (config; opt-in, defaults to false)."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        from utils import is_truthy_value
+
+        return is_truthy_value(
+            cfg_get(
+                load_config(),
+                "security",
+                "credential_broker",
+                "scrub_subprocess_env",
+                default=False,
+            )
+        )
+    except Exception:
+        # This sweep is a hardening add-on, not a baseline protection: the
+        # always-on provider blocklist and unconditional passphrase strip are
+        # independent of it. On a config-read error, fail open w.r.t. this
+        # opt-in feature (off) rather than silently enabling an aggressive sweep.
+        return False
+
+
+def _should_strip_env_key(key: str, is_passthrough) -> bool:
+    """Return True when *key* must be removed from a subprocess environment."""
+    if key.upper() in _ALWAYS_STRIP_ENV:
+        # Case-insensitive to match code_execution_tool — Windows env-var
+        # names are case-insensitive. Unconditional; passthrough cannot
+        # resurrect these.
+        return True
+    if is_passthrough(key):
+        return False
+    if key in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        return True
+    if _shape_scrub_enabled() and any(
+        key.upper().endswith(suffix) for suffix in _CREDENTIAL_ENV_SUFFIXES
+    ):
+        return True
+    return False
+
 
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
@@ -215,14 +268,14 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        if not _should_strip_env_key(key, _is_passthrough):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        elif not _should_strip_env_key(key, _is_passthrough):
             sanitized[key] = value
 
     _inject_context_hermes_home(sanitized)
@@ -376,7 +429,7 @@ def _make_run_env(env: dict) -> dict:
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
-        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
+        elif not _should_strip_env_key(k, _is_passthrough):
             run_env[k] = v
     path_key = _path_env_key(run_env)
     if path_key is not None:

@@ -93,6 +93,30 @@ from toolsets import get_toolset_names
 _log = logging.getLogger(__name__)
 
 
+# ── Database encryption (opt-in) ───────────────────────────────────────────
+# kanban.db follows the same SQLCipher rebind as state.db: when database
+# encryption is on, the module-level ``sqlite3`` name is swapped for the
+# keyed ``sqlcipher3.dbapi2`` drop-in. See hermes_state for the rationale.
+_DB_ENCRYPTED = False
+try:
+    from hermes_crypto import database_encryption_active as _hc_db_active
+
+    if _hc_db_active():
+        import sqlcipher3.dbapi2 as sqlite3  # noqa: F811 — keyed-DB drop-in
+
+        _DB_ENCRYPTED = True
+except ImportError:
+    # sqlcipher3 missing while encryption is on — surface the cause instead
+    # of failing later with an opaque "file is not a database" (mirrors
+    # hermes_state).
+    _log.warning(
+        "Database encryption is enabled but the 'sqlcipher3' module is not "
+        "installed — run: pip install 'hermes-agent[encryption]'"
+    )
+except Exception:  # noqa: BLE001 — never let this break import of the DB layer
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -1419,6 +1443,10 @@ def _validate_sqlite_header(path: Path) -> None:
     being collapsed into a generic PRAGMA error and lets the gateway's corrupt
     board handling identify the board by fingerprint.
     """
+    if _DB_ENCRYPTED:
+        # An encrypted SQLCipher database intentionally has no plaintext
+        # SQLite header — the header check does not apply.
+        return
     try:
         stat = path.stat()
     except FileNotFoundError:
@@ -1560,6 +1588,19 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     try:
         probe = _sqlite_connect(resolved)
         try:
+            # Unlock the SQLCipher key BEFORE the integrity probe, mirroring the
+            # state.db ordering in hermes_state.SessionDB.__init__ (key first,
+            # then any other statement). When database encryption is enabled the
+            # file has no plaintext SQLite structure, so an unkeyed
+            # ``PRAGMA integrity_check`` would mis-read the ciphertext as a
+            # malformed DB and brick a perfectly healthy encrypted kanban.db by
+            # backing it up and raising KanbanDbCorruptError. ``_apply_db_key``
+            # is a no-op when encryption is OFF (the default), so the
+            # unencrypted/default path — and its genuine-corruption detection —
+            # is byte-for-byte unchanged.
+            from hermes_state import _apply_db_key
+
+            _apply_db_key(probe)
             row = probe.execute("PRAGMA integrity_check").fetchone()
         finally:
             probe.close()
@@ -1570,6 +1611,13 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         raise
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
+    except Exception:  # noqa: BLE001
+        # Anything other than a SQLite error here (e.g. hermes_state import
+        # failure or key retrieval raising while encryption is on) is NOT
+        # evidence of a corrupt DB — declaring corruption would back up and
+        # brick a healthy board. Fail open and let connect() proceed; its own
+        # _apply_db_key() will surface a genuine key error to the caller.
+        return
     if reason is None:
         return
     backup = _backup_corrupt_db(resolved)
@@ -1644,6 +1692,9 @@ def connect(
         resolved = str(path.resolve())
         conn = _sqlite_connect(path)
         try:
+            from hermes_state import _apply_db_key
+
+            _apply_db_key(conn)
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
                 # WAL activation can take an exclusive lock while SQLite creates the

@@ -95,9 +95,11 @@ def _get_bedrock_runtime_client(region: str):
     """
     if region not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
-        _bedrock_runtime_client_cache[region] = boto3.client(
+        client = boto3.client(
             "bedrock-runtime", region_name=region,
         )
+        client = _wire_broker(client, mode_hint="runtime")
+        _bedrock_runtime_client_cache[region] = client
     return _bedrock_runtime_client_cache[region]
 
 
@@ -105,10 +107,123 @@ def _get_bedrock_control_client(region: str):
     """Get or create a cached ``bedrock`` control-plane client for model discovery."""
     if region not in _bedrock_control_client_cache:
         boto3 = _require_boto3()
-        _bedrock_control_client_cache[region] = boto3.client(
+        client = boto3.client(
             "bedrock", region_name=region,
         )
+        client = _wire_broker(client, mode_hint="control")
+        _bedrock_control_client_cache[region] = client
     return _bedrock_control_client_cache[region]
+
+
+def _wire_broker(client, *, mode_hint: str):
+    """Best-effort: wire *client* through the egress credential broker.
+
+    When the broker is disabled (or any error occurs), returns *client*
+    unchanged — the cached client is still fully usable with the AWS
+    credentials boto3 already resolved.
+
+    For ``AWS_BEARER_TOKEN_BEDROCK`` mode, the real token is read off the
+    client's signer, registered with the broker, and the signer's auth-token
+    is replaced with the placeholder. A ``before-send`` hook rewrites the
+    placeholder back to the real token at request egress.
+
+    For ``AWS_ACCESS_KEY_ID`` mode, the real static key pair (plus optional
+    session token) is read off the client's signer, registered with the
+    broker, and the signer's credentials are replaced with placeholders. The
+    broker hook then wraps those placeholders so ``get_frozen_credentials()``
+    resolves real values only for the SigV4 signing snapshot while the cached
+    signer remains placeholder-only at rest.
+
+    Other auth modes (profile, instance role, container, web identity) are
+    left untouched — broker mode does not extend to refreshable AWS credential
+    objects in this iteration.
+    """
+    try:
+        from agent.secret_broker import (
+            broker_enabled,
+            install_bedrock_event_hook,
+            register_aws_credential_triplet,
+            register_bearer_token,
+        )
+
+        if not broker_enabled():
+            return client
+
+        env_var = resolve_aws_auth_env_var()
+        signer = getattr(client, "_request_signer", None)
+        if signer is None:
+            return client
+
+        if env_var == "AWS_BEARER_TOKEN_BEDROCK":
+            token_obj = getattr(signer, "_auth_token", None)
+            real_token = getattr(token_obj, "token", None)
+            if not real_token or not isinstance(real_token, str):
+                return client
+            from agent.secret_broker import SecretBroker as _SB
+            if _SB.is_placeholder(real_token):
+                install_bedrock_event_hook(client, mode="bearer")
+                return client  # already brokered
+            placeholder = register_bearer_token(real_token)
+            try:
+                from botocore.tokens import FrozenAuthToken
+                signer._auth_token = FrozenAuthToken(token=placeholder)
+            except Exception:
+                return client
+            install_bedrock_event_hook(client, mode="bearer")
+
+        elif env_var == "AWS_ACCESS_KEY_ID":
+            creds = getattr(signer, "_credentials", None)
+            if creds is None:
+                return client
+            real_id = getattr(creds, "access_key", None)
+            real_secret = getattr(creds, "secret_key", None)
+            if not real_id or not real_secret:
+                return client
+            from agent.secret_broker import SecretBroker as _SB
+            if _SB.is_placeholder(real_id):
+                install_bedrock_event_hook(client, mode="sigv4")
+                return client  # already brokered
+            real_token = getattr(creds, "token", None)
+            placeholder_id, placeholder_secret, placeholder_token = (
+                register_aws_credential_triplet(real_id, real_secret, real_token)
+            )
+            try:
+                import botocore.credentials as _bc
+                kwargs = {
+                    "access_key": placeholder_id,
+                    "secret_key": placeholder_secret,
+                    "token": placeholder_token,
+                    "method": getattr(creds, "method", None),
+                }
+                account_id = getattr(creds, "account_id", None)
+                if account_id is not None:
+                    kwargs["account_id"] = account_id
+                try:
+                    signer._credentials = _bc.Credentials(**kwargs)
+                except TypeError:
+                    kwargs.pop("account_id", None)
+                    signer._credentials = _bc.Credentials(**kwargs)
+            except Exception:
+                return client
+            # Order matters: the signer must hold placeholders before the hook
+            # wraps them; otherwise refreshable/non-placeholder providers are
+            # intentionally left untouched.
+            install_bedrock_event_hook(client, mode="sigv4")
+
+        return client
+    except Exception:
+        # Best-effort audit; never raise.
+        try:
+            from hermes_crypto import audit
+            audit.log_event(
+                "broker_install_failed",
+                outcome="failure",
+                component="bedrock_adapter",
+                mode_hint=mode_hint,
+            )
+        except Exception:
+            pass
+        return client
 
 
 def reset_client_cache():

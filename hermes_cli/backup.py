@@ -258,10 +258,38 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to.  Falls back to raw copy on failure.
+    When database encryption is on and *src* is SQLCipher-encrypted, the
+    snapshot runs over a keyed connection and the copy stays encrypted
+    under the same key.
     """
+    db_module = sqlite3
+    apply_key = None
     try:
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(dst))
+        with open(src, "rb") as fh:
+            plaintext_header = fh.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        plaintext_header = True
+    if not plaintext_header:
+        # No plaintext SQLite header → SQLCipher-encrypted (or corrupt).
+        # Take the snapshot through the keyed sqlcipher3 module that
+        # hermes_state rebound at import; PRAGMA key must run before any
+        # other statement. On any error the existing raw-copy fallback
+        # still produces a byte-exact (encrypted) copy.
+        try:
+            import hermes_state as _hermes_state
+
+            if _hermes_state._DB_ENCRYPTED:
+                db_module = _hermes_state.sqlite3
+                apply_key = _hermes_state._apply_db_key
+        except Exception:
+            pass
+    try:
+        conn = db_module.connect(f"file:{src}?mode=ro", uri=True)
+        if apply_key is not None:
+            apply_key(conn)
+        backup_conn = db_module.connect(str(dst))
+        if apply_key is not None:
+            apply_key(backup_conn)
         conn.backup(backup_conn)
         backup_conn.close()
         conn.close()

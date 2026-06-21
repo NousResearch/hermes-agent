@@ -17414,6 +17414,53 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from hermes_logging import setup_logging, _safe_stderr
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
+    # Credential-broker SIGHUP reload hook. Lets
+    # operators flip security.credential_broker.enabled in config.yaml and
+    # invalidate the broker cache with `kill -HUP <pid>` instead of a full
+    # gateway restart. POSIX-only — Windows path returns False silently.
+    # The function itself swallows any install error so a signal-handling
+    # quirk on the host never breaks startup.
+    try:
+        from agent.secret_broker import install_broker_signal_handler
+        if install_broker_signal_handler():
+            logger.info("SIGHUP reload handler installed (broker cache).")
+        else:
+            logger.info(
+                "SIGHUP reload handler not installed (Windows or unsupported); "
+                "restart the gateway to pick up broker config changes."
+            )
+    except Exception as exc:
+        logger.info(
+            "SIGHUP reload handler skipped: %s. "
+            "Restart the gateway to pick up broker config changes.", exc,
+        )
+
+    # Periodic process memory usage logging (gateway only) — emits a
+    # grep-friendly "[MEMORY] rss=...MB ..." line every N minutes so
+    # slow leaks in the long-lived gateway process show up as a time
+    # series in agent.log / gateway.log.  Ported from cline/cline#10343.
+    # Controlled by the logging.memory_monitor section in config.yaml.
+    try:
+        from gateway import memory_monitor as _memory_monitor
+
+        _mm_cfg = {}
+        try:
+            # config is loaded a few lines up; re-read the logging section
+            # here so we pick up user overrides without coupling to local
+            # variable names inside the start_gateway body.
+            from hermes_cli.config import load_config as _load_cli_config
+
+            _mm_cfg = (_load_cli_config() or {}).get("logging", {}).get("memory_monitor", {}) or {}
+        except Exception:
+            _mm_cfg = {}
+        if _mm_cfg.get("enabled", True):
+            try:
+                _mm_interval = float(_mm_cfg.get("interval_seconds", 300))
+            except (TypeError, ValueError):
+                _mm_interval = 300.0
+            _memory_monitor.start_memory_monitoring(interval_seconds=_mm_interval)
+    except Exception as _mm_exc:
+        logger.debug("Failed to start memory monitor: %s", _mm_exc)
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output
     # verbosity=0    (default):    WARNING and above

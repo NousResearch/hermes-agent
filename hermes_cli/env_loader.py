@@ -143,11 +143,42 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
-def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+def _maybe_decrypt_env_file(path: Path) -> str | None:
+    """Return the decrypted ``.env`` text when *path* is encrypted, else None.
+
+    A genuine decryption failure is allowed to propagate: an encrypted
+    ``.env`` that cannot be opened must fail loudly here rather than let the
+    agent start with no API keys (which would surface as a confusing
+    unrelated auth error later).
+    """
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        from hermes_crypto import is_encrypted
+    except Exception:
+        return None
+    if not is_encrypted(raw):
+        return None
+    from hermes_crypto import decrypt_if_encrypted
+
+    return decrypt_if_encrypted(raw).decode("utf-8", errors="replace")
+
+
+def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    decrypted = _maybe_decrypt_env_file(path)
+    if decrypted is not None:
+        # Encrypted .env — feed python-dotenv the decrypted text directly so
+        # no plaintext copy is ever written to disk.
+        import io
+
+        load_dotenv(stream=io.StringIO(decrypted), override=override)
+    else:
+        try:
+            load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars
@@ -174,6 +205,17 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     """
     if not path.exists():
         return
+    # An encrypted .env is an opaque marker + base64 blob — the line
+    # sanitizer would corrupt the envelope, so skip it entirely.
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(64)
+        from hermes_crypto import is_encrypted
+
+        if is_encrypted(head):
+            return
+    except Exception:
+        pass
     try:
         from hermes_cli.config import _sanitize_env_lines
     except ImportError:
@@ -244,6 +286,23 @@ def load_hermes_dotenv(
 
     _apply_external_secret_sources(home_path)
     _apply_managed_env()
+
+    # Move the encryption passphrase out of os.environ into hermes_crypto's
+    # in-memory stash before anything can spawn a subprocess — child
+    # processes must never inherit it (the per-spawn-site scrub lists are
+    # only defense-in-depth). Runs after the dotenv loads above so a
+    # passphrase placed in a plaintext .env is stashed too; an encrypted
+    # .env was already decrypted via the shell-provided variable, which
+    # get_data_key() consumed-and-stashed on its own.
+    if os.environ.get("HERMES_ENCRYPTION_PASSPHRASE"):
+        try:
+            from hermes_crypto import stash_passphrase_from_env
+
+            stash_passphrase_from_env()
+        except Exception:
+            # The stash is hardening, not a load-bearing step — never let it
+            # break startup credential loading.
+            pass
 
     return loaded
 

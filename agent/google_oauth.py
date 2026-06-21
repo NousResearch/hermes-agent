@@ -472,9 +472,16 @@ def load_credentials() -> Optional[GoogleCredentials]:
         return None
     try:
         with _credentials_lock():
-            raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (json.JSONDecodeError, OSError, IOError) as exc:
+            blob = path.read_bytes()
+        try:
+            from hermes_crypto import decrypt_if_encrypted, is_encrypted
+
+            if is_encrypted(blob):
+                blob = decrypt_if_encrypted(blob)
+        except ImportError:
+            pass
+        data = json.loads(blob.decode("utf-8"))
+    except Exception as exc:
         logger.warning("Failed to read Google OAuth credentials at %s: %s", path, exc)
         return None
     if not isinstance(data, dict):
@@ -493,7 +500,14 @@ def save_credentials(creds: GoogleCredentials) -> Path:
     # On Windows this is a no-op (POSIX mode bits aren't enforced); ignore failures.
     # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
     secure_parent_dir(path)
-    payload = json.dumps(creds.to_dict(), indent=2, sort_keys=True) + "\n"
+    payload = (json.dumps(creds.to_dict(), indent=2, sort_keys=True) + "\n").encode("utf-8")
+    # Encrypt at rest when credential encryption is enabled (no-op otherwise).
+    try:
+        from hermes_crypto import encrypt_if_enabled
+
+        payload = encrypt_if_enabled(payload)
+    except ImportError:
+        pass
 
     with _credentials_lock():
         tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
@@ -506,7 +520,7 @@ def save_credentials(creds: GoogleCredentials) -> Path:
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 stat.S_IRUSR | stat.S_IWUSR,
             )
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            with os.fdopen(fd, "wb") as fh:
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())

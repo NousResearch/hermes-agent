@@ -52,4 +52,36 @@ describe("describeSchedule cron day-of-month humanization", () => {
     );
     expect(result).toBe("Weekly on Mon, Wed at 09:00");
   });
+
+  it("falls back to raw cron for a multi-DOM expr even with no fallbackDisplay", () => {
+    // describeSchedule is commonly called with fallbackDisplay=undefined.
+    // The "don't render a misleading single-day sentence" outcome must not
+    // depend on fallbackDisplay being present — the raw expr is recovered
+    // from schedule.expr in that case.
+    const result = describeSchedule(
+      { kind: "cron", expr: "0 9 1,15 * *" },
+      undefined,
+      strings,
+    );
+    expect(result).toBe("0 9 1,15 * *");
+    expect(result).not.toContain("Monthly on the 1st");
+  });
+
+  it("does NOT misrender a DOM cron operator as a single day", () => {
+    // parseInt("1-15"|"1/2"|"1L"|"1W"|"15#2", 10) would truncate to a
+    // single number and produce a wrong "Monthly on the Nth" sentence. The
+    // literal-or-list guard must reject every non-digits-only DOM token and
+    // bail to the raw expression instead.
+    for (const expr of [
+      "0 9 1-15 * *",
+      "0 9 1/2 * *",
+      "0 9 1L * *",
+      "0 9 1W * *",
+      "0 9 15#2 * *",
+    ]) {
+      const result = describeSchedule({ kind: "cron", expr }, expr, strings);
+      expect(result).toBe(expr);
+      expect(result).not.toContain("Monthly");
+    }
+  });
 });

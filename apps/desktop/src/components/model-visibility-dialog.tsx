@@ -61,7 +61,7 @@ export function ModelVisibilityDialog({
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
+    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers, { stripSentinels: false }))
     const key = modelVisibilityKey(provider.slug, model)
     const sentinel = emptyProviderSentinelKey(provider.slug)
 

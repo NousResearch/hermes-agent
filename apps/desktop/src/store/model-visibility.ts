@@ -120,7 +120,8 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
  *  configured, otherwise the curated default for the given providers. */
 export function effectiveVisibleKeys(
   stored: Set<string> | null,
-  providers: readonly ModelOptionProvider[]
+  providers: readonly ModelOptionProvider[],
+  options?: { stripSentinels?: boolean }
 ): Set<string> {
   if (!stored) {
     return defaultVisibleKeys(providers)
@@ -150,10 +151,12 @@ export function effectiveVisibleKeys(
     }
   }
 
-  // Strip sentinel keys — they are bookkeeping, not real visibility entries.
-  for (const key of [...next]) {
-    if (isProviderSentinel(key)) {
-      next.delete(key)
+  if (options?.stripSentinels !== false) {
+    // Strip sentinel keys — they are bookkeeping, not real visibility entries.
+    for (const key of [...next]) {
+      if (isProviderSentinel(key)) {
+        next.delete(key)
+      }
     }
   }
 

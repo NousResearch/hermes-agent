@@ -762,7 +762,12 @@ export function ChatSidebar({
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
-  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
+  const showSessionSections =
+    showSessionSkeletons ||
+    sortedSessions.length > 0 ||
+    pinnedSessions.length > 0 ||
+    messagingSessions.length > 0 ||
+    cronJobs.length > 0
 
   // Each reorderable list reports its OWN new id order; persisting is a direct,
   // typed write — no id-prefix sniffing to figure out which level moved.

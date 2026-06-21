@@ -248,6 +248,7 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     # Signal has no real edit API for already-sent messages. Mark it explicitly
     # so streaming suppresses the visible cursor instead of leaving a stale tofu
     # square behind in chat clients when edit attempts fail.
@@ -1070,31 +1071,38 @@ class SignalAdapter(BasePlatformAdapter):
         await self._stop_typing_indicator(chat_id)
 
         plain_text, text_styles = self._markdown_to_signal(content)
+        chunks = self.truncate_message(plain_text, self.MAX_MESSAGE_LENGTH)
 
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": plain_text,
-        }
-
-        if text_styles:
-            if len(text_styles) == 1:
-                params["textStyle"] = text_styles[0]
-            else:
-                params["textStyles"] = text_styles
-
+        base_params: Dict[str, Any] = {"account": self.account}
         if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
+            base_params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            base_params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
-        result = await self._rpc("send", params)
+        logger.info("[Signal] Sending response (%d chars in %d chunk(s)) to %s", len(plain_text), len(chunks), chat_id)
+        last_result: Any = None
+        for chunk in chunks:
+            params: Dict[str, Any] = {**base_params, "message": chunk}
 
-        if result is not None:
+            # Native Signal body ranges are offsets into one message body. Once
+            # a response is split, fall back to plain text chunks rather than
+            # sending stale ranges that point into the original unsplit text.
+            if len(chunks) == 1 and text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
+
+            result = await self._rpc("send", params)
+            if result is None:
+                return SendResult(success=False, error="RPC send failed")
             success, err_msg = self._validate_send_result(result)
             if not success:
                 return SendResult(success=False, error=err_msg, raw_response=result)
-            self._track_sent_timestamp(result, chat_id, plain_text)
+            last_result = result
+            self._track_sent_timestamp(result, chat_id, chunk)
+
+        if last_result is not None:
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
             # future edits can remove an in-progress cursor from the chat thread.

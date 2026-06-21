@@ -1118,6 +1118,30 @@ class TestSignalSendReturnsMessageId:
     """Signal send() should not pretend sent messages are editable."""
 
     @pytest.mark.asyncio
+    async def test_send_chunks_long_text_before_calling_signal_cli(self, monkeypatch):
+        from gateway.platforms.signal import MAX_MESSAGE_LENGTH
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        long_content = ("A" * MAX_MESSAGE_LENGTH) + ("B" * 200)
+
+        result = await adapter.send(chat_id="group:test-group", content=long_content)
+
+        assert result.success is True
+        assert len(captured) >= 2
+        assert all(call["method"] == "send" for call in captured)
+        assert all(call["params"]["groupId"] == "test-group" for call in captured)
+        messages = [call["params"]["message"] for call in captured]
+        assert all(len(message) <= MAX_MESSAGE_LENGTH for message in messages)
+        assert "".join(messages).startswith("A" * 100)
+        assert "B" * 100 in "".join(messages)
+        assert all("textStyle" not in call["params"] for call in captured)
+        assert all("textStyles" not in call["params"] for call in captured)
+        assert adapter._is_recent_sent_text("group:test-group", messages[-1]) is True
+
+    @pytest.mark.asyncio
     async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})

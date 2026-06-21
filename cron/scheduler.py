@@ -57,6 +57,10 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    if "empty response" in lower:
+        cleaned = re.sub(r"\s+", " ", text).strip()
+        return f"⚠️ Cron job '{job_name}' failed: {cleaned}"
+
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
         reason = "rate limit"
@@ -2073,13 +2077,17 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         if verbose:
             logger.info("Output saved to: %s", output_file)
 
+        # Treat empty final_response as a soft failure before delivery
+        # so last_status is not "ok" and the user receives a failure
+        # notice instead of a silent blank run. (issue #8585)
+        if success and not final_response.strip():
+            success = False
+            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
         # Deliver the final response to the origin/target chat.
         # If the agent responded with [SILENT], skip delivery (but
         # output is already saved above).  Failed jobs always deliver.
         deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-        # Treat whitespace-only final responses the same as empty
-        # responses: do not deliver a blank message, and let the
-        # empty-response guard below mark the run as a soft failure.
         should_deliver = bool(deliver_content.strip())
         if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
@@ -2092,13 +2100,6 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             except Exception as de:
                 delivery_error = str(de)
                 logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-        # Treat empty final_response as a soft failure so last_status
-        # is not "ok" — the agent ran but produced nothing useful.
-        # (issue #8585)
-        if success and not final_response.strip():
-            success = False
-            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         return True

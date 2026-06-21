@@ -813,6 +813,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
+            # Telegram DM topic sends need direct_messages_topic_id in metadata
+            # so the live adapter can route to the correct topic thread without
+            # a reply anchor. cron jobs are synthetic sends with no user reply
+            # context, so this field is required for DM topic delivery.
+            if send_metadata and thread_id and platform_name == "telegram":
+                try:
+                    if int(chat_id) > 0:
+                        send_metadata["direct_messages_topic_id"] = thread_id
+                except (ValueError, TypeError):
+                    pass
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -1047,6 +1057,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             argv,
             capture_output=True,
             text=True,
+            encoding='utf-8',
             timeout=script_timeout,
             cwd=str(path.parent),
             env=_sanitize_subprocess_env(os.environ.copy()),

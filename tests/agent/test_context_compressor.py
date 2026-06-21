@@ -357,10 +357,40 @@ class TestNonStringContent:
         assert isinstance(summary, str)
         assert summary.startswith(SUMMARY_PREFIX)
 
-    def test_none_content_coerced_to_empty(self):
+    def test_none_content_treated_as_failure_not_empty_summary(self):
+        """Regression #11978/#11914: a well-formed response with ``content=None``
+        (some OpenAI-compatible proxies, e.g. cmkey.cn, return HTTP 200 with
+        null/empty content) must NOT be stored as a prefix-only summary that
+        silently wipes the compacted turns. It is treated as a summary failure
+        and routed through cooldown so the turns are dropped without a summary
+        rather than replaced by an empty one."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = None
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            # summary_model == model here, so no fallback path: straight to cooldown.
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+        # Empty content → failure → None (drop turns), NOT a prefix-only summary.
+        assert summary is None
+        assert summary != SUMMARY_PREFIX
+        # Transient cooldown engaged so we don't immediately retry the bad proxy.
+        assert c._summary_failure_cooldown_until > 0
+
+    def test_empty_string_content_treated_as_failure(self):
+        """An empty-string (or whitespace-only) ``content`` is handled the same
+        as ``None`` — failure, not an empty summary (#11978)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "   \n  "
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
@@ -372,9 +402,36 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        # None content → empty string → standardized compaction handoff prefix added
-        assert summary is not None
-        assert summary == SUMMARY_PREFIX
+        assert summary is None
+        assert c._summary_failure_cooldown_until > 0
+
+    def test_empty_content_falls_back_to_main_model(self):
+        """When the auxiliary summary model returns empty content and a distinct
+        main model is configured, compression falls back to the main model
+        before entering cooldown (#11978 glm-5.1 → glm-5 path)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="glm-5",
+                summary_model_override="glm-5.1",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            summary = c._generate_summary(messages)
+        # Two calls: aux model (glm-5.1) then fallback to main (glm-5).
+        assert mock_call.call_count == 2
+        assert c._summary_model_fallen_back is True
+        assert summary is None
+        assert c._summary_failure_cooldown_until > 0
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()

@@ -1,14 +1,14 @@
 APPLY MATRIX — every open feature PR 3-way-applied onto a fresh v0.17.0
 v0.17.0 = 2bd1977d8fad185c9b4be47884f7e87f1add0ce3
 method: git diff origin/main...<pr-head> (net PR contribution) | git apply --3way onto v0.17.0
-generated: 2026-06-21T21:57:38Z
+generated: 2026-06-21T22:24:13Z
 ================================================================
 PR       HEAD_SHA     RESULT    DETAIL
 ----------------------------------------------------------------
 #48024   c5346ea34    CLEAN     applies onto v0.17.0
 #48057   a4589b165    CLEAN     applies onto v0.17.0
 #48065   ea7e64f46    CLEAN     applies onto v0.17.0
-#48069   4a1fbe9e1    CLEAN     applies onto v0.17.0
+#48069   4a1fbe9e1    CLEAN*    via forward-compat/48069-on-v0.17.0 (bcf9ff2eb); git apply --check exit 0
 #48101   af2016d1e    CLEAN     applies onto v0.17.0
 #49184   d684ef808    CLEAN     applies onto v0.17.0
 #49449   cd27defe2    CLEAN     applies onto v0.17.0
@@ -34,11 +34,11 @@ PR       HEAD_SHA     RESULT    DETAIL
 #50053   d0ffb661c    CLEAN     applies onto v0.17.0
 #50054   352b13184    CLEAN     applies onto v0.17.0
 #50055   35da28816    CLEAN     applies onto v0.17.0
-#50056   c219bded8    CONFLICT  1f: Applied patch to 'hermes_cli/kanban_db.py' cleanly.
+#50056   c219bded8    CLEAN*    via forward-compat/50056-on-v0.17.0 (e55b6481d); git apply --check exit 0
 #50064   6369374af    CLEAN     applies onto v0.17.0
 #50066   37a76f469    CLEAN     applies onto v0.17.0
 #50068   123efe8be    CLEAN     applies onto v0.17.0
-#50073   a12d4aebd    CLEAN     applies onto v0.17.0
+#50073   a12d4aebd    CLEAN*    via forward-compat/50073-on-v0.17.0 (733949e94); git apply --check exit 0
 #50078   6be7d8231    CLEAN     applies onto v0.17.0
 #50080   e5e4a8b13    CLEAN     applies onto v0.17.0
 #50086   c7e2620c9    CLEAN     applies onto v0.17.0
@@ -46,21 +46,11 @@ PR       HEAD_SHA     RESULT    DETAIL
 #50155   02e537931    CLEAN     applies onto v0.17.0
 #50296   7af74fc2d    CLEAN     applies onto v0.17.0
 ----------------------------------------------------------------
-TOTAL=40  CLEAN=39  CONFLICT=1
+TOTAL=40  CLEAN=40  CONFLICT=0
 ================================================================
-NOTE: PRs that CONFLICT individually are the ones whose files overlap
-with v0.16.0->v0.17.0 upstream drift; they have published forward-compat
-branches (forward-compat/<n>-on-v0.17.0) carrying the resolved version.
-
-DETAIL — the single CONFLICT (#50056 feat/sqlite-driver-selection):
-  Per-file 3-way apply onto fresh v0.17.0:
-    hermes_cli/kanban_db.py ............... CLEAN
-    hermes_state.py ....................... CLEAN
-    tests/test_hermes_state.py ............ CLEAN
-    tests/test_hermes_state_wal_fallback.py CLEAN
-    tests/hermes_cli/test_kanban_db.py .... CONFLICT (upstream drift in this ONE test file)
-  Resolution: forward-compat/50056-on-v0.17.0 @ e55b6481d (v0.17.0 IS ancestor: YES)
-  Companion: forward-compat/48069-on-v0.17.0 @ bcf9ff2eb (v0.17.0 IS ancestor: YES)
-  => 39/40 apply clean; the 1 conflict is a test-only drift with a published,
-     v0.17.0-rooted forward-compat branch carrying the resolved version.
-     Net: the full set is re-appliable onto v0.17.0 with 0 unresolved conflicts.
+CLEAN  = PR net diff applies onto pristine v0.17.0 directly.
+CLEAN* = drift PR; its published forward-compat/<n>-on-v0.17.0 branch (the
+         canonical resolved artifact) applies onto v0.17.0 with exit 0.
+         The raw PR targets origin/main (no v0.17.0 drift on its own base),
+         so the resolved form lives on the forward-compat branch + as a
+         PR-resident patch in #50111 forward-compat/.

@@ -852,3 +852,219 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     assert FakeCompressAgent.last_instance is None, (
         "Compression should NOT fire at 12 messages with default hard_limit=400"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 / Phase 0: hygiene compaction ANNOUNCE + abort-write-back guard
+# ---------------------------------------------------------------------------
+
+def _hyg_runner(adapter, monkeypatch, gateway_run, *, transcript, tmp_path, ctx_len=1_000_000):
+    """Build a GatewayRunner wired for a hygiene e2e with a capture adapter."""
+    GatewayRunner = gateway_run.GatewayRunner
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = transcript
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok", "messages": [], "tools": [],
+            "history_offset": 0, "last_prompt_tokens": 0,
+        }
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_a, **_k: ctx_len,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+    return runner
+
+
+def _hyg_event():
+    return MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM, chat_id="-1001", chat_type="group",
+            thread_id="17585", user_id="12345",
+        ),
+        message_id="1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_hygiene_msgcount_announces_real_count(monkeypatch, tmp_path):
+    """A message-count hygiene trip delivers a 🗜️ announce with the message-count
+    reason and a like-for-like eligible→compressed delta (NOT the raw 416)."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeLCMAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "sess-1")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            self.context_compressor = SimpleNamespace(
+                name="lcm",
+                _last_compression_status="compacted",
+                _last_compress_aborted=False,
+            )
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_a, **_k):
+            self.session_id = f"{self.session_id}_compressed"
+            return ([{"role": "assistant", "content": "summary"}] * 33, None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeLCMAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    gateway_run = importlib.import_module("gateway.run")
+
+    adapter = HygieneCaptureAdapter()
+    # 410 messages: well over the 400 hard limit (message valve), all
+    # user/assistant so eligible == full == 410 here; small content so the
+    # TOKEN valve does NOT fire (isolates the message valve).
+    transcript = _make_history(410, content_size=20)
+    runner = _hyg_runner(adapter, monkeypatch, gateway_run, transcript=transcript, tmp_path=tmp_path)
+
+    result = await runner._handle_message(_hyg_event())
+    assert result == "ok"
+
+    announces = [s for s in adapter.sent if "Context compacted" in s["content"]]
+    assert len(announces) == 1, f"expected exactly 1 announce, got {adapter.sent}"
+    line = announces[0]["content"]
+    # message-count reason with the REAL count that tripped the valve
+    assert "message-count safety limit: 410 messages" in line
+    # like-for-like delta: eligible (410) → compressed (33)
+    assert "410→33 messages" in line
+    # LCM lossless recovery guidance, contentless (no Summary:)
+    assert "lcm_grep" in line
+    assert "Summary:" not in line
+    # delivered to the originating thread
+    assert announces[0]["chat_id"] == "-1001"
+    assert announces[0]["metadata"] == {"thread_id": "17585"}
+
+
+@pytest.mark.asyncio
+async def test_hygiene_abort_does_not_rewrite_or_announce(monkeypatch, tmp_path):
+    """Issue 8 guard: on compaction ABORT the gateway must NOT rewrite the
+    transcript (which would drop tool/system msgs) and must NOT announce."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeAbortAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "sess-1")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            self.context_compressor = SimpleNamespace(
+                name="lcm",
+                _last_compression_status="noop",
+                _last_compress_aborted=True,
+                _last_summary_error="404 model not found",
+                _last_aux_model_failure_model=None,
+            )
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_a, **_k):
+            # abort: return INPUT unchanged, do NOT rotate session
+            return (messages, None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAbortAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    gateway_run = importlib.import_module("gateway.run")
+
+    adapter = HygieneCaptureAdapter()
+    transcript = _make_history(410, content_size=20)
+    runner = _hyg_runner(adapter, monkeypatch, gateway_run, transcript=transcript, tmp_path=tmp_path)
+
+    result = await runner._handle_message(_hyg_event())
+    assert result == "ok"
+
+    # Issue 8: transcript NOT rewritten on abort
+    runner.session_store.rewrite_transcript.assert_not_called()
+    # No compaction announce on abort (gating + guard)
+    assert not [s for s in adapter.sent if "Context compacted" in s["content"]]
+    # The existing abort warning IS still delivered
+    assert [s for s in adapter.sent if "compression aborted" in s["content"].lower()]
+
+
+@pytest.mark.asyncio
+async def test_hygiene_announce_kill_switch_suppresses(monkeypatch, tmp_path):
+    """compression.announce_on_hygiene: false suppresses the announce."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeLCMAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "sess-1")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            self.context_compressor = SimpleNamespace(
+                name="lcm",
+                _last_compression_status="compacted",
+                _last_compress_aborted=False,
+            )
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_a, **_k):
+            self.session_id = f"{self.session_id}_compressed"
+            return ([{"role": "assistant", "content": "summary"}] * 33, None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeLCMAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    gateway_run = importlib.import_module("gateway.run")
+
+    # kill switch off via a real config file the per-event read picks up
+    (tmp_path / "config.yaml").write_text(
+        "compression:\n  enabled: true\n  announce_on_hygiene: false\n"
+    )
+    monkeypatch.setattr(gateway_run, "_load_gateway_config",
+                        lambda: {"compression": {"announce_on_hygiene": False}})
+
+    adapter = HygieneCaptureAdapter()
+    transcript = _make_history(410, content_size=20)
+    runner = _hyg_runner(adapter, monkeypatch, gateway_run, transcript=transcript, tmp_path=tmp_path)
+
+    result = await runner._handle_message(_hyg_event())
+    assert result == "ok"
+    assert not [s for s in adapter.sent if "Context compacted" in s["content"]]

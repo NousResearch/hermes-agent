@@ -8666,6 +8666,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             ]
 
                             if len(_hyg_msgs) >= 4:
+                                # Which valve tripped (for the announce reason).
+                                # Both can be true; the message-count valve is the
+                                # #2153 death-spiral backstop → it wins.
+                                if _msg_count >= _HARD_MSG_LIMIT:
+                                    _hyg_reason = "hygiene_messages"
+                                    _hyg_reason_value = _msg_count
+                                else:
+                                    _hyg_reason = "hygiene_tokens"
+                                    _hyg_reason_value = _compress_token_threshold
+                                _hyg_eligible_count = len(_hyg_msgs)
+                                _hyg_old_sid = session_entry.session_id
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
@@ -8687,42 +8698,79 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         ),
                                     )
 
-                                    # _compress_context ends the old session and creates
-                                    # a new session_id.  Write compressed messages into
-                                    # the NEW session so the old transcript stays intact
-                                    # and searchable via session_search.
-                                    _hyg_new_sid = _hyg_agent.session_id
-                                    if _hyg_new_sid != session_entry.session_id:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
-                                        self._sync_telegram_topic_binding(
-                                            source, session_entry,
-                                            reason="hygiene-compression",
+                                    # Issue 8 guard: on ABORT (aux summarizer
+                                    # failed; abort_on_summary_failure=false), the
+                                    # compressor returns the INPUT unchanged — and
+                                    # the input here is the user/assistant-only
+                                    # subset _hyg_msgs.  Writing that back as the
+                                    # full transcript would silently drop every
+                                    # tool/system message with zero compaction
+                                    # benefit.  So skip the rewrite entirely on
+                                    # abort and leave the live transcript intact.
+                                    _comp = getattr(_hyg_agent, "context_compressor", None)
+                                    _hyg_aborted = bool(
+                                        _comp is not None
+                                        and getattr(_comp, "_last_compress_aborted", False)
+                                    )
+
+                                    if not _hyg_aborted:
+                                        # _compress_context ends the old session and creates
+                                        # a new session_id.  Write compressed messages into
+                                        # the NEW session so the old transcript stays intact
+                                        # and searchable via session_search.
+                                        _hyg_new_sid = _hyg_agent.session_id
+                                        if _hyg_new_sid != session_entry.session_id:
+                                            session_entry.session_id = _hyg_new_sid
+                                            self.session_store._save()
+                                            self._sync_telegram_topic_binding(
+                                                source, session_entry,
+                                                reason="hygiene-compression",
+                                            )
+
+                                        self.session_store.rewrite_transcript(
+                                            session_entry.session_id, _compressed
+                                        )
+                                        # Reset stored token count — transcript was rewritten
+                                        session_entry.last_prompt_tokens = 0
+                                        history = _compressed
+                                        _new_count = len(_compressed)
+                                        _new_tokens = estimate_messages_tokens_rough(
+                                            _compressed
                                         )
 
-                                    self.session_store.rewrite_transcript(
-                                        session_entry.session_id, _compressed
-                                    )
-                                    # Reset stored token count — transcript was rewritten
-                                    session_entry.last_prompt_tokens = 0
-                                    history = _compressed
-                                    _new_count = len(_compressed)
-                                    _new_tokens = estimate_messages_tokens_rough(
-                                        _compressed
-                                    )
+                                        logger.info(
+                                            "Session hygiene: compressed %s → %s msgs, "
+                                            "~%s → ~%s tokens",
+                                            _msg_count, _new_count,
+                                            f"{_approx_tokens:,}", f"{_new_tokens:,}",
+                                        )
 
-                                    logger.info(
-                                        "Session hygiene: compressed %s → %s msgs, "
-                                        "~%s → ~%s tokens",
-                                        _msg_count, _new_count,
-                                        f"{_approx_tokens:,}", f"{_new_tokens:,}",
-                                    )
+                                        if _new_tokens >= _warn_token_threshold:
+                                            logger.warning(
+                                                "Session hygiene: still ~%s tokens after "
+                                                "compression",
+                                                f"{_new_tokens:,}",
+                                            )
 
-                                    if _new_tokens >= _warn_token_threshold:
-                                        logger.warning(
-                                            "Session hygiene: still ~%s tokens after "
-                                            "compression",
-                                            f"{_new_tokens:,}",
+                                        # In-chat compaction announce (engine-aware,
+                                        # formatted from REAL gateway facts — NOT the
+                                        # throwaway agent's filtered done-site view).
+                                        # Contentless (no summary snippet) on the
+                                        # channel rail for privacy.
+                                        await self._announce_hygiene_compaction(
+                                            agent=_hyg_agent,
+                                            source=source,
+                                            meta=_hyg_meta,
+                                            old_session_id=_hyg_old_sid,
+                                            new_session_id=session_entry.session_id,
+                                            eligible_count=_hyg_eligible_count,
+                                            new_count=_new_count,
+                                            pre_tokens=_approx_tokens,
+                                            post_tokens=_new_tokens,
+                                            model=_hyg_model,
+                                            runtime=_hyg_runtime,
+                                            trigger_reason=_hyg_reason,
+                                            trigger_value=_hyg_reason_value,
                                         )
 
                                     # If summary generation failed, the
@@ -8734,7 +8782,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # is "frozen" at the current size and can
                                     # /compress to retry or /reset to start
                                     # fresh.
-                                    _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
                                         _warn_msg = (
@@ -11364,6 +11411,102 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return cfg if isinstance(cfg, dict) else {}
         except Exception:
             return {}
+
+    async def _announce_hygiene_compaction(
+        self,
+        *,
+        agent,
+        source,
+        meta,
+        old_session_id: str,
+        new_session_id: str,
+        eligible_count: int,
+        new_count: int,
+        pre_tokens: int,
+        post_tokens: int,
+        model: "Optional[str]",
+        runtime: dict,
+        trigger_reason: str,
+        trigger_value: int,
+    ) -> None:
+        """Format + deliver the session-hygiene compaction announce from REAL
+        gateway facts (not the throwaway agent's filtered done-site view), on the
+        same _adapter.send rail used for the hygiene abort/aux warnings.
+
+        Gating is the shared _format_compaction_announce allow-list. Contentless
+        (no summary snippet) on the channel rail for privacy (D-7). The built-in
+        recovery pointer's session ids are stripped from the channel variant
+        (D-11) — only the LCM lossless-store guidance ships to chat.
+
+        Kill switch: compression.announce_on_hygiene (default true).
+        """
+        try:
+            # Kill switch (per-event mtime-cached config read; non-privileged).
+            try:
+                _cfg = _load_gateway_config()
+                _comp_cfg = _cfg.get("compression", {}) if isinstance(_cfg, dict) else {}
+                _enabled = _comp_cfg.get("announce_on_hygiene", True)
+                if str(_enabled).lower() in {"false", "0", "no", "off"}:
+                    return
+            except Exception:
+                pass  # config read failure → default-on
+
+            from agent.conversation_compression import _format_compaction_announce
+
+            _comp = getattr(agent, "context_compressor", None)
+            _engine_name = getattr(_comp, "name", None)
+            _status = getattr(_comp, "_last_compression_status", None)
+            _provider = runtime.get("provider") if isinstance(runtime, dict) else None
+
+            # Built-in variant: do NOT ship session ids to a chat channel (D-11).
+            # _format_compaction_announce renders the built-in recovery pointer
+            # only when old/new sids differ; pass equal sentinels so the built-in
+            # branch is gated out of the channel message. (Apollo runs LCM, whose
+            # recovery ref carries no sids, so this is a no-op there.)
+            if _engine_name == "lcm":
+                _old_sid_arg, _new_sid_arg = old_session_id, new_session_id
+            else:
+                _old_sid_arg = _new_sid_arg = new_session_id  # equal → no sid pointer
+
+            line = _format_compaction_announce(
+                engine_name=_engine_name,
+                status=_status,
+                old_session_id=_old_sid_arg,
+                new_session_id=_new_sid_arg,
+                old_messages=eligible_count,
+                new_messages=new_count,
+                pre_tokens=pre_tokens,
+                post_tokens=post_tokens,
+                model=model,
+                provider=_provider,
+                summary_snippet=None,  # contentless on the channel rail (D-7)
+                trigger_reason=trigger_reason,
+                trigger_value=trigger_value,
+            )
+            if not line:
+                return  # gating said skip (noop/idle/etc.) — nothing to deliver
+
+            _adapter = self.adapters.get(source.platform)
+            if not (_adapter and source.chat_id):
+                logger.warning(
+                    "COMPACTION_ANNOUNCE_DELIVERY_FAILED session=%s err=no-adapter-or-chat-id",
+                    new_session_id,
+                )
+                return
+            try:
+                await _adapter.send(source.chat_id, line, metadata=meta)
+                logger.info(
+                    "COMPACTION_ANNOUNCE_DELIVERED reason=%s session=%s",
+                    trigger_reason, new_session_id,
+                )
+            except Exception as _serr:
+                logger.warning(
+                    "COMPACTION_ANNOUNCE_DELIVERY_FAILED session=%s err=%s",
+                    new_session_id, _serr,
+                )
+        except Exception:
+            # Never let an announce failure break session hygiene.
+            logger.debug("hygiene compaction announce skipped (non-fatal)", exc_info=True)
 
     def _thread_metadata_for_source(
         self,

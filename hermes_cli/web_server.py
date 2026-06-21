@@ -155,7 +155,7 @@ def _resolve_restart_drain_timeout() -> float:
     try:
         from hermes_cli.gateway import _get_restart_drain_timeout
         return _get_restart_drain_timeout()
-    except ImportError:
+    except Exception:
         from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
         return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 

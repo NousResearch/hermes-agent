@@ -892,13 +892,16 @@ class CredentialPool:
                     except Exception as wexc:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
-                # Adopt fresher tokens from auth.json before spending the
-                # refresh_token — single-use tokens consumed by another Hermes
-                # process sharing the same auth.json singleton would otherwise
-                # trigger ``refresh_token_reused`` on the next POST.
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
+                if entry.source == "device_code":
+                    auth_mod.resolve_codex_runtime_credentials(
+                        force_refresh=force,
+                        refresh_if_expiring=True,
+                    )
+                    return self._sync_codex_entry_from_auth_store(entry)
+
+                # Independent manual OAuth entries are not singleton mirrors.
+                # They keep their own refresh-token chain until the targeted
+                # pool-entry CAS path lands.
                 refreshed = auth_mod.refresh_codex_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,

@@ -2641,6 +2641,51 @@ def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
     assert synced is entry
 
 
+def test_codex_device_code_refresh_delegates_to_singleton_resolver(tmp_path, monkeypatch):
+    """device_code mirrors must not spend refresh tokens outside auth.py's singleton transaction."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.source == "device_code"
+
+    resolver_calls = {"count": 0}
+    low_level_calls = {"count": 0}
+
+    def _resolver(*, force_refresh=False, refresh_if_expiring=True, refresh_skew_seconds=None):
+        resolver_calls["count"] += 1
+        assert force_refresh is True
+        assert refresh_if_expiring is True
+        _write_auth_store(tmp_path, _codex_auth_store("access-NEW", "refresh-NEW"))
+        return {
+            "provider": "openai-codex",
+            "api_key": "access-NEW",
+            "source": "hermes-auth-store",
+            "last_refresh": "2026-04-28T00:00:00Z",
+            "auth_mode": "chatgpt",
+        }
+
+    def _low_level_refresh(*_args, **_kwargs):
+        low_level_calls["count"] += 1
+        raise RuntimeError("credential_pool called low-level Codex refresh")
+
+    monkeypatch.setattr(auth_mod, "resolve_codex_runtime_credentials", _resolver)
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _low_level_refresh)
+
+    refreshed = pool.try_refresh_current()
+
+    assert resolver_calls["count"] == 1
+    assert low_level_calls["count"] == 0
+    assert refreshed is not None
+    assert refreshed.access_token == "access-NEW"
+    assert refreshed.refresh_token == "refresh-NEW"
+
+
 def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):
     """An exhausted Codex entry should recover when auth.json has newer tokens.
 

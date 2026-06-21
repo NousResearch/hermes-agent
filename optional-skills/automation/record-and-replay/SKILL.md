@@ -1,7 +1,7 @@
 ---
 name: record-and-replay
 description: "Record any workflow by performing it once — the agent watches your screen, captures your clicks and keystrokes globally across all apps, and generates a replayable skill."
-version: 3.0.0
+version: 4.0.0
 author: Eric Woodard (Snail3D)
 license: MIT
 platforms: [macos, linux, windows]
@@ -31,6 +31,8 @@ Windows (pynput/Win32).
 - The user wants to automate a repetitive GUI task
 - The user wants to create a reusable skill from a manual process
 - The user says "replay" or "run the <name> skill"
+- The user says "learn how to do X" or "figure out the best way to do X" → self-learning mode
+- The user wants the agent to practice a task and save the most efficient approach
 
 ## Files
 
@@ -40,6 +42,7 @@ Windows (pynput/Win32).
 | `scripts/analyze_recording.py` | Analysis script — step detection, pattern/retry detection, HTML viewer generation |
 | `scripts/generate_skill.py` | Vision-based skill generation from analysis JSON |
 | `scripts/replay_skill.py` | Replay engine — executes generated skills step by step |
+| `scripts/self_learn.py` | Self-learning engine — agent records its own attempts, compares efficiency, saves the best |
 | `scripts/view_recording.html.template` | HTML viewer template (reference for the generated viewer) |
 | `scripts/test_record_replay.sh` | Integration test — full pipeline validation |
 
@@ -299,6 +302,132 @@ The engine generates a JSON report with:
 
 ## Advanced Usage
 
+### Self-Learning Mode — Agent Records Itself
+
+Instead of a human recording a workflow, the **agent itself** performs the task
+via `computer_use` while the recording script runs in the background. The agent
+attempts the task multiple times, each time trying to be more efficient (fewer
+clicks, fewer retries, faster navigation). After all attempts, the
+self-learning engine compares them and saves the best one as a skill.
+
+This is useful when:
+- The user wants the agent to learn a complex app (e.g., Bambu Slicer, DaVinci
+  Resolve) by trial and error
+- The user wants the most efficient possible replay skill
+- The user says "learn how to do X" or "figure out the best way to do X"
+
+#### Self-Learning Workflow
+
+```
+Attempt 1: Agent explores the UI (slow, retries, wrong clicks)
+Attempt 2: Agent applies lessons (faster, fewer mistakes)
+Attempt 3: Agent optimizes (shortcuts, combined steps, minimal captures)
+    ↓
+Compare: self_learn.py ranks all attempts by efficiency score
+Generate: Best attempt → SKILL.md
+Verify: Replay the skill to confirm it works
+```
+
+#### Step-by-step: How the Agent Self-Learns
+
+The agent drives this loop using its tools. Here's what it does:
+
+**1. Initialize the session:**
+```bash
+python3 scripts/self_learn.py --init bambu-slice \
+  --description "Open Bambu Slicer, import 3MF, choose filament, slice, save G-code"
+```
+
+**2. For each attempt (1 through N, typically 3):**
+
+a) Start recording in the background:
+```bash
+python3 scripts/record_workflow.py --interval 1.0 \
+  --output-dir ~/.hermes/recordings/bambu-slice-attempt-N
+```
+
+b) Perform the task using `computer_use`:
+```
+computer_use(action="capture", mode="som", app="Bambu Studio")
+computer_use(action="click", element=5)  # File menu
+computer_use(action="click", element=12) # Import
+computer_use(action="type", text="/path/to/model.3mf")
+computer_use(action="key", keys="return")
+# ... continue until task complete
+```
+
+c) Stop the recording:
+```bash
+touch ~/.hermes/recordings/bambu-slice-attempt-N/.stop
+```
+
+d) Analyze this attempt:
+```bash
+python3 scripts/self_learn.py --analyze ~/.hermes/recordings/self-learn/bambu-slice \
+  --attempt N --recording ~/.hermes/recordings/bambu-slice-attempt-N
+```
+
+e) Review the metrics. Before the next attempt, think about:
+   - Which clicks were retries? Can you find the right element faster?
+   - Are there keyboard shortcuts that skip menu navigation?
+   - Can you combine "click field" + "type text" into fewer captures?
+   - Can you skip unnecessary verification captures?
+
+**3. After all attempts, compare:**
+```bash
+python3 scripts/self_learn.py --compare ~/.hermes/recordings/self-learn/bambu-slice
+```
+
+**4. View the report:**
+```bash
+python3 scripts/self_learn.py --report ~/.hermes/recordings/self-learn/bambu-slice
+```
+
+The report shows a table of all attempts with metrics (duration, actions,
+retries, steps, score) and explains why the best attempt won.
+
+**5. Generate skill from the best attempt:**
+```bash
+python3 scripts/self_learn.py --generate ~/.hermes/recordings/self-learn/bambu-slice
+```
+
+**6. Install and verify:**
+```bash
+cp -r ~/.hermes/recordings/self-learn/bambu-slice/best-skill/ \
+  ~/.hermes/skills/automation/bambu-slice/
+python3 scripts/replay_skill.py \
+  --skill ~/.hermes/skills/automation/bambu-slice/SKILL.md --dry-run
+```
+
+#### Efficiency Metrics
+
+The self-learning engine ranks attempts using a weighted score (lower = better):
+
+| Metric | Weight | What it measures |
+|--------|--------|------------------|
+| Action count | 30% | Total interactions (clicks + keys + scrolls) |
+| Retry count | 30% | Detected mis-clicks (nearby clicks within 500ms) |
+| Duration | 20% | Wall time from first to last event |
+| Step count | 20% | Logical steps detected by the analyzer |
+
+Raw values are normalized to a 0-10 scale using soft caps (120s duration,
+50 actions, 10 retries, 20 steps = score 10 each). The final score is the
+weighted sum.
+
+#### How Many Attempts?
+
+- **2-3 attempts** for simple tasks (open app, do one thing, close)
+- **3-5 attempts** for complex tasks (multi-step workflows with menus, dialogs)
+- Stop early if the last 2 attempts have the same score (no more improvement)
+
+#### What Gets Captured During Self-Learning
+
+The recording script captures screenshots, AX trees, and any OS-level events.
+When the agent uses `computer_use` (cua-driver), the posted events flow through
+the OS event system and are captured by CGEventTap. Even if some programmatic
+events aren't captured, the screenshots + AX trees provide full context for the
+analysis — the analyzer reconstructs what happened from visual state changes.
+
 ### Flags for analyze_recording.py
 
 | Flag | Description |
@@ -324,6 +453,20 @@ The engine generates a JSON report with:
 | `--step-delay SECS` | Seconds between steps (default: 1.0) |
 | `--max-retries N` | Max retries per step (default: 2) |
 | `--output-dir DIR` | Output directory for replay report |
+
+### Flags for self_learn.py
+
+| Flag | Description |
+|------|-------------|
+| `--init TASK_NAME` | Initialize a new self-learning session |
+| `--description TEXT` | Task description (used with `--init`) |
+| `--analyze SESSION_DIR` | Analyze an attempt (requires `--attempt` and `--recording`) |
+| `--attempt N` | Attempt number (used with `--analyze`) |
+| `--recording DIR` | Path to the recording directory (used with `--analyze`) |
+| `--compare SESSION_DIR` | Compare all attempts and pick the best |
+| `--generate SESSION_DIR` | Generate skill from the best attempt |
+| `--report SESSION_DIR` | Print the comparison report |
+| `--dry-run` | Preview skill generation without saving (used with `--generate`) |
 
 ### Testing the Full Pipeline
 

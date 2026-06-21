@@ -325,7 +325,15 @@ def _apply_replacements(content: str, matches: List[Tuple[int, int]],
     sorted_matches = sorted(matches, key=lambda x: x[0], reverse=True)
 
     result = content
+    # Defense-in-depth against overlapping ranges from any strategy: applying
+    # two ranges that share characters would clobber each other and corrupt
+    # the output. Walking from the end, skip any match whose end reaches into
+    # a range we have already replaced.
+    prev_start: Optional[int] = None
     for start, end in sorted_matches:
+        if prev_start is not None and end > prev_start:
+            continue
+        prev_start = start
         if old_string is not None:
             file_region = content[start:end]
             adjusted = _reindent_replacement(file_region, old_string, new_string)
@@ -341,7 +349,19 @@ def _apply_replacements(content: str, matches: List[Tuple[int, int]],
 # =============================================================================
 
 def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
-    """Strategy 1: Exact string match."""
+    """Strategy 1: Exact string match.
+
+    Matches are non-overlapping: after each hit we advance past the whole
+    match rather than a single character. Advancing by one allowed a
+    self-overlapping pattern (e.g. ``--`` in ``------``) to report
+    overlapping ranges, which inflated the match count and corrupted the
+    file when those ranges were spliced together during replacement.
+    """
+    # An empty pattern would make ``find`` return the same position forever;
+    # guard against it so the loop always makes progress.
+    if not pattern:
+        return []
+
     matches = []
     start = 0
     while True:
@@ -349,7 +369,7 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        start = pos + len(pattern)
     return matches
 
 

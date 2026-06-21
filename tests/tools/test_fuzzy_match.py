@@ -167,6 +167,33 @@ class TestReplaceAll:
         assert new == "ccc bbb ccc"
 
 
+class TestSelfOverlappingPattern:
+    """A self-overlapping old_string (e.g. ``--`` inside ``------``) must be
+    matched non-overlappingly. Counting overlapping occurrences used to inflate
+    the match count and corrupt the rewritten content."""
+
+    def test_separator_run_replace_all(self):
+        # Six dashes contain three non-overlapping "--", not five overlapping.
+        new, count, _, err = fuzzy_find_and_replace("------", "--", "-", replace_all=True)
+        assert err is None
+        assert count == 3
+        assert new == "---"
+
+    def test_repeated_char_run_replace_all(self):
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "X", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "XX"
+
+    def test_overlap_not_reported_as_ambiguous(self):
+        # "aaa" holds a single non-overlapping "aa", so the unique-match path
+        # should succeed instead of erroring with a false "Found 2 matches".
+        new, count, _, err = fuzzy_find_and_replace("aaa", "aa", "X", replace_all=False)
+        assert err is None
+        assert count == 1
+        assert new == "Xa"
+
+
 class TestUnicodeNormalized:
     """Tests for the unicode_normalized strategy (Bug 5)."""
 

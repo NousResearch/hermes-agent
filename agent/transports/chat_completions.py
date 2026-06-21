@@ -437,7 +437,7 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body["extra_body"] = openai_compat_extra
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
-        elif provider_name == "google-gemini-cli":
+        elif provider_name in {"google-gemini-cli", "google-antigravity"}:
             thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if thinking_config:
                 extra_body["thinking_config"] = thinking_config

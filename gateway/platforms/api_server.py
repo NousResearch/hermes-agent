@@ -749,6 +749,16 @@ class APIServerAdapter(BasePlatformAdapter):
     and routes them through hermes-agent's AIAgent.
     """
 
+    # Stateless request/response: every route (the OpenAI-spec
+    # /v1/chat/completions and /v1/responses, and the proprietary /v1/runs SSE
+    # stream) tears down its channel when the turn ends. There is no persistent
+    # outbound channel to push a background completion to a client that already
+    # received its response, and ``send()`` is a no-op stub. So async-delivery
+    # tools (terminal notify_on_complete / watch_patterns, delegate_task
+    # background=True) must NOT promise delivery on this path — see
+    # ``async_delivery_supported()``.
+    supports_async_delivery: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
@@ -3689,6 +3699,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 chat_id=session_id or "",
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
+                async_delivery=False,
             )
             try:
                 agent = self._create_agent(
@@ -3959,6 +3970,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_tokens = set_session_vars(
                             platform="api_server",
                             session_key=approval_session_key,
+                            async_delivery=False,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(

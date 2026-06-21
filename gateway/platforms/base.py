@@ -1925,6 +1925,22 @@ class BasePlatformAdapter(ABC):
     # preview (see gateway/run.py progress_callback).
     supports_code_blocks: bool = False
 
+    # Whether this adapter can deliver an ASYNC notification back to the agent
+    # AFTER a turn ends — i.e. wake a fresh turn to surface a background
+    # process completion (terminal notify_on_complete / watch_patterns) or a
+    # detached subagent result (delegate_task background=True).
+    #
+    # True for adapters that hold a persistent outbound channel (Telegram,
+    # Discord, Slack, ... — they have a real ``send()`` and the gateway runs
+    # the watcher/drain loops). False for stateless request/response adapters
+    # (the API server): every route closes its channel when the turn ends, so
+    # there is nowhere to push a later completion. The gateway propagates this
+    # into the ``HERMES_SESSION_ASYNC_DELIVERY`` contextvar at session-bind
+    # time; tools read it via ``async_delivery_supported()`` and refuse to make
+    # a delivery promise they can't keep. A new stateless adapter only needs to
+    # set this to False to stay correct-by-default.
+    supports_async_delivery: bool = True
+
     # The command prefix users can always TYPE on this platform to reach
     # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
     # as plain message text).  Platforms where typing a leading "/" is

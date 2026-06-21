@@ -621,3 +621,79 @@ def get_container_mirror_warning(
         f"(Defense-in-depth — not a security boundary; the terminal tool "
         f"can still bypass.)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Skill-write bypass guard — deflect write_file/patch on skill dirs to skill_manage
+# ---------------------------------------------------------------------------
+
+
+def get_skill_write_bypass_warning(path: str) -> Optional[str]:
+    """Return a model-facing warning when path lands under a skills directory
+    that should be managed via skill_manage instead of raw write_file/
+    patch.
+
+    Detects:
+      * The active profile's skills dir (~/.hermes/skills/)
+      * Any named profile's skills dir (~/.hermes/profiles/<name>/skills/)
+
+    Returns None when the path is outside all known skills directories.
+    The caller (file_tools) surfaces this as a tool-result error. The
+    agent can bypass by passing force_skill_write=True after explicit
+    user direction, or — far better — switch to skill_manage.
+
+    This is defense-in-depth: the terminal tool runs as the same OS user and
+    can write any of these paths directly. The guard stops accidental bypass
+    of skill_manage's approval gate, security scan, frontmatter validation,
+    curator telemetry, and skill-cache invalidation.
+    """
+    root = _hermes_root_path()
+    try:
+        target = Path(os.path.expanduser(str(path))).resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    # Collect all known skills directories: the default + every named profile.
+    candidates: list[Path] = [root / "skills"]
+    profiles_dir = root / "profiles"
+    if profiles_dir.is_dir():
+        try:
+            for entry in profiles_dir.iterdir():
+                if entry.is_dir():
+                    candidates.append(entry / "skills")
+        except OSError:
+            pass
+
+    for skills_dir in candidates:
+        if not skills_dir.is_dir():
+            continue
+        try:
+            target.relative_to(skills_dir)
+        except ValueError:
+            continue
+
+        try:
+            sd_resolved = skills_dir.resolve()
+            rel = target.relative_to(sd_resolved)
+        except (OSError, ValueError):
+            rel = target.name
+
+        rel_str = rel.as_posix() if isinstance(rel, Path) else str(rel)
+        return (
+            f"Skill-write bypass blocked by soft guard: {rel_str!r} is under "
+            f"{skills_dir}, which is managed by skill_manage. Writing to skill "
+            f"files via write_file or patch bypasses skill_manage's protections "
+            f"(approval gate, security scan, frontmatter validation, curator "
+            f"telemetry, and skill-cache invalidation).\n"
+            "\n"
+            f"Use skill_manage(action='patch', name='<skill>', ...) or "
+            f"skill_manage(action='write_file', name='<skill>', "
+            f"file_path='...', file_content='...') instead.\n"
+            "\n"
+            f"To bypass this guard after explicit user direction, retry with "
+            f"force_skill_write=True. "
+            f"(Defense-in-depth — not a security boundary; the terminal tool "
+            f"can still bypass.)"
+        )
+
+    return None

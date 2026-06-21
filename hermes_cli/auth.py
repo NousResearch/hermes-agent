@@ -1071,6 +1071,8 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         or isinstance(raw.get("credential_pool"), dict)
     ):
         raw.setdefault("providers", {})
+        if isinstance(raw.get("providers"), dict):
+            _migrate_stale_nous_portal_url(raw["providers"])
         return raw
 
     # Migrate from PR's "systems" format if present
@@ -1681,6 +1683,35 @@ def _optional_base_url(value: Any) -> Optional[str]:
     return cleaned if cleaned else None
 
 
+_NOUS_STALE_PORTAL_HOSTS: FrozenSet[str] = frozenset({
+    "api.nousresearch.com",
+})
+
+# Allowlist of valid Nous Portal hosts. A portal_base_url outside this
+# set is treated as a misconfiguration and falls back to the default.
+# "localhost" / "127.0.0.1" are valid for local development and testing.
+_NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
+    "portal.nousresearch.com",
+    "localhost",
+    "127.0.0.1",
+})
+
+
+def _migrate_stale_nous_portal_url(providers: Dict[str, Any]) -> None:
+    nous = providers.get("nous")
+    if not isinstance(nous, dict):
+        return
+    stored = (nous.get("portal_base_url") or "").strip()
+    if stored:
+        parsed = urlparse(stored)
+        if parsed.hostname in _NOUS_STALE_PORTAL_HOSTS:
+            logger.warning(
+                "auth: migrating stale nous portal_base_url %s -> %s",
+                stored, DEFAULT_NOUS_PORTAL_URL,
+            )
+            nous["portal_base_url"] = DEFAULT_NOUS_PORTAL_URL
+
+# Allowlist of hosts the Nous Portal proxy is willing to forward inference
 # Allowlist of hosts the Nous Portal proxy is willing to forward inference
 # JWTs to. Sending a bearer anywhere else would leak it.
 #
@@ -5292,6 +5323,15 @@ def resolve_nous_access_token(
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
+
+        parsed_portal_url = urlparse(portal_base_url)
+        if parsed_portal_url.hostname and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
+            logger.warning(
+                "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
+                portal_base_url, parsed_portal_url.hostname,
+            )
+            portal_base_url = DEFAULT_NOUS_PORTAL_URL
+
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
 

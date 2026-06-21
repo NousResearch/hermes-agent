@@ -33,6 +33,15 @@ gateway:
   no_active_goal:   "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
   config_save_failed: "⚠️ Could not save config: {error}"
+  drain:
+    queued_next_turn:  "⏳ Gateway {action} — queued for the next turn after it comes back."
+    busy_another_turn: "⏳ Gateway is {action} and is not accepting another turn right now."
+    busy_new_work:     "⏳ Gateway is {action} and is not accepting new work right now."
+  status_action:
+    restarting:        "restarting"
+    shutting_down:     "shutting down"
+  unknown_command:  "Unknown command `/{command}`. Type /commands to see what's available, or resend without the leading slash to send as a regular message."
+  first_message_note: "[System note: This is the user's very first message ever. Briefly introduce yourself and mention that /help shows available commands. Keep the introduction concise -- one or two sentences max.]"
 
   # /model command output -- shown after a model switch or when listing models.
   # Provider names, model IDs, capability strings, and cost figures are NOT
@@ -181,6 +190,8 @@ gateway:
     home:                  "📂 **Home:** `{home}`"
 
   reasoning:
+    header:                    "💭 **Reasoning:**"
+    more_lines:                "_... ({count} more lines)_"
     level_default:             "medium (default)"
     level_disabled:            "none (disabled)"
     scope_session:             "session override"

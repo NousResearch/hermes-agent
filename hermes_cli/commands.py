@@ -441,6 +441,20 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
+def _localized_description(cmd: CommandDef) -> str:
+    """Resolve a command description via the locale catalogs.
+
+    Looks up ``gateway.commands.desc.<name>``; commands without a catalog
+    entry (or with English active) fall back to the registry's English
+    ``description``, so the catalogs never need to mirror the full registry.
+    """
+    from agent.i18n import t  # local import: keep module import light for CLI startup
+
+    key = f"gateway.commands.desc.{cmd.name}"
+    localized = t(key)
+    return cmd.description if localized == key else localized
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -456,7 +470,7 @@ def gateway_help_lines() -> list[str]:
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        lines.append(f"`/{cmd.name}{args}` -- {_localized_description(cmd)}{alias_note}")
     return lines
 
 

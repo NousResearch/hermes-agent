@@ -5,13 +5,16 @@
 // incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
 // ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
 // rebuild. Empty string means "served at root".
-function readBasePath(): string {
-  if (typeof window === "undefined") return "";
-  const raw = window.__HERMES_BASE_PATH__ ?? "";
+function normalizeBasePath(raw: string | null | undefined): string {
   if (!raw) return "";
   // Normalise: ensure leading slash, strip trailing slash.
   const withLead = raw.startsWith("/") ? raw : `/${raw}`;
   return withLead.replace(/\/+$/, "");
+}
+
+function readBasePath(): string {
+  if (typeof window === "undefined") return "";
+  return normalizeBasePath(window.__HERMES_BASE_PATH__ ?? "");
 }
 
 export const HERMES_BASE_PATH = readBasePath();
@@ -186,6 +189,17 @@ export async function fetchJSON<T>(
     throw new Error(`${res.status}: ${text}`);
   }
   return res.json();
+}
+
+export function buildManagedFileDownloadUrl(
+  path: string,
+  options: { basePath?: string; token?: string | null } = {},
+): string {
+  const params = new URLSearchParams({ path });
+  if (options.token) {
+    params.set("token", options.token);
+  }
+  return `${normalizeBasePath(options.basePath ?? HERMES_BASE_PATH)}/api/files/download?${params.toString()}`;
 }
 
 /** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
@@ -419,6 +433,10 @@ export const api = {
     fetchJSON<ManagedFileReadResponse>(
       `/api/files/read?path=${encodeURIComponent(path)}`,
     ),
+  fileDownloadUrl: (path: string) =>
+    buildManagedFileDownloadUrl(path, {
+      token: typeof window === "undefined" ? null : window.__HERMES_SESSION_TOKEN__ ?? null,
+    }),
   uploadFile: (path: string, file: File, overwrite = true) => {
     // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
     // the browser adds the multipart boundary automatically. Sending the file

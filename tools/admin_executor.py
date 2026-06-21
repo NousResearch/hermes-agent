@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -57,6 +58,21 @@ def can_elevate() -> bool:
         return False
 
 
+# ShellExecuteW error codes for quick lookup in error messages.
+_SHELL_EXECUTE_ERRORS: dict[int, str] = {
+    2: "File not found",
+    5: "Access denied",
+    8: "Out of memory",
+    26: "Sharing violation",
+    27: "File name association incomplete",
+    28: "DDE timeout",
+    29: "DDE transaction failed",
+    30: "DDE busy",
+    31: "No association for file type",
+    1223: "User cancelled the UAC prompt",
+}
+
+
 def execute_elevated(
     command: str,
     cwd: str | None = None,
@@ -96,6 +112,20 @@ def execute_elevated(
         }
 
     tmp_dir = tempfile.mkdtemp(prefix="hermes_elevated_")
+    try:
+        return _execute_elevated_impl(command, cwd, timeout, tmp_dir)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _execute_elevated_impl(
+    command: str,
+    cwd: str | None,
+    timeout: int,
+    tmp_dir: str,
+) -> dict:
+    """Internal implementation — runs inside a try/finally that cleans tmp_dir."""
+
     output_file = os.path.join(tmp_dir, "output.txt")
     rc_file = os.path.join(tmp_dir, "rc.txt")
     done_file = os.path.join(tmp_dir, "done.txt")
@@ -103,10 +133,10 @@ def execute_elevated(
     effective_cwd = cwd or os.getcwd()
     script_content = (
         f"@echo off\r\n"
-        f"cd /d \"{effective_cwd}\"\r\n"
-        f"{command} > \"{output_file}\" 2>&1\r\n"
-        f"echo %ERRORLEVEL% > \"{rc_file}\"\r\n"
-        f"echo done > \"{done_file}\"\r\n"
+        f'cd /d "{effective_cwd}"\r\n'
+        f'{command} > "{output_file}" 2>&1\r\n'
+        f'echo %ERRORLEVEL% > "{rc_file}"\r\n'
+        f'echo done > "{done_file}"\r\n'
     )
 
     script_path = os.path.join(tmp_dir, "elevated.cmd")
@@ -136,20 +166,14 @@ def execute_elevated(
             "error": f"ShellExecuteW failed: {exc}",
         }
 
-    if result <= 32:
-        error_map = {
-            2: "File not found",
-            5: "Access denied",
-            8: "Out of memory",
-            26: "Sharing violation",
-            27: "File name association incomplete",
-            28: "DDE timeout",
-            29: "DDE transaction failed",
-            30: "DDE busy",
-            31: "No association for file type",
-            1223: "User cancelled the UAC prompt",
-        }
-        error_msg = error_map.get(result, f"Unknown error (code {result})")
+    # ShellExecuteW returns >32 on success.  ERROR_CANCELLED (1223) is >32
+    # but must be treated as a failure — the user clicked "No" on the UAC
+    # prompt.  Check the error map explicitly so 1223 never falls through
+    # to the polling loop.
+    if result <= 32 or result in _SHELL_EXECUTE_ERRORS:
+        error_msg = _SHELL_EXECUTE_ERRORS.get(
+            result, f"Unknown error (code {result})"
+        )
         return {
             "output": "",
             "exit_code": -1,
@@ -181,5 +205,8 @@ def execute_elevated(
     return {
         "output": "",
         "exit_code": -1,
-        "error": f"Elevated command timed out after {timeout}s. UAC may have been dismissed or the command is still running.",
+        "error": (
+            f"Elevated command timed out after {timeout}s. "
+            "The command may still be running."
+        ),
     }

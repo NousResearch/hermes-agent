@@ -203,6 +203,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
     CommandDef("evolve", "Trigger a Growth Pulse for self-evolution and code optimization", "Tools & Skills",
+               cli_only=True,
                aliases=("growth-pulse",), args_hint="[task_dir] [generations]"),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
@@ -1141,7 +1142,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
-            _add(alias, f"Alias for /{cmd.name} - {cmd.description}", cmd.args_hint or "")
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
     # Third pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():

@@ -188,11 +188,25 @@ def _get_effective_configurable_toolsets():
 
 
 def _get_plugin_toolset_keys() -> set:
-    """Return the set of toolset keys provided by plugins."""
+    """Return the set of toolset keys provided by plugins.
+
+    Excludes keys that collide with built-in ``CONFIGURABLE_TOOLSETS``
+    entries. A plugin may register its tools into an existing built-in
+    toolset (e.g. ``plugins/irodori_tts`` extends ``tts``, bundled
+    ``plugins/spotify`` shares ``spotify``) so its tools ride along with
+    that toolset's toggle — but the built-in's enable/disable semantics
+    must govern. Without the exclusion, ``_get_platform_tools`` treats
+    the shared key as an unknown plugin toolset and default-enables it,
+    resurrecting a configurable toolset the user explicitly deselected
+    (breaks the explicit empty-selection contract). Mirrors the dedupe
+    in ``_get_effective_configurable_toolsets`` where the built-in entry
+    wins.
+    """
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
-        return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+        builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+        return {ts_key for ts_key, _, _ in get_plugin_toolsets()} - builtin_keys
     except Exception:
         return set()
 

@@ -1486,3 +1486,34 @@ def test_apply_provider_selection_does_not_prompt_or_post_setup(monkeypatch):
     config = {}
     tools_config.apply_provider_selection("tts", "Microsoft Edge TTS", config)
     assert config["tts"]["provider"] == "edge"
+
+
+def test_checklist_toolset_keys_excludes_kanban():
+    for plat in ("cli", "telegram", "discord"):
+        keys = _checklist_toolset_keys(plat)
+        assert "kanban" not in keys
+        assert "web" in keys
+
+
+def test_kanban_not_reported_as_removed_in_diff():
+    config = {"platform_toolsets": {"telegram": ["kanban", "web", "terminal"]}}
+    current = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+    assert "kanban" in current
+
+    universe = _checklist_toolset_keys("telegram")
+    new_enabled = {t for t in current if t != "kanban"}
+
+    assert (current - new_enabled) == {"kanban"}
+    assert ((current - new_enabled) & universe) == set()
+
+
+def test_real_configurable_changes_still_reported_in_diff():
+    config = {"platform_toolsets": {"cli": ["kanban", "web", "terminal", "skills"]}}
+    current = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    universe = _checklist_toolset_keys("cli")
+
+    new_enabled = {t for t in current if t not in ("kanban", "terminal")}
+    assert ((current - new_enabled) & universe) == {"terminal"}
+
+    new_enabled2 = (current - {"kanban"}) | {"vision"}
+    assert ((new_enabled2 - current) & universe) == {"vision"}

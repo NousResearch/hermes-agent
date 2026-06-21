@@ -488,10 +488,14 @@ class TrajectoryCompressor:
         """
         n = len(trajectory)
         protected = set()
-        
+        # Head turns are the first occurrence of each role; the compressible
+        # region begins right after the last of them. Tracked separately from
+        # the tail so the boundary is decided by role-of-origin, not position.
+        head_protected = set()
+
         # Track first occurrences
         first_system = first_human = first_gpt = first_tool = None
-        
+
         for i, turn in enumerate(trajectory):
             role = turn.get("from", "")
             if role == "system" and first_system is None:
@@ -502,28 +506,34 @@ class TrajectoryCompressor:
                 first_gpt = i
             elif role == "tool" and first_tool is None:
                 first_tool = i
-        
+
         # Protect first turns
         if self.config.protect_first_system and first_system is not None:
-            protected.add(first_system)
+            head_protected.add(first_system)
         if self.config.protect_first_human and first_human is not None:
-            protected.add(first_human)
+            head_protected.add(first_human)
         if self.config.protect_first_gpt and first_gpt is not None:
-            protected.add(first_gpt)
+            head_protected.add(first_gpt)
         if self.config.protect_first_tool and first_tool is not None:
-            protected.add(first_tool)
-        
-        # Protect last N turns
-        for i in range(max(0, n - self.config.protect_last_n_turns), n):
+            head_protected.add(first_tool)
+        protected.update(head_protected)
+
+        # Protect last N turns (the tail group)
+        tail_start = max(0, n - self.config.protect_last_n_turns) if self.config.protect_last_n_turns > 0 else n
+        for i in range(tail_start, n):
             protected.add(i)
-        
-        # Determine compressible region
-        # Start after the last protected head turn
-        head_protected = [i for i in protected if i < n // 2]
-        tail_protected = [i for i in protected if i >= n // 2]
-        
+
+        # Determine compressible region: everything strictly between the last
+        # protected head turn and the start of the protected tail. We must NOT
+        # split protected indices by their position relative to the trajectory
+        # midpoint (n // 2): when the first tool call lands in the second half
+        # of the trajectory, a positional split misclassifies that head turn as
+        # a tail turn, which makes the compressor squeeze the pre-tool
+        # conversation and leave the tool-interaction middle untouched —
+        # contrary to the documented "compress MIDDLE turns only, starting from
+        # 2nd tool response" strategy.
         compressible_start = max(head_protected) + 1 if head_protected else 0
-        compressible_end = min(tail_protected) if tail_protected else n
+        compressible_end = tail_start
 
         return protected, compressible_start, compressible_end
 

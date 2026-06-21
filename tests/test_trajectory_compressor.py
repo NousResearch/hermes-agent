@@ -402,6 +402,59 @@ class TestFindProtectedIndices:
         protected, _, _ = tc._find_protected_indices(trajectory)
         assert 0 not in protected  # system not protected
 
+    def test_late_first_tool_compresses_tool_middle_not_pre_tool_chatter(self):
+        """The compressible region must follow role-of-origin, not n // 2.
+
+        When the first tool call lands in the second half of the trajectory,
+        the old positional split classified that head turn as a "tail" turn,
+        so the compressible region became [3, first_tool) — squeezing the
+        pre-tool conversation and leaving the tool-interaction middle intact,
+        and starting *before* the first tool response. The region must instead
+        begin right after the first tool turn and end at the protected tail.
+        """
+        tc = _make_compressor()  # protect_last_n_turns defaults to 4
+        # 24 turns; the first "tool" turn is at index 13 (second half).
+        trajectory = [
+            {"from": "system", "value": "sys"},
+            {"from": "human", "value": "q"},
+        ]
+        for i in range(2, 13):  # indices 2..12: no tool turns yet
+            trajectory.append({"from": "gpt" if i % 2 == 0 else "human", "value": "x"})
+        trajectory.append({"from": "tool", "value": "first tool result"})  # index 13
+        for i in range(14, 24):  # indices 14..23: the tool-interaction middle + tail
+            trajectory.append({"from": "gpt" if i % 2 == 0 else "tool", "value": "y"})
+
+        protected, start, end = tc._find_protected_indices(trajectory)
+
+        first_tool = 13
+        tail_start = len(trajectory) - 4  # 20
+        # Region starts right after the first tool turn (not before it).
+        assert start == first_tool + 1 == 14
+        # Region ends where the protected last-4 turns begin.
+        assert end == tail_start == 20
+        # No protected turn is ever inside the compressible region.
+        assert not any(start <= idx < end for idx in protected)
+        # The first tool turn itself is protected as a head turn.
+        assert first_tool in protected
+
+    def test_compressible_region_excludes_all_protected_turns(self):
+        """Invariant: protected turns are never inside the compressible region."""
+        tc = _make_compressor()
+        trajectory = [
+            {"from": "system", "value": "sys"},
+            {"from": "human", "value": "q"},
+            {"from": "gpt", "value": "a"},
+            {"from": "tool", "value": "r"},
+            {"from": "gpt", "value": "b"},
+            {"from": "tool", "value": "r2"},
+            {"from": "gpt", "value": "c"},
+            {"from": "tool", "value": "r3"},
+            {"from": "gpt", "value": "d"},
+            {"from": "human", "value": "thanks"},
+        ]
+        protected, start, end = tc._find_protected_indices(trajectory)
+        assert not any(start <= idx < end for idx in protected)
+
 
 # ---------------------------------------------------------------------------
 # TrajectoryCompressor._extract_turn_content_for_summary

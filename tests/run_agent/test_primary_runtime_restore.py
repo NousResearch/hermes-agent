@@ -10,7 +10,11 @@ Verifies that:
 """
 
 import time
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import MagicMock, patch, PropertyMock
+
+import pytest
 
 
 from run_agent import AIAgent
@@ -210,6 +214,60 @@ class TestRestorePrimaryRuntime:
             result = agent._restore_primary_runtime()
 
         assert result is False
+
+
+# =============================================================================
+# smart_model_routing turn restore
+# =============================================================================
+
+class TestSmartModelRouting:
+    def test_turn_scoped_route_restores_primary_and_can_reroute(self):
+        agent = cast(Any, _make_agent(provider="openai-codex", base_url="https://api.openai.com/v1"))
+        agent.model = "gpt-5.4"
+        agent._primary_runtime["model"] = "gpt-5.4"
+        original_model = agent.model
+        original_provider = agent.provider
+        original_base_url = agent.base_url
+
+        agent._smart_model_routing = {
+            "enabled": True,
+            "cheap_model": "gpt-5.3-codex-spark",
+            "cheap_provider": original_provider,
+            "cheap_base_url": original_base_url,
+            "short_prompt_threshold": 180,
+            "long_prompt_threshold": 500,
+        }
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            # Turn 1: a simple summary prompt should route to the cheap model.
+            assert agent._maybe_route_turn_model("이 문장을 한 줄로 요약해줘") is True
+            assert agent.model == "gpt-5.3-codex-spark"
+            assert agent._smart_model_route_activated is True
+            assert agent._smart_model_route_reason == "simple_keywords"
+
+            # Turn 2 start: the prior cheap route must be undone before routing again.
+            assert agent._restore_turn_model_route() is True
+            assert agent._restore_primary_runtime() is False
+            assert agent.model == original_model
+            assert agent.provider == original_provider
+            assert agent.base_url == original_base_url
+            assert agent._smart_model_route_snapshot is None
+            assert agent._smart_model_route_activated is False
+            assert agent._smart_model_route_reason is None
+
+            # A complex coding/debugging prompt must stay on the primary model.
+            assert agent._maybe_route_turn_model("파이썬 traceback 에러를 디버깅해줘") is False
+            assert agent.model == original_model
+            assert agent.provider == original_provider
+            assert agent.base_url == original_base_url
+
+            # Turn 3: after a primary-only turn, a new simple prompt can route cheap again.
+            assert agent._restore_turn_model_route() is False
+            assert agent._restore_primary_runtime() is False
+            assert agent._maybe_route_turn_model("한 줄로 다듬어줘") is True
+            assert agent.model == "gpt-5.3-codex-spark"
+            assert agent._smart_model_route_activated is True
+            assert agent._smart_model_route_reason == "simple_keywords"
 
 
 # =============================================================================

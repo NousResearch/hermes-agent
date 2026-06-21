@@ -76,8 +76,14 @@ class _FakeAgent:
     def _ensure_db_session(self):
         pass
 
+    def _restore_turn_model_route(self):
+        return False
+
     def _restore_primary_runtime(self):
-        pass
+        return False
+
+    def _maybe_route_turn_model(self, _user_message):
+        return False
 
     def _cleanup_dead_connections(self):
         return False

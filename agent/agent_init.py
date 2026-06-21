@@ -19,6 +19,7 @@ preserved.
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -47,7 +48,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolGuardrailDecision,
 )
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, load_config
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
@@ -443,6 +444,10 @@ def init_agent(
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
+    agent._smart_model_routing = copy.deepcopy(cfg_get(load_config(), "smart_model_routing", default={}) or {})
+    agent._smart_model_route_snapshot = None
+    agent._smart_model_route_activated = False
+    agent._smart_model_route_reason = None
 
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does

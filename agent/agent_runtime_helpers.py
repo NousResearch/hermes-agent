@@ -973,6 +973,63 @@ def drop_thinking_only_and_merge_users(
 
 
 
+def _restore_runtime_snapshot(agent, rt: dict, *, reason: str) -> bool:
+    """Restore a previously captured runtime snapshot onto the live agent."""
+    try:
+        # ── Core runtime state ──
+        agent.model = rt["model"]
+        agent.provider = rt["provider"]
+        agent.base_url = rt["base_url"]           # setter updates _base_url_lower
+        agent.api_mode = rt["api_mode"]
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
+        agent.api_key = rt["api_key"]
+        agent._client_kwargs = dict(rt["client_kwargs"])
+        agent._use_prompt_caching = rt["use_prompt_caching"]
+        # Default to native layout when the restored snapshot predates the
+        # native-vs-proxy split (older sessions saved before this PR).
+        agent._use_native_cache_layout = rt.get(
+            "use_native_cache_layout",
+            agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
+        )
+
+        # ── Rebuild client for the restored provider ──
+        if agent.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client
+            agent._anthropic_api_key = rt.get("anthropic_api_key", rt["api_key"])
+            agent._anthropic_base_url = rt.get("anthropic_base_url", rt["base_url"])
+            agent._anthropic_client = build_anthropic_client(
+                agent._anthropic_api_key,
+                agent._anthropic_base_url,
+                timeout=get_provider_request_timeout(agent.provider, agent.model) or 1800.0,
+            )
+            agent._is_anthropic_oauth = rt.get("is_anthropic_oauth", False)
+            agent.client = None
+        else:
+            agent.client = agent._create_openai_client(
+                dict(rt["client_kwargs"]),
+                reason=reason,
+                shared=True,
+            )
+
+        # ── Restore context engine state ──
+        cc = agent.context_compressor
+        cc.update_model(
+            model=rt["compressor_model"],
+            context_length=rt["compressor_context_length"],
+            base_url=rt["compressor_base_url"],
+            api_key=rt["compressor_api_key"],
+            provider=rt["compressor_provider"],
+            api_mode=rt.get("compressor_api_mode", ""),
+        )
+        if rt.get("compressor_threshold_tokens"):
+            cc.threshold_tokens = rt["compressor_threshold_tokens"]
+        return True
+    except Exception as e:
+        logger.warning("Failed to restore runtime snapshot: %s", e)
+        return False
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
@@ -998,71 +1055,142 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
 
-    rt = agent._primary_runtime
-    try:
-        # ── Core runtime state ──
-        agent.model = rt["model"]
-        agent.provider = rt["provider"]
-        agent.base_url = rt["base_url"]           # setter updates _base_url_lower
-        agent.api_mode = rt["api_mode"]
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
-        agent.api_key = rt["api_key"]
-        agent._client_kwargs = dict(rt["client_kwargs"])
-        agent._use_prompt_caching = rt["use_prompt_caching"]
-        # Default to native layout when the restored snapshot predates the
-        # native-vs-proxy split (older sessions saved before this PR).
-        agent._use_native_cache_layout = rt.get(
-            "use_native_cache_layout",
-            agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
-        )
-
-        # ── Rebuild client for the primary provider ──
-        if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
-            agent._anthropic_api_key = rt["anthropic_api_key"]
-            agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
-            agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
-            agent.client = None
-        else:
-            agent.client = agent._create_openai_client(
-                dict(rt["client_kwargs"]),
-                reason="restore_primary",
-                shared=True,
-            )
-
-        # ── Restore context engine state ──
-        cc = agent.context_compressor
-        cc.update_model(
-            model=rt["compressor_model"],
-            context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"],
-            api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"],
-            api_mode=rt.get("compressor_api_mode", ""),
-        )
-
-        # ── Reset fallback chain for the new turn ──
+    restored = _restore_runtime_snapshot(agent, agent._primary_runtime, reason="restore_primary")
+    if restored:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
         # Undo the fallback's identity rewrite so the prompt is
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
-        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+        rewrite_prompt_model_identity(
+            agent,
+            agent._primary_runtime["model"],
+            agent._primary_runtime["provider"],
+        )
 
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
-        return True
-    except Exception as e:
-        logger.warning("Failed to restore primary runtime: %s", e)
+    return restored
+
+
+def restore_turn_model_route(agent) -> bool:
+    """Undo the previous turn's smart-route so the next turn starts on primary."""
+    if not getattr(agent, "_smart_model_route_activated", False):
         return False
+
+    rt = getattr(agent, "_smart_model_route_snapshot", None)
+    restored = _restore_runtime_snapshot(agent, rt, reason="restore_turn_route") if rt else False
+    agent._smart_model_route_snapshot = None
+    agent._smart_model_route_activated = False
+    agent._smart_model_route_reason = None
+    return restored
+
+
+_SMART_COMPLEX_PATTERNS = (
+    r"\b(debug|bug|fix|refactor|implement|architecture|migration|deploy|deployment|ci/cd|test|tests|failing|error|traceback|stack trace|performance|optimi[sz]e)\b",
+    r"\b(api|database|schema|sql|python|javascript|typescript|react|vite|node|supabase|vercel|docker|git)\b",
+    r"(코드|코딩|디버깅|버그|에러|오류|리팩터링|구현|배포|설정|마이그레이션|성능|테스트|서버|DB|데이터베이스|스키마|깃|도커|수정해|고쳐줘)",
+)
+
+_SMART_SIMPLE_PATTERNS = (
+    r"(요약|정리|번역|맞춤법|짧게|한줄|한 줄|아이디어|브레인스토밍|제목|카피)",
+    r"\b(summary|summarize|translate|rewrite|brainstorm|idea|headline|title|copy)\b",
+)
+
+
+def _smart_route_decision(agent, user_message: str) -> tuple[str, str]:
+    cfg = getattr(agent, "_smart_model_routing", {}) or {}
+    text = (user_message or "").strip()
+    short_threshold = int(cfg.get("short_prompt_threshold") or 180)
+    long_threshold = int(cfg.get("long_prompt_threshold") or 500)
+
+    if not text:
+        return "primary", "empty_prompt"
+
+    text_lower = text.lower()
+    length = len(text)
+    complex_hit = any(re.search(p, text_lower, re.I) for p in _SMART_COMPLEX_PATTERNS)
+    simple_hit = any(re.search(p, text_lower, re.I) for p in _SMART_SIMPLE_PATTERNS)
+
+    if "```" in text or ("\n" in text and length >= short_threshold):
+        return "primary", "multiline_prompt"
+    if length >= long_threshold:
+        return "primary", f"long_prompt:{length}"
+    if complex_hit:
+        return "primary", "complex_keywords"
+    if simple_hit and length <= max(short_threshold + 120, 300):
+        return "cheap", "simple_keywords"
+    if length <= short_threshold:
+        return "cheap", f"short_prompt:{length}"
+    return "primary", f"mid_prompt:{length}"
+
+
+def maybe_route_turn_model(agent, user_message: str) -> bool:
+    """Route obviously simple turns to the configured cheap model."""
+    cfg = getattr(agent, "_smart_model_routing", {}) or {}
+    if not cfg.get("enabled"):
+        return False
+
+    cheap_model = str(cfg.get("cheap_model") or "").strip()
+    if not cheap_model:
+        return False
+
+    primary = getattr(agent, "_primary_runtime", None) or {}
+    if not primary.get("model"):
+        return False
+
+    decision, reason = _smart_route_decision(agent, user_message)
+    if decision != "cheap":
+        return False
+
+    cheap_provider = str(cfg.get("cheap_provider") or primary.get("provider") or agent.provider or "").strip().lower()
+    cheap_base_url = str(cfg.get("cheap_base_url") or primary.get("base_url") or agent.base_url or "").strip()
+    cheap_api_mode = str(cfg.get("cheap_api_mode") or "").strip()
+    current_provider = (agent.provider or "").strip().lower()
+    current_base_url = str(agent.base_url or "").strip()
+
+    if (
+        cheap_model == (agent.model or "")
+        and cheap_provider == current_provider
+        and cheap_base_url == current_base_url
+    ):
+        return False
+
+    primary_snapshot = copy.deepcopy(primary)
+    fallback_chain_snapshot = copy.deepcopy(getattr(agent, "_fallback_chain", []) or [])
+    fallback_model_snapshot = copy.deepcopy(getattr(agent, "_fallback_model", None))
+    fallback_index_snapshot = getattr(agent, "_fallback_index", 0)
+    fallback_activated_snapshot = getattr(agent, "_fallback_activated", False)
+
+    switch_model(
+        agent,
+        cheap_model,
+        cheap_provider,
+        api_key=primary_snapshot.get("api_key", getattr(agent, "api_key", "")),
+        base_url=cheap_base_url,
+        api_mode=cheap_api_mode,
+    )
+    agent._primary_runtime = primary_snapshot
+    agent._fallback_chain = fallback_chain_snapshot
+    agent._fallback_model = fallback_model_snapshot
+    agent._fallback_index = fallback_index_snapshot
+    agent._fallback_activated = fallback_activated_snapshot
+    agent._smart_model_route_snapshot = primary_snapshot
+    agent._smart_model_route_activated = True
+    agent._smart_model_route_reason = reason
+
+    logger.info(
+        "Turn smart-routing activated: %s (%s) -> %s (%s) reason=%s",
+        primary_snapshot.get("model"),
+        primary_snapshot.get("provider"),
+        cheap_model,
+        cheap_provider,
+        reason,
+    )
+    return True
 
 # Which error types indicate a transient transport failure worth
 # one more attempt with a rebuilt client / connection pool.

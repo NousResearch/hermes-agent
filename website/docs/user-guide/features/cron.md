@@ -300,7 +300,7 @@ cron:
 
 ### Silent suppression
 
-If the agent's final response starts with `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
+If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
 
 This is useful for monitoring jobs that should only report when something is wrong:
 
@@ -309,7 +309,7 @@ Check if nginx is running. If everything is healthy, respond with only [SILENT].
 Otherwise, report the issue.
 ```
 
-Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced.
+Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
 
 ## Script timeout
 

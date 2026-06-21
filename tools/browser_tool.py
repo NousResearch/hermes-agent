@@ -67,7 +67,7 @@ from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 from utils import env_int, is_truthy_value
-from hermes_cli.config import cfg_get
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
 try:
     from tools.website_policy import check_website_access
@@ -619,7 +619,7 @@ def _is_local_mode() -> bool:
 
 
 def _is_local_backend() -> bool:
-    """Return True when the browser runs locally (no cloud provider).
+    """Return True when the browser runs locally AND the terminal is also local.
 
     SSRF protection is only meaningful for cloud backends (Browserbase,
     BrowserUse) where the agent could reach internal resources on a remote
@@ -627,8 +627,20 @@ def _is_local_backend() -> bool:
     Chromium without a cloud provider — the user already has full terminal
     and network access on the same machine, so the check adds no security
     value.
+
+    However, when the terminal runs in a container (docker, modal, daytona,
+    ssh, singularity), the browser on the host can access internal networks
+    that the terminal cannot.  In this case, SSRF protection should be
+    enabled even though the browser is technically "local".
     """
-    return _is_camofox_mode() or _get_cloud_provider() is None
+    if _is_camofox_mode():
+        return True
+    if _get_cloud_provider() is not None:
+        return False
+    # When terminal runs in a container, browser on host can access
+    # internal networks the terminal can't → treat as non-local.
+    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    return terminal_backend in ("local", "")
 
 
 _auto_local_for_private_urls_resolved = False
@@ -1177,10 +1189,28 @@ _cleanup_done = False
 # Inactivity Timeout Configuration
 # =============================================================================
 
-# Session inactivity timeout (seconds) - cleanup if no activity for this long
-# Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
-# especially when subagents are doing multi-step browser tasks.
-BROWSER_SESSION_INACTIVITY_TIMEOUT = env_int("BROWSER_INACTIVITY_TIMEOUT", 300)
+# Session inactivity timeout (seconds) - cleanup if no activity for this long.
+# config.yaml is authoritative; BROWSER_INACTIVITY_TIMEOUT remains a legacy
+# fallback so old deployments keep working if they have not migrated yet.
+DEFAULT_SESSION_INACTIVITY_TIMEOUT = int(
+    DEFAULT_CONFIG.get("browser", {}).get("inactivity_timeout", 120)
+)
+
+
+def _get_session_inactivity_timeout() -> int:
+    result = env_int("BROWSER_INACTIVITY_TIMEOUT", DEFAULT_SESSION_INACTIVITY_TIMEOUT)
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "inactivity_timeout")
+        if val is not None:
+            result = max(int(val), 30)  # Floor at 30s to avoid instant reaping
+    except Exception as e:
+        logger.debug("Could not read inactivity_timeout from config: %s", e)
+    return result
+
+
+BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}

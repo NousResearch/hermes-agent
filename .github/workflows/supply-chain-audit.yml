@@ -1,11 +1,11 @@
 name: Supply Chain Audit
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   # No paths filter — the jobs must always run so required checks
   # report a status (path-gated workflows leave checks "pending" forever
   # when no matching files change, which blocks merge).
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   pull-requests: write
@@ -29,8 +29,10 @@ jobs:
       scan: ${{ steps.filter.outputs.scan }}
       # True when pyproject.toml changed in this PR
       deps: ${{ steps.filter.outputs.deps }}
+      # True when the curated MCP catalog / bundled MCP manifests changed.
+      mcp_catalog: ${{ steps.filter.outputs.mcp_catalog }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
       - name: Check for relevant file changes
@@ -54,6 +56,14 @@ jobs:
           else
             echo "deps=false" >> "$GITHUB_OUTPUT"
           fi
+          MCP_CATALOG_FILES=$(git diff --name-only "$BASE"..."$HEAD" -- \
+            'optional-mcps/**' \
+            'hermes_cli/mcp_catalog.py' || true)
+          if [ -n "$MCP_CATALOG_FILES" ]; then
+            echo "mcp_catalog=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mcp_catalog=false" >> "$GITHUB_OUTPUT"
+          fi
 
   scan:
     name: Scan PR for critical supply chain risks
@@ -62,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -135,9 +145,19 @@ jobs:
           # auto-loaded by the interpreter via site.py. Any nested file with the
           # same name (e.g. hermes_cli/setup.py — the CLI setup wizard) is unrelated
           # and produced false positives that trained reviewers to ignore the scanner.
+          #
+          # Unlike hidden-code patterns above (.pth, base64+exec/eval,
+          # subprocess+obfuscation), reviewed install-hook changes can be expected
+          # maintenance. Require an explicit maintainer label for this one class
+          # only; do not let the label bypass the other critical patterns.
           SETUP_HITS=$(git diff --name-only "$BASE"..."$HEAD" | grep -E '^(setup\.py|setup\.cfg|sitecustomize\.py|usercustomize\.py|__init__\.pth)$' || true)
           if [ -n "$SETUP_HITS" ]; then
-            FINDINGS="${FINDINGS}
+            LABELS=$(gh pr view "${{ github.event.pull_request.number }}" --json labels --jq '.labels[].name' || true)
+            if echo "$LABELS" | grep -Fxq 'install-hook-reviewed'; then
+              echo "Reviewed install-hook change allowed by install-hook-reviewed label:"
+              echo "$SETUP_HITS"
+            else
+              FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: Install-hook file added or modified
           These files can execute code during package installation or interpreter startup.
 
@@ -145,7 +165,11 @@ jobs:
           \`\`\`
           ${SETUP_HITS}
           \`\`\`
+
+          If a maintainer has reviewed and approved these install-hook changes,
+          add the \`install-hook-reviewed\` label and rerun this check.
           "
+            fi
           fi
 
           if [ -n "$FINDINGS" ]; then
@@ -197,7 +221,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -268,3 +292,50 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "No pyproject.toml changes, skipping dependency bounds check."
+
+  mcp-catalog-review:
+    name: MCP catalog security review
+    needs: changes
+    if: needs.changes.outputs.mcp_catalog == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Require explicit MCP catalog review label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
+          if echo "$LABELS" | grep -Fxq 'mcp-catalog-reviewed'; then
+            echo "MCP catalog review label present."
+            exit 0
+          fi
+
+          BODY="## ⚠️ MCP catalog security review required
+
+          This PR changes the bundled MCP catalog or MCP catalog installer code. MCP entries can define local commands that users later install into \`mcp_servers\`, so this needs explicit maintainer review before merge.
+
+          A maintainer should verify:
+          - any new/changed \`optional-mcps/**/manifest.yaml\` command and args are expected,
+          - stdio transports do not use shell+egress/exfiltration payloads,
+          - git install refs are pinned and bootstrap commands are minimal,
+          - requested env vars/secrets match the upstream MCP's documented needs.
+
+          After review, add the \`mcp-catalog-reviewed\` label and re-run this check."
+
+          gh pr comment "$PR" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
+          echo "::error::MCP catalog changes require the mcp-catalog-reviewed label."
+          exit 1
+
+  mcp-catalog-review-gate:
+    name: MCP catalog security review
+    needs: changes
+    if: always() && needs.changes.outputs.mcp_catalog != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No MCP catalog changes, skipping MCP catalog security review."

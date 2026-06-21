@@ -121,6 +121,16 @@ DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 # effect of normal API traffic.
 DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 
+# Grace added to a claim when a reclaim is deferred because the previous
+# host-local worker is still alive after a termination attempt. Releasing the
+# claim in that state would spawn a duplicate alongside the surviving worker —
+# the runaway seen when a cgroup memory.high throttle parks a worker in
+# uninterruptible (D) state, where a pending SIGKILL cannot be delivered until
+# the throttle lifts. Holding the claim a short grace and retrying next tick
+# stops the duplication; once no duplicate is spawned the pressure eases, the
+# signal lands, and the following tick reclaims cleanly.
+RECLAIM_DEFER_GRACE_SECONDS = 120
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -3286,6 +3296,14 @@ def release_stale_claims(
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
+        # Never release a claim while our own worker is still alive: that would
+        # spawn a duplicate beside it. Hold the claim and retry next tick.
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, row["id"], row["claim_lock"], now, termination,
+                reason="ttl_expired_worker_alive",
+            )
+            continue
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -4684,6 +4702,225 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def _git_toplevel(path: Path) -> Optional[Path]:
+    """Return the git toplevel containing ``path``, or ``None`` if not in a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    out = (result.stdout or "").strip()
+    if not out:
+        return None
+    try:
+        return Path(out).expanduser().resolve()
+    except Exception:
+        return Path(out).expanduser()
+
+
+def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "show-ref", "--verify", f"refs/heads/{branch_name}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _git_common_dir(path: Path) -> Optional[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    out = (result.stdout or "").strip()
+    if not out:
+        return None
+    return Path(out).expanduser().resolve(strict=False)
+
+
+def _git_dir(path: Path) -> Optional[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    out = (result.stdout or "").strip()
+    if not out:
+        return None
+    return Path(out).expanduser().resolve(strict=False)
+
+
+def _git_current_branch(path: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    branch = (result.stdout or "").strip()
+    return branch or None
+
+
+def _is_linked_worktree_checkout(path: Path) -> bool:
+    git_dir = _git_dir(path)
+    common_dir = _git_common_dir(path)
+    if git_dir is None or common_dir is None:
+        return False
+    return git_dir != common_dir
+
+
+def _nearest_existing_path(path: Path) -> Path:
+    current = path
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current
+
+
+def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
+    current = _nearest_existing_path(path).resolve(strict=False)
+    while True:
+        repo_root = _git_toplevel(current)
+        if repo_root is not None:
+            return repo_root
+        if current == current.parent:
+            return None
+        current = current.parent
+
+
+def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    target = target.expanduser()
+    repo_common = _git_common_dir(repo_root)
+    if target.exists() and repo_common is not None:
+        target_common = _git_common_dir(target)
+        if target_common == repo_common:
+            return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _git_branch_exists(repo_root, branch_name):
+        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+    else:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
+            str(target), "HEAD",
+        ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+        )
+
+
+def _resolve_worktree_workspace(
+    task: Task, *, board: Optional[str] = None
+) -> tuple[Path, str]:
+    """Resolve + materialize a linked git worktree for ``task``.
+
+    When ``task.workspace_path`` is unset, the anchor is the board's
+    ``default_workdir`` (a persistent project checkout). This keeps every
+    worktree task under a meaningful, board-owned repo — ``<repo>/.worktrees/
+    <task-id>`` — instead of silently landing under the dispatcher's current
+    working directory (which is whatever directory the gateway happened to be
+    launched from, e.g. the Hermes checkout). If no anchor is configured
+    anywhere, we fail loudly rather than guess.
+    """
+    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    if not task.workspace_path:
+        # Anchor on the board's configured default_workdir, not Path.cwd().
+        # The dispatcher's CWD is incidental (gateway launch dir) and using it
+        # scatters worktrees under whatever repo the gateway started in.
+        board_slug = board if board else get_current_board()
+        board_default = (read_board_metadata(board_slug).get("default_workdir") or "").strip()
+        if not board_default:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but no workspace_path, "
+                f"and board {board_slug!r} has no default_workdir set. Set a board "
+                "default workdir (a git repo) or create the task with "
+                "--workspace worktree:<absolute-repo-path>."
+            )
+        anchor = Path(board_default).expanduser()
+        if not anchor.is_absolute():
+            raise ValueError(
+                f"board {board_slug!r} default_workdir {board_default!r} is not "
+                "absolute; use an absolute path to a git repo"
+            )
+        repo_root = _git_toplevel(anchor)
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but board "
+                f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
+            )
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name)
+        return target, branch_name
+
+    requested = Path(task.workspace_path).expanduser()
+    if not requested.is_absolute():
+        raise ValueError(
+            f"task {task.id} has non-absolute worktree path "
+            f"{task.workspace_path!r}; use an absolute path"
+        )
+    requested_resolved = requested.resolve(strict=False)
+
+    if requested.exists() and _is_linked_worktree_checkout(requested):
+        actual_branch = _git_current_branch(requested)
+        return requested_resolved, actual_branch or branch_name
+
+    repo_root = _git_toplevel(requested)
+    if repo_root is not None and requested_resolved == repo_root:
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name)
+        return target, branch_name
+
+    repo_root = _repo_root_for_worktree_target(requested.parent)
+    if repo_root is None:
+        raise ValueError(
+            f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
+            "and does not point at a git repo root"
+        )
+    _ensure_git_worktree(repo_root, requested, branch_name)
+    return requested, branch_name
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -4697,9 +4934,15 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
       resolves against the dispatcher's CWD instead of a meaningful
       root.  Users who want a kanban-root-relative workspace should
       compute the absolute path themselves.
-    - ``worktree``: a git worktree at ``workspace_path``.  Not created
-      automatically in v1 -- the kanban-worker skill documents
-      ``git worktree add`` as a worker-side step.  Returns the intended path.
+    - ``worktree``: a real linked git worktree. If ``workspace_path`` names
+      a repo root, Hermes treats it as an anchor and materializes a linked
+      worktree at ``<repo>/.worktrees/<task-id>``. If ``workspace_path`` names
+      a concrete target path, Hermes creates/reuses that linked worktree. With
+      no ``workspace_path``, Hermes anchors on the board's ``default_workdir``
+      and materializes ``<repo>/.worktrees/<task-id>`` per task; if no
+      ``default_workdir`` is configured it raises rather than guessing from the
+      dispatcher's CWD. When ``branch_name`` is empty, Hermes uses
+      ``wt/<task-id>``.
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
@@ -4735,15 +4978,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
-        p = Path(task.workspace_path).expanduser()
-        if not p.is_absolute():
-            raise ValueError(
-                f"task {task.id} has non-absolute worktree path "
-                f"{task.workspace_path!r}; use an absolute path"
-            )
+        p, _branch_name = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -4755,6 +4990,16 @@ def set_workspace_path(
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
+        )
+
+
+def set_branch_name(
+    conn: sqlite3.Connection, task_id: str, branch_name: str
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET branch_name = ? WHERE id = ?",
+            (str(branch_name), task_id),
         )
 
 
@@ -5113,7 +5358,13 @@ def _terminate_reclaimed_worker(
     info["termination_attempted"] = True
     try:
         kill(int(pid), signal.SIGTERM)
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError:
+        # Process is already gone — that's a successful termination, not a
+        # survival. Leaving terminated=False here would make the reclaim guard
+        # misread a dead worker as still-alive and defer forever.
+        info["terminated"] = True
+        return info
+    except OSError:
         return info
 
     for _ in range(10):
@@ -5134,6 +5385,63 @@ def _terminate_reclaimed_worker(
 
     info["terminated"] = not _pid_alive(pid)
     return info
+
+
+def _worker_survived_termination(termination: dict) -> bool:
+    """True when we tried to kill our own host-local worker and it is still alive.
+
+    Reclaiming in this state would release the claim and let the dispatcher
+    spawn a second worker while the first is still running — the duplication
+    loop. Only host-local workers we actually signalled count: a non-local
+    claim lock or a no-op attempt (no ``os.kill`` available) must fall through
+    to the normal release path, since we cannot manage that worker anyway.
+    """
+    return bool(
+        termination.get("termination_attempted")
+        and termination.get("host_local")
+        and not termination.get("terminated")
+    )
+
+
+def _defer_reclaim_for_live_worker(
+    conn: sqlite3.Connection,
+    task_id: str,
+    claim_lock: Optional[str],
+    now: int,
+    termination: dict,
+    *,
+    reason: str,
+) -> None:
+    """Hold a claim whose worker survived termination instead of releasing it.
+
+    Extends ``claim_expires`` by ``RECLAIM_DEFER_GRACE_SECONDS`` so the task
+    stays ``running`` (no duplicate spawn) and records a ``reclaim_deferred``
+    event so the hold is visible in ``hermes kanban tail``. The next dispatch
+    tick retries the kill; this is self-correcting because not spawning a
+    duplicate is what lets the throttled worker finally die.
+    """
+    grace = now + RECLAIM_DEFER_GRACE_SECONDS
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET claim_expires = ? "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+            (grace, task_id, claim_lock),
+        )
+        if cur.rowcount != 1:
+            return
+        run_id = _current_run_id(conn, task_id)
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                (grace, run_id),
+            )
+        payload = {
+            "reason": reason,
+            "claim_lock": claim_lock,
+            "claim_expires_now": grace,
+        }
+        payload.update(termination)
+        _append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
 
 def heartbeat_worker(
@@ -5373,6 +5681,15 @@ def detect_stale_running(
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
         )
+
+        # Never release a claim while our own worker is still alive: that would
+        # spawn a duplicate beside it. Hold the claim and retry next tick.
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, tid, lock, now, termination,
+                reason="heartbeat_stale_worker_alive",
+            )
+            continue
 
         with write_txn(conn):
             cur = conn.execute(
@@ -6283,7 +6600,11 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            resolved_branch_name = None
+            if claimed.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            else:
+                workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6294,6 +6615,8 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -6369,7 +6692,11 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            resolved_branch_name = None
+            if claimed.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            else:
+                workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6380,6 +6707,8 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load sdlc-review skill for review agents.  The
         # _default_spawn function already auto-loads kanban-worker, and

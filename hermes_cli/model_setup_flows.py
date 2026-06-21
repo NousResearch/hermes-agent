@@ -24,6 +24,8 @@ import argparse
 import os
 import subprocess
 
+from hermes_cli.config import clear_model_endpoint_credentials
+
 
 def _prompt_auth_credentials_choice(title: str) -> str:
     """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
@@ -123,6 +125,7 @@ def _model_flow_openrouter(config, current_model=""):
         model["provider"] = "openrouter"
         model["base_url"] = OPENROUTER_BASE_URL
         model["api_mode"] = "chat_completions"
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
@@ -325,6 +328,9 @@ def _model_flow_nous(config, current_model="", args=None):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
+        # Reload after the auth helper writes provider state. The incoming
+        # config object may still contain stale custom-provider fields.
+        config = load_config()
         current_model_cfg = config.get("model")
         if isinstance(current_model_cfg, dict):
             model_cfg = dict(current_model_cfg)
@@ -338,6 +344,7 @@ def _model_flow_nous(config, current_model="", args=None):
             model_cfg["base_url"] = inference_url.rstrip("/")
         else:
             model_cfg.pop("base_url", None)
+        clear_model_endpoint_credentials(model_cfg)
         config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
@@ -517,7 +524,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         pass
 
     models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
@@ -1246,6 +1253,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["api_mode"] = api_mode
     model["default"] = effective_model
     model["auth_mode"] = auth_mode_label
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     if use_entra:
         # Persist only the non-default Entra scope so config.yaml stays tidy.
         # Azure identity selection stays in standard AZURE_* env vars.
@@ -1667,6 +1675,7 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         )
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if selected_effort is not None:
             _set_reasoning_effort(cfg, selected_effort)
         save_config(cfg)
@@ -1792,6 +1801,7 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["provider"] = provider_id
     model["base_url"] = effective_base
     model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     save_config(cfg)
     deactivate_provider()
 
@@ -1853,18 +1863,7 @@ def _model_flow_kimi(config, current_model=""):
     print()
 
     # Step 3: Model selection — show appropriate models for the endpoint
-    if is_coding_plan:
-        # Coding Plan models (kimi-k2.6 first)
-        model_list = [
-            "kimi-k2.6",
-            "kimi-k2.5",
-            "kimi-for-coding",
-            "kimi-k2-thinking",
-            "kimi-k2-thinking-turbo",
-        ]
-    else:
-        # Legacy Moonshot models (excludes Coding Plan-only models)
-        model_list = _PROVIDER_MODELS.get("moonshot", [])
+    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
 
     if model_list:
         selected = _prompt_model_selection(
@@ -1892,6 +1891,7 @@ def _model_flow_kimi(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)  # let runtime auto-detect from URL
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -2005,6 +2005,7 @@ def _model_flow_stepfun(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -2088,6 +2089,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         model["provider"] = "custom"
         model["base_url"] = mantle_base_url
         model.pop("api_mode", None)  # chat_completions is the default
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
@@ -2281,6 +2283,7 @@ def _model_flow_bedrock(config, current_model=""):
         model["provider"] = "bedrock"
         model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
         model.pop("api_mode", None)  # bedrock_converse is auto-detected
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
@@ -2574,6 +2577,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
@@ -2728,6 +2732,7 @@ def _model_flow_anthropic(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "anthropic"
         model.pop("base_url", None)
+        clear_model_endpoint_credentials(model)
         save_config(cfg)
         deactivate_provider()
 

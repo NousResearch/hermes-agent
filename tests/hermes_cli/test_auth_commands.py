@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -23,6 +24,37 @@ def _jwt_with_email(email: str) -> str:
         json.dumps({"email": email}).encode()
     ).rstrip(b"=").decode()
     return f"{header}.{payload}.signature"
+
+
+def _codex_pool_only_store(*, exhausted: bool = False) -> dict:
+    entry = {
+        "id": "codex-1",
+        "label": "codex@example.com",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual:device_code",
+        "access_token": _jwt_with_email("codex@example.com"),
+        "refresh_token": "refresh-token",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "last_refresh": "2026-06-15T10:00:00Z",
+    }
+    if exhausted:
+        entry.update(
+            {
+                "last_status": "exhausted",
+                "last_status_at": time.time(),
+                "last_error_code": 429,
+                "last_error_reason": "usage_limit_reached",
+                "last_error_message": "The usage limit has been reached",
+                "last_error_reset_at": time.time() + 3600,
+            }
+        )
+    return {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {},
+        "credential_pool": {"openai-codex": [entry]},
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -481,6 +513,44 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     assert "openai-codex" not in payload.get("providers", {})
     # First add activated the provider; second add left it as-is.
     assert payload["active_provider"] == "openai-codex"
+
+
+def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    from hermes_cli.auth import get_codex_auth_status
+
+    status = get_codex_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["source"] == "pool:codex@example.com"
+
+
+def test_codex_auth_status_reports_pool_only_rate_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=True))
+
+    from hermes_cli.auth import get_codex_auth_status
+
+    status = get_codex_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["rate_limited"] is True
+    assert status["error_code"] == "codex_rate_limited"
+
+
+def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=True))
+
+    from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE, resolve_codex_runtime_credentials
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_codex_runtime_credentials()
+
+    assert exc_info.value.code == CODEX_RATE_LIMITED_CODE
+    assert exc_info.value.relogin_required is False
 
 
 def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):

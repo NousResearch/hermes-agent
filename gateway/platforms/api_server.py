@@ -156,18 +156,23 @@ def _normalize_chat_content(
 
     if isinstance(content, list):
         parts: List[str] = []
+        total_len = 0
         items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
         for item in items:
             if isinstance(item, str):
                 if item:
-                    parts.append(item[:MAX_NORMALIZED_TEXT_LENGTH])
+                    part = item[:MAX_NORMALIZED_TEXT_LENGTH]
+                    parts.append(part)
+                    total_len += len(part)
             elif isinstance(item, dict):
                 item_type = str(item.get("type") or "").strip().lower()
                 if item_type in {"text", "input_text", "output_text"}:
                     text = item.get("text", "")
                     if text:
                         try:
-                            parts.append(str(text)[:MAX_NORMALIZED_TEXT_LENGTH])
+                            part = str(text)[:MAX_NORMALIZED_TEXT_LENGTH]
+                            parts.append(part)
+                            total_len += len(part)
                         except Exception:
                             pass
                 # Silently skip image_url / other non-text parts
@@ -175,8 +180,9 @@ def _normalize_chat_content(
                 nested = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
                 if nested:
                     parts.append(nested)
+                    total_len += len(nested)
             # Check accumulated size
-            if sum(len(p) for p in parts) >= MAX_NORMALIZED_TEXT_LENGTH:
+            if total_len >= MAX_NORMALIZED_TEXT_LENGTH:
                 break
         result = "\n".join(parts)
         return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
@@ -711,6 +717,16 @@ except ImportError:
     _cron_resume = None
     _cron_trigger = None
 
+
+def _notify_cron_provider_jobs_changed() -> None:
+    """Tell the active cron scheduler provider the job set changed after a REST
+    mutation (no-op for the built-in). Best-effort — never breaks the handler."""
+    try:
+        from cron.scheduler import _notify_provider_jobs_changed
+        _notify_provider_jobs_changed()
+    except Exception:
+        pass
+
 # Defense-in-depth: mirror the agent-facing cronjob tool, which scans the
 # user-supplied prompt for exfiltration/injection payloads at create/update
 # time (tools/cronjob_tools.py).  The REST cron endpoints are authenticated
@@ -766,6 +782,15 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        # Concurrency cap shared across all agent-serving endpoints
+        # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
+        # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
+        # the cap. Bounds CPU / memory / upstream-LLM-quota exhaustion
+        # from a request flood (#7483).
+        self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()
+        # Number of in-flight runs on the non-streaming chat/responses paths
+        # (the /v1/runs path tracks its own in-flight set via _run_streams).
+        self._inflight_agent_runs: int = 0
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -781,6 +806,30 @@ class APIServerAdapter(BasePlatformAdapter):
             items = [str(value)]
 
         return tuple(str(item).strip() for item in items if str(item).strip())
+
+    @staticmethod
+    def _resolve_max_concurrent_runs() -> int:
+        """Read the concurrent-run cap from config.yaml (0 disables).
+
+        gateway.api_server.max_concurrent_runs. Falls back to the historical
+        default of 10 when unset or malformed. Negative values are clamped
+        to 0 (disabled).
+        """
+        default = 10
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            raw = cfg_get(
+                load_config(),
+                "gateway",
+                "api_server",
+                "max_concurrent_runs",
+                default=default,
+            )
+            value = int(raw)
+        except Exception:
+            return default
+        return max(0, value)
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -1027,7 +1076,13 @@ class APIServerAdapter(BasePlatformAdapter):
         — matching the semantics of the native gateway's ``session_key``.
         """
         from run_agent import AIAgent
-        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
+        from gateway.run import (
+            _current_max_iterations,
+            _resolve_runtime_agent_kwargs,
+            _resolve_gateway_model,
+            _load_gateway_config,
+            GatewayRunner,
+        )
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -1037,7 +1092,7 @@ class APIServerAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
-        max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+        max_iterations = _current_max_iterations()
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
@@ -1081,16 +1136,35 @@ class APIServerAdapter(BasePlatformAdapter):
         dashboard can display full status without needing a shared PID file or
         /proc access.  No authentication required.
         """
-        from gateway.status import read_runtime_status
+        from gateway.status import (
+            derive_gateway_busy,
+            derive_gateway_drainable,
+            parse_active_agents,
+            read_runtime_status,
+        )
 
         runtime = read_runtime_status() or {}
+        gw_state = runtime.get("gateway_state")
+        gw_active = parse_active_agents(runtime.get("active_agents", 0))
+        # This endpoint is served BY the gateway process, so it is by definition
+        # alive — gateway_running is True. Derive busy/drainable from the same
+        # shared contract /api/status uses so the two surfaces never disagree.
         return web.json_response({
             "status": "ok",
             "platform": "hermes-agent",
             "version": _hermes_version(),
-            "gateway_state": runtime.get("gateway_state"),
+            "gateway_state": gw_state,
             "platforms": runtime.get("platforms", {}),
-            "active_agents": runtime.get("active_agents", 0),
+            "active_agents": gw_active,
+            "gateway_busy": derive_gateway_busy(
+                gateway_running=True,
+                gateway_state=gw_state,
+                active_agents=gw_active,
+            ),
+            "gateway_drainable": derive_gateway_drainable(
+                gateway_running=True,
+                gateway_state=gw_state,
+            ),
             "exit_reason": runtime.get("exit_reason"),
             "updated_at": runtime.get("updated_at"),
             "pid": os.getpid(),
@@ -1725,6 +1799,11 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Bound total in-flight agent runs (configurable; #7483).
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
 
         # Parse request body
         try:
@@ -2795,6 +2874,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        # Bound total in-flight agent runs (configurable; #7483).
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
@@ -3200,6 +3284,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["repeat"] = repeat
 
             job = _cron_create(**kwargs)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3256,6 +3341,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3275,6 +3361,7 @@ class APIServerAdapter(BasePlatformAdapter):
             success = _cron_remove(job_id)
             if not success:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"ok": True})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3294,6 +3381,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_pause(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3313,6 +3401,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_resume(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3335,6 +3424,64 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
+        """POST /api/cron/fire — Chronos managed-cron fire webhook (NAS → agent).
+
+        Authenticated by a NAS-minted JWT (verified via the pluggable
+        fire-verifier), NOT API_SERVER_KEY — NAS holds no API server key, and
+        this is the only inbound that can trigger remote job execution, so it
+        gets its own purpose-scoped token check.
+
+        Returns 202 + runs the job in the background so a long agent turn never
+        trips NAS's HTTP timeout. The store CAS claim inside fire_due guards
+        against double-fire on a NAS/scheduler retry.
+        """
+        from hermes_cli.config import cfg_get, load_config
+        from plugins.cron.chronos.verify import get_fire_verifier
+
+        auth = request.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+
+        cfg = load_config()
+        claims = get_fire_verifier()(
+            token=token,
+            expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
+            jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
+            issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
+        )
+        if claims is None:
+            logger.warning(
+                "cron fire: rejected invalid token: %s",
+                self._request_audit_log_suffix(request),
+            )
+            return web.json_response({"error": "invalid fire token"}, status=401)
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        job_id = (body or {}).get("job_id")
+        if not job_id:
+            return web.json_response({"error": "missing job_id"}, status=400)
+
+        from cron.scheduler_provider import resolve_cron_scheduler
+        provider = resolve_cron_scheduler()
+
+        loop = asyncio.get_running_loop()
+        # Fire in the background (202 immediately). fire_due claims via the
+        # store CAS, so a retry while this is in flight is de-duped.
+        task = asyncio.create_task(
+            asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
+        )
+        try:
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except (TypeError, AttributeError):
+            pass
+
+        return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
+
 
     # ------------------------------------------------------------------
     # Output extraction helper
@@ -3483,6 +3630,31 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent execution
     # ------------------------------------------------------------------
 
+    def _concurrency_limited_response(self) -> Optional["web.Response"]:
+        """Return a 429 response if the concurrent-run cap is reached, else None.
+
+        The cap bounds total in-flight agent activity across every
+        agent-serving endpoint: the non-streaming chat/responses paths
+        (tracked by ``_inflight_agent_runs``) plus the ``/v1/runs`` streaming
+        path (tracked by ``_run_streams``). A configured value of 0 disables
+        the cap entirely.
+        """
+        limit = self._max_concurrent_runs
+        if limit <= 0:
+            return None
+        inflight = self._inflight_agent_runs + len(self._run_streams)
+        if inflight >= limit:
+            return web.json_response(
+                _openai_error(
+                    f"Too many concurrent runs (max {limit})",
+                    err_type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                ),
+                status=429,
+                headers={"Retry-After": "1"},
+            )
+        return None
+
     async def _run_agent(
         self,
         user_message: str,
@@ -3551,13 +3723,16 @@ class APIServerAdapter(BasePlatformAdapter):
             finally:
                 clear_session_vars(tokens)
 
-        return await loop.run_in_executor(None, _run)
+        self._inflight_agent_runs += 1
+        try:
+            return await loop.run_in_executor(None, _run)
+        finally:
+            self._inflight_agent_runs -= 1
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
     # ------------------------------------------------------------------
 
-    _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
@@ -3633,12 +3808,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit
-        if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
-            return web.json_response(
-                _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
-                status=429,
-            )
+        # Enforce concurrency limit (shared across all agent-serving
+        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
 
         try:
             body = await request.json()
@@ -4190,6 +4364,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+
+            # Chronos managed-cron fire webhook (NAS → agent). Authenticated by a
+            # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.
+            if _CRON_AVAILABLE:
+                self._app.router.add_post("/api/cron/fire", self._handle_cron_fire)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)

@@ -13942,6 +13942,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
+                    _pause_typing_before_finalize = None
+                    if source.platform == Platform.TELEGRAM and hasattr(_adapter, "pause_typing_for_chat"):
+                        def _pause_typing_before_finalize(
+                            _adapter=_adapter,
+                            _chat_id=source.chat_id,
+                        ) -> None:
+                            _adapter.pause_typing_for_chat(_chat_id)
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                     _buffer_only = False
@@ -13971,6 +13978,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
+                        on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=event_message_id,
                     )
             except Exception as _sc_err:
@@ -15099,6 +15107,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
+                        _pause_typing_before_finalize = None
+                        if source.platform == Platform.TELEGRAM and hasattr(_adapter, "pause_typing_for_chat"):
+                            def _pause_typing_before_finalize(
+                                _adapter=_adapter,
+                                _chat_id=source.chat_id,
+                            ) -> None:
+                                _adapter.pause_typing_for_chat(_chat_id)
                         # Platforms that don't support editing sent messages
                         # (e.g. QQ, WeChat) should skip streaming entirely —
                         # without edit support, the consumer sends a partial
@@ -15143,6 +15158,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if progress_queue is not None
                                 else None
                             ),
+                            on_before_finalize=_pause_typing_before_finalize,
                             initial_reply_to_id=event_message_id,
                         )
                         if _want_stream_deltas:

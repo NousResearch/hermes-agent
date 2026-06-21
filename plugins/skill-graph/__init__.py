@@ -979,7 +979,29 @@ def _handle_slash_command(args: str) -> str | None:
         except Exception as e:
             return f"Relations failed: {e}"
 
-    elif subcmd in ("info"):
+    elif subcmd == "all":
+        """Show everything: node info + edges + terms."""
+        if not rest:
+            return "Usage: /skill-graph all <skill-name>"
+        try:
+            conn = _ensure_graph()
+            node = conn.execute(
+                "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE name = ?",
+                (rest,),
+            ).fetchone()
+            if not node:
+                return f"Not found: {rest}  (try /sg list)"
+            return "\n".join([
+                f"Node: {node['name']}",
+                f"  Category:    {node['category'] or ''}",
+                f"  Description: {node['description'] or ''}",
+                f"  Tags:        {node['tags'] or ''}",
+                f"  Path:        {node['file_path'] or ''}",
+            ]) + "\n" + _format_edges(rest) + _format_terms(rest)
+        except Exception as e:
+            return f"All failed: {e}"
+
+    elif subcmd == "info":
         """Show all info: metadata + edges + terms."""
         if not rest:
             return "Usage: /skill-graph detail|info <skill-name>"

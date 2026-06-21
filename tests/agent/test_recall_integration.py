@@ -89,6 +89,7 @@ def test_build_turn_context_pulls_recall_block_from_service(monkeypatch):
 
     class FakeService:
         enabled = True
+        session_id = "test-session"
         def ephemeral_block(self, text):
             ephemeral_calls.append(text)
             return "<recalled_context>FAKE</recalled_context>"
@@ -163,6 +164,7 @@ def test_finalize_turn_records_assistant_response(monkeypatch):
 
     class FakeService:
         enabled = True
+        session_id = "test"
         def record_turn(self, role, content):
             record_calls.append((role, content))
 
@@ -241,6 +243,7 @@ def test_finalize_turn_skips_recall_on_interrupt():
 
     class FakeService:
         enabled = True
+        session_id = "test"
         def record_turn(self, role, content):
             record_calls.append((role, content))
 

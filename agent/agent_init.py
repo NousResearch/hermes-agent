@@ -1165,9 +1165,13 @@ def init_agent(
                 _profile = _resolve_active_profile_name()
                 _profile_dir = get_hermes_home() / "profiles" / _profile
                 _profile_dir.mkdir(parents=True, exist_ok=True)
+                # session_id may not yet be known at this point in
+                # init; bind_session_id() is called from turn_context
+                # once the session row is committed.
                 agent._recall_service = build_recall_service(
                     profile_dir=_profile_dir,
                     config=_recall_cfg,
+                    session_id=agent.session_id or "",
                 )
         except Exception:
             # Recall is optional; never break agent init on a bad backend.

@@ -405,6 +405,10 @@ def build_turn_context(
     recall_block = ""
     _recall_service = getattr(agent, "_recall_service", None)
     if _recall_service is not None:
+        # Bind session_id at turn time — init_agent may have built
+        # the service before the session row was committed.
+        if agent.session_id and not _recall_service.session_id:
+            _recall_service.bind_session_id(agent.session_id)
         try:
             _query_text = (
                 original_user_message

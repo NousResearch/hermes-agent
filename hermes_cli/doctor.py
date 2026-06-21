@@ -500,13 +500,19 @@ def recall_check() -> None:
         from agent.recall import build_recall_service, recall_health_summary
         from agent.file_safety import _resolve_active_profile_name
         from hermes_constants import get_hermes_home
-        from hermes_cli.config import cfg_get
+        from hermes_cli.config import load_config, cfg_get
 
-        profile = _resolve_active_profile_name()
-        profile_dir = get_hermes_home() / "profiles" / profile
-        recall_cfg = cfg_get("memory.semantic_recall", {}) or {}
+        # Note: cfg_get takes (cfg_dict, *keys). We load the config
+        # explicitly because cfg_get doesn't fall back to disk.
+        try:
+            cfg = load_config() or {}
+        except Exception:
+            cfg = {}
+        recall_cfg = cfg_get(cfg, "memory", "semantic_recall", default={}) or {}
         if not isinstance(recall_cfg, dict):
             recall_cfg = {}
+        profile = _resolve_active_profile_name()
+        profile_dir = get_hermes_home() / "profiles" / profile
         service = build_recall_service(profile_dir=profile_dir,
                                        config=recall_cfg)
         try:

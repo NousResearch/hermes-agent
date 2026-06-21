@@ -388,8 +388,12 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             _recall_service = getattr(agent, "_recall_service", None)
-            if _recall_service is not None and final_response.strip():
-                _recall_service.record_turn("assistant", final_response)
+            if _recall_service is not None:
+                # Defensive bind in case turn_context didn't run first.
+                if agent.session_id and not _recall_service.session_id:
+                    _recall_service.bind_session_id(agent.session_id)
+                if final_response.strip():
+                    _recall_service.record_turn("assistant", final_response)
         except Exception:
             pass  # recall is best-effort
 

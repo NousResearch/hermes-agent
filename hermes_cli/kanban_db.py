@@ -6238,6 +6238,7 @@ def dispatch_once(
             "GROUP BY assignee"
         ):
             _per_profile_running[prow["assignee"]] = int(prow["n"])
+    active_pr_handoffs: set[str] = set()
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
@@ -6347,6 +6348,22 @@ def dispatch_once(
         # blocks via the normal path rather than on first occurrence.
         guard_reason = check_respawn_guard(conn, row["id"])
         if guard_reason is not None:
+            if guard_reason == "active_pr":
+                if not dry_run:
+                    with write_txn(conn):
+                        cur = conn.execute(
+                            "UPDATE tasks SET status = 'review' "
+                            "WHERE id = ? AND status = 'ready' "
+                            "AND claim_lock IS NULL",
+                            (row["id"],),
+                        )
+                        if cur.rowcount == 1:
+                            _append_event(
+                                conn, row["id"], "promoted_to_review",
+                                {"reason": "active_pr_handoff"},
+                            )
+                            active_pr_handoffs.add(row["id"])
+                continue
             result.respawn_guarded.append((row["id"], guard_reason))
             # Emit an event so operators can see why the task was
             # skipped when reading `hermes kanban tail` — without
@@ -6442,6 +6459,8 @@ def dispatch_once(
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        if row["id"] in active_pr_handoffs:
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue

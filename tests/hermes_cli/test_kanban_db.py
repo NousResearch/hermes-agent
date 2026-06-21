@@ -1973,10 +1973,9 @@ def test_dispatch_respawn_guard_skips_recent_success(
         assert kb.get_task(conn, t).status == "ready"  # not blocked, just skipped
 
 
-def test_dispatch_respawn_guard_skips_active_pr(
+def test_dispatch_respawn_guard_promotes_active_pr_to_review(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once skips (but does not block) a task with an active PR comment."""
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -1989,12 +1988,18 @@ def test_dispatch_respawn_guard_skips_active_pr(
             "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        events = kb.list_events(conn, t)
 
-    assert (t, "active_pr") in res.respawn_guarded
+    assert (t, "active_pr") not in res.respawn_guarded
     assert t not in spawned_ids
     assert t not in res.auto_blocked
+    assert any(
+        event.kind == "promoted_to_review"
+        and event.payload == {"reason": "active_pr_handoff"}
+        for event in events
+    )
     with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "ready"
+        assert kb.get_task(conn, t).status == "review"
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

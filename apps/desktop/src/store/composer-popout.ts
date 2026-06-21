@@ -15,7 +15,7 @@ export interface PopoutPosition {
 }
 
 // Floating composer width (rem). Shared by the inline style that sets
-// --composer-popout-width and the peel-off drag math (to center it on the cursor).
+// --composer-popout-width and the peel-off drag math.
 export const POPOUT_WIDTH_REM = 19.5
 
 // Default pop-out placement: tucked into the bottom-right of the thread, clear
@@ -59,21 +59,33 @@ interface SetPositionOptions {
 // Keep at least this much of every edge between the box and the viewport, so the
 // floating composer can never be dragged (or restored) out of reach.
 const EDGE_MARGIN = 8
-// Height floor used when the real box height is unknown (init / load).
-const MIN_VISIBLE_HEIGHT = 56
+const TITLEBAR_HEIGHT_FALLBACK = 34
+const TITLEBAR_CLEARANCE_REM = 0.75
+// Height floor used when the real box height is unknown (init / load / peel-off).
+export const POPOUT_ESTIMATED_HEIGHT = 56
+const MIN_VISIBLE_HEIGHT = POPOUT_ESTIMATED_HEIGHT
 
 const clampRange = (value: number, lo: number, hi: number) => Math.min(Math.max(value, lo), Math.max(lo, hi))
 
 const rootFontSize = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+
+function titlebarTopMargin() {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--titlebar-height').trim()
+  const titlebarHeight = Number.parseFloat(raw)
+  const breathingRoom = TITLEBAR_CLEARANCE_REM * rootFontSize()
+
+  return Math.max(EDGE_MARGIN, (Number.isFinite(titlebarHeight) ? titlebarHeight : TITLEBAR_HEIGHT_FALLBACK) + breathingRoom)
+}
 
 // Bound the bottom-right inset so the WHOLE box stays on-screen — the corner
 // anchor alone would let the box's width/height push it past the left/top edges.
 function clampPosition({ bottom, right }: PopoutPosition, size?: PopoutSize): PopoutPosition {
   const width = size?.width || POPOUT_WIDTH_REM * rootFontSize()
   const height = size?.height || MIN_VISIBLE_HEIGHT
+  const topMargin = titlebarTopMargin()
 
   return {
-    bottom: clampRange(bottom, EDGE_MARGIN, window.innerHeight - height - EDGE_MARGIN),
+    bottom: clampRange(bottom, EDGE_MARGIN, window.innerHeight - height - topMargin),
     right: clampRange(right, EDGE_MARGIN, window.innerWidth - width - EDGE_MARGIN)
   }
 }

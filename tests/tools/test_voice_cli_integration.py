@@ -948,6 +948,25 @@ class TestVoiceBeepConfigReal:
         cli = _make_voice_cli()
         assert cli._voice_beeps_enabled() is False
 
+    @pytest.mark.parametrize("value", ["false", "0", "off"])
+    def test_false_like_string_values_disable_beeps(self, value):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"beep_enabled": value}},
+        ):
+            cli = _make_voice_cli()
+            assert cli._voice_beeps_enabled() is False
+
+    @pytest.mark.parametrize("value", ["false", "0", "off"])
+    def test_standalone_voice_loop_false_like_string_values_disable_beeps(self, value):
+        from hermes_cli.voice import _beeps_enabled
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"beep_enabled": value}},
+        ):
+            assert _beeps_enabled() is False
+
     @patch("cli._cprint")
     @patch("cli.threading.Thread")
     @patch("tools.voice_mode.play_beep")

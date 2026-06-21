@@ -1731,8 +1731,15 @@ class WeixinAdapter(BasePlatformAdapter):
         last_error: Optional[Exception] = None
         retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
-            if self._rate_limit_cooldown_remaining() > 0:
-                raise self._rate_limit_error()
+            cooldown = self._rate_limit_cooldown_remaining()
+            if cooldown > 0:
+                if cooldown > 120:
+                    raise self._rate_limit_error()
+                logger.info(
+                    "[%s] rate limit cooldown %.1fs active for %s; waiting before send",
+                    self.name, cooldown, _safe_id(chat_id),
+                )
+                await asyncio.sleep(cooldown)
             try:
                 resp = await _send_message(
                     self._send_session,

@@ -25,6 +25,7 @@ import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { isVoicePlaybackActive, playSpeechText } from '@/lib/voice-playback'
 import {
   $composerAttachments,
   clearComposerAttachments,
@@ -161,6 +162,7 @@ const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(
 const DRAFT_PERSIST_DEBOUNCE_MS = 400
 
 export function ChatBar({
+  autoTtsEnabled,
   busy,
   cwd,
   disabled,
@@ -1606,6 +1608,38 @@ export function ChatBar({
     }
   }, [autoDrainNext, busy, queuedPrompts.length])
 
+  // Auto-TTS: speak last assistant message on busy → false, when voice.auto_tts is on.
+  const wasBusyRef = useRef(false)
+  const autoTtsSessionRef = useRef(sessionId)
+
+  // Reset on session switch — ChatBar is persistent, refs survive across sessions.
+  if (autoTtsSessionRef.current !== sessionId) {
+    autoTtsSessionRef.current = sessionId
+    wasBusyRef.current = false
+  }
+
+  useEffect(() => {
+    if (busy) {
+      wasBusyRef.current = true
+
+      return
+    }
+
+    if (!wasBusyRef.current || !autoTtsEnabled || voiceConversationActive || isVoicePlaybackActive()) {
+      return
+    }
+
+    const response = pendingResponse()
+
+    if (!response || response.pending) {
+      return
+    }
+
+    // Consume before async call to prevent double-play on a second effect fire.
+    consumePendingResponse()
+    void playSpeechText(response.text, { messageId: response.id, source: 'read-aloud' })
+  }, [busy]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
   useEffect(() => {
@@ -2028,6 +2062,7 @@ export function ChatBar({
                   composerSurfaceGlass
                 )}
               />
+              <VoicePlaybackActivity />
               <div
                 className={cn(
                   'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
@@ -2036,7 +2071,6 @@ export function ChatBar({
                 data-slot="composer-fade"
               >
                 <VoiceActivity state={voiceActivityState} />
-                <VoicePlaybackActivity />
                 {queueEdit && editingQueuedPrompt && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
                     <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">

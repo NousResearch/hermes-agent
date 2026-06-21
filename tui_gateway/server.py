@@ -6746,14 +6746,18 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     pass
 
             # CLI parity: when voice-mode TTS is on, speak the agent reply
-            # (cli.py:_voice_speak_response).  Only the final text — tool
-            # calls / reasoning already stream separately and would be
-            # noisy to read aloud.
+            # WS clients (desktop, dashboard) do their own client-side playback,
+            # so speaking here too would double the audio — restrict server-side
+            # speech to non-WS transports (TUI / stdio CLI). Class-name check
+            # avoids a circular import of tui_gateway.ws.
+            _transport = session.get("transport")
+            _is_ws_client = type(_transport).__name__ == "WSTransport"
             if (
                 status == "complete"
                 and isinstance(raw, str)
                 and raw.strip()
                 and _voice_tts_enabled()
+                and not _is_ws_client
             ):
                 try:
                     from hermes_cli.voice import speak_text
@@ -9958,8 +9962,20 @@ def _voice_mode_enabled() -> bool:
 
 
 def _voice_tts_enabled() -> bool:
-    """Whether agent replies should be spoken back via TTS (runtime only)."""
-    return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
+    """Whether agent replies should be spoken back via TTS.
+
+    Runtime flag (``HERMES_VOICE_TTS`` env var) takes precedence so an
+    in-session toggle survives config reloads.  When the flag has never been
+    set this session, fall back to ``voice.auto_tts`` in config.yaml so the
+    setting takes effect immediately on first launch without a manual toggle.
+    """
+    raw = os.environ.get("HERMES_VOICE_TTS", "")
+    if raw.strip():
+        return raw.strip() == "1"
+    # Seed from config on first access (flag not yet set this session).
+    enabled = bool(_voice_cfg_dict().get("auto_tts", False))
+    os.environ["HERMES_VOICE_TTS"] = "1" if enabled else "0"
+    return enabled
 
 
 def _voice_cfg_dict() -> dict:
@@ -10062,8 +10078,6 @@ def _(rid, params: dict) -> dict:
         )
 
     if action == "tts":
-        if not _voice_mode_enabled():
-            return _err(rid, 4014, "enable voice mode first: /voice on")
         new_value = not _voice_tts_enabled()
         # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
         os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"

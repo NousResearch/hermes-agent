@@ -760,7 +760,10 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text },
+    // Long-response synthesis exceeds the app-wide 15s default; the backend
+    // caps edge-tts at 60s (tools/tts_tool.py), so give the HTTP layer headroom
+    timeoutMs: 75_000
   })
 }
 

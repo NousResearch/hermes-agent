@@ -1176,7 +1176,7 @@ export function ChatSidebar({
   return (
     <Sidebar
       className={cn(
-        'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
+        'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-sidebar-foreground transition-none',
         panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
         sidebarOpen
           ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
@@ -1214,9 +1214,9 @@ export function ChatSidebar({
                         // resolved region has been observed to swallow clicks on the
                         // top rows. Same carve-out as USER_BUBBLE_BASE_CLASS in
                         // thread.tsx.
-                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-semibold text-(--ui-sidebar-nav-foreground) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-(--ui-sidebar-heading) hover:transition-none',
                         active &&
-                          'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
+                          'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-(--ui-sidebar-heading) shadow-none hover:border-(--ui-stroke-tertiary)!',
                         !isInteractive &&
                           'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                       )}

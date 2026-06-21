@@ -266,6 +266,27 @@
     --ui-inline-code-background: color-mix(in srgb, #141414 5%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #141414 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 55%, transparent);
+    /* Emphasis (chat markdown headings + bold). Defaults to the body foreground
+       so existing themes render identically; a theme can set it (via
+       `emphasisForeground`) to make headings/bold a brighter/separate color —
+       e.g. terminal-style "bold brightens". */
+    --ui-emphasis-foreground: var(--dt-foreground);
+    /* Sidebar section headers ("PINNED", "SESSIONS"). Defaults to the brand
+       accent (prior behavior); a theme can override (via
+       `sidebarHeadingForeground`) for e.g. white headers. */
+    --ui-sidebar-heading: var(--theme-primary);
+    --ui-sidebar-nav-foreground: var(--sidebar-foreground);
+    --ui-sidebar-workspace-foreground: var(--ui-text-secondary);
+    --ui-sidebar-session-foreground: var(--ui-text-secondary);
+    --ui-backdrop-opacity: 1;
+    --ui-status-gateway-foreground: var(--ui-text-tertiary);
+    --ui-status-agents-foreground: var(--ui-text-tertiary);
+    --ui-status-cron-foreground: var(--ui-text-tertiary);
+    --ui-status-context-foreground: var(--ui-text-tertiary);
+    --ui-status-session-foreground: var(--ui-text-tertiary);
+    --ui-status-yolo-foreground: var(--ui-text-tertiary);
+    --ui-status-terminal-foreground: var(--ui-text-tertiary);
+    --ui-status-version-foreground: var(--ui-text-tertiary);
 
     --dt-background: var(--ui-bg-chrome);
     --dt-foreground: var(--ui-text-primary);
@@ -478,11 +499,11 @@
    pointer-transparent. Auto-resets on mouse-out, no JS.
 
    - data-suppress-pane-reveal       → kills BOTH edges (use for small regions
-                                         like the thread timeline).
+                                        like the thread timeline).
    - data-suppress-pane-reveal-side  → kills only the hovered region's OWN side
-                                         (side read from its [data-pane-side]
-                                         pane ancestor), so the opposite sidebar
-                                         stays summonable while you work a pane. */
+                                        (side read from its [data-pane-side]
+                                        pane ancestor), so the opposite sidebar
+                                        stays summonable while you work a pane. */
 [data-pane-shell]:has([data-suppress-pane-reveal]:hover) [data-pane-reveal-trigger] {
   pointer-events: none;
 }
@@ -494,6 +515,43 @@
   [data-pane-side='right']
   [data-pane-reveal-trigger] {
   pointer-events: none;
+}
+
+[data-statusbar-tone='gateway'] {
+  color: var(--ui-status-gateway-foreground) !important;
+}
+
+[data-statusbar-tone='agents'] {
+  color: var(--ui-status-agents-foreground) !important;
+}
+
+[data-statusbar-tone='cron'] {
+  color: var(--ui-status-cron-foreground) !important;
+}
+
+[data-statusbar-tone='context'] {
+  color: var(--ui-status-context-foreground) !important;
+}
+
+[data-statusbar-tone='session'] {
+  color: var(--ui-status-session-foreground) !important;
+}
+
+[data-statusbar-tone='yolo'] {
+  color: var(--ui-status-yolo-foreground) !important;
+}
+
+[data-statusbar-tone='terminal'] {
+  color: var(--ui-status-terminal-foreground) !important;
+}
+
+[data-statusbar-tone='version'] {
+  color: var(--ui-status-version-foreground) !important;
+}
+
+[data-statusbar-tone] [data-slot='statusbar-detail'] {
+  color: currentColor;
+  opacity: 0.82;
 }
 
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {

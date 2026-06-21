@@ -228,6 +228,40 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
+  // Inline-code tokens are opt-in per theme. Set when present, REMOVE when not,
+  // so switching from a theme that customizes them back to one that doesn't
+  // restores the styles.css :root / :root.dark default instead of leaking the
+  // previous skin's values. Same pattern for emphasis (chat headings/bold) and
+  // the two sidebar tokens (section headers + entry text).
+  const optionalTokens: Record<string, string | undefined> = {
+    '--ui-inline-code-foreground': c.inlineCodeForeground,
+    '--ui-inline-code-background': c.inlineCodeBackground,
+    '--ui-inline-code-border': c.inlineCodeBorder,
+    '--ui-emphasis-foreground': c.emphasisForeground,
+    '--ui-sidebar-heading': c.sidebarHeadingForeground,
+    '--sidebar-foreground': c.sidebarForeground,
+    '--ui-sidebar-nav-foreground': c.sidebarNavForeground,
+    '--ui-sidebar-workspace-foreground': c.sidebarWorkspaceForeground,
+    '--ui-sidebar-session-foreground': c.sidebarSessionForeground,
+    '--ui-backdrop-opacity': c.backdropOpacity,
+    '--ui-status-gateway-foreground': c.statusGatewayForeground,
+    '--ui-status-agents-foreground': c.statusAgentsForeground,
+    '--ui-status-cron-foreground': c.statusCronForeground,
+    '--ui-status-context-foreground': c.statusContextForeground,
+    '--ui-status-session-foreground': c.statusSessionForeground,
+    '--ui-status-yolo-foreground': c.statusYoloForeground,
+    '--ui-status-terminal-foreground': c.statusTerminalForeground,
+    '--ui-status-version-foreground': c.statusVersionForeground
+  }
+
+  for (const [k, v] of Object.entries(optionalTokens)) {
+    if (v) {
+      root.style.setProperty(k, v)
+    } else {
+      root.style.removeProperty(k)
+    }
+  }
+
   const chromeBg = chromeBackground(c.background, isDark)
 
   window.hermesDesktop?.setTitleBarTheme?.({

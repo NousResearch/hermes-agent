@@ -39,6 +39,7 @@ export interface StatusbarItem {
   onSelect?: (modifiers: StatusbarSelectModifiers) => void
   title?: string
   to?: string
+  tone?: 'agents' | 'context' | 'cron' | 'gateway' | 'session' | 'terminal' | 'version' | 'yolo'
   variant?: 'action' | 'link' | 'menu' | 'text'
 }
 
@@ -92,7 +93,11 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     <>
       {item.icon}
       {item.label && <span className="truncate">{item.label}</span>}
-      {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
+      {item.detail && (
+        <span className="truncate text-muted-foreground/80" data-slot="statusbar-detail">
+          {item.detail}
+        </span>
+      )}
     </>
   )
 
@@ -101,7 +106,12 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
       <Tip label={item.title}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+            <button
+              className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+              data-statusbar-tone={item.tone}
+              disabled={item.disabled}
+              type="button"
+            >
               {content}
             </button>
           </DropdownMenuTrigger>
@@ -160,6 +170,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
             'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
             item.className
           )}
+          data-statusbar-tone={item.tone}
         >
           {content}
         </div>
@@ -170,7 +181,13 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={item.title}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          data-statusbar-tone={item.tone}
+          href={item.href}
+          rel="noreferrer"
+          target="_blank"
+        >
           {content}
         </a>
       </Tip>
@@ -181,6 +198,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     <Tip label={item.title}>
       <button
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        data-statusbar-tone={item.tone}
         disabled={item.disabled}
         onClick={event => {
           if (item.to) {

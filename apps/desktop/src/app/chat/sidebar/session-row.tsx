@@ -215,7 +215,12 @@ export function SidebarSessionRow({
               />
             </Tip>
           ) : null}
-          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <SidebarRowLabel
+            className={cn(
+              'flex-1 font-normal text-(--ui-sidebar-session-foreground) group-hover:text-sidebar-foreground group-data-[working=true]:text-sidebar-foreground',
+              isSelected && 'text-sidebar-foreground'
+            )}
+          >
             {title}
           </SidebarRowLabel>
         </SidebarRowBody>

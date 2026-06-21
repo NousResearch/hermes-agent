@@ -52,6 +52,12 @@ class CaptureResult:
     window_title: str = ""
     # Raw bytes we sent to Anthropic, for token estimation.
     png_bytes_len: int = 0
+    # Explicit MIME type for `png_b64` when the backend supplied it
+    # (cua-driver-rs emits `mimeType` on every image part as of
+    # trycua/cua#1961 — Surface 7 of NousResearch/hermes-agent#47072).
+    # When None, downstream consumers fall back to base64-prefix
+    # sniffing for back-compat with older drivers.
+    image_mime_type: Optional[str] = None
 
 
 @dataclass

@@ -473,15 +473,24 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
       {
         "data": <text or parsed json>,
         "images": [b64, ...],
+        "image_mime_types": [mime, ...],   # parallel to `images`, "" when absent
         "structuredContent": <dict|None>,
         "isError": bool,
       }
     structuredContent is populated from the MCP result's structuredContent field
     (MCP spec §2024-11-05+) and takes precedence for structured data like
     list_windows window arrays.
+
+    `image_mime_types` is the explicit `mimeType` cua-driver emits on every
+    image part as of trycua/cua#1961 (Surface 7 of
+    NousResearch/hermes-agent#47072). Each entry corresponds index-for-index
+    with `images`; an empty string entry signals the part carried no
+    mimeType (older cua-driver build), and the caller should fall back to
+    base64-prefix sniffing.
     """
     data: Any = None
     images: List[str] = []
+    image_mime_types: List[str] = []
     is_error = bool(getattr(mcp_result, "isError", False))
     structured: Optional[Dict] = getattr(mcp_result, "structuredContent", None) or None
     text_chunks: List[str] = []
@@ -493,13 +502,21 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
             b64 = getattr(part, "data", None)
             if b64:
                 images.append(b64)
+                mime = getattr(part, "mimeType", None) or ""
+                image_mime_types.append(mime)
     if text_chunks:
         joined = "\n".join(t for t in text_chunks if t)
         try:
             data = json.loads(joined) if joined.strip().startswith(("{", "[")) else joined
         except json.JSONDecodeError:
             data = joined
-    return {"data": data, "images": images, "structuredContent": structured, "isError": is_error}
+    return {
+        "data": data,
+        "images": images,
+        "image_mime_types": image_mime_types,
+        "structuredContent": structured,
+        "isError": is_error,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +639,7 @@ class CuaDriverBackend(ComputerUseBackend):
 
         # Step 2: capture.
         png_b64: Optional[str] = None
+        image_mime_type: Optional[str] = None
         elements: List[UIElement] = []
         width = height = 0
         window_title = ""
@@ -634,6 +652,11 @@ class CuaDriverBackend(ComputerUseBackend):
             )
             if sc_out["images"]:
                 png_b64 = sc_out["images"][0]
+                # Pick up the explicit mimeType cua-driver attaches to image
+                # parts (Surface 7). Empty string means the driver didn't
+                # carry one — callers will fall back to magic-byte sniffing.
+                mimes = sc_out.get("image_mime_types") or []
+                image_mime_type = mimes[0] if mimes and mimes[0] else None
         else:
             # get_window_state: AX tree + optional screenshot.
             gws_out = self._session.call_tool(
@@ -650,6 +673,8 @@ class CuaDriverBackend(ComputerUseBackend):
                 elements = _parse_elements_from_tree(tree)
             elif gws_out["images"]:
                 png_b64 = gws_out["images"][0]
+                mimes = gws_out.get("image_mime_types") or []
+                image_mime_type = mimes[0] if mimes and mimes[0] else None
                 elements = _parse_elements_from_tree(tree)
 
             # Extract window title from the AX tree first AXWindow line.
@@ -678,6 +703,7 @@ class CuaDriverBackend(ComputerUseBackend):
             app=app_name,
             window_title=window_title,
             png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
         )
 
     # ── Pointer ────────────────────────────────────────────────────

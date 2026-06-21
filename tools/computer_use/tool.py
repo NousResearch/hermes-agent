@@ -616,11 +616,15 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 payload["truncated_elements"] = truncated_elements
             return json.dumps(payload)
 
-        # Detect actual image format from base64 magic bytes so the MIME type
-        # matches what the data contains (cua-driver may return JPEG or PNG).
-        # JPEG: base64 starts with /9j/   PNG: starts with iVBOR
-        _b64_prefix = cap.png_b64[:8]
-        _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
+        # Prefer the explicit MIME type cua-driver attaches to its image
+        # parts (Surface 7 of NousResearch/hermes-agent#47072 — trycua/cua#1961
+        # made `mimeType` part of every MCP image-part response). Fall back
+        # to base64-prefix sniffing for older cua-driver builds that didn't
+        # carry the field. JPEG base64 starts with /9j/; PNG with iVBOR.
+        _mime = cap.image_mime_type
+        if not _mime:
+            _b64_prefix = cap.png_b64[:8]
+            _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
         # The multimodal response carries the screenshot, not the AX
         # elements array, so a "response truncated to N of M elements"
         # note would be inaccurate — skip it on this branch.
@@ -762,7 +766,12 @@ def _route_capture_through_aux_vision(
 
         # Pick an extension that matches the on-disk bytes so vision_analyze's
         # MIME sniffing returns the right content-type.
-        ext = ".jpg" if cap.png_b64[:8].startswith("/9j/") else ".png"
+        # Surface 7: prefer the explicit MIME type cua-driver supplied.
+        _mime_for_ext = cap.image_mime_type or ""
+        if _mime_for_ext == "image/jpeg" or (not _mime_for_ext and cap.png_b64[:8].startswith("/9j/")):
+            ext = ".jpg"
+        else:
+            ext = ".png"
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"

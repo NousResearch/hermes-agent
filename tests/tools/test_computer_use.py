@@ -1733,3 +1733,108 @@ class TestClickButtonPassthrough:
         assert name == "click"
         assert args["button"] == "right"
         assert args["x"] == 10 and args["y"] == 20
+
+
+class TestImageMimeTypePropagation:
+    """Surface 7 (NousResearch/hermes-agent#47072): trycua/cua#1961 made
+    `mimeType` part of every MCP image-part response, so the wrapper no
+    longer has to sniff PNG vs JPEG by inspecting the first base64 bytes
+    (`/9j/` for JPEG / `iVBOR` for PNG). The sniff is preserved as a
+    fallback for older cua-driver builds.
+    """
+
+    def test_extract_tool_result_captures_mime_alongside_image(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import _extract_tool_result
+
+        image_part = MagicMock()
+        image_part.type = "image"
+        image_part.data = "iVBORw0K..."
+        image_part.mimeType = "image/png"
+
+        result = MagicMock()
+        result.isError = False
+        result.structuredContent = None
+        result.content = [image_part]
+
+        out = _extract_tool_result(result)
+        assert out["images"] == ["iVBORw0K..."]
+        assert out["image_mime_types"] == ["image/png"]
+
+    def test_extract_tool_result_handles_missing_mime_field(self):
+        """Older cua-driver builds may omit mimeType — the parallel list
+        carries an empty string so callers fall back to sniffing."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import _extract_tool_result
+
+        image_part = MagicMock()
+        image_part.type = "image"
+        image_part.data = "/9j/4AAQ..."
+        # Simulate the field being absent on the SDK object.
+        del image_part.mimeType
+
+        result = MagicMock()
+        result.isError = False
+        result.structuredContent = None
+        result.content = [image_part]
+
+        out = _extract_tool_result(result)
+        assert out["images"] == ["/9j/4AAQ..."]
+        assert out["image_mime_types"] == [""]
+
+    def test_capture_response_uses_explicit_mime_when_provided(self):
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use.tool import _capture_response
+
+        cap = CaptureResult(
+            mode="vision",
+            width=100, height=100,
+            png_b64="anything-not-a-real-jpeg-prefix-but-mime-says-jpeg",
+            image_mime_type="image/jpeg",
+            png_bytes_len=10,
+        )
+        resp = _capture_response(cap)
+        # _capture_response only returns the _multimodal envelope when the
+        # image is wired into the response.
+        if isinstance(resp, dict) and resp.get("_multimodal"):
+            url = resp["content"][1]["image_url"]["url"]
+            assert url.startswith("data:image/jpeg;base64,"), (
+                f"explicit mime=image/jpeg should win over sniff; got {url[:32]}"
+            )
+
+    def test_capture_response_falls_back_to_sniff_when_mime_missing(self):
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use.tool import _capture_response
+
+        cap = CaptureResult(
+            mode="vision",
+            width=100, height=100,
+            # /9j/ — base64-encoded JPEG SOI marker
+            png_b64="/9j/4AAQSkZJRgABAQAAAQABAAD",
+            image_mime_type=None,
+            png_bytes_len=10,
+        )
+        resp = _capture_response(cap)
+        if isinstance(resp, dict) and resp.get("_multimodal"):
+            url = resp["content"][1]["image_url"]["url"]
+            assert url.startswith("data:image/jpeg;base64,"), (
+                f"sniff fallback should detect JPEG from /9j/ prefix; got {url[:32]}"
+            )
+
+    def test_capture_response_falls_back_to_png_when_mime_missing_and_no_jpeg_prefix(self):
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use.tool import _capture_response
+
+        cap = CaptureResult(
+            mode="vision",
+            width=100, height=100,
+            png_b64="iVBORw0KGgoAAAANSUhEUgAA",  # PNG header in base64
+            image_mime_type=None,
+            png_bytes_len=10,
+        )
+        resp = _capture_response(cap)
+        if isinstance(resp, dict) and resp.get("_multimodal"):
+            url = resp["content"][1]["image_url"]["url"]
+            assert url.startswith("data:image/png;base64,"), (
+                f"sniff fallback should default to PNG; got {url[:32]}"
+            )

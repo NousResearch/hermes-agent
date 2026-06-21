@@ -30,6 +30,15 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def hello() -> None:
+    """Print a friendly greeting.
+
+    This lightweight helper is intended for quick sanity checks or demos.
+    It simply prints ``Hello, Hermes!`` to standard output.
+    """
+    print('Hello, Hermes!')
+
+
 def env_var_enabled(name: str, default: str = "") -> bool:
     """Return True when an environment variable is set to a truthy value."""
     return is_truthy_value(os.getenv(name, default), default=False)
@@ -438,3 +447,7 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+def hello():
+    print('Hello, Hermes!')

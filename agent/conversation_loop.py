@@ -572,6 +572,16 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    # Self-escalation: load thinking config (dynamic ON/OFF toggle)
+    # See ~/self-escalation-implementation-plan.md
+    try:
+        from agent.self_escalation import load_thinking_config
+        _thinking_state = load_thinking_config()
+    except Exception as _se_err:
+        import logging as _se_log
+        _se_log.getLogger(__name__).debug("[self-escalation] Failed to load config: %s", _se_err)
+        _thinking_state = None
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -798,6 +808,13 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        # Self-escalation: inject thinking-mode instructions (API-time only, not cached)
+        if _thinking_state is not None and _thinking_state.enabled:
+            try:
+                from agent.self_escalation import inject_thinking_prompt
+                effective_system = inject_thinking_prompt(effective_system, _thinking_state)
+            except Exception:
+                pass
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -1005,6 +1022,13 @@ def run_conversation(
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                # Self-escalation: inject chat_template_kwargs for thinking toggle
+                if _thinking_state is not None and _thinking_state.enabled:
+                    try:
+                        from agent.self_escalation import inject_thinking_kwargs
+                        api_kwargs = inject_thinking_kwargs(api_kwargs, _thinking_state, agent.provider)
+                    except Exception:
+                        pass
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -3808,6 +3832,29 @@ def run_conversation(
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
             
+            # Self-escalation: detect [ESCALATE_THINKING: true] and re-run with thinking ON
+            if _thinking_state is not None:
+                try:
+                    from agent.self_escalation import detect_escalation, escalate, strip_escalation_marker
+                    if detect_escalation(assistant_message.content or "", _thinking_state):
+                        if escalate(_thinking_state):
+                            # Strip the escalation marker from content
+                            if assistant_message.content:
+                                assistant_message.content = strip_escalation_marker(
+                                    assistant_message.content, _thinking_state
+                                )
+                            logger.debug("[self-escalation] Re-running iteration with thinking ON")
+                            if not agent.quiet_mode:
+                                agent._vprint(f"{agent.log_prefix}🧠 Self-escalation: switching to thinking ON...")
+                            api_call_count -= 1  # Don't count this short iteration
+                            try:
+                                agent.iteration_budget.refund()
+                            except Exception:
+                                pass
+                            continue
+                except Exception as _se_err:
+                    logger.debug("[self-escalation] Detection error: %s", _se_err)
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
@@ -4165,6 +4212,9 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                # Self-escalation: reset for next user turn
+                if _thinking_state is not None:
+                    _thinking_state.reset()
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery

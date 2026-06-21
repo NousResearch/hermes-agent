@@ -2110,9 +2110,9 @@ def _run_browser_command(
             result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
             # Fall through to fallback check below
         else:
-            with open(stdout_path, "r", encoding="utf-8") as f:
+            with open(stdout_path, "r", encoding="utf-8", errors="replace") as f:
                 stdout = f.read()
-            with open(stderr_path, "r", encoding="utf-8") as f:
+            with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
                 stderr = f.read()
             returncode = proc.returncode
 

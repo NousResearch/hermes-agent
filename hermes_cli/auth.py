@@ -5888,7 +5888,11 @@ def resolve_nous_runtime_credentials(
         "expires_at": expires_at,
         "expires_in": expires_in,
         "source": NOUS_AUTH_PATH_INVOKE_JWT,
-        "auth_path": str(state_source_path or _auth_file_path()),
+        # Preserve the public semantic source label while exposing the concrete
+        # store separately for diagnostics. Refresh persistence uses
+        # state_source_path internally and must not overload this field.
+        "auth_path": NOUS_AUTH_PATH_INVOKE_JWT,
+        "state_path": str(state_source_path or _auth_file_path()),
     }
 
 

@@ -1141,6 +1141,62 @@ async def test_run_agent_matrix_suppresses_thinking_by_default(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_run_agent_matrix_requires_platform_opt_in_for_interim_commentary(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-matrix-global-interim-disabled",
+        config_data={
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {"matrix": {"tool_progress": "all"}},
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    assert not any("I'll inspect the repo first." in call["content"] for call in adapter.sent)
+    assert not result.get("already_sent")
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_platform_opt_in_enables_interim_commentary(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-matrix-platform-interim-enabled",
+        config_data={
+            "display": {
+                "interim_assistant_messages": False,
+                "platforms": {
+                    "matrix": {
+                        "tool_progress": "all",
+                        "interim_assistant_messages": True,
+                    }
+                },
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result.get("already_sent") is not True
+    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_matrix_ignores_thinking_progress_opt_in(
     monkeypatch, tmp_path, caplog
 ):

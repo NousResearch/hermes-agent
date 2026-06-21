@@ -200,6 +200,7 @@ class TestPlatformDefaults:
 
         assert resolve_display_setting({}, "matrix", "tool_progress") == "new"
         assert resolve_display_setting({}, "matrix", "streaming") is False
+        assert resolve_display_setting({}, "matrix", "interim_assistant_messages") is False
 
     def test_matrix_default_tool_preview_length_is_room_friendly(self):
         """Matrix opt-in progress uses longer previews when enabled."""

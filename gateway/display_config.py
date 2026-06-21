@@ -135,6 +135,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         **_TIER_MEDIUM,
         "tool_progress": "new",
         "streaming": False,
+        "interim_assistant_messages": False,
         "tool_preview_length": 320,
     },
     "feishu":          _TIER_MEDIUM,

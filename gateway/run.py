@@ -16424,7 +16424,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         log_queue: "queue.Queue | None" = queue.Queue() if log_mode_enabled else None
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
-        # in chat platforms while opting into concise mid-turn updates.
+        # in chat platforms while opting into concise mid-turn updates. Matrix
+        # and Mattermost require explicit per-platform opt-in because these
+        # messages otherwise interrupt room transcripts and read markers.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
             and _resolve_gateway_display_bool(
@@ -16433,7 +16435,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "interim_assistant_messages",
                 default=True,
                 platform=source.platform,
-                require_platform_override_for={Platform.MATTERMOST},
+                require_platform_override_for={Platform.MATTERMOST, Platform.MATRIX},
             )
         )
         # thinking_progress is independent — if enabled, we need the progress

@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, xai, local) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -68,9 +68,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_nine_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -80,6 +80,7 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "local",
             "parallel",
             "searxng",
             "tavily",
@@ -96,6 +97,7 @@ class TestBundledPluginsRegister:
             ("parallel", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
+            ("local", False, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
         ],
@@ -116,7 +118,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "local"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +131,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "local"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -246,6 +248,15 @@ class TestIsAvailable:
         monkeypatch.setenv("XAI_API_KEY", "real")
         assert p.is_available() is True
 
+    def test_local_is_always_available(self) -> None:
+        """Local extraction has no credentials or external service requirement."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("local")
+        assert p is not None
+        assert p.is_available() is True
+
 
 # ---------------------------------------------------------------------------
 # Registry resolution semantics (Option B — conservative smart fallback)
@@ -350,6 +361,14 @@ class TestAsyncExtractDispatch:
         from agent.web_search_registry import get_provider
 
         p = get_provider("firecrawl")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.extract) is True
+
+    def test_local_extract_is_async(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("local")
         assert p is not None
         assert inspect.iscoroutinefunction(p.extract) is True
 

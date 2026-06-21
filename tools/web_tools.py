@@ -204,14 +204,47 @@ def _get_extract_backend() -> str:
 def _get_capability_backend(capability: str) -> str:
     """Shared helper for per-capability backend selection.
 
-    Reads ``web.{capability}_backend`` from config; if set and available,
-    uses it. Otherwise falls through to the shared ``_get_backend()``.
+    Reads ``web.{capability}_backend`` from config first, then ``web.backend``.
+    Search-only providers such as SearXNG, Brave free, DDGS, and xAI must not
+    be reused for extraction; if the configured/shared backend lacks the
+    requested capability, fall through to an available capability-specific
+    backend instead of returning a backend that will fail at dispatch time.
     """
     cfg = _load_web_config()
+    capability_map = {
+        "search": {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"},
+        "extract": {"parallel", "firecrawl", "tavily", "exa", "local"},
+    }
+    allowed = capability_map.get(capability, set())
+
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific and _is_backend_available(specific):
+    if specific and specific in allowed and _is_backend_available(specific):
         return specific
-    return _get_backend()
+
+    shared = (cfg.get("backend") or "").lower().strip()
+    known = {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "local"}
+    if shared and shared in known and _is_backend_available(shared):
+        # Preserve the legacy contract: if a user explicitly set a shared
+        # search-only backend and calls web_extract, dispatch will surface a
+        # typed "search-only backend" error rather than silently switching.
+        return shared
+
+    backend_candidates = (
+        ("tavily", _has_env("TAVILY_API_KEY")),
+        ("exa", _has_env("EXA_API_KEY")),
+        ("parallel", _has_env("PARALLEL_API_KEY")),
+        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
+        ("firecrawl", _is_tool_gateway_ready()),
+        ("searxng", _has_env("SEARXNG_URL")),
+        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("ddgs", _ddgs_package_importable()),
+        ("local", True),
+    )
+    for backend, available in backend_candidates:
+        if backend in allowed and available:
+            return backend
+
+    return "local" if capability == "extract" else "firecrawl"  # default (backward compat)
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -230,6 +263,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "local":
+        return True
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path
@@ -891,6 +926,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return tool_error(error_msg)
 
 
+
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
@@ -978,13 +1014,12 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
-            # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
+            # All bundled web providers (brave-free, ddgs, searxng, exa,
+            # parallel, tavily, firecrawl, xai, local) live as plugins. The
+            # dispatcher is a registry lookup + delegation. Some providers'
+            # extract() is async (parallel, firecrawl, local), others sync
+            # (exa, tavily) — detect coroutine functions and await; sync
+            # functions run in a thread so network I/O doesn't block the loop.
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
@@ -1007,7 +1042,7 @@ async def web_extract_tool(
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, parallel, or local."
                             ),
                         },
                         ensure_ascii=False,
@@ -1020,7 +1055,7 @@ async def web_extract_tool(
                             "error": (
                                 "No web extract provider configured. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, parallel, or local."
                             ),
                         },
                         ensure_ascii=False,
@@ -1030,14 +1065,10 @@ async def web_extract_tool(
                 "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
             )
 
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
             import inspect
             if inspect.iscoroutinefunction(provider.extract):
                 results = await provider.extract(safe_urls, format=format)
             else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
                 results = await asyncio.to_thread(
                     provider.extract, safe_urls, format=format
                 )

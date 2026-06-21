@@ -1,0 +1,9 @@
+name: apify
+version: 1.0.0
+description: "Apify Actor execution — 3 tools (discover, start, collect) for running any of 20,000+ Actors from the Apify Store (web automation, data extraction, social media, maps, e-commerce). Gated on APIFY_API_TOKEN. Toolset is default-off; enable via `hermes tools` → Apify Actors."
+author: JanHranicky
+kind: backend
+provides_tools:
+  - apify_discover
+  - apify_start
+  - apify_collect

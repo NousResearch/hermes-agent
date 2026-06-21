@@ -269,6 +269,15 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "apify": {
+        "description": (
+            "Apify Actor execution — discover Actors in the Store, "
+            "start runs, and collect results."
+        ),
+        "tools": ["apify_discover", "apify_start", "apify_collect"],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],

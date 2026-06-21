@@ -3261,6 +3261,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "APIFY_API_TOKEN": {
+        "description": "Apify API token for Actor execution tools (apify_discover, apify_start, apify_collect)",
+        "prompt": "Apify API token",
+        "url": "https://apify.com/account/integrations",
+        "tools": ["apify_discover", "apify_start", "apify_collect"],
+        "password": True,
+        "category": "tool",
+    },
     "SEARXNG_URL": {
         "description": "URL of your SearXNG instance for free self-hosted web search",
         "prompt": "SearXNG URL (e.g. http://localhost:8080)",

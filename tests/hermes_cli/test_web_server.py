@@ -483,6 +483,34 @@ class TestWebServerEndpoints:
         assert config["dashboard"]["theme"] == "ember"
         assert config["dashboard"]["font"] == "jetbrains-mono"
 
+    def test_get_sessions_total_matches_visible_default_rows(self):
+        """Pagination total must count rows the endpoint can actually return.
+
+        Child delegate sessions are intentionally hidden from the default
+        list_sessions_rich view. If /api/sessions reports the raw session table
+        count instead, the frontend enables phantom pages whose offsets return
+        no rows.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("root", "cli")
+            db.append_message("root", "user", "root request")
+            for i in range(25):
+                sid = f"delegate-{i}"
+                db.create_session(sid, "cli", parent_session_id="root")
+                db.append_message(sid, "user", f"delegate request {i}")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["id"] for s in data["sessions"]] == ["root"]
+        assert data["total"] == 1
+
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
 

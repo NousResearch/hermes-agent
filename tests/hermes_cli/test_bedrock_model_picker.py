@@ -280,9 +280,15 @@ class TestBedrockRegionRouting:
     """End-to-end: region from botocore profile is used for discovery, so EU/AP
     users get eu.*/ap.* model IDs rather than the hardcoded us-east-1 list."""
 
-    def test_eu_region_from_botocore_profile_yields_eu_models(self):
+    def test_eu_region_from_botocore_profile_yields_eu_models(self, monkeypatch):
         """When botocore resolves eu-central-1, picker shows eu.* model IDs."""
         from hermes_cli.model_switch import list_authenticated_providers
+
+        # The code intentionally gives AWS_REGION/AWS_DEFAULT_REGION priority
+        # over botocore profile config.  Clear host-level AWS region variables
+        # so this test actually exercises the botocore-profile fallback path.
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"

@@ -5999,6 +5999,43 @@ def _kill_stale_dashboard_processes(
 _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
+def _atomic_replace_dir(src: str, dst: str) -> None:
+    """Replace directory *dst* with *src* without leaving *dst* half-deleted.
+
+    The naive ``rmtree(dst); copytree(src, dst)`` has a destructive window: if
+    the copy fails partway (common on the Windows ZIP-update path, which only
+    runs because file I/O is already flaky on that machine), the old directory
+    is already gone and nothing replaced it — the install is left with a
+    deleted tree (issue #49145, where ``ui-tui/`` vanished and broke the TUI).
+
+    Instead, stage the new copy into a sibling temp dir first; only once that
+    fully succeeds do we swap it in. A failure during staging raises with the
+    original *dst* still intact.
+    """
+    staging = f"{dst}.hermes-update-staging"
+    backup = f"{dst}.hermes-update-old"
+    # Clear any leftovers from a previously-interrupted update.
+    for leftover in (staging, backup):
+        if os.path.exists(leftover):
+            shutil.rmtree(leftover, ignore_errors=True)
+
+    # 1. Stage the new copy. If this fails, dst is untouched.
+    shutil.copytree(src, staging)
+    # 2. Swap: move the live dir aside, move staging into place. Both moves are
+    #    same-filesystem renames; if the second fails we restore the backup.
+    if os.path.exists(dst):
+        os.rename(dst, backup)
+    try:
+        os.rename(staging, dst)
+    except OSError:
+        if os.path.exists(backup) and not os.path.exists(dst):
+            os.rename(backup, dst)  # roll back to the original
+        raise
+    # 3. New dir is in place; drop the old one (best-effort — never fatal).
+    if os.path.exists(backup):
+        shutil.rmtree(backup, ignore_errors=True)
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -6084,9 +6121,9 @@ def _update_via_zip(args):
             src = os.path.join(extracted, item)
             dst = os.path.join(str(PROJECT_ROOT), item)
             if os.path.isdir(src):
-                if os.path.exists(dst):
-                    shutil.rmtree(dst)
-                shutil.copytree(src, dst)
+                # Atomic-ish replace: never leave dst half-deleted if the copy
+                # fails partway (the failure mode behind #49145 on Windows).
+                _atomic_replace_dir(src, dst)
             else:
                 shutil.copy2(src, dst)
             update_count += 1

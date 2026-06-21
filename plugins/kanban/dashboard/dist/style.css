@@ -67,6 +67,7 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
+  min-width: 0;
 }
 
 .hermes-kanban-column {

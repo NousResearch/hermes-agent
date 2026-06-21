@@ -2366,23 +2366,53 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             lock_fd.close()
         return 0
 
+    def _release_lock() -> None:
+        """Release and close the tick file lock.  Idempotent — safe to call
+        again from the outer guard if the critical section already released."""
+        if lock_fd.closed:
+            return
+        if fcntl:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
+        elif msvcrt:
+            try:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, IOError):
+                pass
+        lock_fd.close()
+
     try:
-        due_jobs = get_due_jobs()
+        # Critical section: select due jobs and advance their next_run_at.
+        # This is the ONLY work that must be serialized across overlapping
+        # ticks — once advance_next_run() has bumped each job's next_run_at,
+        # a concurrent tick that acquires the lock afterwards sees them as
+        # no-longer-due, so at-most-once dispatch is preserved.  The lock is
+        # released in the finally below BEFORE any job is dispatched, so a
+        # long-running delegation no longer starves subsequent ticks (#27485).
+        try:
+            due_jobs = get_due_jobs()
 
-        if verbose and not due_jobs:
-            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
-            return 0
+            if verbose and not due_jobs:
+                logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+                return 0
 
-        if verbose:
-            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+            if verbose:
+                logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        # For parallel jobs that are already running, advance_next_run keeps
-        # bumping next_run_at forward so the grace window never expires.
-        # mark_job_run() overwrites next_run_at on completion.
-        for job in due_jobs:
-            advance_next_run(job["id"])
+            # Advance next_run_at for all recurring jobs FIRST, under the file
+            # lock, before any execution begins.  This preserves at-most-once
+            # semantics.  For parallel jobs that are already running,
+            # advance_next_run keeps bumping next_run_at forward so the grace
+            # window never expires.  mark_job_run() overwrites next_run_at on
+            # completion.
+            for job in due_jobs:
+                advance_next_run(job["id"])
+        finally:
+            # Release the lock as soon as the schedule state is committed —
+            # dispatch, sync waiting, and MCP cleanup all run lock-free below.
+            _release_lock()
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -2532,17 +2562,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         return sum(_results)
     finally:
-        if fcntl:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+        # Safety net: the lock is normally released in the critical-section
+        # finally above, before dispatch.  This idempotent call guarantees it
+        # is also released if the dispatch phase raises before any callback
+        # runs.  No-op when already released.
+        _release_lock()
 
 
 if __name__ == "__main__":

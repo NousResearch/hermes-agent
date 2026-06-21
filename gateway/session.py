@@ -1074,6 +1074,21 @@ class SessionStore:
 
         return entry
 
+    def get_existing_session(self, source: SessionSource) -> Optional[SessionEntry]:
+        """Return the current entry for ``source`` without creating or resetting.
+
+        Some gateway probes need to check optional per-session side state
+        before deciding whether an inbound message should start a real agent
+        turn. Those probes must not call :meth:`get_or_create_session`,
+        because creating a session is itself user-visible state and can bypass
+        early-return paths such as Telegram topic-mode lobby reminders or the
+        active-session limit.
+        """
+        session_key = self._generate_session_key(source)
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
+
     def update_session(
         self,
         session_key: str,

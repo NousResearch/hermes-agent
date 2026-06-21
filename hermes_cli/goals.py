@@ -194,6 +194,142 @@ class GoalState:
         return "\n".join(f"- {i}. {text}" for i, text in enumerate(self.subgoals, start=1))
 
 
+@dataclass
+class GoalDraft:
+    """Pending Goal Packet awaiting user approval.
+
+    Unlike ``GoalState``, this is not an active standing goal. It exists so
+    ``/goal <text>`` can show a clarified packet first and only start the
+    autonomous loop after the user replies in natural language.
+    """
+
+    raw_goal: str
+    packet: str
+    revision: int = 1
+    status: str = "pending"       # pending | approved | cleared
+    created_at: float = 0.0
+    updated_at: float = 0.0
+    edits: List[str] = field(default_factory=list)
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, raw: str) -> "GoalDraft":
+        data = json.loads(raw)
+        edits_raw = data.get("edits") or []
+        edits: List[str] = []
+        if isinstance(edits_raw, list):
+            edits = [str(e).strip() for e in edits_raw if str(e).strip()]
+        return cls(
+            raw_goal=str(data.get("raw_goal") or ""),
+            packet=str(data.get("packet") or ""),
+            revision=int(data.get("revision", 1) or 1),
+            status=str(data.get("status") or "pending"),
+            created_at=float(data.get("created_at", 0.0) or 0.0),
+            updated_at=float(data.get("updated_at", 0.0) or 0.0),
+            edits=edits,
+        )
+
+
+def build_goal_packet(raw_goal: str, *, edits: Optional[List[str]] = None, revision: int = 1) -> str:
+    """Build the approval-gated Goal Packet used before starting ``/goal``.
+
+    This is deterministic by design: command handlers can create the safety
+    packet without making an extra model call, and the eventual active goal
+    contains the same packet the user approved.
+    """
+    raw_goal = (raw_goal or "").strip()
+    if not raw_goal:
+        raise ValueError("goal text is empty")
+    clean_edits = [str(e).strip() for e in (edits or []) if str(e).strip()]
+    edits_block = "없음"
+    if clean_edits:
+        edits_block = "\n".join(f"- v{i + 2}: {text}" for i, text in enumerate(clean_edits))
+    return (
+        f"🧭 Goal Packet v{revision}\n\n"
+        "## 1. 원래 요청\n"
+        f"> {raw_goal}\n\n"
+        "## 2. 정리된 목표\n"
+        f"- {raw_goal}\n\n"
+        "## 3. 작업 범위\n"
+        "- 대상: 요청에 직접 관련된 파일, 설정, 문서, 실행 상태\n"
+        "- 포함: 선행 확인, 필요한 최소 변경, 검증, 최종 보고\n"
+        "- 제외: 불필요한 리팩터링, 대량 이동/삭제, 외부 전송, 시크릿 노출\n\n"
+        "## 4. 완료조건 / Definition of Done\n"
+        "- [ ] 요청한 결과가 실제로 수행되거나, 불가능한 경우 근거와 대안을 보고\n"
+        "- [ ] 변경 사항이 있으면 변경 파일과 핵심 diff를 보고\n"
+        "- [ ] 가능한 테스트/검증을 실행하고 결과를 보고\n\n"
+        "## 5. 검증 계획\n"
+        "- 관련 파일/설정/상태를 도구로 확인\n"
+        "- 코드 변경은 가능한 한 타깃 테스트를 실행\n"
+        "- 검증 불가 시 이유와 남은 리스크를 명시\n\n"
+        "## 6. 안전 경계\n"
+        "- 삭제, 대량 이동, 서비스 재시작, 외부 메시지 전송, 시크릿 조회는 별도 승인 전 금지\n"
+        "- 기존 동작과 무관한 정리/개선은 하지 않음\n\n"
+        "## 7. 사용자 수정 요청\n"
+        f"{edits_block}\n\n"
+        "## 8. 응답 규칙\n"
+        "- 진행/좋아/ㄱ/승인: 이 Goal Packet으로 시작\n"
+        "- 수정 내용: Goal Packet을 반영해 다시 제시\n"
+        "- 취소/삭제/없던 걸로: 초안 폐기"
+    )
+
+
+def render_goal_draft_notice(draft: GoalDraft) -> str:
+    return (
+        f"{draft.packet}\n\n"
+        "진행할까요?\n"
+        "답장 예: `진행` / `수정: ...` / `취소`"
+    )
+
+
+def _preview_goal(text: str, limit: int = 120) -> str:
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1] + "…"
+
+
+def render_goal_approved_notice(state: GoalState) -> str:
+    return (
+        f"⊙ Goal set ({state.max_turns}-turn budget): {_preview_goal(state.goal)}\n"
+        "승인된 Goal Packet으로 시작합니다. "
+        "Controls: /goal status · /goal pause · /goal resume · /goal clear"
+    )
+
+
+def _normalize_draft_reply(text: str) -> str:
+    text = " ".join(str(text or "").strip().lower().split())
+    return text.strip("`'\".,!?;:()[]{}")
+
+
+def classify_goal_draft_reply(text: str) -> str:
+    """Classify a natural-language reply to a pending Goal Packet.
+
+    Returns ``approve``, ``cancel``, or ``edit``. Approval is intentionally
+    exact-match only: replies like "진행하되 위키는 빼" should be treated as an
+    edit, not as approval.
+    """
+    norm = _normalize_draft_reply(text)
+    approve = {
+        "진행", "진행해", "좋아", "좋습니다", "승인", "승인해", "ㄱ",
+        "해", "시작", "시작해", "ok", "okay", "yes", "y", "go", "go ahead",
+        "approve", "approved", "start",
+    }
+    cancel = {
+        "취소", "취소해", "삭제", "삭제해", "없던 걸로", "없던걸로", "그만",
+        "clear", "cancel", "discard", "stop", "nevermind", "never mind",
+    }
+    if norm in approve:
+        return "approve"
+    if norm in cancel:
+        return "cancel"
+    if re.fullmatch(r"취소(?:해|할래|합니다|할게|요)?", norm):
+        return "cancel"
+    return "edit"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Persistence (SessionDB state_meta)
 # ──────────────────────────────────────────────────────────────────────
@@ -201,6 +337,10 @@ class GoalState:
 
 def _meta_key(session_id: str) -> str:
     return f"goal:{session_id}"
+
+
+def _draft_meta_key(session_id: str) -> str:
+    return f"goal_draft:{session_id}"
 
 
 _DB_CACHE: Dict[str, Any] = {}
@@ -219,7 +359,8 @@ def _get_session_db() -> Optional[Any]:
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
 
-        home = str(get_hermes_home())
+        home_path = get_hermes_home()
+        home = str(home_path)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB bootstrap failed (%s)", exc)
         return None
@@ -228,7 +369,7 @@ def _get_session_db() -> Optional[Any]:
     if cached is not None:
         return cached
     try:
-        db = SessionDB()
+        db = SessionDB(home_path / "state.db")
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
@@ -315,6 +456,55 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("GoalManager: goal migration failed: %s", exc)
         return False
+
+
+def load_goal_draft(session_id: str) -> Optional[GoalDraft]:
+    """Load a pending Goal Packet draft for a session, if one exists."""
+    if not session_id:
+        return None
+    db = _get_session_db()
+    if db is None:
+        return None
+    try:
+        raw = db.get_meta(_draft_meta_key(session_id))
+    except Exception as exc:
+        logger.debug("GoalManager: get draft meta failed: %s", exc)
+        return None
+    if not raw:
+        return None
+    try:
+        draft = GoalDraft.from_json(raw)
+    except Exception as exc:
+        logger.warning("GoalManager: could not parse stored goal draft for %s: %s", session_id, exc)
+        return None
+    if draft.status != "pending":
+        return None
+    if not draft.packet.strip():
+        return None
+    return draft
+
+
+def save_goal_draft(session_id: str, draft: GoalDraft) -> None:
+    """Persist a Goal Packet draft to SessionDB. No-op if DB unavailable."""
+    if not session_id:
+        return
+    db = _get_session_db()
+    if db is None:
+        return
+    try:
+        db.set_meta(_draft_meta_key(session_id), draft.to_json())
+    except Exception as exc:
+        logger.debug("GoalManager: set draft meta failed: %s", exc)
+
+
+def clear_goal_draft(session_id: str) -> None:
+    """Mark a pending Goal Packet draft cleared (preserved for audit)."""
+    draft = load_goal_draft(session_id)
+    if draft is None:
+        return
+    draft.status = "cleared"
+    draft.updated_at = time.time()
+    save_goal_draft(session_id, draft)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -527,12 +717,19 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+        self._draft: Optional[GoalDraft] = load_goal_draft(session_id)
 
     # --- introspection ------------------------------------------------
 
     @property
     def state(self) -> Optional[GoalState]:
         return self._state
+
+    def pending_draft(self) -> Optional[GoalDraft]:
+        return self._draft
+
+    def has_pending_draft(self) -> bool:
+        return self._draft is not None and self._draft.status == "pending"
 
     def is_active(self) -> bool:
         return self._state is not None and self._state.status == "active"
@@ -543,6 +740,8 @@ class GoalManager:
     def status_line(self) -> str:
         s = self._state
         if s is None or s.status in {"cleared",}:
+            if self.has_pending_draft():
+                return f"Pending Goal Packet v{self._draft.revision}: {_preview_goal(self._draft.raw_goal)}"
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
@@ -571,7 +770,88 @@ class GoalManager:
         )
         self._state = state
         save_goal(self.session_id, state)
+        if self._draft is not None:
+            clear_goal_draft(self.session_id)
+            self._draft = None
         return state
+
+    def draft(self, raw_goal: str) -> GoalDraft:
+        raw_goal = (raw_goal or "").strip()
+        if not raw_goal:
+            raise ValueError("goal text is empty")
+        now = time.time()
+        draft = GoalDraft(
+            raw_goal=raw_goal,
+            packet=build_goal_packet(raw_goal, revision=1),
+            revision=1,
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+        self._draft = draft
+        save_goal_draft(self.session_id, draft)
+        return draft
+
+    def revise_draft(self, feedback: str) -> GoalDraft:
+        feedback = (feedback or "").strip()
+        if not feedback:
+            raise ValueError("draft revision text is empty")
+        draft = self._draft or load_goal_draft(self.session_id)
+        if draft is None:
+            raise RuntimeError("no pending goal draft")
+        edits = [*draft.edits, feedback]
+        draft.edits = edits
+        draft.revision += 1
+        draft.packet = build_goal_packet(draft.raw_goal, edits=edits, revision=draft.revision)
+        draft.updated_at = time.time()
+        self._draft = draft
+        save_goal_draft(self.session_id, draft)
+        return draft
+
+    def approve_draft(self) -> GoalState:
+        draft = self._draft or load_goal_draft(self.session_id)
+        if draft is None:
+            raise RuntimeError("no pending goal draft")
+        draft.status = "approved"
+        draft.updated_at = time.time()
+        save_goal_draft(self.session_id, draft)
+        self._draft = None
+        return self.set(draft.packet)
+
+    def clear_draft(self) -> None:
+        if self._draft is None:
+            clear_goal_draft(self.session_id)
+            return
+        self._draft.status = "cleared"
+        self._draft.updated_at = time.time()
+        save_goal_draft(self.session_id, self._draft)
+        self._draft = None
+
+    def handle_draft_reply(self, reply: str) -> Dict[str, Any]:
+        draft = self._draft or load_goal_draft(self.session_id)
+        if draft is None:
+            return {"action": "none", "message": ""}
+        self._draft = draft
+        action = classify_goal_draft_reply(reply)
+        if action == "approve":
+            state = self.approve_draft()
+            return {
+                "action": "approve",
+                "state": state,
+                "message": render_goal_approved_notice(state),
+            }
+        if action == "cancel":
+            self.clear_draft()
+            return {
+                "action": "cancel",
+                "message": "✓ Goal Packet 초안을 취소했습니다.",
+            }
+        edited = self.revise_draft(reply)
+        return {
+            "action": "edit",
+            "draft": edited,
+            "message": render_goal_draft_notice(edited),
+        }
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
@@ -592,11 +872,11 @@ class GoalManager:
         return self._state
 
     def clear(self) -> None:
-        if self._state is None:
-            return
-        self._state.status = "cleared"
-        save_goal(self.session_id, self._state)
-        self._state = None
+        if self._state is not None:
+            self._state.status = "cleared"
+            save_goal(self.session_id, self._state)
+            self._state = None
+        self.clear_draft()
 
     def mark_done(self, reason: str) -> None:
         if not self._state:
@@ -934,6 +1214,7 @@ def run_kanban_goal_loop(
 
 __all__ = [
     "GoalState",
+    "GoalDraft",
     "GoalManager",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
@@ -942,10 +1223,17 @@ __all__ = [
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",
+    "build_goal_packet",
+    "render_goal_draft_notice",
+    "render_goal_approved_notice",
+    "classify_goal_draft_reply",
     "load_goal",
     "save_goal",
     "clear_goal",
     "migrate_goal_to_session",
+    "load_goal_draft",
+    "save_goal_draft",
+    "clear_goal_draft",
     "judge_goal",
     "run_kanban_goal_loop",
 ]

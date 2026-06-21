@@ -6222,6 +6222,32 @@ def _(rid, params: dict) -> dict:
                     db.replace_messages(session["session_key"], truncated)
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+        if isinstance(text, str) and not text.strip().startswith("/"):
+            try:
+                from hermes_cli.goals import GoalManager
+
+                goals_cfg = _load_cfg().get("goals") or {}
+                max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                mgr = GoalManager(
+                    session_id=session.get("session_key") or "",
+                    default_max_turns=max_turns,
+                )
+                if mgr.has_pending_draft():
+                    result = mgr.handle_draft_reply(text)
+                    action = result.get("action")
+                    message = result.get("message") or ""
+                    if message:
+                        _emit("status.update", sid, {"kind": "goal", "text": message})
+                    if action == "approve":
+                        state = result.get("state")
+                        text = getattr(state, "goal", "") or text
+                    elif action in {"edit", "cancel"}:
+                        return _ok(rid, {"status": "handled"})
+            except Exception as exc:
+                print(
+                    f"[tui_gateway] goal draft reply handling failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
         session["running"] = True
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
@@ -8961,7 +8987,7 @@ def _(rid, params: dict) -> dict:
                 },
             )
         if lower in {"clear", "stop", "done"}:
-            had = mgr.has_goal()
+            had = mgr.has_goal() or mgr.has_pending_draft()
             mgr.clear()
             return _ok(
                 rid,
@@ -8971,25 +8997,15 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
-        # Otherwise — treat the remaining text as the new goal.
+        # Otherwise — create a pending Goal Packet draft. Do not kick off the
+        # autonomous loop until the user replies with natural-language approval.
         try:
-            state = mgr.set(arg)
+            from hermes_cli.goals import render_goal_draft_notice
+            draft = mgr.draft(arg)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
-        notice = (
-            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
-            "Controls: /goal status · /goal pause · /goal resume · /goal clear"
-        )
-        # Send the goal text as the kickoff prompt. The TUI client sees
-        # {type: send, notice, message} → renders `notice` as a sys line,
-        # then submits `message` as a user turn. The post-turn judge
-        # wired in _run_prompt_submit takes over from there.
-        return _ok(
-            rid,
-            {"type": "send", "notice": notice, "message": state.goal},
-        )
+        return _ok(rid, {"type": "exec", "output": render_goal_draft_notice(draft)})
 
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the

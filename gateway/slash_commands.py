@@ -1797,7 +1797,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.goal.resumed", goal=state.goal)
 
         if lower in {"clear", "stop", "done"}:
-            had = mgr.has_goal()
+            had = mgr.has_goal() or mgr.has_pending_draft()
             mgr.clear()
             try:
                 adapter = self.adapters.get(event.source.platform) if event.source else None
@@ -1808,30 +1808,53 @@ class GatewaySlashCommandsMixin:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
 
-        # Otherwise — treat the remaining text as the new goal.
+        # Otherwise — create a pending Goal Packet draft. Do not queue the
+        # autonomous kickoff until the user replies with natural-language approval.
         try:
-            state = mgr.set(args)
+            from hermes_cli.goals import render_goal_draft_notice
+            draft = mgr.draft(args)
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
 
-        # Queue the goal text as an immediate first turn so the agent
-        # starts making progress. The post-turn hook takes over after.
-        adapter = self.adapters.get(event.source.platform) if event.source else None
-        _quick_key = self._session_key_for_source(event.source) if event.source else None
-        if adapter and _quick_key:
-            try:
-                kickoff_event = MessageEvent(
-                    text=state.goal,
-                    message_type=MessageType.TEXT,
-                    source=event.source,
-                    message_id=event.message_id,
-                    channel_prompt=event.channel_prompt,
-                )
-                self._enqueue_fifo(_quick_key, kickoff_event, adapter)
-            except Exception as exc:
-                logger.debug("goal kickoff enqueue failed: %s", exc)
+        return render_goal_draft_notice(draft)
 
-        return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+    async def _handle_pending_goal_reply(self, event: "MessageEvent") -> Optional[str]:
+        """Handle natural-language approve/edit/cancel replies to a Goal Packet."""
+        text = (getattr(event, "text", "") or "").strip()
+        if not text or text.startswith("/"):
+            return None
+
+        mgr, _session_entry = self._get_goal_manager_for_event(
+            event,
+            create_session=False,
+        )
+        if mgr is None or not mgr.has_pending_draft():
+            return None
+
+        result = mgr.handle_draft_reply(text)
+        action = result.get("action")
+        if action == "none":
+            return None
+
+        if action == "approve":
+            state = result.get("state")
+            goal_text = getattr(state, "goal", "") or ""
+            adapter = self.adapters.get(event.source.platform) if event.source else None
+            _quick_key = self._session_key_for_source(event.source) if event.source else None
+            if adapter and _quick_key and goal_text:
+                try:
+                    kickoff_event = MessageEvent(
+                        text=goal_text,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                    )
+                    self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                except Exception as exc:
+                    logger.debug("goal approval kickoff enqueue failed: %s", exc)
+
+        return result.get("message") or ""
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).

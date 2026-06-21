@@ -4573,7 +4573,9 @@ def _runtime_health_lines() -> list[str]:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
     elif gateway_state == "draining":
         action = "restart" if restart_requested else "shutdown"
-        count = int(active_agents or 0)
+        from gateway.status import parse_active_agents
+
+        count = parse_active_agents(active_agents)
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")

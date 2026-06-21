@@ -807,6 +807,7 @@ class GatewayKanbanWatchersMixin:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
+        _decompose_warn_state = [0]  # [last_warn_epoch]; mutable for closure
         # Avoid hot-looping corrupt-looking board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
         # surface as "database disk image is malformed" for one tick.
@@ -1059,12 +1060,21 @@ class GatewayKanbanWatchersMixin:
                                     slug, tid,
                                 )
                         else:
-                            # Common no-op reasons (no aux client configured) shouldn't
-                            # spam logs every tick. Log at debug.
-                            logger.debug(
-                                "kanban auto-decompose [%s]: %s skipped: %s",
-                                slug, tid, outcome.reason,
-                            )
+                            # First failure at WARNING, then once every 5 min
+                            # so persistent misconfigurations are visible
+                            # without spamming on transient hiccups.
+                            now = int(time.time())
+                            if now - _decompose_warn_state[0] >= 300:
+                                logger.warning(
+                                    "kanban auto-decompose [%s]: %s skipped: %s",
+                                    slug, tid, outcome.reason,
+                                )
+                                _decompose_warn_state[0] = now
+                            else:
+                                logger.debug(
+                                    "kanban auto-decompose [%s]: %s skipped: %s",
+                                    slug, tid, outcome.reason,
+                                )
                 finally:
                     if prev_env is None:
                         os.environ.pop("HERMES_KANBAN_BOARD", None)

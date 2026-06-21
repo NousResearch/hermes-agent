@@ -281,3 +281,188 @@ async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkey
 
     with pytest.raises(RuntimeError, match="route failed"):
         await router._deliver_to_platform(target, "hello", metadata={"telegram_reply_to_message_id": "9001"})
+
+
+# ---------------------------------------------------------------------------
+# Cron output truncation / adapter-aware chunking (issue #50126)
+# ---------------------------------------------------------------------------
+
+class ChunkingAdapter:
+    """Adapter that declares splits_long_messages=True (like Discord/Telegram)."""
+    splits_long_messages = True
+
+    def __init__(self):
+        self.calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
+
+
+class NonChunkingAdapter:
+    """Adapter without splits_long_messages (default False — legacy behavior)."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
+
+
+@pytest.mark.asyncio
+async def test_long_output_truncated_for_non_chunking_adapter(tmp_path, monkeypatch):
+    """Non-chunking adapters receive truncated content with a footer + file save."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job1"})
+
+    delivered = adapter.calls[0]["content"]
+    assert len(delivered) < 5000  # was truncated
+    assert "truncated" in delivered.lower()
+    assert "full output saved to" in delivered
+    # Full output was saved to disk
+    saved_files = list(tmp_path.glob("cron/output/job1_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text() == long_content
+
+
+@pytest.mark.asyncio
+async def test_long_output_preserved_for_chunking_adapter(tmp_path, monkeypatch):
+    """Chunking adapters (splits_long_messages=True) receive the FULL content."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = ChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job2"})
+
+    delivered = adapter.calls[0]["content"]
+    assert delivered == long_content  # NOT truncated — adapter handles chunking
+    assert "truncated" not in delivered.lower()
+    # Full output still saved to disk as audit trail
+    saved_files = list(tmp_path.glob("cron/output/job2_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text() == long_content
+
+
+@pytest.mark.asyncio
+async def test_short_output_never_truncated(tmp_path, monkeypatch):
+    """Output under the limit passes through untouched for any adapter."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    short_content = "x" * 100
+    await router._deliver_to_platform(target, short_content, metadata={"job_id": "job3"})
+
+    assert adapter.calls[0]["content"] == short_content
+    # Nothing saved to disk
+    assert not list(tmp_path.glob("cron/output/*.txt"))
+
+
+@pytest.mark.asyncio
+async def test_env_override_changes_truncation_threshold(tmp_path, monkeypatch):
+    """HERMES_DELIVERY_MAX_PLATFORM_OUTPUT env var overrides the default 4000."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_DELIVERY_MAX_PLATFORM_OUTPUT", "200")
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    content = "x" * 300  # over the env-override threshold of 200
+    await router._deliver_to_platform(target, content, metadata={"job_id": "job4"})
+
+    delivered = adapter.calls[0]["content"]
+    assert len(delivered) < 300  # truncated because env lowered the bar
+    assert "truncated" in delivered.lower()
+    # Audit file saved (truncation path always saves when it truncates)
+    saved_files = list(tmp_path.glob("cron/output/job4_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text() == content
+
+
+@pytest.mark.asyncio
+async def test_env_override_disable_truncation(tmp_path, monkeypatch):
+    """Setting HERMES_DELIVERY_MAX_PLATFORM_OUTPUT=0 disables truncation entirely."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_DELIVERY_MAX_PLATFORM_OUTPUT", "0")
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    content = "x" * 10000
+    await router._deliver_to_platform(target, content, metadata={"job_id": "job5"})
+
+    # With max_output=0, truncation is disabled — even non-chunking adapters
+    # receive the full content (they may error at the platform API level, but
+    # that's the user's explicit choice).
+    assert adapter.calls[0]["content"] == content
+    # Audit file STILL saved — the audit threshold (4000) is independent of
+    # the truncation setting.  Content (10000) exceeds it.
+    saved_files = list(tmp_path.glob("cron/output/job5_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text() == content
+
+
+@pytest.mark.asyncio
+async def test_audit_save_failure_does_not_break_chunking_delivery(tmp_path, monkeypatch):
+    """If the audit save fails (disk full, permissions), chunking adapters
+    still receive the full content — the save is best-effort."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+
+    adapter = ChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+
+    call_count = {"n": 0}
+
+    def failing_save(content, job_id):
+        call_count["n"] += 1
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(router, "_save_full_output", failing_save)
+
+    # Should NOT raise — audit failure is caught
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job6"})
+
+    # Adapter still got the full content
+    assert adapter.calls[0]["content"] == long_content
+    # Save was attempted
+    assert call_count["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_audit_save_failure_does_not_break_non_chunking_delivery(tmp_path, monkeypatch):
+    """If the audit save fails AND truncation is needed, the fallback save
+    in Step 2 is NOT caught — the footer needs a valid path, so this is a
+    real failure. But if content exceeds the audit threshold AND truncation
+    is disabled (max_output=0), the caught Step 1 failure lets delivery
+    proceed."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_DELIVERY_MAX_PLATFORM_OUTPUT", "0")
+
+    adapter = NonChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "x" * 5000
+
+    def failing_save(content, job_id):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(router, "_save_full_output", failing_save)
+
+    # max_output=0 → no truncation → Step 1 failure is caught → delivery proceeds
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
+
+    # Non-chunking adapter still got the full content (truncation disabled)
+    assert adapter.calls[0]["content"] == long_content

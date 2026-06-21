@@ -1132,6 +1132,12 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
+
+    # Semantic recall (jcode-style): embedding-backed retrieval of similar
+    # past turns. Default disabled; opt-in via memory.semantic_recall.enabled.
+    # Independent of MEMORY.md / USER.md — these are separate surfaces.
+    agent._recall_service = None
+
     if not skip_memory:
         try:
             mem_config = _agent_cfg.get("memory", {})
@@ -1147,7 +1153,26 @@ def init_agent(
                 agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init
-    
+
+        # Build recall service only if explicitly enabled. Failures here
+        # are non-fatal — a broken recall backend should never block
+        # agent init.
+        try:
+            _recall_cfg = _agent_cfg.get("memory", {}).get("semantic_recall", {})
+            if isinstance(_recall_cfg, dict) and _recall_cfg.get("enabled"):
+                from agent.recall import build_recall_service
+                from agent.file_safety import _resolve_active_profile_name
+                _profile = _resolve_active_profile_name()
+                _profile_dir = get_hermes_home() / "profiles" / _profile
+                _profile_dir.mkdir(parents=True, exist_ok=True)
+                agent._recall_service = build_recall_service(
+                    profile_dir=_profile_dir,
+                    config=_recall_cfg,
+                )
+        except Exception:
+            # Recall is optional; never break agent init on a bad backend.
+            agent._recall_service = None
+
 
 
     # Memory provider plugin (external — one at a time, alongside built-in)

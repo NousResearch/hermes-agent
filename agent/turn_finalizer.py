@@ -380,6 +380,19 @@ def finalize_turn(
         _should_review_skills = True
         agent._iters_since_skill = 0
 
+    # Semantic recall: embed the assistant's final response for this turn
+    # so future turns can recall it via cosine similarity. Best-effort —
+    # failures here never affect the user-visible response. Skipped
+    # entirely when recall is disabled or interrupted (we don't want to
+    # embed partial / aborted responses).
+    if final_response and not interrupted:
+        try:
+            _recall_service = getattr(agent, "_recall_service", None)
+            if _recall_service is not None and final_response.strip():
+                _recall_service.record_turn("assistant", final_response)
+        except Exception:
+            pass  # recall is best-effort
+
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,

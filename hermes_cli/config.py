@@ -1903,6 +1903,28 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Semantic recall (jcode-style): per-turn embedding of user +
+        # assistant turns with cosine retrieval. Independent of
+        # memory_enabled / USER.md — this is a per-session turn-recall
+        # surface, not durable cross-session memory.
+        #   enabled  (default false) — turn on automatic recall injection.
+        #   backend  (default "noop") — "noop" disables embedding (cheapest),
+        #                              "numpy" uses sentence-transformers
+        #                              (downloads ~90 MB model on first use).
+        #   top_k    (default 5)      — number of recalled turns per turn.
+        #   max_turns (default 200)   — sliding-window size of the on-disk store.
+        #   max_tokens (default 1500) — hard cap on the recall block size.
+        # When backend is "numpy" but sentence-transformers is not installed
+        # (or its torch dependency fails to load), recall silently degrades to
+        # noop — no error, no injection.
+        "semantic_recall": {
+            "enabled": False,
+            "backend": "noop",
+            "model": "all-MiniLM-L6-v2",
+            "top_k": 5,
+            "max_turns": 200,
+            "max_tokens": 1500,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

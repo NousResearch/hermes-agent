@@ -235,22 +235,64 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return normalized_configured == normalized_provider
 
 
-def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
+def _copilot_runtime_api_mode(
+    model_cfg: Dict[str, Any],
+    api_key: str,
+    target_model: Optional[str] = None,
+) -> str:
+    """Resolve the api_mode for a Copilot model, preferring the model in use.
+
+    Copilot is a multi-family provider: GPT-5+ models are served only on the
+    Responses API (``/responses``) and are rejected on ``/chat/completions``
+    with ``unsupported_api_for_model`` — which surfaces in Hermes as an empty
+    reply / ``no final response was produced``. Claude- and Gemini-via-Copilot
+    use Chat Completions. api_mode is therefore a function of the *model being
+    invoked*, not a value that can be pinned once in config.
+
+    ``target_model`` is the model actually being used (an explicit
+    ``--model``/``/model`` switch); it overrides ``model_cfg["default"]`` so
+    api_mode follows the switch instead of a stale persisted default. We
+    re-derive the family-required mode *before* honoring a persisted
+    ``api_mode`` so the setup wizard's default ``chat_completions`` (written
+    once, then stale the moment the user picks a GPT-5 model) cannot silently
+    misroute GPT-5+ traffic. When the model does not force a mode, the
+    explicit persisted api_mode still wins (e.g. Claude-via-Copilot users who
+    intentionally pin ``chat_completions``), preserving existing setups.
+
+    Mirrors the per-target re-derivation already in place for the other
+    multi-family providers — opencode-zen/go (#15106, #16878) and
+    azure-foundry (#16361).
+    """
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+
+    # Prefer the actually-requested model over the persisted default so a
+    # /model switch (or an explicit --model) drives api_mode.
+    effective_model = str(target_model or model_cfg.get("default") or "").strip()
+
+    model_inferred_mode: Optional[str] = None
+    if effective_model:
+        try:
+            from hermes_cli.models import copilot_model_api_mode
+
+            model_inferred_mode = copilot_model_api_mode(effective_model, api_key=api_key)
+        except Exception:
+            model_inferred_mode = None
+
+    # A family-restricted mode (GPT-5+ -> codex_responses, Claude-only
+    # deployments -> anthropic_messages) beats a stale persisted
+    # chat_completions: routing GPT-5+ to /chat/completions returns an empty
+    # response. This is the narrow correctness guard.
+    if model_inferred_mode and model_inferred_mode != "chat_completions":
+        return model_inferred_mode
+
+    # Otherwise honor an explicitly persisted api_mode for the Copilot
+    # provider (so a deliberate chat_completions pin is respected).
     if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
         return configured_mode
 
-    model_name = str(model_cfg.get("default") or "").strip()
-    if not model_name:
-        return "chat_completions"
-
-    try:
-        from hermes_cli.models import copilot_model_api_mode
-
-        return copilot_model_api_mode(model_name, api_key=api_key)
-    except Exception:
-        return "chat_completions"
+    # Fall back to whatever the model lookup produced, defaulting safe.
+    return model_inferred_mode or "chat_completions"
 
 
 _VALID_API_MODES = {
@@ -356,7 +398,11 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "nous":
         api_mode = "chat_completions"
     elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        api_mode = _copilot_runtime_api_mode(
+            model_cfg,
+            getattr(entry, "runtime_api_key", ""),
+            target_model=effective_model,
+        )
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
@@ -1240,6 +1286,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1359,7 +1406,7 @@ def _resolve_explicit_runtime(
 
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+            api_mode = _copilot_runtime_api_mode(model_cfg, api_key, target_model=target_model)
         elif provider == "xai":
             api_mode = "codex_responses"
         else:
@@ -1460,6 +1507,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -1799,7 +1847,9 @@ def resolve_runtime_provider(
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+            api_mode = _copilot_runtime_api_mode(
+                model_cfg, creds.get("api_key", ""), target_model=target_model
+            )
         elif provider == "xai":
             api_mode = "codex_responses"
         else:

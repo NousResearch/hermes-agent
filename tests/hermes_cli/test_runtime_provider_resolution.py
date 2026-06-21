@@ -2083,6 +2083,126 @@ class TestAzureFoundryResolution:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Copilot — per-model api_mode re-derivation (GitHub #27132)
+#
+# Copilot is a multi-family provider. GPT-5+ models are served ONLY on the
+# Responses API (/responses); Copilot rejects them on /chat/completions with
+# ``unsupported_api_for_model``, which surfaces in Hermes as an empty reply /
+# "no final response was produced". Claude- and Gemini-via-Copilot use Chat
+# Completions. So api_mode MUST be a function of the model actually in use,
+# not a value pinned once in config.
+#
+# The bug: ``_copilot_runtime_api_mode`` honored a persisted
+# ``api_mode: chat_completions`` (written by the setup wizard) and derived the
+# model from ``model_cfg["default"]`` (often a Claude model) — so an explicit
+# request for ``gpt-5.5`` (e.g. an LM-council seat invoked with
+# ``--provider copilot --model gpt-5.5``) silently routed to chat_completions
+# and returned nothing. The fix re-derives the family-required mode from the
+# target model BEFORE honoring a persisted chat_completions pin.
+#
+# Mirrors the sibling re-derivation for azure-foundry (above) and
+# opencode-zen/go.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestCopilotPerModelApiMode:
+    """Unit tests for _copilot_runtime_api_mode target-model preference."""
+
+    def _cfg(self, default="claude-opus-4.8", api_mode="chat_completions"):
+        # The classic trap: setup wizard pinned chat_completions while the
+        # persisted default is a Claude model.
+        return {"provider": "copilot", "default": default, "api_mode": api_mode}
+
+    def test_gpt5_target_overrides_persisted_chat_completions(self):
+        """The core bug: gpt-5.5 seat must reach codex_responses despite a
+        persisted chat_completions pin + a Claude default."""
+        mode = rp._copilot_runtime_api_mode(
+            self._cfg(), "", target_model="gpt-5.5"
+        )
+        assert mode == "codex_responses"
+
+    def test_gpt5_codex_target_overrides_pin(self):
+        mode = rp._copilot_runtime_api_mode(
+            self._cfg(), "", target_model="gpt-5.4"
+        )
+        assert mode == "codex_responses"
+
+    def test_claude_target_uses_chat_completions(self):
+        """A Claude seat on the same council must stay on chat_completions."""
+        mode = rp._copilot_runtime_api_mode(
+            self._cfg(), "", target_model="claude-opus-4.7"
+        )
+        assert mode == "chat_completions"
+
+    def test_gpt5_mini_stays_chat_completions(self):
+        """gpt-5-mini is the documented Responses-API exception."""
+        mode = rp._copilot_runtime_api_mode(
+            self._cfg(), "", target_model="gpt-5-mini"
+        )
+        assert mode == "chat_completions"
+
+    def test_no_target_falls_back_to_default_model(self):
+        """Without a target_model, derive from the (Claude) default →
+        chat_completions. No regression for steady-state Claude users."""
+        mode = rp._copilot_runtime_api_mode(self._cfg(), "")
+        assert mode == "chat_completions"
+
+    def test_no_target_gpt5_default_still_upgrades(self):
+        """If the persisted default itself is a GPT-5 model, a stale
+        chat_completions pin must not pin it to the wrong transport."""
+        mode = rp._copilot_runtime_api_mode(
+            self._cfg(default="gpt-5.5", api_mode="chat_completions"), ""
+        )
+        assert mode == "codex_responses"
+
+    def test_claude_pin_preserved_when_model_is_neutral(self):
+        """A deliberate chat_completions pin still wins when the model does
+        not force a family mode (Claude returns chat_completions, which does
+        not trigger the override branch)."""
+        mode = rp._copilot_runtime_api_mode(
+            self._cfg(default="claude-opus-4.8", api_mode="chat_completions"),
+            "",
+            target_model="claude-opus-4.8",
+        )
+        assert mode == "chat_completions"
+
+    def test_end_to_end_pool_path_gpt5(self, monkeypatch):
+        """Full resolve_runtime_provider through the Copilot pool path: a
+        gpt-5.5 target must resolve to codex_responses end to end."""
+
+        class _Entry:
+            runtime_api_key = "copilot-token"
+            access_token = "copilot-token"
+            runtime_base_url = "https://api.githubcopilot.com"
+            base_url = "https://api.githubcopilot.com"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda: {
+                "provider": "copilot",
+                "default": "claude-opus-4.8",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+        resolved = rp.resolve_runtime_provider(
+            requested="copilot", target_model="gpt-5.5"
+        )
+
+        assert resolved["api_mode"] == "codex_responses"
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Azure Anthropic — honor user-specified env var hints (key_env / api_key_env)
 #
 # When the user points provider=anthropic at an Azure Foundry base URL, the

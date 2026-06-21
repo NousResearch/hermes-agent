@@ -2713,6 +2713,26 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif base_url_hostname(configured_base_url) == "api.anthropic.com":
             provider = "anthropic"
             api_mode = "anthropic_messages"
+        elif base_url_hostname(configured_base_url) == "api.githubcopilot.com":
+            # Copilot is a multi-family endpoint: GPT-5+ is served only on the
+            # Responses API and is rejected on /chat/completions
+            # (unsupported_api_for_model → empty subagent reply), while
+            # Claude/Gemini-via-Copilot use chat_completions. Derive the mode
+            # from the delegation model rather than defaulting to
+            # chat_completions, mirroring the main runtime resolver's
+            # _copilot_runtime_api_mode. Without this, a delegated
+            # gpt-5.x subagent silently misroutes and returns nothing.
+            provider = "copilot"
+            api_mode = "chat_completions"
+            if configured_model:
+                try:
+                    from hermes_cli.models import copilot_model_api_mode
+
+                    api_mode = copilot_model_api_mode(
+                        configured_model, api_key=configured_api_key or None
+                    )
+                except Exception:
+                    api_mode = "chat_completions"
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"

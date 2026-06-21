@@ -985,6 +985,51 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertEqual(creds["api_mode"], "anthropic_messages")
 
+    def test_direct_copilot_endpoint_gpt5_uses_codex_responses(self):
+        # GitHub #27132: a delegated subagent pointed at the direct Copilot
+        # endpoint with a GPT-5+ model must use the Responses API. Copilot
+        # rejects GPT-5+ on /chat/completions (unsupported_api_for_model),
+        # which surfaces as an empty subagent reply. The host is multi-family,
+        # so the mode is derived from the model, not the host.
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "gpt-5.5",
+            "provider": "custom",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "copilot")
+        self.assertEqual(creds["api_mode"], "codex_responses")
+
+    def test_direct_copilot_endpoint_claude_uses_chat_completions(self):
+        # The same Copilot host serves Claude on Chat Completions — a Claude
+        # delegation must NOT be force-upgraded to the Responses API.
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "claude-opus-4.7",
+            "provider": "custom",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "copilot")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
+    def test_direct_copilot_endpoint_explicit_api_mode_still_wins(self):
+        # An explicit delegation.api_mode overrides the model-derived default,
+        # consistent with every other direct-endpoint case.
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "gpt-5.5",
+            "provider": "custom",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+            "api_mode": "chat_completions",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
     def test_direct_endpoint_explicit_api_mode_overrides_url_detection(self):
         # Explicit api_mode in config always wins over auto-detection.
         parent = _make_mock_parent(depth=0)

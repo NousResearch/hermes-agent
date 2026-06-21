@@ -901,10 +901,10 @@ def _format_terms(skill_name: str) -> str:
                 _adj = (_eff - 0.5) * 2
                 _th = _adj / (1 + abs(_adj) * 0.5)
                 _boost = 0.1 * _th * _conf
-                _sign = "+" if _boost >= 0 else ""
-                stats = f"s={_sc}/l={_lc}/ok={_suc}/b={_sign}{_boost:.3f}"
+                _sign = "+" if _boost > 0 else ""
+                _stats = f"s={_sc}/l={_lc}/ok={_suc}/b={_sign}{_boost:.3f}".replace("+-", "")
                 term_lines.append(
-                    f"    {skill_name} ──({t['source']})──> {t['term']}  [{stats}]"
+                    f"    {skill_name} ──({t['source']})──> {t['term']}  [{_stats}]"
                 )
             parts.append("\n".join(term_lines))
 
@@ -926,8 +926,8 @@ def _format_terms(skill_name: str) -> str:
                 _adj2 = (_eff2 - 0.5) * 2
                 _th2 = _adj2 / (1 + abs(_adj2) * 0.5)
                 _boost2 = 0.1 * _th2 * _conf2
-                _sign2 = "+" if _boost2 >= 0 else ""
-                rev_lines.append(f"    {sn:40s} ──({src})──> {skill_name}  [s={sc}/l={lc}/ok={suc}/b={_sign2}{_boost2:.3f}]")
+                _sign2 = "+" if _boost2 > 0 else ""
+                rev_lines.append(f"    {sn:40s} ──({src})──> {skill_name}  [s={sc}/l={lc}/ok={suc}/b={_sign2}{_boost2:.3f}]".replace("+-", ""))
             parts.append("\n".join(rev_lines))
 
         return "\n".join(parts) if parts else ""

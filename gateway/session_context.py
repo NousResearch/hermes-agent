@@ -32,13 +32,15 @@ def session_context_engaged() -> bool:
 # * MESSAGE_ID: reply anchor keeping notifications inside the originating Telegram topic.
 # * CRON_SESSION: tri-state — _UNSET = legacy env fallback; "1" = cron; "" = non-cron, masks env.
 _SESSION_VARS = (
-    _SESSION_PLATFORM, _SESSION_SOURCE, _SESSION_CHAT_ID, _SESSION_CHAT_TYPE,
+    _SESSION_PLATFORM, _SESSION_SOURCE, _SESSION_CHAT_ID, _SESSION_PARENT_CHAT_ID,
+    _SESSION_PROSPECTIVE_THREAD_ID, _SESSION_CHAT_TYPE,
     _SESSION_CHAT_NAME, _SESSION_THREAD_ID, _SESSION_USER_ID, _SESSION_USER_ID_ALT,
     _SESSION_USER_NAME, _SESSION_SCOPE_ID, _SESSION_KEY, _SESSION_ID,
     _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
     _BROWSER_CONTROL_PRINCIPAL, _BROWSER_CONTROL_TRANSPORT_FAMILY, _CRON_SESSION,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
     "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
+    "HERMES_SESSION_PARENT_CHAT_ID", "HERMES_SESSION_PROSPECTIVE_THREAD_ID",
     "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_USER_ID", "HERMES_SESSION_USER_ID_ALT", "HERMES_SESSION_USER_NAME",
     "HERMES_SESSION_SCOPE_ID", "HERMES_SESSION_KEY", "HERMES_SESSION_ID",
@@ -51,6 +53,11 @@ _SESSION_VARS = (
 # ``async_delivery_supported()``).  _UNSET => supported (CLI, contextvar-unaware paths); stateless
 # adapters (API server, Kanban workers) opt OUT via ``supports_async_delivery = False`` at bind.
 _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
+
+# Hidden request-local capability: true only while a live messaging-gateway
+# turn (or its authenticated gateway-proxy continuation) is executing. It is
+# deliberately independent of persisted ``source`` and ``agent.platform``.
+_SESSION_GATEWAY_CONTEXT = ContextVar("HERMES_SESSION_GATEWAY_CONTEXT", default=_UNSET)
 
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -107,7 +114,8 @@ def set_session_vars(
     user_name: str = "", scope_id: str = "", session_key: str = "", session_id: str = "",
     message_id: str = "", profile: str = "", browser_control_principal: str = "",
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
-    ui_session_id: str = "", cron_session: Any = _UNSET,
+    ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
+    prospective_thread_id: str = "", gateway_context: bool = False,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -115,12 +123,14 @@ def set_session_vars(
     global _session_context_engaged
     _session_context_engaged = True
     values = (
-        platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
+        platform, source, chat_id, parent_chat_id, prospective_thread_id, chat_type,
+        chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
         browser_control_principal, browser_control_transport_family, cron_session,
     )
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
+    tokens.append(_SESSION_GATEWAY_CONTEXT.set(bool(gateway_context)))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
@@ -132,6 +142,7 @@ def clear_session_vars(tokens: list) -> None:
     for var in _SESSION_VARS:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_GATEWAY_CONTEXT.set(False)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -143,6 +154,7 @@ def reset_session_vars() -> None:
     for var in _VAR_MAP.values():
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_GATEWAY_CONTEXT.set(_UNSET)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -153,6 +165,50 @@ def get_session_env(name: str, default: str = "") -> str:
     if var is not None and (value := var.get()) is not _UNSET:
         return value
     return os.getenv(name, default)
+
+
+def get_bound_session_origin() -> dict[str, str] | None:
+    """Current task's routing identity without any process-env fallback."""
+    platform = _SESSION_PLATFORM.get()
+    if platform is _UNSET or not str(platform or "").strip():
+        return None
+
+    def value(var: ContextVar) -> str:
+        bound = var.get()
+        return "" if bound is _UNSET or bound is None else str(bound)
+
+    return {
+        "platform": str(platform),
+        "chat_id": value(_SESSION_CHAT_ID),
+        "parent_chat_id": value(_SESSION_PARENT_CHAT_ID),
+        "prospective_thread_id": value(_SESSION_PROSPECTIVE_THREAD_ID),
+        "chat_type": value(_SESSION_CHAT_TYPE),
+        "thread_id": value(_SESSION_THREAD_ID),
+        "user_id": value(_SESSION_USER_ID),
+        "user_id_alt": value(_SESSION_USER_ID_ALT),
+        "scope_id": value(_SESSION_SCOPE_ID),
+        "profile": value(_SESSION_PROFILE),
+    }
+
+
+def gateway_context_active() -> bool:
+    """Whether this task owns the live messaging-gateway recall capability."""
+    return _SESSION_GATEWAY_CONTEXT.get() is True
+
+
+@contextmanager
+def scoped_gateway_context(active: bool) -> Iterator[None]:
+    """Temporarily bind the gateway capability and restore it exactly."""
+    token = _SESSION_GATEWAY_CONTEXT.set(bool(active))
+    try:
+        yield
+    finally:
+        _SESSION_GATEWAY_CONTEXT.reset(token)
+
+
+def get_bound_gateway_origin() -> dict[str, str] | None:
+    """Live routing metadata only when the trusted gateway marker is active."""
+    return get_bound_session_origin() if gateway_context_active() else None
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

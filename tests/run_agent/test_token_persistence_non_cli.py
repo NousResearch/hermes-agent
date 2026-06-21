@@ -85,7 +85,7 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     agent = _make_agent(None, platform="acp")
     result = json.loads(agent._invoke_tool(
         "session_search",
-        {"query": "Hermes", "detail": "full"},
+        {"query": "Hermes", "detail": "full", "scope": "all"},
         "task-id",
     ))
 
@@ -93,6 +93,8 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     assert captured["db"] is sentinel_db
     assert captured["query"] == "Hermes"
     assert captured["detail"] == "full"
+    assert captured["scope"] == "all"
+    assert "gateway_platform" not in captured
     assert agent._session_db is sentinel_db
 
 
@@ -114,7 +116,9 @@ def test_sequential_session_search_forwards_detail(monkeypatch):
         id="search-1",
         function=SimpleNamespace(
             name="session_search",
-            arguments=json.dumps({"query": "Hermes", "detail": "full"}),
+            arguments=json.dumps(
+                {"query": "Hermes", "detail": "full", "scope": "all"}
+            ),
         ),
     )
     assistant_message = SimpleNamespace(tool_calls=[tool_call])
@@ -129,3 +133,5 @@ def test_sequential_session_search_forwards_detail(monkeypatch):
     assert captured["db"] is session_db
     assert captured["query"] == "Hermes"
     assert captured["detail"] == "full"
+    assert captured["scope"] == "all"
+    assert "gateway_platform" not in captured

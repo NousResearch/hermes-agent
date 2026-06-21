@@ -2426,7 +2426,9 @@ class GatewayTurnMixin:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
         Lets a Docker container handle Matrix E2EE while the agent runs on the host with full
-        access to local files, memory, skills, and a unified session store."""
+        access to local files, memory, skills, and a unified session store. Native gateway
+        sources use the dedicated authenticated route so current-chat recall cannot downgrade
+        to the profile-global OpenAI surface."""
         from gateway.run import _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
@@ -2450,6 +2452,35 @@ class GatewayTurnMixin:
         except Exception:
             proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
+        if not proxy_key:
+            return self._proxy_error_result(
+                "⚠️ Gateway proxy mode requires GATEWAY_PROXY_KEY so the remote API can "
+                "authenticate and preserve chat scope.")
+
+        try:
+            from gateway.recall_scope import (
+                GATEWAY_PROXY_CHAT_COMPLETIONS_PATH,
+                GATEWAY_PROXY_MARKER_HEADER,
+                GATEWAY_PROXY_ORIGIN_HEADER,
+                GATEWAY_PROXY_SESSION_KEY_HEADER,
+                encode_gateway_proxy_origin,
+                encode_gateway_proxy_session_key,
+                is_recall_gateway_platform,
+            )
+
+            is_native_gateway_source = is_recall_gateway_platform(source.platform)
+            if is_native_gateway_source and not session_id:
+                raise ValueError("gateway proxy session id is missing")
+            proxy_origin = None
+            proxy_session_key = None
+            proxy_path = "/v1/chat/completions"
+            if is_native_gateway_source:
+                proxy_origin = encode_gateway_proxy_origin(source.to_dict())
+                proxy_session_key = encode_gateway_proxy_session_key(session_key)
+                proxy_path = GATEWAY_PROXY_CHAT_COMPLETIONS_PATH
+        except (TypeError, ValueError) as exc:
+            return self._proxy_error_result(f"⚠️ Gateway proxy context rejected: {exc}")
+
         _run_still_current = self._run_still_current_fn(session_key, run_generation)
 
         def _stale_result(what: str) -> Dict[str, Any]:
@@ -2472,8 +2503,11 @@ class GatewayTurnMixin:
         api_messages.append({"role": "user", "content": message})
 
         headers: Dict[str, str] = {"Content-Type": "application/json"}
-        if proxy_key:
-            headers["Authorization"] = f"Bearer {proxy_key}"
+        headers["Authorization"] = f"Bearer {proxy_key}"
+        if proxy_origin is not None:
+            headers[GATEWAY_PROXY_MARKER_HEADER] = "1"
+            headers[GATEWAY_PROXY_ORIGIN_HEADER] = proxy_origin
+            headers[GATEWAY_PROXY_SESSION_KEY_HEADER] = proxy_session_key
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
@@ -2492,7 +2526,7 @@ class GatewayTurnMixin:
         try:
             _timeout = ClientTimeout(total=0, sock_read=1800)
             async with _AioClientSession(timeout=_timeout) as session:
-                async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
+                async with session.post(f"{proxy_url}{proxy_path}", json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
                         logger.warning("Proxy error (%d) from %s: %s", resp.status, proxy_url, error_text[:500])

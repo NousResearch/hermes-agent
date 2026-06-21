@@ -1,18 +1,21 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import os
 
 import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from gateway.platforms.api_server import APIServerAdapter
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
+    gateway_context_active,
+    get_bound_gateway_origin,
+    get_bound_session_origin,
     get_session_env,
     set_session_vars,
     clear_session_vars,
     reset_session_vars,
-    _VAR_MAP,
-    _UNSET,
 )
 
 
@@ -25,10 +28,9 @@ def _reset_contextvars():
     context, so a clear_session_vars() from test A (which sets vars to "")
     would leak into test B.  This fixture ensures each test starts clean.
     """
+    reset_session_vars()
     yield
-    for var in _VAR_MAP.values():
-        # Can't use var.reset() without a token; just set back to sentinel.
-        var.set(_UNSET)
+    reset_session_vars()
 
 
 def test_set_session_env_sets_contextvars(monkeypatch):
@@ -42,12 +44,16 @@ def test_set_session_env_sets_contextvars(monkeypatch):
         user_id="123456",
         user_name="alice",
         thread_id="17585",
+        parent_chat_id="parent-chat",
+        prospective_thread_id="prospective-topic",
     )
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PARENT_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PROSPECTIVE_THREAD_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
@@ -60,6 +66,11 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_SOURCE") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
+    assert get_session_env("HERMES_SESSION_PARENT_CHAT_ID") == "parent-chat"
+    assert (
+        get_session_env("HERMES_SESSION_PROSPECTIVE_THREAD_ID")
+        == "prospective-topic"
+    )
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
     assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
@@ -69,6 +80,8 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
     assert os.getenv("HERMES_SESSION_SOURCE") is None
+    assert os.getenv("HERMES_SESSION_PARENT_CHAT_ID") is None
+    assert os.getenv("HERMES_SESSION_PROSPECTIVE_THREAD_ID") is None
     assert os.getenv("HERMES_SESSION_CHAT_TYPE") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
 
@@ -82,6 +95,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
 
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PARENT_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
@@ -96,12 +110,16 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
         user_id="123456",
         user_name="alice",
         thread_id="17585",
+        parent_chat_id="parent-chat",
+        prospective_thread_id="prospective-topic",
     )
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
+    assert get_session_env("HERMES_SESSION_PARENT_CHAT_ID") == "parent-chat"
+    assert gateway_context_active() is True
     assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
 
     runner._clear_session_env(tokens)
@@ -109,6 +127,9 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     # After clear, contextvars should return to defaults (empty)
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
+    assert get_session_env("HERMES_SESSION_PARENT_CHAT_ID") == ""
+    assert get_session_env("HERMES_SESSION_PROSPECTIVE_THREAD_ID") == ""
+    assert gateway_context_active() is False
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
     assert get_session_env("HERMES_SESSION_CHAT_TYPE") == ""
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
@@ -132,6 +153,102 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     # must not leak through after a gateway session is cleaned up.
     clear_session_vars(tokens)
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+
+
+def test_bound_session_origin_never_falls_back_to_process_env(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "foreign-chat")
+    assert get_bound_session_origin() is None
+
+    tokens = set_session_vars(
+        platform="discord",
+        chat_id="current-chat",
+        chat_type="group",
+        scope_id="guild-1",
+        gateway_context=True,
+    )
+    assert get_bound_session_origin() == {
+        "platform": "discord",
+        "chat_id": "current-chat",
+        "parent_chat_id": "",
+        "prospective_thread_id": "",
+        "chat_type": "group",
+        "thread_id": "",
+        "user_id": "",
+        "user_id_alt": "",
+        "scope_id": "guild-1",
+        "profile": "",
+    }
+    assert get_bound_gateway_origin() == get_bound_session_origin()
+
+    clear_session_vars(tokens)
+    assert get_bound_session_origin() is None
+    assert get_bound_gateway_origin() is None
+
+
+def test_api_server_session_source_is_explicitly_non_gateway():
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    context = SessionContext(
+        source=SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id="api-session",
+            chat_type="dm",
+        ),
+        connected_platforms=[],
+        home_channels={},
+        session_id="api-session",
+    )
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert gateway_context_active() is False
+        assert get_bound_gateway_origin() is None
+    finally:
+        runner._clear_session_env(tokens)
+
+
+def test_authenticated_proxy_origin_binds_only_inside_api_worker():
+    origin = {
+        "platform": "slack",
+        "chat_id": "D123",
+        "chat_type": "dm",
+        "thread_id": "1700000000.0001",
+        "scope_id": "workspace-1",
+    }
+
+    def worker():
+        tokens = APIServerAdapter._bind_api_server_session(
+            session_id="proxy-session",
+            session_key="proxy-session",
+            gateway_origin=origin,
+        )
+        try:
+            bound = get_bound_gateway_origin()
+            active = gateway_context_active()
+        finally:
+            clear_session_vars(tokens)
+        return bound, active, gateway_context_active()
+
+    assert gateway_context_active() is False
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        bound, active_in_worker, active_after_clear = executor.submit(worker).result()
+
+    assert active_in_worker is True
+    assert bound == {
+        "platform": "slack",
+        "chat_id": "D123",
+        "parent_chat_id": "",
+        "prospective_thread_id": "",
+        "chat_type": "dm",
+        "thread_id": "1700000000.0001",
+        "user_id": "",
+        "user_id_alt": "",
+        "scope_id": "workspace-1",
+        "profile": "",
+    }
+    assert active_after_clear is False
+    assert gateway_context_active() is False
 
 
 # ---------------------------------------------------------------------------
@@ -272,4 +389,3 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
 
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
-

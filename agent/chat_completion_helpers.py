@@ -122,6 +122,34 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _ensure_copilot_request_ends_with_user(agent, api_kwargs: dict) -> None:
+    """Copilot's proxy rejects assistant-message prefill ("This model does not support
+    assistant message prefill. The conversation must end with a user message."). Any path
+    that leaves a trailing assistant turn (incomplete-text continuation, thinking prefill,
+    or configured prefill_messages) 400s on Copilot. Stock Hermes gap (present in v0.16.0
+    too): direct Anthropic ALLOWS prefill, the Copilot proxy does NOT. For Copilot only,
+    append a minimal user continuation so the request is valid; the trailing assistant text
+    stays as context so the model continues from it. No-op on every other provider."""
+    try:
+        prov = (getattr(agent, "provider", "") or "").lower()
+        base = (getattr(agent, "base_url", "") or "").lower()
+        if prov not in ("copilot", "copilot-acp") and "api.githubcopilot.com" not in base:
+            return
+        msgs = api_kwargs.get("messages")
+        if not (isinstance(msgs, list) and msgs
+                and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "assistant"):
+            return
+        txt = ("Please continue your previous response from exactly where it left off, "
+               "without repeating any text.")
+        last_content = msgs[-1].get("content")
+        content = [{"type": "text", "text": txt}] if isinstance(last_content, list) else txt
+        msgs.append({"role": "user", "content": content})
+        logger.info("copilot prefill guard: appended user continuation "
+                    "(request ended with an assistant turn Copilot would 400)")
+    except Exception:
+        pass
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -136,6 +164,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    _ensure_copilot_request_ends_with_user(agent, api_kwargs)
     result = {"response": None, "error": None}
     request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
@@ -1613,6 +1642,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     Falls back to _interruptible_api_call on provider errors indicating
     streaming is not supported.
     """
+    _ensure_copilot_request_ends_with_user(agent, api_kwargs)
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 

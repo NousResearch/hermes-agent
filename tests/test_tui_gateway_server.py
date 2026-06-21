@@ -7890,3 +7890,37 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+def test_save_cfg_uses_atomic_write_and_preserves_config_on_failure(tmp_path, monkeypatch):
+    """_save_cfg must write config.yaml atomically: a mid-write failure must
+    leave the previous config intact rather than truncating it.
+
+    Salvage of #13357 by @Junass1.
+    """
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({"existing": True}), encoding="utf-8")
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(server, "_cfg_mtime", None, raising=False)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    # Patch the atomic helper at its source module so _save_cfg's
+    # `from utils import atomic_yaml_write` picks up the failing version.
+    monkeypatch.setattr("utils.atomic_yaml_write", _boom)
+
+    with patch.object(server, "_cfg_lock"):
+        try:
+            server._save_cfg({"new": True})
+        except RuntimeError as exc:
+            assert str(exc) == "disk full"
+        else:
+            raise AssertionError("expected _save_cfg to raise")
+
+    # The original config must survive untouched (no truncation).
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {"existing": True}

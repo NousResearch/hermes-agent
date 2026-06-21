@@ -184,6 +184,29 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const aui = useAui()
+
+  // Safe setText: when the assistant-ui composer core binding is not yet
+  // established (e.g. during boot or session switch), setText throws
+  // "Composer is not available".  In those cases defer to the next frame
+  // so the binding has a chance to resolve.
+  const safeSetText = useCallback(
+    (text: string) => {
+      const trySet = () => {
+        try {
+          aui.composer().setText(text)
+        } catch (e) {
+          if (e instanceof Error && e.message === 'Composer is not available') {
+            window.requestAnimationFrame(trySet)
+          } else {
+            throw e as Error
+          }
+        }
+      }
+      trySet()
+    },
+    [aui],
+  )
+
   const draft = useAuiState(s => s.composer.text)
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
@@ -550,7 +573,7 @@ export function ChatBar({
     const nextDraft = `${currentDraft}${sep}${text}`
 
     draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    safeSetText(nextDraft)
 
     // Push the new text into the contentEditable editor directly. Setting the
     // assistant-ui composer state alone is not enough: the draft→editor sync
@@ -583,7 +606,7 @@ export function ChatBar({
     }
 
     draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    safeSetText(nextDraft)
     requestMainFocus()
 
     return true
@@ -1275,17 +1298,17 @@ export function ChatBar({
   }
 
   const clearDraft = useCallback(() => {
-    aui.composer().setText('')
+    safeSetText('')
     draftRef.current = ''
 
     if (editorRef.current) {
       editorRef.current.replaceChildren()
     }
-  }, [aui])
+  }, [safeSetText])
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     draftRef.current = text
-    aui.composer().setText(text)
+    safeSetText(text)
     $composerAttachments.set(cloneAttachments(attachments))
 
     const editor = editorRef.current

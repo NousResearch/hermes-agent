@@ -77,10 +77,17 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 **Blockers / boundaries**
 
 - No USB/block-device, root, sudo, package install, cron mutation, gateway mutation, external security, cloud, hardware, or secret-disclosure actions were performed.
-- Merge is staged and ready for commit at this checkpoint; no full-suite run was attempted because this cron lane stayed focused on AgentCyber/Live USB plus directly touched tests.
+- No full-suite run was attempted because this cron lane stayed focused on AgentCyber/Live USB plus directly touched tests.
+
+**Commit / push**
+
+- Committed guarded upstream merge: `b2e66a619595f3c210ed8082275f8150aa23f059` (`merge: sync upstream Hermes into AgentCyber`).
+- Pushed branch to origin without force: `origin/agentcyber/upstream-sync-20260621-194355`.
+- Verified local and remote branch tips matched immediately after push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `b2e66a619595f3c210ed8082275f8150aa23f059`.
+- Post-merge drift check on the sync branch: `git rev-list --count HEAD..upstream/main` -> `0`; `git rev-list --count upstream/main..HEAD` -> `61`.
+- GitHub reported PR creation URL: `https://github.com/breakingcircuits1337/hermes-agentcyber/pull/new/agentcyber/upstream-sync-20260621-194355`.
 
 **Next lane**
 
-- Commit the guarded upstream sync branch and push it to origin if final status remains clean.
-- After branch push, open or hand off for review/merge into AgentCyber main; do not force-push.
+- Open/review the pushed guarded sync branch and merge it into AgentCyber main when approved; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger before taking any new implementation lane.

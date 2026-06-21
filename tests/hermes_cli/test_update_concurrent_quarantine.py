@@ -480,6 +480,13 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         return set()
 
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
+    monkeypatch.setattr(
+        gateway_mod,
+        "_capture_gateway_argv",
+        lambda pid: ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
+        if pid == 202
+        else None,
+    )
 
     terminated = []
     monkeypatch.setattr(
@@ -494,6 +501,12 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         "resume_needed": True,
         "profiles": {"work": 101},
         "unmapped_pids": [202],
+        "unmapped": [
+            {
+                "pid": 202,
+                "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
+            }
+        ],
     }
     assert waited_for == [101]
     assert terminated == [(202, True)]
@@ -505,6 +518,9 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     captured = capsys.readouterr().out
     assert "Paused gateway profile(s): work" in captured
     assert "without profile mapping" in captured
+    # An unmapped PID whose argv we captured is respawnable, so we must NOT
+    # tell the user to restart it manually.
+    assert "Restart manually after update" not in captured
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -536,6 +552,49 @@ def test_resume_windows_gateways_after_update_relaunches_paused_profiles(
         "Restarting Windows gateway profile(s): default, work"
         in capsys.readouterr().out
     )
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_windows_gateways_after_update_respawns_unmapped_by_cmdline(
+    _winp,
+    monkeypatch,
+    capsys,
+):
+    """Unmapped gateways (no profile→PID-file mapping, e.g. a Scheduled Task)
+    are respawned by replaying the argv snapshotted before the force-kill."""
+    import hermes_cli.gateway as gateway_mod
+
+    by_cmdline = []
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_gateway_restart_by_cmdline",
+        lambda old_pid, argv: by_cmdline.append((old_pid, argv)) or True,
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, old_pid: True,
+    )
+
+    scheduled_argv = ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [7560],
+        "unmapped": [
+            # Respawnable — argv captured.
+            {"pid": 7560, "argv": scheduled_argv},
+            # Not respawnable — no argv (psutil missing / access denied).
+            {"pid": 9999, "argv": None},
+        ],
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert token["resume_needed"] is False
+    assert by_cmdline == [(7560, scheduled_argv)]
+    out = capsys.readouterr().out
+    assert "Restarting 1 unmapped Windows gateway process(es)" in out
 
 
 # ---------------------------------------------------------------------------

@@ -138,7 +138,17 @@ def format_token_count_compact(*args, **kwargs):
                 text = text.rstrip("0").rstrip(".")
             return f"{sign}{text}{suffix}"
 
-    return f"{value:,}"
+
+def _compact_cwd() -> str:
+    """Return current working directory, compacted for status bar display.
+
+    Long paths are truncated to ~30 chars: ``/data/ro3.../SafeDepot``.
+    """
+    cwd = os.getcwd()
+    if len(cwd) <= 32:
+        return cwd
+    # Keep first component (/) and last 28 chars, insert ellipsis
+    return f"{cwd[0]}" + ".../" + cwd.rsplit("/", 1)[-1]
 
 
 def is_table_divider(*args, **kwargs):
@@ -4113,6 +4123,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
+            # Compact cwd for status bar: /data/ro3.../SafeDepot when path is long
+            "cwd": _compact_cwd(),
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -4369,12 +4381,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"📁 {snapshot['cwd']} · ⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"📁 {snapshot['cwd']}", f"⚕ {snapshot['model_short']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -4397,7 +4409,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"📁 {snapshot['cwd']}", f"⚕ {snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -4435,6 +4447,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             if width < 52:
                 frags = [
+                    ("class:status-bar-dim", " 📁 "),
+                    ("class:status-bar-dim", snapshot["cwd"]),
+                    ("class:status-bar-dim", " · "),
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
@@ -4452,6 +4467,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
+                        ("class:status-bar-dim", " 📁 "),
+                        ("class:status-bar-dim", snapshot["cwd"]),
+                        ("class:status-bar-dim", " · "),
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
@@ -4487,6 +4505,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
+                        ("class:status-bar-dim", " 📁 "),
+                        ("class:status-bar-dim", snapshot["cwd"]),
+                        ("class:status-bar-dim", " │ "),
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),

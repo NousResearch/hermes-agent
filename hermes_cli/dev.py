@@ -34,6 +34,10 @@ TOUCHED_PACKAGES = (
 CONTEXT_TESTS = (
     "tests/gateway/test_discord_slash_auth.py",
     "tests/gateway/test_discord_slash_commands.py",
+    "tests/gateway/test_discord_context_smoke.py",
+    "tests/gateway/test_context_dump.py",
+    "tests/gateway/test_startup_context.py",
+    "tests/gateway/test_tool_policy.py",
     "tests/hermes_cli/test_dev.py",
 )
 RSYNC_EXCLUDES = (

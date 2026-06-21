@@ -168,14 +168,29 @@ class TestKillPortProcess:
                 sys.executable, "-c",
                 "import socket,time;"
                 "s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
-                "s.bind(('127.0.0.1',0));print(s.getsockname()[1],flush=True);"
-                "s.listen(5);time.sleep(30)",
+                "s.bind(('127.0.0.1',0));port=s.getsockname()[1];"
+                "s.listen(5);"           # listen BEFORE announcing the port
+                "print(port,flush=True);"  # so the parent never connects too early
+                "time.sleep(30)",
             ],
             stdout=subprocess.PIPE, text=True,
         )
         try:
             port = int(listener.stdout.readline().strip())
-            cli = socket.create_connection(("127.0.0.1", port))  # we are the client
+            # Connect with a short retry: under a loaded CI box the child can
+            # print the port a hair before the listen backlog is fully ready,
+            # so a single immediate connect occasionally hits ECONNREFUSED.
+            cli = None
+            deadline = time.monotonic() + 5.0
+            last_err = None
+            while time.monotonic() < deadline:
+                try:
+                    cli = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+                    break
+                except (ConnectionRefusedError, OSError) as e:
+                    last_err = e
+                    time.sleep(0.05)
+            assert cli is not None, f"could not connect to listener: {last_err}"
             _kill_port_process(port)
             assert _pid_exists(os.getpid()), "client (test process) must survive"
             assert _wait_dead(listener, timeout=5.0), "stale listener should be killed"

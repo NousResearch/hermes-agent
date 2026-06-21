@@ -11,7 +11,8 @@ import { type Translations, useI18n } from '@/i18n'
 import { ArrowUpRight, X } from '@/lib/icons'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
-import type { ComposerStatusItem } from '@/store/composer-status'
+import { type ComposerStatusItem, setGoalStatusFromText } from '@/store/composer-status'
+import { $gateway } from '@/store/gateway'
 
 const toolLabel = (name: string) =>
   name
@@ -31,6 +32,16 @@ const TODO_GLYPHS: Record<Exclude<TodoStatus, 'in_progress' | 'pending'>, { icon
 // Left slot: braille spinner while running, otherwise a small status dot
 // (green = done, red = failed) so the slot is always filled and rows align.
 function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']): ReactNode {
+  if (item.type === 'goal') {
+    if (item.goalStatus === 'paused') {
+      return <Codicon className="text-amber-500/80" name="debug-pause" size="0.8rem" />
+    }
+
+    if (item.goalStatus === 'done') {
+      return <Codicon className="text-emerald-500/80" name="pass-filled" size="0.8rem" />
+    }
+  }
+
   if (item.todoStatus === 'pending') {
     return (
       <span
@@ -94,6 +105,31 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
         : onDismiss && { label: s.dismiss, onClick: () => onDismiss(item.id) }
       : null
 
+  const runGoalCommand = (command: 'clear' | 'pause' | 'resume') => {
+    if (!item.sessionId) {
+      return
+    }
+
+    void $gateway
+      .get()
+      ?.request<{ output?: string; type?: string }>('command.dispatch', { arg: command, name: 'goal', session_id: item.sessionId })
+      .then(result => {
+        setGoalStatusFromText(item.sessionId!, result?.output || `Goal ${command === 'clear' ? 'cleared' : command}d`)
+      })
+      .catch(() => undefined)
+  }
+
+  const goalMeta =
+    item.type === 'goal'
+      ? [
+          item.goalStatus ?? null,
+          item.turnsUsed !== undefined && item.maxTurns !== undefined ? `${item.turnsUsed}/${item.maxTurns}` : null,
+          item.goalVerdict ? `judge: ${item.goalVerdict}` : null
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : ''
+
   const canOpen = item.type === 'subagent' && !!onOpen
   const hasOutput = item.type === 'background' && !!item.output
   const onActivate = canOpen ? onOpen : hasOutput ? () => setOutputOpen(open => !open) : undefined
@@ -104,7 +140,39 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
         leading={leadingGlyph(item, s)}
         onActivate={onActivate}
         trailing={
-          action ? (
+          item.type === 'goal' ? (
+            <div className="flex shrink-0 items-center gap-0.5">
+              {item.goalStatus !== 'done' && (
+                <Button
+                  className="h-4 rounded px-1 text-[0.58rem] text-muted-foreground/70 hover:text-foreground/90"
+                  onClick={event => {
+                    event.stopPropagation()
+                    runGoalCommand(item.goalStatus === 'paused' ? 'resume' : 'pause')
+                  }}
+                  size="micro"
+                  type="button"
+                  variant="text"
+                >
+                  {item.goalStatus === 'paused' ? s.goalResume : s.goalPause}
+                </Button>
+              )}
+              <Tip label={s.goalClear}>
+                <Button
+                  aria-label={s.goalClear}
+                  className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+                  onClick={event => {
+                    event.stopPropagation()
+                    runGoalCommand('clear')
+                  }}
+                  size="icon-xs"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X size={12} />
+                </Button>
+              </Tip>
+            </div>
+          ) : action ? (
             <Tip label={action.label}>
               <Button
                 aria-label={action.label}
@@ -141,6 +209,12 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
           <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
             {toolLabel(item.currentTool)}
           </span>
+        )}
+        {item.type === 'goal' && goalMeta && (
+          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">{goalMeta}</span>
+        )}
+        {item.type === 'goal' && item.reason && (
+          <span className="shrink truncate text-[0.62rem] leading-4 text-muted-foreground/55">{item.reason}</span>
         )}
         {failed && typeof item.exitCode === 'number' && item.exitCode !== 0 && (
           <span className="shrink-0 rounded bg-destructive/15 px-1 text-[0.58rem] font-semibold text-destructive tabular-nums">

@@ -29,7 +29,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
 import { setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
-import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { refreshBackgroundProcesses, setGoalStatusFromText } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
@@ -1076,6 +1076,12 @@ export function useMessageStream({
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'goal') {
+          const text = typeof payload.text === 'string' ? payload.text : ''
+
+          if (text.trim()) {
+            setGoalStatusFromText(sessionId, text)
+          }
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.

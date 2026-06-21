@@ -1525,6 +1525,10 @@ export const zh: Translations = {
   statusStack: {
     agents: '代理',
     background: count => `${count} 个后台任务`,
+    goal: '目标',
+    goalClear: '删除目标',
+    goalPause: '暂停',
+    goalResume: '继续',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
     running: '运行中',

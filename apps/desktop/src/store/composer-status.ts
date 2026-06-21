@@ -8,23 +8,35 @@ import { dispatchNativeNotification } from './native-notifications'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
 
-/** Composer status stack feed — merged todos, subagents, background per session. */
+/** Composer status stack feed — merged goals, todos, subagents, background per session. */
 export type StatusItemState = 'done' | 'failed' | 'running'
-export type StatusItemType = 'background' | 'subagent' | 'todo'
+export type StatusItemType = 'background' | 'goal' | 'subagent' | 'todo'
+
+export type GoalCardStatus = 'active' | 'paused' | 'done'
 
 export interface ComposerStatusItem {
   /** background: non-zero exit shown inline when failed. */
   exitCode?: number
   /** subagent: active tool label shown on the right. */
   currentTool?: string
+  /** goal: active | paused | done. */
+  goalStatus?: GoalCardStatus
+  /** goal: latest judge verdict. */
+  goalVerdict?: string
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
+  /** goal: judge reason / paused reason summary. */
+  reason?: string
   /** subagent: its own stored session id — row click opens that session window
    *  (livestreamed by the gateway's child-session mirror). */
   sessionId?: string
   state: StatusItemState
   title: string
+  /** goal: current judge turn count. */
+  turnsUsed?: number
+  /** goal: max judge turn budget. */
+  maxTurns?: number
   /** todo: the full four-state status driving the row's checkmark glyph. */
   todoStatus?: TodoStatus
   type: StatusItemType
@@ -33,6 +45,118 @@ export interface ComposerStatusItem {
 // Writable source for background work, synced from the gateway's process
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
+export const $goalStatusBySession = atom<Record<string, ComposerStatusItem>>({})
+
+const GOAL_BUDGET_RE = /\((?<max>\d+)-turn budget\)/
+const GOAL_TURNS_RE = /(?<used>\d+)\/(?<max>\d+)(?:\s+turns)?/
+
+const firstLine = (text: string) => text.trim().split('\n')[0]?.trim() ?? ''
+
+export function setGoalStatusFromText(sid: string, text: string) {
+  const line = firstLine(text)
+
+  if (!sid || !line) {
+    return
+  }
+
+  const current = $goalStatusBySession.get()
+  const prev = current[sid]
+  let next: ComposerStatusItem | null = null
+
+  if (line.startsWith('⊙ Goal set')) {
+    const title = line.split(':').slice(1).join(':').trim() || prev?.title || 'Goal'
+    const maxTurns = Number(line.match(GOAL_BUDGET_RE)?.groups?.max || '') || prev?.maxTurns
+    next = {
+      id: 'goal',
+      goalStatus: 'active',
+      maxTurns,
+      sessionId: sid,
+      state: 'running',
+      title,
+      type: 'goal'
+    }
+  } else if (line.startsWith('⊙ Goal (active')) {
+    const turns = line.match(GOAL_TURNS_RE)?.groups
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'active',
+      maxTurns: Number(turns?.max || '') || prev?.maxTurns,
+      state: 'running',
+      title: line.split('):').slice(1).join('):').trim() || prev?.title || 'Goal',
+      turnsUsed: Number(turns?.used || '') || prev?.turnsUsed
+    }
+  } else if (line.startsWith('⏸ Goal (paused')) {
+    const turns = line.match(GOAL_TURNS_RE)?.groups
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'paused',
+      maxTurns: Number(turns?.max || '') || prev?.maxTurns,
+      state: 'failed',
+      title: line.split('):').slice(1).join('):').trim() || prev?.title || 'Goal',
+      turnsUsed: Number(turns?.used || '') || prev?.turnsUsed
+    }
+  } else if (line.startsWith('✓ Goal done')) {
+    const turns = line.match(GOAL_TURNS_RE)?.groups
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'done',
+      maxTurns: Number(turns?.max || '') || prev?.maxTurns,
+      state: 'done',
+      title: line.split('):').slice(1).join('):').trim() || prev?.title || 'Goal',
+      turnsUsed: Number(turns?.used || '') || prev?.turnsUsed
+    }
+  } else if (line.startsWith('⏸ Goal paused')) {
+    const turns = line.match(GOAL_TURNS_RE)?.groups
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'paused',
+      maxTurns: Number(turns?.max || '') || prev?.maxTurns,
+      reason: line.replace(/^⏸ Goal paused\s*[—-]?\s*/, '').trim(),
+      state: 'failed',
+      turnsUsed: Number(turns?.used || '') || prev?.turnsUsed
+    }
+  } else if (line.startsWith('✓ Goal achieved')) {
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'done',
+      reason: line.replace(/^✓ Goal achieved:\s*/, '').trim(),
+      state: 'done'
+    }
+  } else if (line.startsWith('↻ Continuing toward goal')) {
+    const turns = line.match(GOAL_TURNS_RE)?.groups
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'active',
+      goalVerdict: 'continue',
+      maxTurns: Number(turns?.max || '') || prev?.maxTurns,
+      reason: line.split(':').slice(1).join(':').trim() || prev?.reason,
+      state: 'running',
+      turnsUsed: Number(turns?.used || '') || prev?.turnsUsed
+    }
+  } else if (/goal\s+(cleared|stopped|deleted)/i.test(line) || /^No (active )?goal/i.test(line)) {
+    const out = { ...current }
+    delete out[sid]
+    $goalStatusBySession.set(out)
+
+    return
+  } else if (/goal\s+resumed/i.test(line)) {
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'active',
+      state: 'running'
+    }
+  } else if (/goal\s+paused/i.test(line)) {
+    next = {
+      ...(prev ?? { id: 'goal', sessionId: sid, title: 'Goal', type: 'goal' as const }),
+      goalStatus: 'paused',
+      state: 'failed'
+    }
+  }
+
+  if (next) {
+    $goalStatusBySession.set({ ...current, [sid]: next })
+  }
+}
 
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.
@@ -57,14 +181,18 @@ const todoToItem = (t: TodoItem): ComposerStatusItem => ({
 
 // The single thing the stack reads: a typed, merged item list per session.
 export const $statusItemsBySession = computed(
-  [$subagentsBySession, $backgroundStatusBySession, $todosBySession],
-  (subs, background, todos) => {
+  [$goalStatusBySession, $subagentsBySession, $backgroundStatusBySession, $todosBySession],
+  (goals, subs, background, todos) => {
     const out: Record<string, ComposerStatusItem[]> = {}
 
     const push = (sid: string, items: ComposerStatusItem[]) => {
       if (items.length > 0) {
         out[sid] = out[sid] ? [...out[sid], ...items] : items
       }
+    }
+
+    for (const [sid, goal] of Object.entries(goals)) {
+      push(sid, [goal])
     }
 
     for (const [sid, list] of Object.entries(todos)) {
@@ -84,7 +212,7 @@ export const $statusItemsBySession = computed(
 )
 
 // Fixed render order for the groups in the stack (top → bottom, above queue).
-const TYPE_ORDER: readonly StatusItemType[] = ['todo', 'subagent', 'background']
+const TYPE_ORDER: readonly StatusItemType[] = ['goal', 'todo', 'subagent', 'background']
 
 export interface StatusGroup {
   items: ComposerStatusItem[]

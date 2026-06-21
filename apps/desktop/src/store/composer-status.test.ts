@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $backgroundStatusBySession, dismissBackgroundProcess, reconcileBackgroundProcesses } from './composer-status'
+import {
+  $backgroundStatusBySession,
+  $goalStatusBySession,
+  dismissBackgroundProcess,
+  groupStatusItems,
+  reconcileBackgroundProcesses,
+  setGoalStatusFromText
+} from './composer-status'
 
 const SID = 'sess-1'
 
@@ -18,6 +25,7 @@ const items = () => $backgroundStatusBySession.get()[SID] ?? []
 describe('reconcileBackgroundProcesses', () => {
   beforeEach(() => {
     $backgroundStatusBySession.set({})
+    $goalStatusBySession.set({})
   })
 
   it('maps registry entries to status items', () => {
@@ -95,5 +103,76 @@ describe('reconcileBackgroundProcesses', () => {
     reconcileBackgroundProcesses(SID, [])
 
     expect($backgroundStatusBySession.get()).toEqual({})
+  })
+})
+
+describe('goal status items', () => {
+  beforeEach(() => {
+    $goalStatusBySession.set({})
+  })
+
+  it('parses goal set notices into a status row', () => {
+    setGoalStatusFromText(SID, '⊙ Goal set (20-turn budget): fix the desktop slash bug')
+
+    expect($goalStatusBySession.get()[SID]).toMatchObject({
+      goalStatus: 'active',
+      maxTurns: 20,
+      state: 'running',
+      title: 'fix the desktop slash bug',
+      type: 'goal'
+    })
+  })
+
+  it('updates judge turn metadata and clears on stop output', () => {
+    setGoalStatusFromText(SID, '⊙ Goal set (20-turn budget): fix the desktop slash bug')
+    setGoalStatusFromText(SID, '↻ Continuing toward goal (3/20): still working')
+
+    expect($goalStatusBySession.get()[SID]).toMatchObject({
+      goalVerdict: 'continue',
+      reason: 'still working',
+      turnsUsed: 3
+    })
+
+    setGoalStatusFromText(SID, 'Goal cleared')
+
+    expect($goalStatusBySession.get()[SID]).toBeUndefined()
+  })
+
+  it('clears stale goal rows when backend reports no active goal', () => {
+    setGoalStatusFromText(SID, '⊙ Goal set (20-turn budget): fix the desktop slash bug')
+    setGoalStatusFromText(SID, 'No active goal. Set one with /goal <text>.')
+
+    expect($goalStatusBySession.get()[SID]).toBeUndefined()
+  })
+
+  it('parses backend goal status lines into status rows', () => {
+    setGoalStatusFromText(SID, '⊙ Goal (active, 2/20 turns): keep this thread alive')
+
+    expect($goalStatusBySession.get()[SID]).toMatchObject({
+      goalStatus: 'active',
+      maxTurns: 20,
+      state: 'running',
+      title: 'keep this thread alive',
+      turnsUsed: 2
+    })
+
+    setGoalStatusFromText(SID, '✓ Goal done (4/20 turns): keep this thread alive')
+
+    expect($goalStatusBySession.get()[SID]).toMatchObject({
+      goalStatus: 'done',
+      state: 'done',
+      title: 'keep this thread alive',
+      turnsUsed: 4
+    })
+  })
+
+  it('groups goal rows before todos and background rows', () => {
+    const groups = groupStatusItems([
+      { id: 'bg', state: 'running', title: 'bg', type: 'background' },
+      { id: 'todo:a', state: 'running', title: 'todo', todoStatus: 'in_progress', type: 'todo' },
+      { goalStatus: 'active', id: 'goal', state: 'running', title: 'goal', type: 'goal' }
+    ])
+
+    expect(groups.map(group => group.type)).toEqual(['goal', 'todo', 'background'])
   })
 })

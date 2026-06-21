@@ -29,6 +29,10 @@ import { StatusItemRow } from './status-row'
 const BACKGROUND_POLL_MS = 5_000
 
 const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
+  if (group.type === 'goal') {
+    return s.goal
+  }
+
   if (group.type === 'todo') {
     return s.todos(group.items.filter(i => i.todoStatus === 'completed').length, group.items.length)
   }
@@ -101,9 +105,11 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
             </Button>
           ) : undefined
         }
-        defaultCollapsed={group.type !== 'todo'}
+        defaultCollapsed={group.type !== 'goal' && group.type !== 'todo'}
         icon={
-          group.type === 'todo' ? (
+          group.type === 'goal' ? (
+            <Codicon className="text-muted-foreground/70" name="target" size="0.8rem" />
+          ) : group.type === 'todo' ? (
             <Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />
           ) : undefined
         }

@@ -1018,6 +1018,10 @@ export interface Translations {
   statusStack: {
     agents: string
     background: (count: number) => string
+    goal: string
+    goalClear: string
+    goalPause: string
+    goalResume: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
     running: string

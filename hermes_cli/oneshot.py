@@ -356,6 +356,8 @@ def _run_agent(
         #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
+        # Oneshot has no next turn, so don't warm one.
+        prefetch_after_turn=False,
     )
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
@@ -364,7 +366,13 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    try:
+        return agent.chat(prompt) or ""
+    finally:
+        try:
+            agent.shutdown_memory_provider(getattr(agent, "messages", []))
+        except Exception:
+            pass
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

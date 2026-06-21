@@ -59,6 +59,26 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class NamedProgressCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, name: str, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.name_tag = name
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        self.sent[-1]["adapter"] = self.name_tag
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        result = await super().edit_message(chat_id, message_id, content)
+        self.edits[-1]["adapter"] = self.name_tag
+        return result
+
+    async def send_typing(self, chat_id, metadata=None) -> None:
+        await super().send_typing(chat_id, metadata=metadata)
+        self.typing[-1]["adapter"] = self.name_tag
+
+
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
     """Adapter with a tiny platform limit to exercise progress rollover."""
 
@@ -246,6 +266,13 @@ def _make_runner(adapter):
     return runner
 
 
+def _make_multiplex_runner(default_adapter, profile_name: str, profile_adapter):
+    runner = _make_runner(default_adapter)
+    runner.config.multiplex_profiles = True
+    runner._profile_adapters = {profile_name: {profile_adapter.platform: profile_adapter}}
+    return runner
+
+
 @pytest.mark.asyncio
 async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
@@ -371,6 +398,50 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
     assert adapter.sent
     assert adapter.sent[0]["metadata"] is None
     assert all(call["metadata"] is None for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_uses_secondary_profile_adapter(monkeypatch, tmp_path):
+    """Multiplexed secondary-profile progress/streaming must not fall back to the default bot."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401
+
+    default_adapter = NamedProgressCaptureAdapter("default")
+    profile_adapter = NamedProgressCaptureAdapter("coder")
+    runner = _make_multiplex_runner(default_adapter, "coder", profile_adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        profile="coder",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-secondary-progress",
+        session_key="agent:coder:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert profile_adapter.sent, "secondary-profile adapter should carry progress/preview sends"
+    assert not default_adapter.sent, "default adapter should stay idle for a secondary-profile run"
+    assert all(call["adapter"] == "coder" for call in profile_adapter.sent)
+    assert all(call["adapter"] == "coder" for call in profile_adapter.typing)
 
 
 @pytest.mark.asyncio

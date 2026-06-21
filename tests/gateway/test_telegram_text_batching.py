@@ -164,3 +164,14 @@ class TestTextBatching:
         adapter.handle_message.assert_called_once()
         dispatched = adapter.handle_message.call_args[0][0]
         assert dispatched.source.thread_id == "222"
+
+    def test_secondary_profile_batching_uses_profile_namespace(self):
+        """Multiplexed Telegram DMs must batch on the profile-scoped session key."""
+        adapter = _make_adapter()
+        adapter.set_source_profile("coder")
+        event = _make_event("hello from secondary profile")
+
+        key = adapter._text_batch_key(event)
+
+        assert key == "agent:coder:telegram:dm:12345"
+        assert event.source.profile == "coder"

@@ -2250,6 +2250,30 @@ class BasePlatformAdapter(ABC):
         """
         self._message_handler = handler
 
+    def set_source_profile(self, profile_name: Optional[str]) -> None:
+        """Stamp inbound events from this adapter with a fixed profile.
+
+        Secondary multiplexed adapters own a dedicated credential set, so
+        their inbound events must carry that profile before any session keying
+        or batching happens inside the adapter layer. ``None`` clears the
+        override for primary/default adapters.
+        """
+        normalized = (profile_name or "").strip()
+        self._source_profile = normalized or None  # type: ignore[attr-defined]
+
+    def _apply_source_profile(self, event: MessageEvent) -> None:
+        """Attach the adapter-owned profile to an inbound event, if any."""
+        profile_name = getattr(self, "_source_profile", None)
+        if not profile_name:
+            return
+        source = getattr(event, "source", None)
+        if source is None or getattr(source, "profile", None):
+            return
+        try:
+            event.source = dataclasses.replace(source, profile=profile_name)
+        except Exception:
+            logger.debug("source-profile rewrite failed", exc_info=True)
+
     def set_topic_recovery_fn(
         self,
         fn: Optional[Callable[[Any], Optional[str]]],
@@ -3938,6 +3962,7 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
+        self._apply_source_profile(event)
 
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and
@@ -3948,6 +3973,7 @@ class BasePlatformAdapter(ABC):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=getattr(event.source, "profile", None),
         )
 
         # On-entry self-heal: if the adapter still has an _active_sessions

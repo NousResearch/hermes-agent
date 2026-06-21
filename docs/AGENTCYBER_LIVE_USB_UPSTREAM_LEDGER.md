@@ -392,7 +392,11 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 **Commit / push**
 
-- This entry will be included in the scoped Live USB clarity commit. After that push, use one bounded ledger-only follow-up to record the new commit SHA, remote-tip verification, and final drift/status, then stop rather than amending the ledger again solely to mention the ledger-only commit.
+- Committed scoped Live USB toolset wording/tests/ledger changes on the guarded sync branch: `44b93aab43b2f3d30320afa7c2ae15f1683b9c5f` (`docs: clarify AgentCyber live USB safety gates`).
+- Pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force.
+- Verified local and remote branch tips matched after push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `44b93aab43b2f3d30320afa7c2ae15f1683b9c5f`.
+- Post-push drift: `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`; `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `79`.
+- This is the bounded ledger-only follow-up recording post-push facts. After pushing this ledger commit, final verification should check local HEAD equals the remote branch tip and stop rather than amending the ledger again solely to mention the ledger-only commit SHA.
 
 **Next lane**
 

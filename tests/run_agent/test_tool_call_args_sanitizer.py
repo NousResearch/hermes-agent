@@ -149,6 +149,64 @@ def test_empty_string_arguments_treated_as_empty_object(caplog):
     assert caplog.records == []
 
 
+def test_missing_function_name_repaired(caplog):
+    """Empty function.name is repaired before sending to strict providers."""
+    messages = [
+        _assistant_message(_tool_call(arguments='{"query":"weather"}')),
+    ]
+    del messages[0]["tool_calls"][0]["function"]["name"]
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        repaired = AIAgent._sanitize_tool_call_arguments(
+            messages,
+            logger=logging.getLogger("run_agent"),
+            session_id="session-123",
+        )
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["name"] == "unknown_tool"
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == '{"query":"weather"}'
+    assert any(
+        "Fixed empty function.name" in record.message
+        for record in caplog.records
+    )
+
+
+def test_blank_function_name_repaired():
+    """Whitespace-only function.name is repaired."""
+    messages = [
+        _assistant_message(_tool_call(name="   ", arguments='{"query":"weather"}')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["name"] == "unknown_tool"
+
+
+def test_function_name_recovered_from_tool_result(caplog):
+    """When tool result message has a name, use it as recovery source."""
+    messages = [
+        _assistant_message(_tool_call(call_id="call_1", arguments='{"path":"/tmp"}')),
+        {"role": "tool", "tool_call_id": "call_1", "name": "terminal", "content": "ok"},
+    ]
+    messages[0]["tool_calls"][0]["function"]["name"] = ""
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        repaired = AIAgent._sanitize_tool_call_arguments(
+            messages,
+            logger=logging.getLogger("run_agent"),
+            session_id="session-456",
+        )
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert any(
+        "Fixed empty function.name from tool message" in record.message
+        for record in caplog.records
+    )
+
+
 def test_non_assistant_messages_ignored():
     messages = [
         {"role": "user", "content": "hello", "tool_calls": [_tool_call(arguments='{"bad":')]},

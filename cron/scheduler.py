@@ -153,7 +153,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     surprise $4.63 run).
     """
     per_job = job.get("enabled_toolsets")
-    if per_job:
+    if per_job is not None:
         return per_job
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load

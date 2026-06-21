@@ -313,6 +313,7 @@ def _process_single_prompt(
         if config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using container image {container_image}")
     
+    agent = None
     try:
         # Sample toolsets from distribution for this prompt
         selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
@@ -395,6 +396,17 @@ def _process_single_prompt(
                 "timestamp": datetime.now().isoformat()
             }
         }
+    finally:
+        # Release the ephemeral batch agent's resources (terminal sandboxes,
+        # browser daemons, cached httpx clients) instead of leaking them across
+        # prompts in long batch runs. Best-effort: a cleanup failure must not
+        # mask the result or crash the batch. Addresses the batch_runner.py
+        # leak reported in #50197.
+        if agent is not None:
+            try:
+                agent.close()
+            except Exception:
+                pass
 
 
 def _process_batch_worker(args: Tuple) -> Dict[str, Any]:

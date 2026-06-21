@@ -20,7 +20,8 @@ def _make_agent(fallback_model=None):
     ):
         agent = AIAgent(
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -30,7 +31,7 @@ def _make_agent(fallback_model=None):
         return agent
 
 
-def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
+def _mock_client(base_url="https://chatgpt.com/backend-api/codex", api_key="fb-key"):
     mock = type("Client", (), {})()
     mock.base_url = base_url
     mock.api_key = api_key
@@ -46,7 +47,7 @@ class TestNousFallbackLocalAvailability:
         agent = _make_agent(
             fallback_model=[
                 {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
-                {"provider": "openai", "model": "gpt-4o"},
+                {"provider": "openai-codex", "model": "gpt-5.5"},
             ]
         )
         with patch(
@@ -54,18 +55,18 @@ class TestNousFallbackLocalAvailability:
             return_value={},
         ), patch(
             "agent.auxiliary_client.resolve_provider_client",
-            return_value=(_mock_client(api_key="fb"), "gpt-4o"),
+            return_value=(_mock_client(api_key="fb"), "gpt-5.5"),
         ):
             activated = agent._try_activate_fallback(None)
         assert activated is True
-        assert agent.model == "gpt-4o"
+        assert agent.model == "gpt-5.5"
 
     def test_nous_unavailable_not_retried_in_same_session(self):
         """After Nous is skipped once, subsequent activations continue further."""
         agent = _make_agent(
             fallback_model=[
                 {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
-                {"provider": "openai", "model": "gpt-4o"},
+                {"provider": "openai-codex", "model": "gpt-5.5"},
             ]
         )
         with patch(
@@ -85,7 +86,7 @@ class TestNousFallbackLocalAvailability:
         agent = _make_agent(
             fallback_model=[
                 {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
-                {"provider": "openai", "model": "gpt-4o"},
+                {"provider": "openai-codex", "model": "gpt-5.5"},
             ]
         )
         with patch(

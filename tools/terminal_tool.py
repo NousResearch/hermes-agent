@@ -1850,6 +1850,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    elevated: bool = False,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1864,6 +1865,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        elevated: If True, run the command with Windows administrator privileges via UAC (Windows only). Triggers a UAC elevation prompt that the user must approve. Cannot be combined with background=True or pty=True. Output is captured via temp files. Default: False.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2084,6 +2086,39 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+
+        # Elevated execution via UAC (Windows only) — short-circuits before
+        # approval/env checks because it runs in a separate elevated process
+        # with its own output capture, not through the environment backend.
+        if elevated:
+            from tools.admin_executor import execute_elevated as _execute_elevated
+            if background:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "elevated=true cannot be combined with background=true. Elevated commands run synchronously with UAC.",
+                    "status": "error",
+                }, ensure_ascii=False)
+            if pty:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "elevated=true cannot be combined with pty=true. Elevated commands use file-based output capture, not PTY.",
+                    "status": "error",
+                }, ensure_ascii=False)
+            effective_cwd = _resolve_command_cwd(workdir=workdir, env=None, default_cwd=cwd)
+            result_data = _execute_elevated(
+                command=command,
+                cwd=effective_cwd,
+                timeout=timeout or 120,
+            )
+            return json.dumps({
+                "output": result_data.get("output", ""),
+                "exit_code": result_data.get("exit_code", -1),
+                "error": result_data.get("error"),
+                "status": "error" if result_data.get("error") else "success",
+            }, ensure_ascii=False)
+
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
@@ -2688,6 +2723,11 @@ TERMINAL_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
+            },
+            "elevated": {
+                "type": "boolean",
+                "description": "Run the command with Windows administrator privileges via UAC. Only works on Windows. When true, triggers a UAC elevation prompt — the user must approve. Output is captured via temp files (no PTY support). Cannot be used with background=true or pty=true. Default: false.",
+                "default": False
             }
         },
         "required": ["command"]
@@ -2705,6 +2745,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        elevated=args.get("elevated", False),
     )
 
 

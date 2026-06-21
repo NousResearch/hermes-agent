@@ -850,62 +850,41 @@ def _format_edges(skill_name: str) -> str:
                     edge_lines.append(direction)
             parts.append("\n".join(edge_lines))
 
-        # 2. Term associations (term → skill or skill → terms)
-        # Skill's own terms
+        # 2. Term associations with stats
+        # Skill's own terms — query stats inline
         terms = conn.execute(
-            "SELECT term, strength, source FROM skill_terms WHERE skill_name = ? ORDER BY strength DESC, source",
+            "SELECT t.term, t.strength, t.source, "
+            "COALESCE(s.search_count,0) AS sc, COALESCE(s.load_count,0) AS lc, COALESCE(s.success_count,0) AS suc "
+            "FROM skill_terms t "
+            "LEFT JOIN skill_term_stats s ON t.skill_name = s.skill_name AND t.term = s.term "
+            "WHERE t.skill_name = ? ORDER BY t.strength DESC, t.source",
             (skill_name,),
         ).fetchall()
         if terms:
-            term_lines = ["", "  Terms (skill → term):"]
-            for t, s, src in terms:
-                term_lines.append(f"    {skill_name} ──(has_term)──> {t}  [{src}, strength={s}]")
+            term_lines = ["", "  Terms:"]
+            for t in terms:
+                stats = f"s={t['sc']}/l={t['lc']}/ok={t['suc']}"
+                term_lines.append(
+                    f"    {skill_name} ──({t['source']})──> {t['term']}  [strength={t['strength']}, {stats}]"
+                )
             parts.append("\n".join(term_lines))
 
         # Skills that have this term (reverse lookup)
         skills_with_term = conn.execute(
-            "SELECT skill_name, strength, source FROM skill_terms WHERE term = ? ORDER BY strength DESC",
+            "SELECT t.skill_name, t.strength, t.source, "
+            "COALESCE(s.search_count,0) AS sc, COALESCE(s.load_count,0) AS lc, COALESCE(s.success_count,0) AS suc "
+            "FROM skill_terms t "
+            "LEFT JOIN skill_term_stats s ON t.skill_name = s.skill_name AND t.term = s.term "
+            "WHERE t.term = ? ORDER BY t.strength DESC",
             (skill_name,),
         ).fetchall()
         if skills_with_term:
             rev_lines = ["", "  Skills with this term:"]
-            for sn, s, src in skills_with_term:
-                rev_lines.append(f"    {sn:40s} ──(has_term)──> {skill_name}  [{src}, strength={s}]")
+            for sn, s, src, sc, lc, suc in skills_with_term:
+                rev_lines.append(f"    {sn:40s} ──({src})──> {skill_name}  [strength={s}, s={sc}/l={lc}/ok={suc}]")
             parts.append("\n".join(rev_lines))
 
         return "\n".join(parts) if parts else ""
-    except Exception:
-        return ""
-
-
-def _format_stats(skill_name: str) -> str:
-    """Query term stats for a skill and return a formatted string."""
-    try:
-        conn = _ensure_graph()
-        rows = conn.execute(
-            """SELECT term, search_count, load_count, success_count FROM skill_term_stats
-               WHERE skill_name = ? ORDER BY search_count DESC, success_count DESC LIMIT 20""",
-            (skill_name,),
-        ).fetchall()
-        if not rows:
-            return ""
-        lines = ["", "  Term stats (search / load / success):"]
-        for r in rows:
-            boost = 0
-            try:
-                eff = (r["success_count"] * 2 + r["load_count"]) / max(r["search_count"] * 3, 1)
-                conf = 1 - __import__("math").pow(0.5, r["search_count"] / 5)
-                adj = (eff - 0.5) * 2
-                tanh = adj / (1 + abs(adj) * 0.5)
-                boost = 0.1 * tanh * conf
-            except Exception:
-                pass
-            sign = "+" if boost >= 0 else ""
-            lines.append(
-                f"    {r['term']:25s}  {r['search_count']:3d} / {r['load_count']:2d} / {r['success_count']:2d}"
-                f"  (boost={sign}{boost:.3f})"
-            )
-        return "\n".join(lines)
     except Exception:
         return ""
 
@@ -960,7 +939,7 @@ def _handle_slash_command(args: str) -> str | None:
                 f"  Description: {node['description'] or ''}",
                 f"  Tags:        {node['tags'] or ''}",
                 f"  Path:        {node['file_path'] or ''}",
-            ]) + _format_edges(rest) + _format_stats(rest)
+            ]) + _format_edges(rest)
         except Exception as e:
             return f"Show failed: {e}"
 

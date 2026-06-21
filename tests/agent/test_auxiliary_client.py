@@ -105,13 +105,14 @@ class TestAuxiliaryMaxTokensParam:
 
 
 class TestBuildCallKwargsMaxTokens:
-    """_build_call_kwargs should not cap output by default (#34530).
+    """_build_call_kwargs preserves caller-requested output caps (#50132).
 
-    Most chat-completions providers treat an omitted max_tokens as "use the
-    model max", which is what we want for auxiliary tasks. An explicit cap only
-    risks truncation or a wire-format 400 (GitHub Copilot / GPT-5 reject
-    max_tokens; ZAI vision rejects it entirely). The Anthropic Messages wire is
-    the one exception — max_tokens is a mandatory field there.
+    The helper still omits max_tokens when callers do not request a cap, keeping
+    the historic "use provider default/max output" behavior. When a caller does
+    pass an explicit cap (for example context compression's summary budget), the
+    cap must reach OpenAI-compatible local endpoints instead of silently falling
+    back to their oversized server default. Providers that reject the field are
+    handled by the existing unsupported-parameter retry path.
     """
 
     @pytest.mark.parametrize(
@@ -126,7 +127,27 @@ class TestBuildCallKwargsMaxTokens:
             ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
         ],
     )
-    def test_omits_max_tokens_for_openai_compatible(self, provider, model, base_url):
+    def test_omits_max_tokens_when_no_cap_is_requested(self, provider, model, base_url):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            base_url=base_url,
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("custom", "qwen", "http://localhost:8080/v1"),
+            ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
+        ],
+    )
+    def test_keeps_explicit_max_tokens_for_openai_compatible(self, provider, model, base_url):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -136,7 +157,7 @@ class TestBuildCallKwargsMaxTokens:
             max_tokens=1234,
             base_url=base_url,
         )
-        assert "max_tokens" not in kwargs
+        assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
 
     @pytest.mark.parametrize(

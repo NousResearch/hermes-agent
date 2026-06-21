@@ -5121,24 +5121,12 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
-        # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
-        # an explicit cap only risks truncating a summary or 400-ing on providers
-        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
-        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
-        # models reject it entirely with error 1210). Omitting it sidesteps all of
-        # those wire-format quirks at once.
-        #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
-        _effective_base = base_url or (
-            _current_custom_base_url() if provider == "custom" else ""
-        )
-        if _is_anthropic_compat_endpoint(provider, _effective_base):
-            kwargs["max_tokens"] = max_tokens
+        # Preserve explicit caller caps.  Omitting max_tokens is still the
+        # default when callers do not request a limit, but compression and other
+        # budgeted auxiliary paths pass a deliberate cap that local
+        # OpenAI-compatible servers must see.  Providers that reject the field
+        # are handled by the existing unsupported-parameter retry path below.
+        kwargs["max_tokens"] = max_tokens
 
     if tools:
         # Defensive dedup: providers like Google Vertex, Azure, and Bedrock

@@ -491,6 +491,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.approval_shortcuts import rewrite_numeric_approval_shortcut
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -3960,6 +3961,12 @@ class BasePlatformAdapter(ABC):
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            approval_shortcut_event = rewrite_numeric_approval_shortcut(
+                event, session_key
+            )
+            if approval_shortcut_event is not None:
+                event = approval_shortcut_event
+
             # Certain commands must bypass the active-session guard and be
             # dispatched directly to the gateway runner.  Without this, they
             # are queued as pending messages and either:

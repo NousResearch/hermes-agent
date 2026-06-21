@@ -267,6 +267,40 @@ class TestCommandBypassActiveSession:
             "/queue response was not sent back to the user"
         )
 
+    @pytest.mark.parametrize(
+        ("reply", "canonical"),
+        [
+            ("1", "approve"),
+            ("2", "approve"),
+            ("3", "approve"),
+            ("4", "deny"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_numeric_approval_shortcuts_bypass_guard(
+        self, monkeypatch, reply, canonical
+    ):
+        """Bare numeric approval replies must reach the approval handlers."""
+        from tools import approval as approval_module
+
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        monkeypatch.setattr(
+            approval_module,
+            "has_blocking_approval",
+            lambda key: key == sk,
+        )
+
+        await adapter.handle_message(_make_event(reply))
+
+        assert sk not in adapter._pending_messages, (
+            f"{reply} was queued instead of bypassing as /{canonical}"
+        )
+        assert any(f"handled:{canonical}" in r for r in adapter.sent_responses), (
+            f"{reply} did not dispatch as /{canonical}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests: non-bypass-set commands (no dedicated Level-2 handler) also bypass
@@ -366,6 +400,27 @@ class TestNonBypassStillQueued:
         assert len(adapter.sent_responses) == 0, (
             "Regular text should not produce a direct response"
         )
+
+    @pytest.mark.asyncio
+    async def test_numeric_approval_shortcut_queued_without_pending_approval(
+        self, monkeypatch
+    ):
+        """A bare number is ordinary text unless a tool approval is live."""
+        from tools import approval as approval_module
+
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        monkeypatch.setattr(
+            approval_module,
+            "has_blocking_approval",
+            lambda _key: False,
+        )
+
+        await adapter.handle_message(_make_event("1"))
+
+        assert sk in adapter._pending_messages
+        assert len(adapter.sent_responses) == 0
 
     @pytest.mark.asyncio
     async def test_unknown_command_queued(self):

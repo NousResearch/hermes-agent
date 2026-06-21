@@ -31,6 +31,7 @@ from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
+from gateway.approval_shortcuts import rewrite_numeric_approval_shortcut
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -47,6 +48,12 @@ logger = logging.getLogger("gateway.run")
 
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
+
+    def _approval_numeric_shortcut_event(
+        self, event: MessageEvent, session_key: str
+    ) -> MessageEvent | None:
+        """Rewrite bare numeric approval replies when a tool approval is live."""
+        return rewrite_numeric_approval_shortcut(event, session_key)
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.

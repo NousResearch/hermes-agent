@@ -7303,6 +7303,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 _update_prompts.pop(_quick_key, None)
 
+        _approval_shortcut_event = self._approval_numeric_shortcut_event(
+            event, _quick_key
+        )
+        if _approval_shortcut_event is not None:
+            event = _approval_shortcut_event
+
         # Intercept messages that are responses to a pending clarify
         # request that is awaiting free-form text (either an open-ended
         # clarify with no choices, or one where the user picked the
@@ -15591,8 +15597,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
-                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                    f"Reply `1` (`{_p}approve`) to execute, "
+                    f"`2` (`{_p}approve session`) to approve this pattern for the session, "
+                    f"`3` (`{_p}approve always`) to approve permanently, "
+                    f"or `4` (`{_p}deny`) to cancel."
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

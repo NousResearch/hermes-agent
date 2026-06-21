@@ -171,6 +171,41 @@
     return p.phantom_cards || p.phantom_refs || [];
   }
 
+  function linearAttention(linear) {
+    if (!linear) return false;
+    return !!(linear.last_error || linear.conflict_reason ||
+      linear.sync_status === "error" || linear.sync_status === "conflict");
+  }
+
+  function linearStatusLabel(linear) {
+    if (!linear) return "Not linked";
+    if (!linear.sync_enabled) return "Paused";
+    if (linear.conflict_reason || linear.sync_status === "conflict") return "Conflict";
+    if (linear.last_error || linear.sync_status === "error") return "Sync error";
+    if (linear.sync_status === "create_requested") return "Create requested";
+    if (linear.sync_status === "sync_requested") return "Sync requested";
+    return linear.sync_status || "Linked";
+  }
+
+  function linearClass(linear) {
+    if (!linear) return "";
+    if (!linear.sync_enabled) return "hermes-kanban-linear--paused";
+    if (linear.conflict_reason || linear.sync_status === "conflict") return "hermes-kanban-linear--conflict";
+    if (linear.last_error || linear.sync_status === "error") return "hermes-kanban-linear--error";
+    if (linear.sync_status === "create_requested" || linear.sync_status === "sync_requested") return "hermes-kanban-linear--pending";
+    return "hermes-kanban-linear--linked";
+  }
+
+  function linearSummary(linear) {
+    if (!linear) return "Linear: not linked";
+    const bits = [linear.linear_identifier || "Linear issue", linearStatusLabel(linear)];
+    if (linear.linear_state) bits.push("State: " + linear.linear_state);
+    if (linear.linear_priority) bits.push("Priority: " + linear.linear_priority);
+    if (linear.last_error) bits.push("Error: " + linear.last_error);
+    if (linear.conflict_reason) bits.push("Conflict: " + linear.conflict_reason);
+    return bits.join(" · ");
+  }
+
   // Takes an optional `t` so the prompt/alert text is localised. Callers
   // outside React components can pass null and fall through to English.
   function withCompletionSummary(patch, count, t) {
@@ -2489,6 +2524,7 @@
 
     const progress = t.progress;
     const needsAssignee = t.status === "ready" && !t.assignee;
+    const linear = t.linear || null;
 
     return h("div", {
       ref: cardRef,
@@ -2526,6 +2562,21 @@
             ),
             h("span", { className: "hermes-kanban-card-id",
                         title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            linear
+              ? (linear.linear_url
+                  ? h("a", {
+                      className: cn("hermes-kanban-linear-badge", linearClass(linear)),
+                      href: linear.linear_url,
+                      target: "_blank",
+                      rel: "noopener noreferrer",
+                      title: linearSummary(linear),
+                      onClick: function (e) { e.stopPropagation(); },
+                    }, linear.linear_identifier || "Linear")
+                  : h("span", {
+                      className: cn("hermes-kanban-linear-badge", linearClass(linear)),
+                      title: linearSummary(linear),
+                    }, linear.linear_identifier || "Linear"))
+              : null,
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(
@@ -2901,6 +2952,24 @@
         .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
     };
 
+    const doLinearAction = function (kind, payload) {
+      setPatchErr(null);
+      let url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/linear`, boardSlug);
+      let method = "PATCH";
+      let body = payload || {};
+      if (kind === "link") { method = "PUT"; }
+      else if (kind === "unlink") { method = "DELETE"; body = null; }
+      else if (kind === "force_sync" || kind === "create_issue") {
+        method = "POST";
+        url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/linear/actions`, boardSlug);
+        body = { action: kind };
+      }
+      const opts = { method: method, headers: { "Content-Type": "application/json" } };
+      if (body) opts.body = JSON.stringify(body);
+      return SDK.fetchJSON(url, opts).then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
+    };
+
     // Triage specifier — calls the auxiliary LLM to flesh out a rough
     // idea in the Triage column into a concrete spec (title + body with
     // goal, approach, acceptance criteria) and promotes it to todo.
@@ -3033,6 +3102,7 @@
           assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
+          onLinearAction: doLinearAction,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
           onAddParent: addLink,
@@ -3047,6 +3117,7 @@
           onDeleteAttachment: handleDeleteAttachment,
           uploadBusy: uploadBusy,
           uploadErr: uploadErr,
+          patchErr: patchErr,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3183,11 +3254,15 @@
     const events = props.data.events || [];
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
+    const linear = t.linear || null;
+    const linearEditBlockReason = linearAttention(linear)
+      ? "Linear sync needs attention before editing Linear-backed fields."
+      : null;
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
         h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[t.status]) }),
-        props.editing
+        props.editing && !linearEditBlockReason
           ? h(TitleEditor, {
               initial: t.title || "",
               onSave: function (newTitle) {
@@ -3196,15 +3271,15 @@
               onCancel: function () { props.setEditing(false); },
             })
           : h("span", {
-              className: "hermes-kanban-drawer-title-text",
-              title: tx(i18n, "clickToEdit", "Click to edit"),
-              onClick: function () { props.setEditing(true); },
+              className: cn("hermes-kanban-drawer-title-text", linearEditBlockReason ? "hermes-kanban-edit-locked" : ""),
+              title: linearEditBlockReason || tx(i18n, "clickToEdit", "Click to edit"),
+              onClick: function () { if (!linearEditBlockReason) props.setEditing(true); },
             }, t.title || tx(i18n, "untitled", "(untitled)")),
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
-        h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
-        h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+        h(AssigneeEditor, { task: t, onPatch: props.onPatch, disabledReason: linearEditBlockReason }),
+        h(PriorityEditor, { task: t, onPatch: props.onPatch, disabledReason: linearEditBlockReason }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
@@ -3222,6 +3297,11 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
+      h(LinearSection, {
+        linear: linear,
+        onLinearAction: props.onLinearAction,
+        patchErr: props.patchErr,
+      }),
       h(StatusActions, {
         task: t,
         onPatch: props.onPatch,
@@ -3244,6 +3324,7 @@
         task: t,
         renderMarkdown: props.renderMarkdown,
         onPatch: props.onPatch,
+        disabledReason: linearEditBlockReason,
       }),
       h(DependencyEditor, {
         task: t,
@@ -3456,6 +3537,70 @@
     );
   }
 
+  function LinearSection(props) {
+    const { t } = useI18n();
+    const linear = props.linear || null;
+    const [value, setValue] = useState("");
+    const [busy, setBusy] = useState(null);
+    const run = function (kind, payload) {
+      if (!props.onLinearAction) return Promise.resolve();
+      setBusy(kind);
+      return props.onLinearAction(kind, payload).finally(function () { setBusy(null); });
+    };
+    return h("div", { className: cn("hermes-kanban-section hermes-kanban-linear-section", linearClass(linear)) },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" }, "Linear"),
+        linear ? h("span", { className: cn("hermes-kanban-linear-status", linearClass(linear)) },
+          linearStatusLabel(linear)) : h("span", { className: "hermes-kanban-linear-status" }, "Not linked"),
+      ),
+      linear
+        ? h("div", { className: "hermes-kanban-linear-body" },
+            h("div", { className: "hermes-kanban-linear-main" },
+              linear.linear_url
+                ? h("a", { href: linear.linear_url, target: "_blank", rel: "noopener noreferrer", className: "hermes-kanban-linear-link" },
+                    linear.linear_identifier || linear.linear_url)
+                : h("span", { className: "hermes-kanban-linear-link" }, linear.linear_identifier || "Linear issue pending"),
+              linear.linear_state ? h("span", { className: "hermes-kanban-linear-chip" }, "State: " + linear.linear_state) : null,
+              linear.linear_priority ? h("span", { className: "hermes-kanban-linear-chip" }, "Priority: " + linear.linear_priority) : null,
+            ),
+            linear.conflict_reason ? h("div", { className: "hermes-kanban-linear-alert" }, "Conflict: " + linear.conflict_reason) : null,
+            linear.last_error ? h("div", { className: "hermes-kanban-linear-alert" }, "Sync error: " + linear.last_error) : null,
+            linearAttention(linear) ? h("div", { className: "hermes-kanban-linear-note" },
+              "Title, assignee, priority, and description edits are locked until the Linear conflict/error is resolved, paused, or unlinked.") : null,
+            h("div", { className: "hermes-kanban-linear-actions" },
+              linear.linear_url ? h(Button, { size: "sm", onClick: function () { window.open(linear.linear_url, "_blank", "noopener,noreferrer"); } }, "Open Linear") : null,
+              h(Button, { size: "sm", disabled: !!busy, onClick: function () { run("force_sync"); } }, busy === "force_sync" ? "Requesting…" : "Force sync"),
+              h(Button, { size: "sm", disabled: !!busy, onClick: function () { run(linear.sync_enabled ? "pause" : "resume", { sync_enabled: !linear.sync_enabled }); } },
+                linear.sync_enabled ? "Pause sync" : "Resume sync"),
+              h(Button, { size: "sm", variant: "destructive", disabled: !!busy, onClick: function () { if (window.confirm("Unlink this Linear issue from the Kanban task?")) run("unlink"); } }, "Unlink"),
+            ),
+          )
+        : h("div", { className: "hermes-kanban-linear-body" },
+            h("div", { className: "hermes-kanban-linear-note" },
+              "Link an existing ENT issue, or request creating a new Linear issue from this card. Secrets stay server-side."),
+            h("div", { className: "hermes-kanban-linear-link-row" },
+              h(Input, {
+                value: value,
+                onChange: function (e) { setValue(e.target.value); },
+                placeholder: "ENT-123 or Linear URL",
+                className: "h-8 text-xs flex-1",
+              }),
+              h(Button, {
+                size: "sm",
+                disabled: !!busy || !value.trim(),
+                onClick: function () { run("link", { identifier_or_url: value.trim() }).then(function () { setValue(""); }); },
+              }, busy === "link" ? "Linking…" : "Link"),
+              h(Button, {
+                size: "sm",
+                disabled: !!busy,
+                onClick: function () { run("create_issue"); },
+              }, busy === "create_issue" ? "Requesting…" : "Create issue"),
+            ),
+          ),
+      props.patchErr ? h("div", { className: "hermes-kanban-linear-alert" }, props.patchErr) : null,
+    );
+  }
+
   function MetaRow(props) {
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, props.label),
@@ -3499,9 +3644,9 @@
       return h("div", { className: "hermes-kanban-meta-row" },
         h("span", { className: "hermes-kanban-meta-label" }, tx(t, "assignee", "Assignee")),
         h("span", {
-          className: "hermes-kanban-meta-value hermes-kanban-editable",
-          onClick: function () { setEditing(true); },
-          title: tx(t, "clickToEditAssignee", "Click to edit assignee"),
+          className: cn("hermes-kanban-meta-value", props.disabledReason ? "hermes-kanban-edit-locked" : "hermes-kanban-editable"),
+          onClick: function () { if (!props.disabledReason) setEditing(true); },
+          title: props.disabledReason || tx(t, "clickToEditAssignee", "Click to edit assignee"),
         }, props.task.assignee || tx(t, "unassigned", "unassigned")),
       );
     }
@@ -3536,9 +3681,9 @@
       return h("div", { className: "hermes-kanban-meta-row" },
         h("span", { className: "hermes-kanban-meta-label" }, tx(t, "priority", "Priority")),
         h("span", {
-          className: "hermes-kanban-meta-value hermes-kanban-editable",
-          onClick: function () { setEditing(true); },
-          title: tx(t, "clickToEdit", "Click to edit"),
+          className: cn("hermes-kanban-meta-value", props.disabledReason ? "hermes-kanban-edit-locked" : "hermes-kanban-editable"),
+          onClick: function () { if (!props.disabledReason) setEditing(true); },
+          title: props.disabledReason || tx(t, "clickToEdit", "Click to edit"),
         }, String(props.task.priority)),
       );
     }
@@ -3581,10 +3726,11 @@
             )
           : h("button", {
               type: "button",
-              onClick: function () { setEditing(true); },
-              className: "hermes-kanban-edit-link",
-              title: "Edit description",
-            }, tx(t, "edit", "edit")),
+              onClick: function () { if (!props.disabledReason) setEditing(true); },
+              disabled: !!props.disabledReason,
+              className: cn("hermes-kanban-edit-link", props.disabledReason ? "hermes-kanban-edit-locked" : ""),
+              title: props.disabledReason || "Edit description",
+            }, props.disabledReason ? "locked" : tx(t, "edit", "edit")),
       ),
       editing
         ? h("textarea", {

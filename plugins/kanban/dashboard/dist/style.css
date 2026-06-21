@@ -1581,3 +1581,84 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ---- Linear integration affordances ---------------------------------- */
+.hermes-kanban-linear-badge,
+.hermes-kanban-linear-status,
+.hermes-kanban-linear-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  padding: 0.05rem 0.4rem;
+  font-size: 0.62rem;
+  line-height: 1.2;
+  text-decoration: none;
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+}
+.hermes-kanban-linear-badge::before,
+.hermes-kanban-linear-status::before {
+  content: "↗";
+  font-size: 0.6rem;
+}
+.hermes-kanban-linear--linked {
+  border-color: color-mix(in srgb, #4a8cd1 45%, var(--color-border));
+  background: color-mix(in srgb, #4a8cd1 12%, transparent);
+}
+.hermes-kanban-linear--pending {
+  border-color: color-mix(in srgb, #d4b348 55%, var(--color-border));
+  background: color-mix(in srgb, #d4b348 16%, transparent);
+}
+.hermes-kanban-linear--paused {
+  border-color: color-mix(in srgb, var(--color-muted-foreground) 50%, var(--color-border));
+  background: color-mix(in srgb, var(--color-muted-foreground) 12%, transparent);
+}
+.hermes-kanban-linear--error,
+.hermes-kanban-linear--conflict {
+  border-color: color-mix(in srgb, var(--color-destructive, #d14a4a) 60%, var(--color-border));
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 14%, transparent);
+}
+.hermes-kanban-linear-section {
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.65rem;
+}
+.hermes-kanban-linear-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.hermes-kanban-linear-main,
+.hermes-kanban-linear-actions,
+.hermes-kanban-linear-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.hermes-kanban-linear-link {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  color: var(--color-foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hermes-kanban-linear-note {
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-linear-alert {
+  border-left: 3px solid var(--color-destructive, #d14a4a);
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 10%, transparent);
+  color: var(--color-foreground);
+  font-size: 0.75rem;
+}
+.hermes-kanban-edit-locked {
+  cursor: not-allowed;
+  opacity: 0.72;
+  text-decoration: none !important;
+}

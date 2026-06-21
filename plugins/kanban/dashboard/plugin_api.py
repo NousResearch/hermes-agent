@@ -132,7 +132,94 @@ def _conn(board: Optional[str] = None):
         kanban_db.init_db(board=board)
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
-    return kanban_db.connect(board=board)
+    conn = kanban_db.connect(board=board)
+    _ensure_linear_table(conn)
+    return conn
+
+
+def _linear_board_slug(board: Optional[str]) -> str:
+    return board or kanban_db.DEFAULT_BOARD
+
+
+def _ensure_linear_table(conn: sqlite3.Connection) -> None:
+    """Create the lightweight dashboard-side Linear mapping cache.
+
+    The sync daemon/backend owns actual Linear API credentials and reconciliation.
+    The dashboard stores only non-secret linkage/status fields and emits events
+    for actions (create/force-sync) that an integration worker can process.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kanban_linear_links (
+            task_id TEXT PRIMARY KEY,
+            board_slug TEXT NOT NULL DEFAULT 'default',
+            linear_issue_id TEXT,
+            linear_identifier TEXT,
+            linear_url TEXT,
+            linear_state TEXT,
+            linear_priority TEXT,
+            sync_enabled INTEGER NOT NULL DEFAULT 1,
+            sync_status TEXT NOT NULL DEFAULT 'linked',
+            last_synced_at INTEGER,
+            last_error TEXT,
+            conflict_reason TEXT,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def _linear_dict(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
+    if row is None:
+        return None
+    return {
+        "task_id": row["task_id"],
+        "board_slug": row["board_slug"],
+        "linear_issue_id": row["linear_issue_id"],
+        "linear_identifier": row["linear_identifier"],
+        "linear_url": row["linear_url"],
+        "linear_state": row["linear_state"],
+        "linear_priority": row["linear_priority"],
+        "sync_enabled": bool(row["sync_enabled"]),
+        "sync_status": row["sync_status"],
+        "last_synced_at": row["last_synced_at"],
+        "last_error": row["last_error"],
+        "conflict_reason": row["conflict_reason"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _linear_for_tasks(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not task_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(task_ids))
+    rows = conn.execute(
+        f"SELECT * FROM kanban_linear_links WHERE task_id IN ({placeholders})",
+        tuple(task_ids),
+    ).fetchall()
+    return {row["task_id"]: _linear_dict(row) for row in rows if row is not None}
+
+
+def _parse_linear_identifier_or_url(value: str) -> tuple[str, str]:
+    raw = (value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Linear issue identifier or URL is required")
+    import re
+    match = re.search(r"([A-Za-z][A-Za-z0-9]+-\d+)", raw)
+    if not match:
+        raise HTTPException(status_code=400, detail="Expected a Linear issue key like ENT-123 or issue URL")
+    ident = match.group(1).upper()
+    url = raw if raw.startswith(("http://", "https://")) else f"https://linear.app/issue/{ident}"
+    return ident, url
+
+
+def _record_linear_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict[str, Any]] = None,
+) -> None:
+    kanban_db._append_event(conn, task_id, kind, payload or {})
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +544,9 @@ def get_board(
         # window-function query (avoids N+1 ``latest_summary`` calls
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
-        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        task_ids = [t.id for t in tasks]
+        summary_map = kanban_db.latest_summaries(conn, task_ids)
+        linear_map = _linear_for_tasks(conn, task_ids)
 
         for t in tasks:
             full = summary_map.get(t.id)
@@ -468,6 +557,7 @@ def get_board(
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            d["linear"] = linear_map.get(t.id)
             diags = diagnostics_per_task.get(t.id)
             if diags:
                 # Full list goes into the payload so the drawer can render
@@ -546,6 +636,7 @@ def get_task(
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
         task_d = _task_dict(task, latest_summary=full_summary)
+        task_d["linear"] = _linear_for_tasks(conn, [task_id]).get(task_id)
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -569,6 +660,157 @@ def get_task(
                 )
             ],
         }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Linear linkage controls (dashboard-safe; no Linear secrets exposed)
+# ---------------------------------------------------------------------------
+
+class LinearLinkBody(BaseModel):
+    identifier_or_url: str
+    issue_id: Optional[str] = None
+    state: Optional[str] = None
+    priority: Optional[str] = None
+
+
+class LinearPatchBody(BaseModel):
+    sync_enabled: Optional[bool] = None
+    sync_status: Optional[str] = None
+    state: Optional[str] = None
+    priority: Optional[str] = None
+    last_error: Optional[str] = None
+    conflict_reason: Optional[str] = None
+
+
+class LinearActionBody(BaseModel):
+    action: str
+
+
+@router.put("/tasks/{task_id}/linear")
+def link_linear_issue(task_id: str, payload: LinearLinkBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    ident, url = _parse_linear_identifier_or_url(payload.identifier_or_url)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        now = int(time.time())
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                """
+                INSERT INTO kanban_linear_links (
+                    task_id, board_slug, linear_issue_id, linear_identifier, linear_url,
+                    linear_state, linear_priority, sync_enabled, sync_status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'linked', ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    board_slug = excluded.board_slug,
+                    linear_issue_id = excluded.linear_issue_id,
+                    linear_identifier = excluded.linear_identifier,
+                    linear_url = excluded.linear_url,
+                    linear_state = excluded.linear_state,
+                    linear_priority = excluded.linear_priority,
+                    sync_enabled = 1,
+                    sync_status = 'linked',
+                    last_error = NULL,
+                    conflict_reason = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (task_id, _linear_board_slug(board), payload.issue_id, ident, url, payload.state, payload.priority, now),
+            )
+            _record_linear_event(conn, task_id, "linear_linked", {"identifier": ident, "url": url})
+        row = conn.execute("SELECT * FROM kanban_linear_links WHERE task_id = ?", (task_id,)).fetchone()
+        return {"linear": _linear_dict(row)}
+    finally:
+        conn.close()
+
+
+@router.patch("/tasks/{task_id}/linear")
+def update_linear_link(task_id: str, payload: LinearPatchBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        row = conn.execute("SELECT * FROM kanban_linear_links WHERE task_id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="task is not linked to Linear")
+        now = int(time.time())
+        updates: dict[str, Any] = {"updated_at": now}
+        if payload.sync_enabled is not None:
+            updates["sync_enabled"] = 1 if payload.sync_enabled else 0
+            updates["sync_status"] = "linked" if payload.sync_enabled else "paused"
+        if payload.sync_status is not None:
+            updates["sync_status"] = payload.sync_status
+        if payload.state is not None:
+            updates["linear_state"] = payload.state
+        if payload.priority is not None:
+            updates["linear_priority"] = payload.priority
+        if payload.last_error is not None:
+            updates["last_error"] = payload.last_error or None
+        if payload.conflict_reason is not None:
+            updates["conflict_reason"] = payload.conflict_reason or None
+        assignments = ", ".join(f"{k} = ?" for k in updates.keys())
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                f"UPDATE kanban_linear_links SET {assignments} WHERE task_id = ?",
+                (*updates.values(), task_id),
+            )
+            _record_linear_event(conn, task_id, "linear_link_updated", updates)
+        row = conn.execute("SELECT * FROM kanban_linear_links WHERE task_id = ?", (task_id,)).fetchone()
+        return {"linear": _linear_dict(row)}
+    finally:
+        conn.close()
+
+
+@router.delete("/tasks/{task_id}/linear")
+def unlink_linear_issue(task_id: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        with kanban_db.write_txn(conn):
+            conn.execute("DELETE FROM kanban_linear_links WHERE task_id = ?", (task_id,))
+            _record_linear_event(conn, task_id, "linear_unlinked", {})
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/linear/actions")
+def request_linear_action(task_id: str, payload: LinearActionBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    action = (payload.action or "").strip()
+    if action not in {"force_sync", "create_issue"}:
+        raise HTTPException(status_code=400, detail="unknown Linear action")
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        now = int(time.time())
+        with kanban_db.write_txn(conn):
+            if action == "create_issue":
+                conn.execute(
+                    """
+                    INSERT INTO kanban_linear_links (
+                        task_id, board_slug, sync_enabled, sync_status, updated_at
+                    ) VALUES (?, ?, 1, 'create_requested', ?)
+                    ON CONFLICT(task_id) DO UPDATE SET
+                        sync_enabled = 1, sync_status = 'create_requested', updated_at = excluded.updated_at
+                    """,
+                    (task_id, _linear_board_slug(board), now),
+                )
+                _record_linear_event(conn, task_id, "linear_create_requested", {})
+            else:
+                conn.execute(
+                    "UPDATE kanban_linear_links SET sync_enabled = 1, sync_status = 'sync_requested', updated_at = ? WHERE task_id = ?",
+                    (now, task_id),
+                )
+                _record_linear_event(conn, task_id, "linear_sync_requested", {})
+        row = conn.execute("SELECT * FROM kanban_linear_links WHERE task_id = ?", (task_id,)).fetchone()
+        return {"linear": _linear_dict(row)}
     finally:
         conn.close()
 

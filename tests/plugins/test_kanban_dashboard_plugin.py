@@ -114,6 +114,76 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_linear_linkage_surfaces_on_board_and_task_detail(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "Add Linear UI"},
+    ).json()["task"]
+
+    r = client.put(
+        f"/api/plugins/kanban/tasks/{task['id']}/linear",
+        json={"identifier_or_url": "ENT-123", "state": "In Progress", "priority": "High"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["linear"]["linear_identifier"] == "ENT-123"
+    assert r.json()["linear"]["sync_enabled"] is True
+
+    board = client.get("/api/plugins/kanban/board").json()
+    linked = next(
+        t
+        for column in board["columns"]
+        for t in column["tasks"]
+        if t["id"] == task["id"]
+    )
+    assert linked["linear"]["linear_identifier"] == "ENT-123"
+    assert linked["linear"]["linear_state"] == "In Progress"
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    assert detail["task"]["linear"]["linear_priority"] == "High"
+
+
+def test_linear_controls_pause_force_sync_and_unlink(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "Linear controls"},
+    ).json()["task"]
+    client.put(
+        f"/api/plugins/kanban/tasks/{task['id']}/linear",
+        json={"identifier_or_url": "https://linear.app/entrixflow/issue/ENT-456/foo"},
+    )
+
+    paused = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}/linear",
+        json={"sync_enabled": False},
+    )
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["linear"]["sync_enabled"] is False
+    assert paused.json()["linear"]["sync_status"] == "paused"
+
+    requested = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/linear/actions",
+        json={"action": "force_sync"},
+    )
+    assert requested.status_code == 200, requested.text
+    assert requested.json()["linear"]["sync_enabled"] is True
+    assert requested.json()["linear"]["sync_status"] == "sync_requested"
+
+    unlinked = client.delete(f"/api/plugins/kanban/tasks/{task['id']}/linear")
+    assert unlinked.status_code == 200, unlinked.text
+    assert client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["linear"] is None
+
+
+def test_dashboard_bundle_contains_linear_controls():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function LinearSection(props)" in js
+    assert "hermes-kanban-linear-badge" in js
+    assert "Force sync" in js
+    assert "Pause sync" in js
+    assert "Create issue" in js
+    assert "Linear sync needs attention before editing Linear-backed fields." in js
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 

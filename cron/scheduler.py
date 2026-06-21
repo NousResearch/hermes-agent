@@ -165,8 +165,25 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _cron_toolsets_need_mcp(enabled_toolsets: list[str] | None) -> bool:
+    """Return whether a cron agent should eagerly initialize MCP servers.
+
+    ``enabled_toolsets=None`` means "legacy full tool access", so preserve the
+    old behavior there. Explicit job/platform toolsets are narrower: initialize
+    MCP only when they ask for an MCP toolset. This keeps broken remote MCP
+    auth (for example Composio) from slowing or polluting web/search-only jobs.
+    """
+    if enabled_toolsets is None:
+        return True
+    for raw_name in enabled_toolsets:
+        name = str(raw_name).strip().lower()
+        if name == "mcp" or name.startswith("mcp-"):
+            return True
+    return False
+
+
 # Valid delivery platforms — used to validate user-supplied platform names
-# in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
@@ -1786,6 +1803,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
+        enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+
         # Initialize MCP servers so configured mcp_servers are available to
         # the agent's tool registry before AIAgent is constructed. Without
         # this, cron jobs never saw any MCP tools — only the gateway / CLI
@@ -1793,19 +1812,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # ticks short-circuit on already-connected servers inside
         # register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
-        try:
-            from tools.mcp_tool import discover_mcp_tools
-            _mcp_tools = discover_mcp_tools()
-            if _mcp_tools:
-                logger.info(
-                    "Job '%s': %d MCP tool(s) available",
-                    job_id, len(_mcp_tools),
+        if _cron_toolsets_need_mcp(enabled_toolsets):
+            try:
+                from tools.mcp_tool import discover_mcp_tools
+                _mcp_tools = discover_mcp_tools()
+                if _mcp_tools:
+                    logger.info(
+                        "Job '%s': %d MCP tool(s) available",
+                        job_id, len(_mcp_tools),
+                    )
+            except Exception as _mcp_exc:
+                logger.warning(
+                    "Job '%s': MCP initialization failed (non-fatal): %s",
+                    job_id, _mcp_exc,
                 )
-        except Exception as _mcp_exc:
-            logger.warning(
-                "Job '%s': MCP initialization failed (non-fatal): %s",
-                job_id, _mcp_exc,
-            )
 
         agent = AIAgent(
             model=model,

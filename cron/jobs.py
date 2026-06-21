@@ -394,6 +394,19 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _parse_stored_datetime(value: str) -> datetime:
+    """Parse stored cron datetimes, accepting ISO UTC ``Z`` suffixes."""
+    if isinstance(value, str) and value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    if isinstance(value, str):
+        value = re.sub(
+            r"(\.\d{1,5})([+-]\d{2}:\d{2})$",
+            lambda match: match.group(1).ljust(7, "0") + match.group(2),
+            value,
+        )
+    return datetime.fromisoformat(value)
+
+
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,
@@ -1189,7 +1202,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
 
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+        try:
+            next_run_dt = _ensure_aware(_parse_stored_datetime(next_run))
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Job '%s' has invalid next_run_at %r (%s); recomputing from schedule",
+                job.get("name", job.get("id")),
+                next_run,
+                exc,
+            )
+            schedule = job.get("schedule", {})
+            recovered_next = compute_next_run(schedule, now.isoformat())
+            if not recovered_next:
+                continue
+            job["next_run_at"] = recovered_next
+            next_run = recovered_next
+            for rj in raw_jobs:
+                if rj["id"] == job["id"]:
+                    rj["next_run_at"] = recovered_next
+                    needs_save = True
+                    break
+            next_run_dt = _ensure_aware(_parse_stored_datetime(next_run))
         if next_run_dt <= now:
             schedule = job.get("schedule", {})
             kind = schedule.get("kind")

@@ -123,13 +123,6 @@ def _resolve_mcp_invocation(
         return driver_cmd, args
     return command, args
 
-# Regex to parse list_windows text output lines:
-#   "- AppName (pid 12345) "Title" [window_id: 67890]"
-_WINDOW_LINE_RE = re.compile(
-    r'^-\s+(.+?)\s+\(pid\s+(\d+)\)\s+.*\[window_id:\s+(\d+)\]',
-    re.MULTILINE,
-)
-
 # Regex to parse element lines from get_window_state AX tree markdown.
 #
 # Handles two output formats from different cua-driver versions:
@@ -253,19 +246,6 @@ def cua_driver_install_hint() -> str:
         f"{installer}\n"
         "Or run `hermes tools` and enable the Computer Use toolset to install it automatically."
     )
-
-
-def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
-    """Parse window records from list_windows text output."""
-    windows = []
-    for m in _WINDOW_LINE_RE.finditer(text):
-        windows.append({
-            "app_name": m.group(1).strip(),
-            "pid": int(m.group(2)),
-            "window_id": int(m.group(3)),
-            "off_screen": "[off-screen]" in m.group(0),
-        })
-    return windows
 
 
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
@@ -631,29 +611,28 @@ class CuaDriverBackend(ComputerUseBackend):
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
         # Step 1: enumerate on-screen windows to find target pid/window_id.
+        # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
+        # `structuredContent.windows` array directly. Pre-fix the wrapper
+        # also kept a text-line regex (`_WINDOW_LINE_RE`) as a fallback for
+        # cua-driver builds that predated structuredContent; the supersede
+        # PR's effective minimum (trycua/cua#1961 + #1908) is well past
+        # that, so the fallback is gone — the wrapper now treats the
+        # structured shape as the only contract.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
-
-        # Prefer structuredContent.windows (MCP 2024-11-05+); fall back to
-        # text-line parsing for older cua-driver builds.
-        sc = lw_out.get("structuredContent") or {}
-        raw_windows = sc.get("windows") if sc else None
-        if raw_windows:
-            windows = [
-                {
-                    "app_name": w.get("app_name", ""),
-                    "pid": int(w["pid"]),
-                    "window_id": int(w["window_id"]),
-                    "off_screen": not w.get("is_on_screen", True),
-                    "title": w.get("title", ""),
-                    "z_index": w.get("z_index", 0),
-                }
-                for w in raw_windows
-            ]
-            # Sort by z_index descending (lowest z_index = frontmost on macOS).
-            windows.sort(key=lambda w: w["z_index"])
-        else:
-            raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
-            windows = _parse_windows_from_text(raw_text)
+        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
+        windows = [
+            {
+                "app_name": w.get("app_name", ""),
+                "pid": int(w["pid"]),
+                "window_id": int(w["window_id"]),
+                "off_screen": not w.get("is_on_screen", True),
+                "title": w.get("title", ""),
+                "z_index": w.get("z_index", 0),
+            }
+            for w in raw_windows
+        ]
+        # Sort by z_index descending (lowest z_index = frontmost on macOS).
+        windows.sort(key=lambda w: w["z_index"])
 
         if not windows:
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
@@ -942,22 +921,17 @@ class CuaDriverBackend(ComputerUseBackend):
         is exactly what this backend is designed to avoid.
         """
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
-        sc = lw_out.get("structuredContent") or {}
-        raw_windows = sc.get("windows") if sc else None
-        if raw_windows:
-            windows = [
-                {
-                    "app_name": w.get("app_name", ""),
-                    "pid": int(w["pid"]),
-                    "window_id": int(w["window_id"]),
-                    "z_index": w.get("z_index", 0),
-                }
-                for w in raw_windows
-            ]
-            windows.sort(key=lambda w: w["z_index"])
-        else:
-            raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
-            windows = _parse_windows_from_text(raw_text)
+        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
+        windows = [
+            {
+                "app_name": w.get("app_name", ""),
+                "pid": int(w["pid"]),
+                "window_id": int(w["window_id"]),
+                "z_index": w.get("z_index", 0),
+            }
+            for w in raw_windows
+        ]
+        windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()
         matched = [w for w in windows if app_lower in w["app_name"].lower()]

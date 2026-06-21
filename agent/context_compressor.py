@@ -689,6 +689,13 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        # Clear the summary-generation failure cooldown.  The cooldown was set
+        # because the OLD model/provider couldn't produce a summary (no provider
+        # configured, timeout, model-not-found, etc.).  The new model has
+        # different capabilities and credentials — let it attempt summarization
+        # immediately rather than inheriting a stale block that can suppress
+        # compression for up to 10 minutes after the switch.
+        self._summary_failure_cooldown_until = 0.0
 
     def __init__(
         self,

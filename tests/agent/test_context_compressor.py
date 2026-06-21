@@ -2324,6 +2324,20 @@ class TestUpdateModelResetsCalibration:
         assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
 
 
+    def test_summary_failure_cooldown_cleared(self):
+        """Stale summary-failure cooldown from the old model must not block
+        the new model from generating summaries after a switch."""
+        import time
+        comp = self._comp()
+        # Simulate a 600-second cooldown set because the old model had no
+        # provider configured for summarization.
+        comp._summary_failure_cooldown_until = time.monotonic() + 600
+
+        comp.update_model("new-model", context_length=128_000)
+
+        assert comp._summary_failure_cooldown_until == 0.0
+
+
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.
 

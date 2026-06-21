@@ -841,6 +841,12 @@ export interface Translations {
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
+    providerLabel: string
+    modelLabel: string
+    defaultProvider: string
+    defaultModel: string
+    failedLoadModelOptions: string
+    providerModelRequired: string
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string

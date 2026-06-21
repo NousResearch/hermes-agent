@@ -21,10 +21,12 @@ import {
   createCronJob,
   type CronJob,
   deleteCronJob,
+  getGlobalModelOptions,
   getCronJobRuns,
   getCronJobs,
   pauseCronJob,
   resumeCronJob,
+  type ModelOptionProvider,
   type SessionInfo,
   triggerCronJob,
   updateCronJob
@@ -43,6 +45,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
+const DEFAULT_MODEL_VALUE = '__default__'
 
 const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
 
@@ -95,6 +98,29 @@ function jobScheduleExpr(job: CronJob): string {
 
 function jobDeliver(job: CronJob): string {
   return asText(job.deliver) || DEFAULT_DELIVER
+}
+
+function jobModel(job: CronJob): string {
+  return asText(job.model).trim()
+}
+
+function jobProvider(job: CronJob): string {
+  return asText(job.provider).trim()
+}
+
+function jobModelDisplay(job: CronJob, c: Translations['cron']): string {
+  const provider = jobProvider(job)
+  const model = jobModel(job)
+
+  if (provider && model) {
+    return `${provider} / ${model}`
+  }
+
+  if (model) {
+    return model
+  }
+
+  return c.defaultModel
 }
 
 function cronParts(expr: string): null | string[] {
@@ -381,7 +407,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         prompt: values.prompt,
         schedule: values.schedule,
         name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER
+        deliver: values.deliver || DEFAULT_DELIVER,
+        model: values.model || undefined,
+        provider: values.provider || undefined
       })
 
       updateCronJobs(rows => [...rows, created])
@@ -391,7 +419,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         prompt: values.prompt,
         schedule: values.schedule,
         name: values.name,
-        deliver: values.deliver
+        deliver: values.deliver,
+        model: values.model || null,
+        provider: values.provider || null
       })
 
       updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
@@ -566,6 +596,7 @@ function CronJobDetail({
                     <Clock className="size-3" />
                     {jobScheduleDisplay(job)}
                   </span>
+                  <span>{jobModelDisplay(job, c)}</span>
                   <span>
                     {c.last} {formatTime(job.last_run_at)}
                   </span>
@@ -734,6 +765,10 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
+  const [providers, setProviders] = useState<ModelOptionProvider[]>([])
+  const [selectedProvider, setSelectedProvider] = useState(DEFAULT_MODEL_VALUE)
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL_VALUE)
+  const [modelOptionsLoading, setModelOptionsLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -747,9 +782,57 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
+    setSelectedProvider(initial && jobProvider(initial) ? jobProvider(initial) : DEFAULT_MODEL_VALUE)
+    setSelectedModel(initial && jobModel(initial) ? jobModel(initial) : DEFAULT_MODEL_VALUE)
     setError(null)
     setSaving(false)
   }, [initial, open])
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    let alive = true
+    setModelOptionsLoading(true)
+
+    getGlobalModelOptions()
+      .then(modelOptions => {
+        if (!alive) {
+          return
+        }
+
+        setProviders(modelOptions.providers || [])
+      })
+      .catch(err => {
+        if (alive) {
+          setError(err instanceof Error ? err.message : c.failedLoadModelOptions)
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setModelOptionsLoading(false)
+        }
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [c.failedLoadModelOptions, initial, open])
+
+  const selectedProviderRow = useMemo(
+    () => providers.find(provider => provider.slug === selectedProvider),
+    [providers, selectedProvider]
+  )
+
+  const selectedProviderModels = selectedProviderRow?.models ?? []
+
+  function handleProviderChange(nextProvider: string) {
+    setSelectedProvider(nextProvider)
+    const models = providers.find(provider => provider.slug === nextProvider)?.models ?? []
+    setSelectedModel(nextProvider === DEFAULT_MODEL_VALUE ? DEFAULT_MODEL_VALUE : (models[0] ?? DEFAULT_MODEL_VALUE))
+    setError(null)
+  }
 
   const selectedScheduleOption =
     SCHEDULE_OPTIONS.find(candidate => candidate.value === schedulePreset) ?? SCHEDULE_OPTIONS[0]
@@ -780,13 +863,21 @@ function CronEditorDialog({
       return
     }
 
+    if (selectedProvider !== DEFAULT_MODEL_VALUE && selectedModel === DEFAULT_MODEL_VALUE) {
+      setError(c.providerModelRequired)
+
+      return
+    }
+
     setSaving(true)
     setError(null)
 
     try {
       await onSave({
         deliver,
+        model: selectedModel === DEFAULT_MODEL_VALUE ? '' : selectedModel,
         name: name.trim(),
+        provider: selectedProvider === DEFAULT_MODEL_VALUE ? '' : selectedProvider,
         prompt: trimmedPrompt,
         schedule: trimmedSchedule
       })
@@ -825,6 +916,44 @@ function CronEditorDialog({
               value={prompt}
             />
           </Field>
+
+          <div className="grid items-start gap-4 sm:grid-cols-2">
+            <Field htmlFor="cron-provider" label={c.providerLabel}>
+              <Select disabled={modelOptionsLoading} onValueChange={handleProviderChange} value={selectedProvider}>
+                <SelectTrigger className="h-9 rounded-md" id="cron-provider">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={DEFAULT_MODEL_VALUE}>{c.defaultProvider}</SelectItem>
+                  {providers.map(provider => (
+                    <SelectItem key={provider.slug} value={provider.slug}>
+                      {provider.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+
+            <Field htmlFor="cron-model" label={c.modelLabel}>
+              <Select
+                disabled={modelOptionsLoading || selectedProvider === DEFAULT_MODEL_VALUE}
+                onValueChange={setSelectedModel}
+                value={selectedModel}
+              >
+                <SelectTrigger className="h-9 rounded-md" id="cron-model">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={DEFAULT_MODEL_VALUE}>{c.defaultModel}</SelectItem>
+                  {selectedProviderModels.map(model => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
 
           <div className="grid items-start gap-4 sm:grid-cols-2">
             <Field htmlFor="cron-frequency" label={c.frequencyLabel}>
@@ -931,7 +1060,9 @@ type EditorState = { mode: 'closed' } | { mode: 'create' } | { job: CronJob; mod
 
 interface EditorValues {
   deliver: string
+  model: string
   name: string
+  provider: string
   prompt: string
   schedule: string
 }

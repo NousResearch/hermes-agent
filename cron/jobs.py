@@ -960,6 +960,15 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
 
+            for _field in ("model", "provider", "base_url"):
+                if _field in updates:
+                    _value = updates[_field]
+                    if _value in {None, "", False}:
+                        updates[_field] = None
+                    elif isinstance(_value, str):
+                        _value = _value.strip()
+                        updates[_field] = _value.rstrip("/") if _field == "base_url" else _value
+
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
 

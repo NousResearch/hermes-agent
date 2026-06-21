@@ -266,6 +266,7 @@ export function ChatBar({
   queueEditRef.current = queueEdit
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  const isSyncingRef = useRef(false)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
@@ -663,16 +664,24 @@ export function ChatBar({
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
   const flushEditorToDraft = (editor: HTMLDivElement) => {
-    normalizeComposerEditorDom(editor)
-
-    const nextDraft = composerPlainText(editor)
-
-    if (nextDraft !== draftRef.current) {
-      draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+    if (isSyncingRef.current) {
+      return
     }
+    isSyncingRef.current = true
+    try {
+      normalizeComposerEditorDom(editor)
 
-    window.setTimeout(refreshTrigger, 0)
+      const nextDraft = composerPlainText(editor)
+
+      if (nextDraft !== draftRef.current) {
+        draftRef.current = nextDraft
+        aui.composer().setText(nextDraft)
+      }
+
+      window.setTimeout(refreshTrigger, 0)
+    } finally {
+      isSyncingRef.current = false
+    }
   }
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {

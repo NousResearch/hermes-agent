@@ -979,7 +979,7 @@ def _handle_slash_command(args: str) -> str | None:
         except Exception as e:
             return f"Relations failed: {e}"
 
-    elif subcmd in ("detail", "info"):
+    elif subcmd in ("info"):
         """Show all info: metadata + edges + terms."""
         if not rest:
             return "Usage: /skill-graph detail|info <skill-name>"
@@ -1140,9 +1140,9 @@ def _handle_slash_command(args: str) -> str | None:
             "Subcommands:\n"
             "  /skill-graph search <query>   Search skills by intent\n"
             "  /skill-graph load <name>      Load skill content (for agent use)\n"
-            "  /skill-graph show <name>      Show metadata and terms with stats\n"
+            "  /skill-graph info <name>      Show metadata and terms with stats\n"
             "  /skill-graph relations|rels <name> Show graph edges\n"
-            "  /skill-graph detail|info <name> Show all metadata, edges, and terms\n"
+            "  /skill-graph all <name>        Show all metadata, edges, and terms\n"
             "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
             "  /skill-graph list             List all skills in graph\n"
             "  /skill-graph config           Show configuration (paths, DB)\n"

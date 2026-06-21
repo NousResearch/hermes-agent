@@ -1093,6 +1093,34 @@ class TestCorruptStatusFiles:
         assert status._read_pid_record(p) == {"pid": 4242}
 
 
+class TestParseActiveAgents:
+    """The shared read-side coercion used by BOTH HTTP surfaces (/api/status
+    and /health/detailed) so the exposed active_agents field is consistent and
+    never negative regardless of what the status file holds."""
+
+    def test_valid_int_passthrough(self):
+        assert status.parse_active_agents(3) == 3
+
+    def test_zero(self):
+        assert status.parse_active_agents(0) == 0
+
+    def test_numeric_string_coerced(self):
+        assert status.parse_active_agents("5") == 5
+
+    def test_negative_clamped_to_zero(self):
+        assert status.parse_active_agents(-3) == 0
+
+    def test_none_degrades_to_zero(self):
+        assert status.parse_active_agents(None) == 0
+
+    def test_garbage_string_degrades_to_zero(self):
+        assert status.parse_active_agents("garbage") == 0
+
+    def test_float_truncates(self):
+        # int() truncation, then clamp — never raises.
+        assert status.parse_active_agents(2.9) == 2
+
+
 class TestActiveAgentsTurnBoundaryWrite:
     """The load-bearing Phase 1a contract: writing the in-flight count at a
     turn boundary must PRESERVE the lifecycle gateway_state. The whole readout

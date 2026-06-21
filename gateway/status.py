@@ -621,6 +621,21 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
     return _read_json_file(_get_runtime_status_path())
 
 
+def parse_active_agents(raw: Any) -> int:
+    """Coerce a persisted ``active_agents`` value to a clamped non-negative int.
+
+    The status file is written atomically but can still hold an
+    absent/None/garbage ``active_agents`` after a partial write or a manual
+    edit.  Both HTTP surfaces (``/api/status`` and ``/health/detailed``) read it
+    through this single helper so the field they expose is consistent and never
+    negative.  Mirrors the write-side clamp in ``write_runtime_status``.
+    """
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 # States in which the gateway is alive and could be asked to drain.  Anything
 # else (draining already, stopping, stopped, startup_failed, None) is NOT a
 # valid begin-drain target.

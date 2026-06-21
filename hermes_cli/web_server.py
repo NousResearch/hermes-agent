@@ -73,6 +73,7 @@ from gateway.status import (
     derive_gateway_drainable,
     get_running_pid,
     get_runtime_status_running_pid,
+    parse_active_agents,
     read_runtime_status,
 )
 from utils import env_var_enabled
@@ -1843,12 +1844,7 @@ async def get_status(profile: Optional[str] = None):
         # liveness via the single shared contract in gateway.status.  Liveness
         # keys off gateway_running (a live PID/health probe), NEVER
         # gateway_updated_at — a healthy idle gateway never advances that.
-        active_agents = 0
-        if runtime:
-            try:
-                active_agents = max(0, int(runtime.get("active_agents", 0) or 0))
-            except (TypeError, ValueError):
-                active_agents = 0
+        active_agents = parse_active_agents(runtime.get("active_agents", 0)) if runtime else 0
         gateway_busy = derive_gateway_busy(
             gateway_running=gateway_running,
             gateway_state=gateway_state,
@@ -1859,19 +1855,15 @@ async def get_status(profile: Optional[str] = None):
             gateway_state=gateway_state,
         )
         # Resolved drain timeout (seconds) so NAS can size its poll deadline
-        # without out-of-band knowledge.  Mirrors gateway/restart.py precedence:
-        # HERMES_RESTART_DRAIN_TIMEOUT env override → config agent.* → default.
-        from gateway.restart import parse_restart_drain_timeout
+        # without out-of-band knowledge.  Reuse the single resolver
+        # (HERMES_RESTART_DRAIN_TIMEOUT env → config agent.restart_drain_timeout
+        # → default) rather than re-deriving the precedence chain here.
+        try:
+            from hermes_cli.gateway import _get_restart_drain_timeout
 
-        _drain_timeout_raw = os.environ.get("HERMES_RESTART_DRAIN_TIMEOUT")
-        if _drain_timeout_raw is None:
-            try:
-                _drain_timeout_raw = cfg_get(
-                    load_config(), "agent", "restart_drain_timeout", default=None
-                )
-            except Exception:
-                _drain_timeout_raw = None
-        restart_drain_timeout = parse_restart_drain_timeout(_drain_timeout_raw)
+            restart_drain_timeout = _get_restart_drain_timeout()
+        except Exception:
+            restart_drain_timeout = None
 
         # Dashboard auth gate (Phase 7): surface whether the gate is engaged
         # and which providers are registered so ``hermes status`` and the

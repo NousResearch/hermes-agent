@@ -40,6 +40,30 @@ import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 
+// Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
+// Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
+// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
+function ptyAttachToken(): string {
+  const KEY = "hermes.pty.token.chat";
+  let t = "";
+  try {
+    t = window.localStorage.getItem(KEY) ?? "";
+  } catch {
+    /* private mode / storage blocked */
+  }
+  if (!t) {
+    const a = new Uint8Array(16);
+    crypto.getRandomValues(a);
+    t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+    try {
+      window.localStorage.setItem(KEY, t);
+    } catch {
+      /* ignore */
+    }
+  }
+  return t;
+}
+
 function buildWsUrl(
   authParam: [string, string],
   resume: string | null,
@@ -52,6 +76,8 @@ function buildWsUrl(
   // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
   const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
   if (resume) qs.set("resume", resume);
+  // Keep-alive identity: reattach to this tab's living PTY across refresh.
+  qs.set("attach", ptyAttachToken());
   // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
   // selected profile, so the conversation runs with that profile's model,
   // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -140,6 +166,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Pending auto-reconnect after a transient PTY socket drop (keep-alive).
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
@@ -618,6 +646,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ws.onopen = () => {
       setBanner(null);
       setSessionEnded(false);
+      // Connected — cancel any pending reconnect from a prior transient drop.
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -679,14 +712,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
-      // Normal/clean exit: the agent process ended (e.g. the user typed
-      // `/exit`, or started a new session). NS-504: surface an explicit
-      // restart affordance instead of leaving a dead terminal that only a
-      // full page refresh could recover.
-      term.write(
-        `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
-      );
-      setSessionEnded(true);
+      // Keep-alive close-code contract (web_server.pty_ws + pty_session):
+      //   4410 = the agent PROCESS exited (real end) → restart affordance.
+      //   4409 = superseded by a newer tab attaching the same token → stay quiet.
+      //   anything else = transient transport drop (refresh, signal loss) →
+      //     reattach to the still-living PTY with the same ?attach= token.
+      if (ev.code === 4410) {
+        term.write(`\r\n\x1b[90m[session ended]\x1b[0m\r\n`);
+        setSessionEnded(true);
+        return;
+      }
+      if (ev.code === 4409) {
+        return;
+      }
+      // Transient: reconnect by re-running the connect effect (reconnectNonce).
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        setReconnectNonce((n) => n + 1);
+      }, 400);
     };
 
     // Keystrokes → PTY.
@@ -752,6 +796,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (copyResetRef.current) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
     };
   }, [channel, resumeParam, scopedProfile, reconnectNonce]);

@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from agent.agent_init import _merge_custom_provider_extra_body
+from agent.agent_init import (
+    _merge_custom_provider_disable_tools,
+    _merge_custom_provider_extra_body,
+)
 
 
 def test_custom_provider_extra_body_merges_into_request_overrides():
@@ -86,6 +89,52 @@ def test_custom_provider_extra_body_ignores_other_custom_models():
                 "base_url": "https://example.test/v1",
                 "model": "google/gemma-4-31b-it",
                 "extra_body": {"enable_thinking": True},
+            }
+        ],
+    )
+
+    assert agent.request_overrides == {}
+
+
+def test_custom_provider_disable_tools_sets_request_override():
+    agent = SimpleNamespace(
+        provider="custom",
+        model="sonar",
+        base_url="https://api.perplexity.ai",
+        request_overrides={},
+    )
+
+    _merge_custom_provider_disable_tools(
+        agent,
+        [
+            {
+                "name": "perplexity",
+                "base_url": "https://api.perplexity.ai/",
+                "model": "sonar",
+                "disable_tools": True,
+            }
+        ],
+    )
+
+    assert agent.request_overrides == {"disable_tools": True}
+
+
+def test_custom_provider_disable_tools_ignores_other_models():
+    agent = SimpleNamespace(
+        provider="custom",
+        model="sonar-pro",
+        base_url="https://api.perplexity.ai",
+        request_overrides={},
+    )
+
+    _merge_custom_provider_disable_tools(
+        agent,
+        [
+            {
+                "name": "perplexity",
+                "base_url": "https://api.perplexity.ai",
+                "model": "sonar",
+                "disable_tools": True,
             }
         ],
     )

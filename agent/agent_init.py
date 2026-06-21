@@ -151,6 +151,53 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _custom_provider_disable_tools_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> bool:
+    if (provider or "").strip().lower() != "custom":
+        return False
+
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return False
+
+    fallback: Optional[bool] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        disable_tools = entry.get("disable_tools")
+        if not isinstance(disable_tools, bool):
+            continue
+        provider_model = str(entry.get("model", "") or "").strip()
+        if provider_model:
+            if _custom_provider_model_matches(model, entry):
+                return disable_tools
+        elif fallback is None:
+            fallback = disable_tools
+
+    return bool(fallback)
+
+
+def _merge_custom_provider_disable_tools(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    if not _custom_provider_disable_tools_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    ):
+        return
+
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    overrides["disable_tools"] = True
+    agent.request_overrides = overrides
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1431,6 +1478,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _merge_custom_provider_disable_tools(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

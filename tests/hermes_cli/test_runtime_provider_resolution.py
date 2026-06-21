@@ -2299,6 +2299,21 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized is not None
         assert "extra_body" in _VALID_CUSTOM_PROVIDER_FIELDS
         assert normalized["extra_body"] == entry["extra_body"]
+
+    def test_disable_tools_is_supported_schema(self):
+        from hermes_cli.config import (
+            _VALID_CUSTOM_PROVIDER_FIELDS,
+            _normalize_custom_provider_entry,
+        )
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "disable_tools": True,
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert "disable_tools" in _VALID_CUSTOM_PROVIDER_FIELDS
+        assert normalized["disable_tools"] is True
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

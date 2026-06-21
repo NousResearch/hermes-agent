@@ -108,6 +108,15 @@ class TestBuildApiKwargsOpenRouter:
         tool_names = [t["function"]["name"] for t in kwargs["tools"]]
         assert "web_search" in tool_names
 
+    def test_disable_tools_override_omits_tool_definitions(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "custom", base_url="https://api.perplexity.ai")
+        agent.model = "sonar"
+        agent.request_overrides = {"disable_tools": True}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "tools" not in kwargs
+        assert "disable_tools" not in kwargs
+
     def test_no_responses_api_fields(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         messages = [{"role": "user", "content": "hi"}]

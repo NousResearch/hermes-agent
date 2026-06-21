@@ -60,6 +60,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
+| `hermes benchmark` | Measure Hermes cold-start time, idle memory, and per-session memory overhead. Runs offline. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
 | `hermes backup` | Back up Hermes home directory to a zip file. |
 | `hermes checkpoints` | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
@@ -956,6 +957,51 @@ hermes prompt-size --platform telegram
 # Machine-readable output for scripts
 hermes prompt-size --json
 ```
+
+## `hermes benchmark`
+
+```bash
+hermes benchmark [--n N] [--json]
+```
+
+Measures Hermes's own resource footprint so you can track regressions and compare against other agents (jcode publishes equivalent numbers for Claude Code, OpenCode, etc. in its README).
+
+- **Cold start** — wall time to import `run_agent` in a fresh subprocess, repeated `n` times. Reports mean + range.
+- **Idle memory** — proportional set size (PSS) of the current process after a short settling period. Falls back to RSS on macOS (PSS is Linux-only); the output labels whichever it measured.
+- **Per-session delta** — slope of memory usage as we spawn `1`, `3`, and `5` child processes that each import + idle. Tells you how much overhead each new session adds.
+
+The full benchmark takes ~30 seconds and makes no API calls. It only works on this machine's venv — the numbers are local, not relative to a reference hardware.
+
+```bash
+# Markdown table — human-readable default
+hermes benchmark
+
+# Average over 5 cold-start iterations
+hermes benchmark --n 5
+
+# JSON for scripting or comparing runs across machines
+hermes benchmark --json
+```
+
+Example output (macOS):
+
+```
+# Hermes benchmark
+
+Platform: darwin, Python 3.11.15, psutil=yes
+
+| Metric | Value |
+|---|---|
+| Cold start (mean of 3) | 1944.1 ms |
+| Cold start (range) | 1838.0–2043.2 ms |
+| Idle RSS | 310.0 MB |
+| Per-session RSS delta | 0.0 MB |
+
+Note: running on macOS — PSS is unavailable, so values are RSS.
+Direct comparison to Linux PSS numbers will overcount.
+```
+
+Note: PSS is the right number to compare against published competitor benchmarks (jcode's README uses PSS throughout). If you're benchmarking against jcode, run on Linux.
 
 :::tip
 The skills index and tool schemas scale with how many skills and tools you have

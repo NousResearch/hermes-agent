@@ -291,6 +291,7 @@ from hermes_cli.subcommands.dashboard import build_dashboard_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.benchmark import build_benchmark_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
@@ -11082,6 +11083,18 @@ def cmd_prompt_size(args):
     _impl(args)
 
 
+def cmd_benchmark(args):
+    """Measure Hermes cold-start, idle memory, and per-session overhead."""
+    from hermes_cli.subcommands.benchmark import run as _benchmark_run
+
+    rc = _benchmark_run(
+        n=int(getattr(args, "n", 3)),
+        json_out=bool(getattr(args, "json", False)),
+    )
+    if rc:
+        sys.exit(rc)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -12515,6 +12528,11 @@ def main():
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # =========================================================================
+    # benchmark command  (parser built in hermes_cli/subcommands/benchmark.py)
+    # =========================================================================
+    build_benchmark_parser(subparsers, cmd_benchmark=cmd_benchmark)
 
     # =========================================================================
     # Parse and execute

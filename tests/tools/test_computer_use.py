@@ -1644,3 +1644,92 @@ class TestCuaEnvironmentScrubbing:
         # Verify PATH is preserved (safe var)
         assert "PATH" in captured_env or "SAFE_VAR" in captured_env, \
             "At least one safe environment variable should be preserved"
+
+
+class TestClickButtonPassthrough:
+    """Surface 5 (NousResearch/hermes-agent#47072) — `middle_click` must
+    actually reach cua-driver as a middle button, not silently degrade to
+    left. Pre-fix, the backend's `click()` chose the tool by name
+    (`button == "right"` → `right_click`, everything else → `click` with
+    no `button` arg) — so a middle-button intent was lost when calling
+    cua-driver. Post-fix, the backend always passes a normalised
+    `button: "left"|"right"|"middle"` to cua-driver's `click` tool
+    (trycua/cua#1961 click.button enum), and rejects unknown buttons
+    instead of silently mapping them.
+    """
+
+    def _backend_with_active_target(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok",
+            "images": [],
+            "structuredContent": None,
+            "isError": False,
+        }
+        # Pretend capture() ran and resolved a target.
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        return backend
+
+    def test_left_button_routes_to_click_with_explicit_button(self):
+        backend = self._backend_with_active_target()
+        res = backend.click(element=5, button="left")
+        assert res.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["button"] == "left"
+
+    def test_right_button_stays_on_click_tool_not_right_click(self):
+        """Pre-fix this called the legacy `right_click` MCP tool; post-fix
+        the canonical `click` tool with `button: "right"` is used so the
+        wrapper participates in the action enum cua-driver advertises."""
+        backend = self._backend_with_active_target()
+        res = backend.click(element=5, button="right")
+        assert res.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click", f"right-button should hit `click`, not {name!r}"
+        assert args["button"] == "right"
+
+    def test_middle_button_actually_passes_through(self):
+        """The Surface 5 regression guard: the middle button must NOT
+        silently become a left click."""
+        backend = self._backend_with_active_target()
+        res = backend.click(element=5, button="middle")
+        assert res.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["button"] == "middle", (
+            "middle-button click must reach cua-driver as button=\"middle\" — "
+            "not silently mapped to left (the original Surface 5 bug)."
+        )
+
+    def test_double_click_still_uses_double_click_tool(self):
+        backend = self._backend_with_active_target()
+        res = backend.click(element=5, button="left", click_count=2)
+        assert res.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "double_click"
+        assert args["button"] == "left"
+
+    def test_unknown_button_rejected_no_tool_call(self):
+        """Pre-fix, an unknown button silently fell through to a default
+        left click. Post-fix, the wrapper rejects it up front so the
+        caller learns about the typo instead of debugging a wrong-button
+        click later."""
+        backend = self._backend_with_active_target()
+        res = backend.click(element=5, button="bogus")
+        assert not res.ok
+        assert "expected" in res.message.lower()
+        backend._session.call_tool.assert_not_called()
+
+    def test_button_passthrough_with_xy_coords(self):
+        """Coordinate-based clicks also carry the button through."""
+        backend = self._backend_with_active_target()
+        backend.click(x=10, y=20, button="right")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["button"] == "right"
+        assert args["x"] == 10 and args["y"] == 20

@@ -696,15 +696,21 @@ class CuaDriverBackend(ComputerUseBackend):
             return ActionResult(ok=False, action="click",
                                 message="No active window — call capture() first.")
 
-        # Choose tool based on button and click_count.
-        if button == "right":
-            tool = "right_click"
-        elif click_count == 2:
-            tool = "double_click"
-        else:
-            tool = "click"
+        # Choose tool by click_count only — single-vs-double — and pass the
+        # button through to `click`'s `button` enum (Surface 5 of
+        # NousResearch/hermes-agent#47072). cua-driver-rs gained an explicit
+        # `button: "left"|"right"|"middle"` arg on `click` in trycua/cua#1961
+        # which rejects unknown buttons; before that, `middle` was silently
+        # mapped to a left-click via name-routing through `right_click`.
+        # `right_click`/`middle_click` MCP tools are deprecated aliases —
+        # kept around but no longer invoked from here.
+        button_norm = (button or "left").lower()
+        if button_norm not in {"left", "right", "middle"}:
+            return ActionResult(ok=False, action="click",
+                                message=f"unknown button {button!r} — expected left, right, middle.")
+        tool = "double_click" if click_count == 2 else "click"
 
-        args: Dict[str, Any] = {"pid": pid}
+        args: Dict[str, Any] = {"pid": pid, "button": button_norm}
         if element is not None:
             if self._active_window_id is None:
                 return ActionResult(ok=False, action=tool,

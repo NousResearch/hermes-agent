@@ -1132,4 +1132,50 @@ class TestActiveAgentsTurnBoundaryWrite:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         status.write_runtime_status(gateway_state="running", active_agents=-5)
         assert status.read_runtime_status()["active_agents"] == 0
+class TestGatewayBusyDerivation:
+    """Pure contract for derive_gateway_busy / derive_gateway_drainable — the
+    single shared definition both /api/status and /health/detailed consume."""
 
+    def test_busy_requires_running_state_and_positive_count(self):
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=1
+        ) is True
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=0
+        ) is False
+
+    def test_busy_false_when_not_live_even_if_file_says_active(self):
+        # Liveness wins: gateway_running False ⇒ never busy, regardless of count.
+        assert status.derive_gateway_busy(
+            gateway_running=False, gateway_state="running", active_agents=9
+        ) is False
+
+    def test_busy_false_for_non_running_states(self):
+        for state in ("draining", "stopping", "stopped", "startup_failed", None):
+            assert status.derive_gateway_busy(
+                gateway_running=True, gateway_state=state, active_agents=5
+            ) is False, state
+
+    def test_busy_degrades_on_unparseable_count(self):
+        for bad in (None, "garbage", object()):
+            assert status.derive_gateway_busy(
+                gateway_running=True, gateway_state="running", active_agents=bad
+            ) is False
+
+    def test_drainable_is_running_and_live_independent_of_count(self):
+        # Idle running gateway is drainable but NOT busy.
+        assert status.derive_gateway_drainable(
+            gateway_running=True, gateway_state="running"
+        ) is True
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=0
+        ) is False
+
+    def test_drainable_false_when_down_or_not_running(self):
+        assert status.derive_gateway_drainable(
+            gateway_running=False, gateway_state="running"
+        ) is False
+        for state in ("draining", "stopped", None):
+            assert status.derive_gateway_drainable(
+                gateway_running=True, gateway_state=state
+            ) is False, state

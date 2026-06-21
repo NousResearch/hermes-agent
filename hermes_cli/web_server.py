@@ -69,6 +69,8 @@ from hermes_cli.memory_providers import (
     get_memory_provider,
 )
 from gateway.status import (
+    derive_gateway_busy,
+    derive_gateway_drainable,
     get_running_pid,
     get_runtime_status_running_pid,
     read_runtime_status,
@@ -1835,6 +1837,42 @@ async def get_status(profile: Optional[str] = None):
         except Exception:
             pass
 
+        # Busy/drainable readout (NAS lifecycle-safety gate).  active_agents is
+        # the in-flight gateway-turn count the gateway now persists at every
+        # turn boundary; gateway_busy/gateway_drainable are derived from it +
+        # liveness via the single shared contract in gateway.status.  Liveness
+        # keys off gateway_running (a live PID/health probe), NEVER
+        # gateway_updated_at — a healthy idle gateway never advances that.
+        active_agents = 0
+        if runtime:
+            try:
+                active_agents = max(0, int(runtime.get("active_agents", 0) or 0))
+            except (TypeError, ValueError):
+                active_agents = 0
+        gateway_busy = derive_gateway_busy(
+            gateway_running=gateway_running,
+            gateway_state=gateway_state,
+            active_agents=active_agents,
+        )
+        gateway_drainable = derive_gateway_drainable(
+            gateway_running=gateway_running,
+            gateway_state=gateway_state,
+        )
+        # Resolved drain timeout (seconds) so NAS can size its poll deadline
+        # without out-of-band knowledge.  Mirrors gateway/restart.py precedence:
+        # HERMES_RESTART_DRAIN_TIMEOUT env override → config agent.* → default.
+        from gateway.restart import parse_restart_drain_timeout
+
+        _drain_timeout_raw = os.environ.get("HERMES_RESTART_DRAIN_TIMEOUT")
+        if _drain_timeout_raw is None:
+            try:
+                _drain_timeout_raw = cfg_get(
+                    load_config(), "agent", "restart_drain_timeout", default=None
+                )
+            except Exception:
+                _drain_timeout_raw = None
+        restart_drain_timeout = parse_restart_drain_timeout(_drain_timeout_raw)
+
         # Dashboard auth gate (Phase 7): surface whether the gate is engaged
         # and which providers are registered so ``hermes status`` and the
         # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
@@ -1863,6 +1901,10 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway_platforms,
             "gateway_exit_reason": gateway_exit_reason,
             "gateway_updated_at": gateway_updated_at,
+            "active_agents": active_agents,
+            "gateway_busy": gateway_busy,
+            "gateway_drainable": gateway_drainable,
+            "restart_drain_timeout": restart_drain_timeout,
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,

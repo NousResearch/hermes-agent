@@ -723,12 +723,25 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
 
 
 def _fts_query(query: str) -> str:
-    """Convert a natural language query to an FTS5 query string."""
+    """Convert a natural language query to an FTS5 query string.
+
+    For ASCII-heavy queries, builds an AND query from multi-char terms.
+    For Chinese-heavy queries (single-char tokens from unicode61), returns
+    empty so _search_graph falls through to term-table matching (Phase 4).
+    """
     terms = re.findall(r"[a-zA-Z0-9_\u4e00-\u9fff_-]+", query.lower())
-    has_ascii = any(t.isascii() for t in terms)
+    # Split Chinese multi-char terms into individual characters for FTS5
+    # compatibility, since unicode61 tokenizes each CJK char separately.
+    flat: list[str] = []
+    for t in terms:
+        if re.match(r"^[\u4e00-\u9fff]+$", t) and len(t) > 1:
+            flat.extend(list(t))  # each CJK char is its own token
+        else:
+            flat.append(t)
+    has_ascii = any(t.isascii() for t in flat)
     if has_ascii:
-        return " AND ".join(t for t in terms if len(t) > 1)
-    return " OR ".join(t for t in terms if len(t) > 1) if terms else ""
+        return " AND ".join(t for t in flat if len(t) > 1)
+    return " OR ".join(t for t in flat if len(t) > 1) if flat else ""
 
 
 def _extract_terms(query: str) -> list[str]:

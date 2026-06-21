@@ -316,15 +316,9 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
-        # Guard: truncate oversized cron output to stay within platform limits
-        if len(content) > MAX_PLATFORM_OUTPUT:
-            job_id = (metadata or {}).get("job_id", "unknown")
-            saved_path = self._save_full_output(content, job_id)
-            logger.info("Cron output truncated (%d chars) — full output: %s", len(content), saved_path)
-            content = (
-                content[:TRUNCATED_VISIBLE]
-                + f"\n\n... [truncated, full output saved to {saved_path}]"
-            )
+        # Oversized cron output is split into multiple messages below (after
+        # metadata routing) instead of truncated, so no content is lost.
+        # See the split block before the final adapter.send() call.
         
         # Substrate-level anti-loop guard: drop hallucinated "silence narration"
         # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.
@@ -400,6 +394,47 @@ class DeliveryRouter:
                 send_metadata["telegram_dm_topic_reply_fallback"] = True
             elif "thread_id" not in send_metadata and "message_thread_id" not in send_metadata and not has_explicit_direct_topic:
                 send_metadata["thread_id"] = target_thread_id
+
+        # Split oversized cron output into multiple messages instead of
+        # truncating.  The adapter's truncate_message() preserves code-block
+        # boundaries and adds (1/N) indicators.  This fixes a regression from
+        # routing cron delivery through DeliveryRouter (#22773): the old cron
+        # path called adapter.send() directly, which split via the WhatsApp
+        # bridge's splitLongMessage(); the new path hit a truncation guard and
+        # silently dropped content beyond MAX_PLATFORM_OUTPUT.
+        if len(content) > MAX_PLATFORM_OUTPUT:
+            job_id = (metadata or {}).get("job_id", "unknown")
+            saved_path = self._save_full_output(content, job_id)
+            logger.info("Cron output split into chunks (%d chars) — full output: %s", len(content), saved_path)
+            chunks = adapter.truncate_message(content, max_length=MAX_PLATFORM_OUTPUT)
+            result: Any = None
+            for chunk in chunks:
+                result = await adapter.send(target.chat_id, chunk, metadata=send_metadata or None)
+                if _send_result_failed(result):
+                    if (
+                        is_named_telegram_private_topic
+                        and named_telegram_private_topic_name
+                        and _is_thread_not_found_delivery_error(result)
+                    ):
+                        ensure_dm_topic = getattr(adapter, "ensure_dm_topic", None)
+                        if ensure_dm_topic is None:
+                            raise RuntimeError("Telegram adapter cannot refresh named private DM topics")
+                        refreshed_thread_id = await ensure_dm_topic(
+                            target.chat_id,
+                            named_telegram_private_topic_name,
+                            force_create=True,
+                        )
+                        if not refreshed_thread_id:
+                            raise RuntimeError(
+                                f"Failed to refresh Telegram private DM topic '{named_telegram_private_topic_name}'"
+                            )
+                        send_metadata["thread_id"] = str(refreshed_thread_id)
+                        send_metadata["telegram_dm_topic_created_for_send"] = True
+                        result = await adapter.send(target.chat_id, chunk, metadata=send_metadata or None)
+                    if _send_result_failed(result):
+                        raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
+            return result  # type: ignore[return-value]
+
         result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
         if _send_result_failed(result):
             if (

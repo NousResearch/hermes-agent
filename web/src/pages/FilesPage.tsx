@@ -82,7 +82,12 @@ function isTextFile(mimeType: string | null, name: string): boolean {
 function dataUrlToText(dataUrl: string): string {
   try {
     const base64 = dataUrl.split(",")[1];
-    return atob(base64);
+    const binaryStr = atob(base64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    return new TextDecoder("utf-8").decode(bytes);
   } catch {
     return "";
   }

@@ -927,15 +927,39 @@ def switch_model(
             "localhost" in _base or "127.0.0.1" in _base
         )
 
+        # Check if user has explicit provider + base_url configuration
+        # If so, respect their explicit config and skip OpenRouter catalog detection
+        has_explicit_config = bool(
+            current_provider
+            and current_provider not in {"auto", "openrouter"}
+            and current_base_url
+        )
+
         if (
             target_provider == current_provider
             and not is_custom
             and not resolved_alias
             and not resolved_in_current_catalog
         ):
-            detected = detect_provider_for_model(new_model, current_provider)
-            if detected:
-                target_provider, new_model = detected
+            if has_explicit_config:
+                # Respect user's explicit config, skip OpenRouter catalog detection
+                logger.debug(
+                    "Skipping OpenRouter catalog detection for model '%s' - "
+                    "explicit provider config found: provider=%s, base_url=%s",
+                    new_model, current_provider, current_base_url,
+                )
+            else:
+                detected = detect_provider_for_model(new_model, current_provider)
+                if detected:
+                    detected_provider, detected_model = detected
+                    # Log the provider switch for transparency (Option C)
+                    logger.info(
+                        "Model '%s' matched OpenRouter catalog. "
+                        "Switching provider from '%s' to '%s'. "
+                        "To prevent this, set provider_routing.ignore: [openrouter] in config.",
+                        new_model, current_provider, detected_provider,
+                    )
+                    target_provider, new_model = detected
 
     # =================================================================
     # COMMON PATH: Resolve credentials, normalize, get metadata

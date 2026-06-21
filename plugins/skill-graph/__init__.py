@@ -703,8 +703,14 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
 
     # Phase 5: Term-based scoring boost + search stats
     # Uses per-(skill, term) stats with confidence-weighted S-curve.
+    _norm_terms = [t.lower() for t in terms]
     for sname, r in results.items():
-        matched_terms = [t for t in terms if t.lower() in (r.get("name", "") + r.get("description", "") + str(r.get("tags", ""))).lower()]
+        _placeholders = ",".join("?" for _ in _norm_terms)
+        _term_rows = conn.execute(
+            f"SELECT term FROM skill_terms WHERE skill_name = ? AND term IN ({_placeholders})",
+            (sname,) + tuple(_norm_terms),
+        ).fetchall()
+        matched_terms = [row["term"] for row in _term_rows]
         if matched_terms:
             for mt in matched_terms:
                 try:
@@ -948,10 +954,10 @@ def _handle_slash_command(args: str) -> str | None:
         except Exception as e:
             return f"Load failed: {e}"
 
-    elif subcmd == "show":
-        """Show skill metadata and term associations."""
+    elif subcmd == "info":
+        """Show skill metadata only."""
         if not rest:
-            return "Usage: /skill-graph show <skill-name>"
+            return "Usage: /skill-graph info <skill-name>"
         try:
             conn = _ensure_graph()
             node = conn.execute(
@@ -966,62 +972,18 @@ def _handle_slash_command(args: str) -> str | None:
                 f"  Description: {node['description'] or ''}",
                 f"  Tags:        {node['tags'] or ''}",
                 f"  Path:        {node['file_path'] or ''}",
-            ]) + _format_terms(rest)
+            ])
         except Exception as e:
-            return f"Show failed: {e}"
+            return f"Info failed: {e}"
 
     elif subcmd in ("relations", "rels"):
-        """Show graph edges with counts and boost."""
+        """Show graph edges."""
         if not rest:
             return "Usage: /skill-graph relations <skill-name>"
         try:
             return _format_edges(rest)
         except Exception as e:
             return f"Relations failed: {e}"
-
-    elif subcmd == "all":
-        """Show everything: node info + edges + terms."""
-        if not rest:
-            return "Usage: /skill-graph all <skill-name>"
-        try:
-            conn = _ensure_graph()
-            node = conn.execute(
-                "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE name = ?",
-                (rest,),
-            ).fetchone()
-            if not node:
-                return f"Not found: {rest}  (try /sg list)"
-            return "\n".join([
-                f"Node: {node['name']}",
-                f"  Category:    {node['category'] or ''}",
-                f"  Description: {node['description'] or ''}",
-                f"  Tags:        {node['tags'] or ''}",
-                f"  Path:        {node['file_path'] or ''}",
-            ]) + "\n" + _format_edges(rest) + _format_terms(rest)
-        except Exception as e:
-            return f"All failed: {e}"
-
-    elif subcmd == "info":
-        """Show all info: metadata + edges + terms."""
-        if not rest:
-            return "Usage: /skill-graph detail|info <skill-name>"
-        try:
-            conn = _ensure_graph()
-            node = conn.execute(
-                "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE name = ?",
-                (rest,),
-            ).fetchone()
-            if not node:
-                return f"Not found: {rest}  (try /sg list)"
-            return "\n".join([
-                f"Node: {node['name']}",
-                f"  Category:    {node['category'] or ''}",
-                f"  Description: {node['description'] or ''}",
-                f"  Tags:        {node['tags'] or ''}",
-                f"  Path:        {node['file_path'] or ''}",
-            ]) + _format_edges(rest) + _format_terms(rest)
-        except Exception as e:
-            return f"Show failed: {e}"
 
     elif subcmd in ("status", "stats"):
         try:
@@ -1162,9 +1124,8 @@ def _handle_slash_command(args: str) -> str | None:
             "Subcommands:\n"
             "  /skill-graph search <query>   Search skills by intent\n"
             "  /skill-graph load <name>      Load skill content (for agent use)\n"
-            "  /skill-graph info <name>      Show metadata and terms with stats\n"
+            "  /skill-graph info <name>      Show skill metadata\n"
             "  /skill-graph relations|rels <name> Show graph edges\n"
-            "  /skill-graph all <name>        Show all metadata, edges, and terms\n"
             "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
             "  /skill-graph list             List all skills in graph\n"
             "  /skill-graph config           Show configuration (paths, DB)\n"

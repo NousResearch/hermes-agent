@@ -10987,6 +10987,39 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+_WS_ALLOWED_ORIGINS_ENV = "HERMES_DASHBOARD_WS_ALLOWED_ORIGINS"
+
+
+def _origin_matches_pattern(origin: str, pattern: str) -> bool:
+    """Return True when a browser Origin matches an explicit allowlist entry.
+
+    Entries must be full exact origins (``https://dashboard.example.org``).
+    Wildcards are intentionally unsupported here: this hook bypasses the normal
+    same-host Origin check for loopback dashboards behind a trusted proxy, so a
+    broad shared-domain pattern would weaken the DNS-rebinding guard.
+    """
+    parsed_origin = urllib.parse.urlparse(origin.rstrip("/"))
+    parsed_pattern = urllib.parse.urlparse(pattern.strip().rstrip("/"))
+    if parsed_origin.scheme not in {"http", "https"}:
+        return False
+    if parsed_pattern.scheme not in {"http", "https"}:
+        return False
+    if parsed_origin.scheme.lower() != parsed_pattern.scheme.lower():
+        return False
+
+    origin_netloc = parsed_origin.netloc.lower()
+    pattern_netloc = parsed_pattern.netloc.lower()
+    if not origin_netloc or not pattern_netloc or "*" in pattern_netloc:
+        return False
+    return origin_netloc == pattern_netloc
+
+
+def _ws_origin_is_explicitly_allowed(origin: str) -> bool:
+    """Check operator-configured public origins for proxied loopback dashboards."""
+    for pattern in os.environ.get(_WS_ALLOWED_ORIGINS_ENV, "").split(","):
+        if pattern.strip() and _origin_matches_pattern(origin, pattern):
+            return True
+    return False
 
 
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
@@ -11081,6 +11114,8 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
     if not _is_accepted_host(parsed.netloc, bound_host):
+        if _ws_origin_is_explicitly_allowed(origin):
+            return None
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

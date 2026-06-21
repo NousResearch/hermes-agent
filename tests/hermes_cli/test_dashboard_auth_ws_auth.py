@@ -443,6 +443,48 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="http://evil.test", host="127.0.0.1:8080")
         assert web_server._ws_host_origin_is_allowed(ws) is False
 
+    def test_loopback_proxy_origin_allowed_when_explicitly_configured(
+        self, loopback_app, monkeypatch
+    ):
+        """Loopback dashboards exposed through a trusted tunnel keep the public
+        browser Origin while the proxy rewrites Host to 127.0.0.1.
+
+        Operators must explicitly opt the exact public origin in; otherwise the
+        rebinding guard continues to reject mismatched http(s) origins.
+        """
+        monkeypatch.setenv(
+            web_server._WS_ALLOWED_ORIGINS_ENV,
+            "https://dashboard.example.org",
+        )
+        ws = self._ws(
+            origin="https://dashboard.example.org",
+            host="127.0.0.1:8080",
+        )
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_proxy_origin_wrong_scheme_still_rejected(
+        self, loopback_app, monkeypatch
+    ):
+        monkeypatch.setenv(
+            web_server._WS_ALLOWED_ORIGINS_ENV,
+            "https://dashboard.example.org",
+        )
+        ws = self._ws(origin="http://dashboard.example.org", host="127.0.0.1:8080")
+        assert web_server._ws_host_origin_is_allowed(ws) is False
+
+    def test_loopback_proxy_wildcard_origin_still_rejected(
+        self, loopback_app, monkeypatch
+    ):
+        monkeypatch.setenv(
+            web_server._WS_ALLOWED_ORIGINS_ENV,
+            "https://*.trycloudflare.com",
+        )
+        ws = self._ws(
+            origin="https://quiet-river.trycloudflare.com",
+            host="127.0.0.1:8080",
+        )
+        assert web_server._ws_host_origin_is_allowed(ws) is False
+
     def test_explicit_non_loopback_file_origin_allowed(self, insecure_explicit_host_app):
         """Packaged Hermes Desktop also uses file:// when connecting to a
         Tailscale/LAN dashboard bind.

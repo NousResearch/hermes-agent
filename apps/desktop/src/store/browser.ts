@@ -144,3 +144,22 @@ export function closeBrowser() {
     selectRightRailTab($rightRailActiveTabId.get())
   }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Live webview registry for agentic interaction (act/extract/screenshot)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// The agent tools need access to the live <webview> element (to call
+// executeJavaScript, capturePage, sendInputEvent), but use-message-stream.ts
+// only has access to $browserState (nav-state), not the element. This registry
+// lets browser-pane.tsx publish the webview when it's created, so the gateway
+// bridge handlers in use-message-stream.ts can reach it.
+let liveWebview: object | null = null
+
+export function registerBrowserWebview(wv: object | null) {
+  liveWebview = wv
+}
+
+export function getBrowserWebview() {
+  return liveWebview
+}

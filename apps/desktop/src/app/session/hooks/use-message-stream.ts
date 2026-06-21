@@ -713,7 +713,7 @@ export function useMessageStream({
   )
 
   const handleGatewayEvent = useCallback(
-    (event: RpcEvent) => {
+    async (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
 
@@ -1092,6 +1092,276 @@ export function useMessageStream({
               loadError: state.loadError
             })
           })
+        }
+      } else if (event.type === 'browser.act.request') {
+        // browser_act tool: interact with the live page (click, type, scroll, key, hover).
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const { getBrowserWebview } = await import('@/store/browser')
+          const webview = getBrowserWebview() as {
+            executeJavaScript?: (code: string) => Promise<unknown>
+            sendInputEvent?: (e: object) => void
+          } | null
+
+          if (!webview) {
+            void $gateway.get()?.request('browser.act.respond', {
+              request_id: requestId,
+              text: JSON.stringify({ ok: false, error: 'No live browser webview' })
+            })
+
+            return
+          }
+
+          const p = payload as Record<string, unknown>
+          const action = typeof p?.action === 'string' ? p.action : ''
+          const selector = typeof p?.selector === 'string' ? p.selector : undefined
+          const text = typeof p?.text === 'string' ? p.text : undefined
+          const key = typeof p?.key === 'string' ? p.key : undefined
+          const x = typeof p?.x === 'number' ? p.x : undefined
+          const y = typeof p?.y === 'number' ? p.y : undefined
+          const direction = typeof p?.direction === 'string' ? p.direction : undefined
+          const amount = typeof p?.amount === 'number' ? p.amount : undefined
+
+          try {
+            let result: { ok: boolean; action: string; detail?: string; error?: string } = {
+              ok: true,
+              action
+            }
+
+            if (action === 'click') {
+              if (selector && webview.executeJavaScript) {
+                const code = `
+                  (function() {
+                    const el = document.querySelector(${JSON.stringify(selector)});
+                    if (!el) return { error: 'Element not found: ${selector}' };
+                    el.click();
+                    return { ok: true };
+                  })()
+                `
+                const resp = (await webview.executeJavaScript(code)) as { error?: string; ok?: boolean }
+
+                if (resp?.error) {
+                  result = { ok: false, action, error: resp.error }
+                }
+              } else if (x !== undefined && y !== undefined && webview.sendInputEvent) {
+                webview.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
+                webview.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+              } else {
+                result = { ok: false, action, error: 'Missing selector or coordinates' }
+              }
+            } else if (action === 'type') {
+              if (selector && text && webview.executeJavaScript) {
+                const code = `
+                  (function() {
+                    const el = document.querySelector(${JSON.stringify(selector)});
+                    if (!el) return { error: 'Element not found: ${selector}' };
+                    el.value = ${JSON.stringify(text)};
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { ok: true };
+                  })()
+                `
+                const resp = (await webview.executeJavaScript(code)) as { error?: string; ok?: boolean }
+
+                if (resp?.error) {
+                  result = { ok: false, action, error: resp.error }
+                }
+              } else {
+                result = { ok: false, action, error: 'Missing selector or text' }
+              }
+            } else if (action === 'scroll') {
+              if (webview.executeJavaScript) {
+                let code = ''
+
+                if (direction === 'top') {
+                  code = 'window.scrollTo(0, 0); ({ ok: true })'
+                } else if (direction === 'bottom') {
+                  code = 'window.scrollTo(0, document.body.scrollHeight); ({ ok: true })'
+                } else if (direction === 'down') {
+                  code = `window.scrollBy(0, ${amount || 300}); ({ ok: true })`
+                } else if (direction === 'up') {
+                  code = `window.scrollBy(0, -${amount || 300}); ({ ok: true })`
+                } else {
+                  result = { ok: false, action, error: 'Invalid scroll direction' }
+                }
+
+                if (code) {
+                  await webview.executeJavaScript(code)
+                }
+              } else {
+                result = { ok: false, action, error: 'executeJavaScript not available' }
+              }
+            } else if (action === 'key') {
+              if (key && webview.sendInputEvent) {
+                webview.sendInputEvent({ type: 'keyDown', keyCode: key })
+                webview.sendInputEvent({ type: 'keyUp', keyCode: key })
+              } else {
+                result = { ok: false, action, error: 'Missing key' }
+              }
+            } else if (action === 'hover') {
+              if (selector && webview.executeJavaScript) {
+                const code = `
+                  (function() {
+                    const el = document.querySelector(${JSON.stringify(selector)});
+                    if (!el) return { error: 'Element not found: ${selector}' };
+                    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    return { ok: true };
+                  })()
+                `
+                const resp = (await webview.executeJavaScript(code)) as { error?: string; ok?: boolean }
+
+                if (resp?.error) {
+                  result = { ok: false, action, error: resp.error }
+                }
+              } else {
+                result = { ok: false, action, error: 'Missing selector' }
+              }
+            } else {
+              result = { ok: false, action, error: 'Unknown action' }
+            }
+
+            void $gateway.get()?.request('browser.act.respond', {
+              request_id: requestId,
+              text: JSON.stringify(result)
+            })
+          } catch (err) {
+            void $gateway.get()?.request('browser.act.respond', {
+              request_id: requestId,
+              text: JSON.stringify({
+                ok: false,
+                action,
+                error: String(err)
+              })
+            })
+          }
+        }
+      } else if (event.type === 'browser.extract.request') {
+        // browser_extract tool: read page content (text/html/links/a11y).
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const { getBrowserWebview } = await import('@/store/browser')
+          const webview = getBrowserWebview() as {
+            executeJavaScript?: (code: string) => Promise<unknown>
+          } | null
+
+          if (!webview?.executeJavaScript) {
+            void $gateway.get()?.request('browser.extract.respond', {
+              request_id: requestId,
+              text: JSON.stringify({ error: 'No live browser webview' })
+            })
+
+            return
+          }
+
+          const p = payload as Record<string, unknown>
+          const mode = typeof p?.mode === 'string' ? p.mode : 'text'
+          const selector = typeof p?.selector === 'string' ? p.selector : undefined
+          const MAX_EXTRACT = 100000
+
+          try {
+            let code = ''
+
+            if (mode === 'text') {
+              code = `
+                (function() {
+                  const root = ${selector ? `document.querySelector(${JSON.stringify(selector)})` : 'document.body'};
+                  if (!root) return { error: 'Selector not found' };
+                  return { text: root.innerText.slice(0, ${MAX_EXTRACT}) };
+                })()
+              `
+            } else if (mode === 'html') {
+              code = `
+                (function() {
+                  const root = ${selector ? `document.querySelector(${JSON.stringify(selector)})` : 'document.body'};
+                  if (!root) return { error: 'Selector not found' };
+                  return { html: root.outerHTML.slice(0, ${MAX_EXTRACT}) };
+                })()
+              `
+            } else if (mode === 'links') {
+              code = `
+                (function() {
+                  const root = ${selector ? `document.querySelector(${JSON.stringify(selector)})` : 'document'};
+                  if (!root) return { error: 'Selector not found' };
+                  const anchors = Array.from(root.querySelectorAll('a'));
+                  return {
+                    links: anchors.map(a => ({
+                      text: a.innerText.trim(),
+                      href: a.href
+                    })).slice(0, 500)
+                  };
+                })()
+              `
+            } else if (mode === 'a11y') {
+              code = `
+                (function() {
+                  const root = ${selector ? `document.querySelector(${JSON.stringify(selector)})` : 'document.body'};
+                  if (!root) return { error: 'Selector not found' };
+                  const roles = Array.from(root.querySelectorAll('[role], h1, h2, h3, h4, h5, h6, a, button, input, select, textarea'));
+                  return {
+                    a11y: roles.map(el => ({
+                      role: el.getAttribute('role') || el.tagName.toLowerCase(),
+                      name: el.getAttribute('aria-label') || el.innerText?.slice(0, 100) || el.value || ''
+                    })).slice(0, 200)
+                  };
+                })()
+              `
+            } else {
+              void $gateway.get()?.request('browser.extract.respond', {
+                request_id: requestId,
+                text: JSON.stringify({ error: 'Unknown mode' })
+              })
+
+              return
+            }
+
+            const result = await webview.executeJavaScript(code)
+
+            void $gateway.get()?.request('browser.extract.respond', {
+              request_id: requestId,
+              text: JSON.stringify(result)
+            })
+          } catch (err) {
+            void $gateway.get()?.request('browser.extract.respond', {
+              request_id: requestId,
+              text: JSON.stringify({ error: String(err) })
+            })
+          }
+        }
+      } else if (event.type === 'browser.screenshot.request') {
+        // browser_screenshot tool: capture the panel as a data URL.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const { getBrowserWebview } = await import('@/store/browser')
+          const webview = getBrowserWebview() as {
+            capturePage?: () => Promise<{ toDataURL: () => string }>
+          } | null
+
+          if (!webview?.capturePage) {
+            void $gateway.get()?.request('browser.screenshot.respond', {
+              request_id: requestId,
+              text: JSON.stringify({ error: 'No live browser webview or capturePage not available' })
+            })
+
+            return
+          }
+
+          try {
+            const image = await webview.capturePage()
+            const dataUrl = image.toDataURL()
+
+            void $gateway.get()?.request('browser.screenshot.respond', {
+              request_id: requestId,
+              text: JSON.stringify({ image: dataUrl })
+            })
+          } catch (err) {
+            void $gateway.get()?.request('browser.screenshot.respond', {
+              request_id: requestId,
+              text: JSON.stringify({ error: String(err) })
+            })
+          }
         }
       } else if (event.type === 'terminal.read.request') {
         // read_terminal tool: serialize the renderer's xterm buffer and answer

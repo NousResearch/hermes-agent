@@ -7,9 +7,15 @@ from unittest import mock
 from tools.desktop_browser_tool import (
     browser_navigate_tool,
     browser_read_tool,
+    browser_act_tool,
+    browser_extract_tool,
+    browser_screenshot_tool,
     check_browser_requirements,
     BROWSER_NAVIGATE_SCHEMA,
     BROWSER_READ_SCHEMA,
+    BROWSER_ACT_SCHEMA,
+    BROWSER_EXTRACT_SCHEMA,
+    BROWSER_SCREENSHOT_SCHEMA,
 )
 
 
@@ -138,3 +144,105 @@ class TestSchemas:
         assert prod is not None
         # The production web-automation tool must still own browser_navigate.
         assert prod.handler.__module__ != "tools.desktop_browser_tool"
+
+
+class TestBrowserActTool:
+    """browser_act_tool — interact with the in-app browser page."""
+
+    def test_act_calls_callback_with_params_and_returns_json(self):
+        def cb(**kw):
+            assert kw["action"] == "click"
+            assert kw["selector"] == "#button"
+            return json.dumps({"ok": True, "action": "click"})
+
+        result = json.loads(browser_act_tool(action="click", selector="#button", callback=cb))
+        assert result["ok"] is True
+        assert result["action"] == "click"
+
+    def test_no_callback_returns_error(self):
+        result = json.loads(browser_act_tool(action="click", selector="#x"))
+        assert "error" in result
+        assert "only available" in result["error"].lower()
+
+    def test_callback_exception_returns_error(self):
+        def cb(**kw):
+            raise RuntimeError("boom")
+
+        result = json.loads(browser_act_tool(action="type", text="x", callback=cb))
+        assert "error" in result
+        assert "boom" in result["error"]
+
+    def test_empty_response_returns_error(self):
+        result = json.loads(browser_act_tool(action="scroll", direction="down", callback=lambda **kw: ""))
+        assert "error" in result
+
+
+class TestBrowserExtractTool:
+    """browser_extract_tool — extract content from the in-app browser page."""
+
+    def test_extract_calls_callback_with_mode_and_selector(self):
+        def cb(mode=None, selector=None):
+            assert mode == "text"
+            assert selector == ".content"
+            return json.dumps({"text": "Hello, world!"})
+
+        result = json.loads(browser_extract_tool(mode="text", selector=".content", callback=cb))
+        assert result["text"] == "Hello, world!"
+
+    def test_default_mode_is_text(self):
+        called = []
+
+        def cb(mode=None, selector=None):
+            called.append(mode)
+            return json.dumps({"text": "..."})
+
+        browser_extract_tool(callback=cb)
+        assert called == ["text"]
+
+    def test_no_callback_returns_error(self):
+        result = json.loads(browser_extract_tool(mode="html"))
+        assert "error" in result
+        assert "only available" in result["error"].lower()
+
+    def test_callback_exception_returns_error(self):
+        def cb(mode=None, selector=None):
+            raise RuntimeError("fail")
+
+        result = json.loads(browser_extract_tool(mode="links", callback=cb))
+        assert "error" in result
+        assert "fail" in result["error"]
+
+
+class TestBrowserScreenshotTool:
+    """browser_screenshot_tool — capture a screenshot of the in-app browser panel."""
+
+    def test_screenshot_calls_callback_and_returns_image_data(self):
+        def cb(full_page=False):
+            return json.dumps({"image": "data:image/png;base64,iVBORw0K..."})
+
+        result = json.loads(browser_screenshot_tool(callback=cb))
+        assert "image" in result
+        assert result["image"].startswith("data:image/png")
+
+    def test_full_page_param_forwarded(self):
+        called = []
+
+        def cb(full_page=False):
+            called.append(full_page)
+            return json.dumps({"image": "data:..."})
+
+        browser_screenshot_tool(full_page=True, callback=cb)
+        assert called == [True]
+
+    def test_no_callback_returns_error(self):
+        result = json.loads(browser_screenshot_tool())
+        assert "error" in result
+        assert "only available" in result["error"].lower()
+
+    def test_callback_exception_returns_error(self):
+        def cb(full_page=False):
+            raise RuntimeError("capture failed")
+
+        result = json.loads(browser_screenshot_tool(callback=cb))
+        assert "error" in result
+        assert "capture failed" in result["error"]

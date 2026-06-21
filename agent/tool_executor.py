@@ -1133,6 +1133,68 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('desktop_browser_read', function_args, tool_duration, result=function_result)}")
+        elif function_name == "desktop_browser_act":
+            def _execute(next_args: dict) -> Any:
+                from tools.desktop_browser_tool import browser_act_tool as _browser_act_tool
+                return _browser_act_tool(
+                    action=next_args.get("action"),
+                    selector=next_args.get("selector"),
+                    text=next_args.get("text"),
+                    key=next_args.get("key"),
+                    x=next_args.get("x"),
+                    y=next_args.get("y"),
+                    direction=next_args.get("direction"),
+                    amount=next_args.get("amount"),
+                    callback=getattr(agent, "browser_act_callback", None),
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('desktop_browser_act', function_args, tool_duration, result=function_result)}")
+        elif function_name == "desktop_browser_extract":
+            def _execute(next_args: dict) -> Any:
+                from tools.desktop_browser_tool import browser_extract_tool as _browser_extract_tool
+                return _browser_extract_tool(
+                    mode=next_args.get("mode", "text"),
+                    selector=next_args.get("selector"),
+                    callback=getattr(agent, "browser_extract_callback", None),
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('desktop_browser_extract', function_args, tool_duration, result=function_result)}")
+        elif function_name == "desktop_browser_screenshot":
+            def _execute(next_args: dict) -> Any:
+                from tools.desktop_browser_tool import browser_screenshot_tool as _browser_screenshot_tool
+                return _browser_screenshot_tool(
+                    full_page=next_args.get("full_page", False),
+                    callback=getattr(agent, "browser_screenshot_callback", None),
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('desktop_browser_screenshot', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

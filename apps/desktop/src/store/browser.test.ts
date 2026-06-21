@@ -5,10 +5,12 @@ import {
   $browserState,
   closeBrowser,
   DEFAULT_BROWSER_URL,
+  getBrowserWebview,
   navigateBrowser,
   normalizeBrowserInput,
   openBrowser,
   openCurrentInSystemBrowser,
+  registerBrowserWebview,
   reloadBrowser,
   setBrowserNavState
 } from './browser'
@@ -181,5 +183,31 @@ describe('openCurrentInSystemBrowser', () => {
 
     expect(openCurrentInSystemBrowser()).toBe('')
     expect(openExternal).not.toHaveBeenCalled()
+  })
+})
+
+describe('webview registry (getBrowserWebview / registerBrowserWebview)', () => {
+  afterEach(() => {
+    registerBrowserWebview(null)
+  })
+
+  it('returns null when no webview is registered', () => {
+    expect(getBrowserWebview()).toBeNull()
+  })
+
+  it('returns the registered webview element', () => {
+    const mockWebview = { executeJavaScript: vi.fn() }
+    registerBrowserWebview(mockWebview)
+
+    expect(getBrowserWebview()).toBe(mockWebview)
+  })
+
+  it('allows clearing the registry by registering null', () => {
+    const mockWebview = { capturePage: vi.fn() }
+    registerBrowserWebview(mockWebview)
+    expect(getBrowserWebview()).toBe(mockWebview)
+
+    registerBrowserWebview(null)
+    expect(getBrowserWebview()).toBeNull()
   })
 })

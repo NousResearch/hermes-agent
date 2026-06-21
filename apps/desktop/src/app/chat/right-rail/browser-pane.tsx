@@ -11,6 +11,7 @@ import {
   navigateBrowser,
   openCurrentInSystemBrowser,
   reloadBrowser,
+  registerBrowserWebview,
   setBrowserNavState
 } from '@/store/browser'
 
@@ -26,6 +27,9 @@ type BrowserWebview = HTMLElement & {
   loadURL?: (url: string) => Promise<void>
   reload?: () => void
   stop?: () => void
+  executeJavaScript?: (code: string) => Promise<unknown>
+  capturePage?: () => Promise<{ toDataURL: () => string }>
+  sendInputEvent?: (e: object) => void
 }
 
 interface NavButtonProps {
@@ -166,6 +170,7 @@ export function BrowserPane() {
 
     host.appendChild(webview)
     webviewRef.current = webview
+    registerBrowserWebview(webview)
 
     return () => {
       webview.removeEventListener('did-start-loading', onStart)
@@ -176,6 +181,7 @@ export function BrowserPane() {
       webview.removeEventListener('did-fail-load', onFail)
       webview.remove()
       webviewRef.current = null
+      registerBrowserWebview(null)
     }
     // Created once; navigation is driven by the nav-request effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps

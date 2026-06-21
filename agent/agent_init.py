@@ -190,6 +190,9 @@ def init_agent(
     read_terminal_callback: callable = None,
     browser_navigate_callback: callable = None,
     browser_read_callback: callable = None,
+    browser_act_callback: callable = None,
+    browser_extract_callback: callable = None,
+    browser_screenshot_callback: callable = None,
     step_callback: callable = None,
     stream_delta_callback: callable = None,
     interim_assistant_callback: callable = None,
@@ -425,6 +428,9 @@ def init_agent(
     agent.read_terminal_callback = read_terminal_callback
     agent.browser_navigate_callback = browser_navigate_callback
     agent.browser_read_callback = browser_read_callback
+    agent.browser_act_callback = browser_act_callback
+    agent.browser_extract_callback = browser_extract_callback
+    agent.browser_screenshot_callback = browser_screenshot_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback

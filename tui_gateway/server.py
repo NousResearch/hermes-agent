@@ -3104,6 +3104,16 @@ def _agent_cbs(sid: str) -> dict:
         "browser_read_callback": lambda: _block(
             "browser.read.request", sid, {}, timeout=30
         ),
+        # browser_act / browser_extract / browser_screenshot: agentic interactions.
+        "browser_act_callback": lambda **kw: _block(
+            "browser.act.request", sid, {k: v for k, v in kw.items() if v is not None}, timeout=30
+        ),
+        "browser_extract_callback": lambda **kw: _block(
+            "browser.extract.request", sid, {k: v for k, v in kw.items() if v is not None}, timeout=30
+        ),
+        "browser_screenshot_callback": lambda **kw: _block(
+            "browser.screenshot.request", sid, {k: v for k, v in kw.items() if v is not None}, timeout=30
+        ),
     }
 
 
@@ -7551,6 +7561,24 @@ def _(rid, params: dict) -> dict:
 @method("browser.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the in-app browser nav-state.
+    return _respond(rid, params, "text")
+
+
+@method("browser.act.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string {ok, action, detail} or {ok: false, error}.
+    return _respond(rid, params, "text")
+
+
+@method("browser.extract.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string with extracted content.
+    return _respond(rid, params, "text")
+
+
+@method("browser.screenshot.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string {image: <data-url>}.
     return _respond(rid, params, "text")
 
 

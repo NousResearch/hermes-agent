@@ -333,6 +333,63 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _host_header_hostname(host_header: str) -> str:
+    """Return a normalized hostname from an incoming Host header.
+
+    This parser is intentionally stricter than URL parsing: actual Host
+    headers are authorities, not full URLs. Malformed values fail closed so
+    the DNS-rebinding guard never turns a bad Host header into localhost.
+    """
+    h = (host_header or "").strip()
+    if not h:
+        return ""
+    if any(c in h for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
+        return ""
+    if "://" in h or any(c in h for c in ("/", "?", "#", "@")):
+        return ""
+    if h.startswith("["):
+        # IPv6 bracketed — port (if any) follows "]:"
+        close = h.find("]")
+        if close == -1:
+            return ""
+        host_only = h[1:close]
+        if ":" not in host_only:
+            return ""
+        rest = h[close + 1:]
+        if rest and not re.fullmatch(r":\d+", rest):
+            return ""
+        return host_only.lower()
+    if h.count(":") > 1:
+        # IPv6 Host headers should use bracket notation, e.g. [::1]:9119.
+        return ""
+    if ":" in h:
+        host_only, port = h.rsplit(":", 1)
+        if not host_only or not port.isdigit():
+            return ""
+        return host_only.lower()
+    return h.lower()
+
+
+def _dashboard_public_hostname() -> str:
+    """Return the operator-declared browser-facing dashboard hostname.
+
+    ``dashboard.public_url`` / ``HERMES_DASHBOARD_PUBLIC_URL`` is already the
+    canonical reverse-proxy URL for OAuth redirects. Reusing its hostname here
+    keeps the Host/Origin guard aligned with the public URL contract instead
+    of introducing a second allowlist setting.
+    """
+    try:
+        from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+        public_url = resolve_public_url()
+        if not public_url:
+            return ""
+        parsed = urllib.parse.urlparse(public_url)
+    except Exception:  # noqa: BLE001 - malformed config must fail closed
+        return ""
+    return (parsed.hostname or "").lower()
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -350,33 +407,23 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+    """True if the Host header targets an explicitly trusted dashboard host.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - The exact hostname from dashboard.public_url / HERMES_DASHBOARD_PUBLIC_URL
+      for trusted reverse-proxy deployments
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
-    if not host_header:
+    host_only = _host_header_hostname(host_header)
+    if not host_only:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+
+    public_host = _dashboard_public_hostname()
+    if public_host and host_only == public_host:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer

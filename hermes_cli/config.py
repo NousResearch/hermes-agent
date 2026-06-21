@@ -1744,8 +1744,10 @@ DEFAULT_CONFIG = {
         # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
         # When set, this is the complete authority — scheme + host +
         # optional path prefix (e.g. ``https://example.com/hermes``) —
-        # the OAuth ``redirect_uri`` is built from. Set this for deploys
-        # behind reverse proxies that don't reliably forward
+        # the OAuth ``redirect_uri`` is built from, and the host is accepted
+        # by the dashboard Host/Origin guard for trusted reverse-proxy
+        # deployments that preserve the browser-facing Host header. Set this
+        # for deploys behind reverse proxies that don't reliably forward
         # ``X-Forwarded-Host`` / ``X-Forwarded-Proto`` / ``X-Forwarded-Prefix``
         # (manual nginx setups, on-prem ingresses, custom-domain Fly
         # deploys without proper proxy headers). When set,

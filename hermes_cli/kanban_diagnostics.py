@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
 import time
+from utils import is_truthy_value
 
 
 # Severity rungs, ordered least → most urgent. The UI colors them
@@ -304,7 +305,7 @@ def triage_aux_status(config: Optional[dict]) -> Optional[dict]:
     # ``auto_decompose`` defaults to True per kanban DEFAULT_CONFIG.
     auto_decompose = True
     if isinstance(kanban_cfg, dict) and "auto_decompose" in kanban_cfg:
-        auto_decompose = bool(kanban_cfg.get("auto_decompose"))
+        auto_decompose = is_truthy_value(kanban_cfg.get("auto_decompose"), default=False)
 
     return {
         "auto_decompose": auto_decompose,

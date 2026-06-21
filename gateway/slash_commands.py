@@ -3446,7 +3446,7 @@ class GatewaySlashCommandsMixin:
         approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
         confirm_required = True
         if isinstance(approvals, dict):
-            confirm_required = bool(approvals.get("mcp_reload_confirm", True))
+            confirm_required = is_truthy_value(approvals.get("mcp_reload_confirm"), default=True)
 
         if not confirm_required:
             return await self._execute_mcp_reload(event)

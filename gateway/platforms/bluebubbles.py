@@ -22,6 +22,7 @@ from urllib.parse import quote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from utils import is_truthy_value
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -135,7 +136,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
-        self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self.send_read_receipts = is_truthy_value(extra.get("send_read_receipts"), default=True)
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")

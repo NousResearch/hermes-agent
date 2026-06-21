@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+from utils import is_truthy_value
 import shlex
 import sys
 import time
@@ -160,7 +161,7 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+        dispatch_on = is_truthy_value(cfg.get("kanban", {}).get("dispatch_in_gateway"), default=True)
     except Exception:
         dispatch_on = True  # can't tell — assume default
 

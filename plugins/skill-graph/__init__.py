@@ -878,6 +878,38 @@ def _format_edges(skill_name: str) -> str:
         return ""
 
 
+def _format_stats(skill_name: str) -> str:
+    """Query term stats for a skill and return a formatted string."""
+    try:
+        conn = _ensure_graph()
+        rows = conn.execute(
+            """SELECT term, search_count, load_count, success_count FROM skill_term_stats
+               WHERE skill_name = ? ORDER BY search_count DESC, success_count DESC LIMIT 20""",
+            (skill_name,),
+        ).fetchall()
+        if not rows:
+            return ""
+        lines = ["", "  Term stats (search / load / success):"]
+        for r in rows:
+            boost = 0
+            try:
+                eff = (r["success_count"] * 2 + r["load_count"]) / max(r["search_count"] * 3, 1)
+                conf = 1 - __import__("math").pow(0.5, r["search_count"] / 5)
+                adj = (eff - 0.5) * 2
+                tanh = adj / (1 + abs(adj) * 0.5)
+                boost = 0.1 * tanh * conf
+            except Exception:
+                pass
+            sign = "+" if boost >= 0 else ""
+            lines.append(
+                f"    {r['term']:25s}  {r['search_count']:3d} / {r['load_count']:2d} / {r['success_count']:2d}"
+                f"  (boost={sign}{boost:.3f})"
+            )
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _handle_slash_command(args: str) -> str | None:
     parts = args.strip().split(None, 1) if args.strip() else []
     subcmd = parts[0].lower() if parts else "help"
@@ -928,7 +960,7 @@ def _handle_slash_command(args: str) -> str | None:
                 f"  Description: {node['description'] or ''}",
                 f"  Tags:        {node['tags'] or ''}",
                 f"  Path:        {node['file_path'] or ''}",
-            ]) + _format_edges(rest)
+            ]) + _format_edges(rest) + _format_stats(rest)
         except Exception as e:
             return f"Show failed: {e}"
 

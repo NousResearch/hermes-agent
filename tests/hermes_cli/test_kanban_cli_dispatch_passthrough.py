@@ -148,3 +148,25 @@ def test_kanban_swarm_uses_existing_humanizer_skill():
         f"humanizer skill missing at {humanizer_path}; the kanban_swarm fix "
         "for #29415 requires this bundled skill to exist"
     )
+
+
+def test_kanban_worker_skill_ignores_archived_copy(tmp_path):
+    """Archived profile skills are not loadable by name.
+
+    If the dispatcher treats ``skills/.archive/kanban-worker/SKILL.md`` as
+    available, Foreman workers launch with ``--skills kanban-worker`` and die
+    before the task starts with "Unknown skill(s): kanban-worker".
+    """
+    from hermes_cli import kanban_db
+
+    archived = tmp_path / "skills" / ".archive" / "kanban-worker"
+    archived.mkdir(parents=True)
+    (archived / "SKILL.md").write_text("# archived copy\n", encoding="utf-8")
+
+    assert kanban_db._kanban_worker_skill_available(str(tmp_path)) is False
+
+    live = tmp_path / "skills" / "devops" / "kanban-worker"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text("# live copy\n", encoding="utf-8")
+
+    assert kanban_db._kanban_worker_skill_available(str(tmp_path)) is True

@@ -6726,9 +6726,16 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     # profiles that have it nested elsewhere.
     if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
         return True
+    def _is_archived_or_hidden(path: _Path) -> bool:
+        try:
+            rel_parts = path.relative_to(skills_root).parts
+        except ValueError:
+            rel_parts = path.parts
+        return any(part.startswith(".") or part == "archive" for part in rel_parts)
+
     try:
         for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
+            if skill_md.is_file() and not _is_archived_or_hidden(skill_md):
                 return True
     except OSError:
         pass

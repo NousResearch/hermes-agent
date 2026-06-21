@@ -198,6 +198,26 @@ def test_repeated_failures_default_matches_dispatcher_failure_limit():
     assert "configured for 2" in d.detail
 
 
+def test_repeated_failures_honours_task_max_retries_below_dispatcher_limit():
+    """A per-task retry cap can trip before the dispatcher default."""
+    task = _task(
+        status="blocked",
+        consecutive_failures=1,
+        max_retries=1,
+        last_failure_error="pid 10400 not alive",
+    )
+    runs = [_run(outcome="crashed", run_id=54)]
+    diags = kd.compute_task_diagnostics(task, [], runs, config={"failure_limit": 2})
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    d = repeated[0]
+    assert d.data["failure_threshold"] == 1
+    assert d.data["failure_limit"] == 1
+    assert d.data["failure_limit_source"] == "task"
+    assert d.data["most_recent_outcome"] == "crashed"
+    assert "configured for 1" in d.detail
+
+
 def test_repeated_failures_derives_threshold_from_kanban_failure_limit():
     task = _task(status="ready", consecutive_failures=2,
                  last_failure_error="Profile 'debugger' does not exist")

@@ -5,6 +5,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -216,6 +217,106 @@ def test_nous_portal_pricing_preserves_vendor_prefixed_model_ids(monkeypatch):
     assert seen["base_url"] == "https://inference-api.nousresearch.com/v1"
     assert float(entry.input_cost_per_million) == 25.0
     assert float(entry.output_cost_per_million) == 125.0
+
+
+def test_venice_direct_pricing_uses_models_dev_for_bare_model(monkeypatch):
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "venice": {
+                "id": "venice",
+                "models": {
+                    "kimi-k2-7-code": {
+                        "id": "kimi-k2-7-code",
+                        "name": "Kimi K2.7 Code",
+                        "cost": {
+                            "input": 0.9,
+                            "output": 4.3,
+                            "cache_read": 0.2,
+                        },
+                    }
+                },
+            }
+        },
+    )
+
+    route = resolve_billing_route(
+        "kimi-k2-7-code",
+        provider="custom",
+        base_url="https://api.venice.ai/api/v1",
+    )
+    entry = get_pricing_entry(
+        "kimi-k2-7-code",
+        provider="custom",
+        base_url="https://api.venice.ai/api/v1",
+    )
+
+    assert route.provider == "venice"
+    assert route.model == "kimi-k2-7-code"
+    assert entry is not None
+    assert entry.source == "models_dev_registry"
+    assert float(entry.input_cost_per_million) == 0.9
+    assert float(entry.output_cost_per_million) == 4.3
+    assert float(entry.cache_read_cost_per_million) == 0.2
+
+
+def test_venice_direct_pricing_strips_legacy_vendor_prefix(monkeypatch):
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "venice": {
+                "id": "venice",
+                "models": {
+                    "kimi-k2-7-code": {
+                        "id": "kimi-k2-7-code",
+                        "cost": {"input": 0.9, "output": 4.3},
+                    }
+                },
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "venice/kimi-k2-7-code",
+        provider="custom",
+        base_url="https://api.venice.ai/api/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.9
+    assert float(entry.output_cost_per_million) == 4.3
+
+
+def test_venice_cost_estimate_includes_cache_read(monkeypatch):
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "venice": {
+                "id": "venice",
+                "models": {
+                    "kimi-k2-7-code": {
+                        "id": "kimi-k2-7-code",
+                        "cost": {
+                            "input": 0.9,
+                            "output": 4.3,
+                            "cache_read": 0.2,
+                        },
+                    }
+                },
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "kimi-k2-7-code",
+        CanonicalUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=100),
+        provider="custom",
+        base_url="https://api.venice.ai/api/v1",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert float(result.amount_usd) == 0.00307
 
 
 def test_deepseek_v4_pro_pricing_entry_exists():

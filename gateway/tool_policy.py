@@ -53,7 +53,9 @@ def select_gateway_toolsets(
     if WORK_INTENT_RE.search(user_text or ""):
         return configured
     preserved_mcp = [name for name in configured if name.startswith("mcp-")]
-    selected = sorted((set(configured) & set(LIGHTWEIGHT_DISCORD_TOOLSETS)) | set(preserved_mcp))
+    selected = sorted(
+        (set(configured) & set(LIGHTWEIGHT_DISCORD_TOOLSETS)) | set(preserved_mcp)
+    )
     return selected or configured
 
 

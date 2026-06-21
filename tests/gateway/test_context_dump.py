@@ -5,11 +5,14 @@ import json
 from gateway.context_dump import (
     agent_history_for_context_dump,
     context_dump_slug,
-    render_context_dump_text,
     write_context_dump_payload,
     write_context_dump_text,
 )
-from gateway.context_layers import ContextLayer, layers_to_payload, total_estimated_tokens
+from gateway.context_layers import (
+    ContextLayer,
+    layers_to_payload,
+    total_estimated_tokens,
+)
 
 
 def test_context_dump_slug_is_bounded_and_filesafe() -> None:
@@ -60,8 +63,18 @@ def test_agent_history_for_context_dump_filters_meta_and_preserves_tools() -> No
         {"role": "session_meta", "content": "skip"},
         {"role": "user", "content": "hi", "timestamp": "ignored"},
         {"role": "assistant", "content": "there", "reasoning": "kept"},
-        {"role": "tool", "content": "result", "tool_call_id": "t1", "timestamp": "ignored"},
-        {"role": "user", "content": "mirrored", "mirror": True, "mirror_source": "other"},
+        {
+            "role": "tool",
+            "content": "result",
+            "tool_call_id": "t1",
+            "timestamp": "ignored",
+        },
+        {
+            "role": "user",
+            "content": "mirrored",
+            "mirror": True,
+            "mirror_source": "other",
+        },
     ]
 
     result = agent_history_for_context_dump(history)

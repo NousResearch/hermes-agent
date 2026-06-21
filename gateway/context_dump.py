@@ -22,7 +22,9 @@ def context_dump_text_path(dump_dir: Path, session_key: str | None) -> Path:
     return dump_dir / f"{context_dump_slug(session_key)}.message.txt"
 
 
-def write_context_dump_payload(dump_dir: Path, session_key: str | None, payload: Mapping[str, Any]) -> Path:
+def write_context_dump_payload(
+    dump_dir: Path, session_key: str | None, payload: Mapping[str, Any]
+) -> Path:
     dump_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = context_dump_path(dump_dir, session_key)
     tmp_path = path.with_suffix(".json.tmp")
@@ -34,7 +36,9 @@ def write_context_dump_payload(dump_dir: Path, session_key: str | None, payload:
     return path
 
 
-def write_context_dump_text(dump_dir: Path, session_key: str | None, payload: Mapping[str, Any]) -> Path:
+def write_context_dump_text(
+    dump_dir: Path, session_key: str | None, payload: Mapping[str, Any]
+) -> Path:
     dump_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = context_dump_text_path(dump_dir, session_key)
     tmp_path = path.with_suffix(".txt.tmp")
@@ -60,11 +64,15 @@ def render_context_dump_text(payload: Mapping[str, Any]) -> list[str]:
         "",
         "## Context Layers",
         "",
-        json.dumps(payload.get("context_layers", []), ensure_ascii=False, indent=2, default=str),
+        json.dumps(
+            payload.get("context_layers", []), ensure_ascii=False, indent=2, default=str
+        ),
         "",
         "## Raw API Messages",
         "",
-        json.dumps(payload.get("api_messages", []), ensure_ascii=False, indent=2, default=str),
+        json.dumps(
+            payload.get("api_messages", []), ensure_ascii=False, indent=2, default=str
+        ),
         "",
         "## Tool Schemas",
         "",
@@ -86,7 +94,9 @@ def render_context_dump_text(payload: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def agent_history_for_context_dump(history: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def agent_history_for_context_dump(
+    history: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
     agent_history: list[dict[str, Any]] = []
     for msg in history:
         role = msg.get("role")

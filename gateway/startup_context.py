@@ -28,12 +28,17 @@ def discord_context_channel_id(event: Any, source: Any) -> str:
 
 def discord_api_timeout() -> float:
     try:
-        return max(0.25, min(float(os.getenv("HERMES_DISCORD_CONTEXT_API_TIMEOUT", "2.0")), 8.0))
+        return max(
+            0.25,
+            min(float(os.getenv("HERMES_DISCORD_CONTEXT_API_TIMEOUT", "2.0")), 8.0),
+        )
     except (TypeError, ValueError):
         return 2.0
 
 
-def discord_api_context_row(module: StartupContextModule, message: Any) -> dict[str, Any] | None:
+def discord_api_context_row(
+    module: StartupContextModule, message: Any
+) -> dict[str, Any] | None:
     content = (getattr(message, "content", None) or "").strip()
     if not content:
         attachments = getattr(message, "attachments", None) or []
@@ -48,9 +53,12 @@ def discord_api_context_row(module: StartupContextModule, message: Any) -> dict[
     )
     reference = getattr(message, "reference", None)
     reply_to_id = getattr(reference, "message_id", None) if reference else None
-    timestamp = getattr(message, "created_at", None)
-    if hasattr(timestamp, "isoformat"):
-        timestamp = timestamp.isoformat()
+    raw_timestamp = getattr(message, "created_at", None)
+    timestamp = (
+        raw_timestamp.isoformat()
+        if raw_timestamp is not None and hasattr(raw_timestamp, "isoformat")
+        else raw_timestamp
+    )
     row = module.external_context_row(
         message_id=getattr(message, "id", ""),
         channel_id=getattr(getattr(message, "channel", None), "id", ""),

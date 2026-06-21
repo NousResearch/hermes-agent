@@ -28,14 +28,18 @@ class _Module:
 
 
 def test_discord_context_channel_id_uses_parent_for_fresh_auto_thread() -> None:
-    event = SimpleNamespace(raw_message=SimpleNamespace(channel=SimpleNamespace(id=123)))
+    event = SimpleNamespace(
+        raw_message=SimpleNamespace(channel=SimpleNamespace(id=123))
+    )
     source = _Source(chat_id="456", parent_chat_id="123", thread_id="456")
 
     assert discord_context_channel_id(event, source) == "123"
 
 
 def test_discord_context_channel_id_uses_thread_for_existing_thread() -> None:
-    event = SimpleNamespace(raw_message=SimpleNamespace(channel=SimpleNamespace(id=456)))
+    event = SimpleNamespace(
+        raw_message=SimpleNamespace(channel=SimpleNamespace(id=456))
+    )
     source = _Source(chat_id="456", parent_chat_id="123", thread_id="456")
 
     assert discord_context_channel_id(event, source) == "456"

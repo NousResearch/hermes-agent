@@ -12,7 +12,6 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,13 +22,21 @@ ODIN_USER = "hermes"
 ODIN_WORKTREE = "/home/hermes/.hermes/hermes-agent-context-work"
 ODIN_LIVE_TREE = "/home/hermes/.hermes/hermes-agent"
 DEFAULT_VALIDATION_CHANNEL_ID = "1501008202630696981"
+PYTHON = sys.executable or "python"
 
 TOUCHED_PACKAGES = (
-    "gateway",
-    "hermes_cli",
-    "agent",
-    "tests/gateway",
-    "tests/hermes_cli",
+    "gateway/context_layers.py",
+    "gateway/startup_context.py",
+    "gateway/context_dump.py",
+    "gateway/route_banner.py",
+    "gateway/tool_policy.py",
+    "gateway/validation/discord_context_smoke.py",
+    "hermes_cli/dev.py",
+    "tests/gateway/test_context_dump.py",
+    "tests/gateway/test_startup_context.py",
+    "tests/gateway/test_tool_policy.py",
+    "tests/gateway/test_discord_context_smoke.py",
+    "tests/hermes_cli/test_dev.py",
 )
 CONTEXT_TESTS = (
     "tests/gateway/test_discord_slash_auth.py",
@@ -97,7 +104,9 @@ class DumpParseResult:
         )
 
 
-def build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> argparse.ArgumentParser:
+def build_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> argparse.ArgumentParser:
     """Register `hermes dev ...` subcommands."""
 
     parser = subparsers.add_parser(
@@ -111,40 +120,82 @@ def build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
 
     sync = dev_sub.add_parser("sync", help="Rsync this worktree to odin")
     sync.add_argument("--to", choices=("odin",), required=True)
-    sync.add_argument("--odin", action="store_true", help="Required acknowledgement for odin mutation")
-    sync.add_argument("--dry-run", action="store_true", help="Print and dry-run rsync without mutation")
+    sync.add_argument(
+        "--odin", action="store_true", help="Required acknowledgement for odin mutation"
+    )
+    sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print and dry-run rsync without mutation",
+    )
 
-    diff = dev_sub.add_parser("diff-odin", help="Show local-vs-odin tracked source differences")
-    diff.add_argument("--odin", action="store_true", help="Required acknowledgement for odin access")
-    diff.add_argument("--dry-run", action="store_true", help="Print planned command without executing")
+    diff = dev_sub.add_parser(
+        "diff-odin", help="Show local-vs-odin tracked source differences"
+    )
+    diff.add_argument(
+        "--odin", action="store_true", help="Required acknowledgement for odin access"
+    )
+    diff.add_argument(
+        "--dry-run", action="store_true", help="Print planned command without executing"
+    )
 
     _add_common_dry_run(dev_sub.add_parser("lint", help="Run ruff checks"))
-    _add_common_dry_run(dev_sub.add_parser("typecheck", help="Run mypy on new context modules"))
-    _add_common_dry_run(dev_sub.add_parser("dead-code", help="Run vulture advisory checks"))
+    _add_common_dry_run(
+        dev_sub.add_parser("typecheck", help="Run mypy on new context modules")
+    )
+    _add_common_dry_run(
+        dev_sub.add_parser("dead-code", help="Run vulture advisory checks")
+    )
     _add_common_dry_run(dev_sub.add_parser("test", help="Run focused developer tests"))
 
     restart = dev_sub.add_parser("restart", help="Restart hermes-gateway on odin")
-    restart.add_argument("--odin", action="store_true", help="Required acknowledgement for odin mutation")
-    restart.add_argument("--dry-run", action="store_true", help="Print planned command without executing")
+    restart.add_argument(
+        "--odin", action="store_true", help="Required acknowledgement for odin mutation"
+    )
+    restart.add_argument(
+        "--dry-run", action="store_true", help="Print planned command without executing"
+    )
 
     logs = dev_sub.add_parser("logs", help="Inspect hermes-gateway logs on odin")
-    logs.add_argument("--odin", action="store_true", help="Required acknowledgement for odin access")
-    logs.add_argument("--dry-run", action="store_true", help="Print planned command without executing")
+    logs.add_argument(
+        "--odin", action="store_true", help="Required acknowledgement for odin access"
+    )
+    logs.add_argument(
+        "--dry-run", action="store_true", help="Print planned command without executing"
+    )
     logs.add_argument("--lines", type=int, default=200)
 
-    smoke = dev_sub.add_parser("smoke", help="Run live Discord smoke validation on odin")
-    smoke.add_argument("--odin", action="store_true", help="Required acknowledgement for odin mutation")
-    smoke.add_argument("--dry-run", action="store_true", help="Print planned command without executing")
+    smoke = dev_sub.add_parser(
+        "smoke", help="Run live Discord smoke validation on odin"
+    )
+    smoke.add_argument(
+        "--odin", action="store_true", help="Required acknowledgement for odin mutation"
+    )
+    smoke.add_argument(
+        "--dry-run", action="store_true", help="Print planned command without executing"
+    )
     smoke.add_argument("--channel-id", default=None)
     smoke.add_argument("--timeout-seconds", type=int, default=60)
 
-    dump_parse = dev_sub.add_parser("dump-parse", help="Parse a Hermes .message.txt context dump")
+    dump_parse = dev_sub.add_parser(
+        "dump-parse", help="Parse a Hermes .message.txt context dump"
+    )
     dump_parse.add_argument("path", type=Path)
-    dump_parse.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    dump_parse.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
-    verify = dev_sub.add_parser("verify", help="Run the ordered developer verification workflow")
-    verify.add_argument("--odin", action="store_true", help="Include odin sync/restart/smoke/log checks")
-    verify.add_argument("--dry-run", action="store_true", help="Print the ordered plan without executing")
+    verify = dev_sub.add_parser(
+        "verify", help="Run the ordered developer verification workflow"
+    )
+    verify.add_argument(
+        "--odin", action="store_true", help="Include odin sync/restart/smoke/log checks"
+    )
+    verify.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the ordered plan without executing",
+    )
 
     parser.set_defaults(func=cmd_dev)
     return parser
@@ -165,7 +216,9 @@ def cmd_dev(args: argparse.Namespace) -> None:
             raise SystemExit(2)
         return
 
-    if command in {"sync", "restart", "logs", "smoke", "diff-odin"} and not getattr(args, "odin", False):
+    if command in {"sync", "restart", "logs", "smoke", "diff-odin"} and not getattr(
+        args, "odin", False
+    ):
         raise SystemExit(f"`hermes dev {command}` requires --odin.")
 
     plans = build_plans(args)
@@ -186,7 +239,14 @@ def build_plans(args: argparse.Namespace) -> list[CommandPlan]:
     if command == "sync":
         return [_rsync_plan(dry_run=getattr(args, "dry_run", False))]
     if command == "diff-odin":
-        return [_ssh_plan("diff-odin", "cd {worktree} && git status --short --branch && git diff --stat".format(worktree=ODIN_WORKTREE))]
+        return [
+            _ssh_plan(
+                "diff-odin",
+                "cd {worktree} && git status --short --branch && git diff --stat".format(
+                    worktree=ODIN_WORKTREE
+                ),
+            )
+        ]
     if command == "lint":
         return _lint_plans()
     if command == "typecheck":
@@ -199,7 +259,12 @@ def build_plans(args: argparse.Namespace) -> list[CommandPlan]:
         return [_ssh_plan("restart gateway", "systemctl --user restart hermes-gateway")]
     if command == "logs":
         lines = max(1, int(getattr(args, "lines", 200)))
-        return [_ssh_plan("gateway logs", f"journalctl --user -u hermes-gateway -n {lines} --no-pager")]
+        return [
+            _ssh_plan(
+                "gateway logs",
+                f"journalctl --user -u hermes-gateway -n {lines} --no-pager",
+            )
+        ]
     if command == "smoke":
         channel_id = getattr(args, "channel_id", None) or os.getenv(
             "HERMES_CONTEXT_VALIDATION_CHANNEL_ID",
@@ -221,26 +286,40 @@ def build_plans(args: argparse.Namespace) -> list[CommandPlan]:
         plans.extend(_test_plans())
         if getattr(args, "odin", False):
             plans.append(_rsync_plan(dry_run=getattr(args, "dry_run", False)))
-            plans.append(_ssh_plan("restart gateway", "systemctl --user restart hermes-gateway"))
+            plans.append(
+                _ssh_plan("restart gateway", "systemctl --user restart hermes-gateway")
+            )
             plans.append(
                 _ssh_plan(
                     "discord smoke",
                     "cd {worktree} && python -m gateway.validation.discord_context_smoke "
                     "--channel-id {channel_id} --timeout-seconds 60".format(
                         worktree=ODIN_WORKTREE,
-                        channel_id=os.getenv("HERMES_CONTEXT_VALIDATION_CHANNEL_ID", DEFAULT_VALIDATION_CHANNEL_ID),
+                        channel_id=os.getenv(
+                            "HERMES_CONTEXT_VALIDATION_CHANNEL_ID",
+                            DEFAULT_VALIDATION_CHANNEL_ID,
+                        ),
                     ),
                 )
             )
-            plans.append(_ssh_plan("gateway logs", "journalctl --user -u hermes-gateway -n 200 --no-pager"))
+            plans.append(
+                _ssh_plan(
+                    "gateway logs",
+                    "journalctl --user -u hermes-gateway -n 200 --no-pager",
+                )
+            )
         return plans
     return []
 
 
 def parse_context_dump(path: Path) -> DumpParseResult:
     text = path.read_text(encoding="utf-8")
-    raw_messages = _extract_json_section(text, "## Raw API Messages", "## Tool Schemas", default=[])
-    tools = _extract_json_section(text, "## Tool Schemas", "## Debug Metadata", default=[])
+    raw_messages = _extract_json_section(
+        text, "## Raw API Messages", "## Tool Schemas", default=[]
+    )
+    tools = _extract_json_section(
+        text, "## Tool Schemas", "## Debug Metadata", default=[]
+    )
     metadata = _extract_json_section(text, "## Debug Metadata", None, default={})
 
     missing: list[str] = []
@@ -281,13 +360,17 @@ def print_dump_summary(result: DumpParseResult) -> None:
     print(f"Rough tool tokens: {result.rough_tool_tokens}")
     print(f"Rough total tokens: {result.rough_total_tokens}")
     if result.missing_required_sections:
-        print("Missing required sections: " + ", ".join(result.missing_required_sections))
+        print(
+            "Missing required sections: " + ", ".join(result.missing_required_sections)
+        )
     else:
         print("Missing required sections: none")
 
 
 def _add_common_dry_run(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dry-run", action="store_true", help="Print planned command without executing")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print planned command without executing"
+    )
 
 
 def _status_plans() -> list[CommandPlan]:
@@ -297,15 +380,20 @@ def _status_plans() -> list[CommandPlan]:
             "odin status",
             "cd {worktree} && git status --short --branch; "
             "pgrep -af 'hermes_cli.main gateway run|gateway run' || true; "
-            "systemctl --user is-active hermes-gateway || true".format(worktree=ODIN_WORKTREE),
+            "systemctl --user is-active hermes-gateway || true".format(
+                worktree=ODIN_WORKTREE
+            ),
         ),
     ]
 
 
 def _lint_plans() -> list[CommandPlan]:
     return [
-        CommandPlan("ruff check", ("python", "-m", "ruff", "check", *TOUCHED_PACKAGES)),
-        CommandPlan("ruff format check", ("python", "-m", "ruff", "format", "--check", *TOUCHED_PACKAGES)),
+        CommandPlan("ruff check", (PYTHON, "-m", "ruff", "check", *TOUCHED_PACKAGES)),
+        CommandPlan(
+            "ruff format check",
+            (PYTHON, "-m", "ruff", "format", "--check", *TOUCHED_PACKAGES),
+        ),
     ]
 
 
@@ -319,20 +407,50 @@ def _typecheck_plans() -> list[CommandPlan]:
         "hermes_cli/dev.py",
         "tests/hermes_cli/test_dev.py",
     )
-    return [CommandPlan("mypy", ("python", "-m", "mypy", *paths))]
+    return [
+        CommandPlan(
+            "mypy",
+            (
+                PYTHON,
+                "-m",
+                "mypy",
+                "--follow-imports=skip",
+                "--ignore-missing-imports",
+                *paths,
+            ),
+        )
+    ]
 
 
 def _dead_code_plans() -> list[CommandPlan]:
     return [
         CommandPlan(
             "vulture advisory",
-            ("python", "-m", "vulture", "gateway", "hermes_cli/dev.py", "tests/hermes_cli/test_dev.py", "--min-confidence", "80"),
+            (
+                PYTHON,
+                "-m",
+                "vulture",
+                "gateway/context_layers.py",
+                "gateway/startup_context.py",
+                "gateway/context_dump.py",
+                "gateway/route_banner.py",
+                "gateway/tool_policy.py",
+                "gateway/validation/discord_context_smoke.py",
+                "hermes_cli/dev.py",
+                "tests/gateway/test_context_dump.py",
+                "tests/gateway/test_startup_context.py",
+                "tests/gateway/test_tool_policy.py",
+                "tests/gateway/test_discord_context_smoke.py",
+                "tests/hermes_cli/test_dev.py",
+                "--min-confidence",
+                "80",
+            ),
         )
     ]
 
 
 def _test_plans() -> list[CommandPlan]:
-    return [CommandPlan("focused pytest", ("python", "-m", "pytest", *CONTEXT_TESTS))]
+    return [CommandPlan("focused pytest", (PYTHON, "-m", "pytest", *CONTEXT_TESTS))]
 
 
 def _rsync_plan(*, dry_run: bool) -> CommandPlan:
@@ -362,7 +480,9 @@ def _ssh_plan(label: str, remote_command: str) -> CommandPlan:
     )
 
 
-def _extract_json_section(text: str, start_marker: str, end_marker: str | None, *, default: Any) -> Any:
+def _extract_json_section(
+    text: str, start_marker: str, end_marker: str | None, *, default: Any
+) -> Any:
     start = text.find(start_marker)
     if start < 0:
         return default

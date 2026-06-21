@@ -25,15 +25,24 @@ def test_dump_parse_reports_counts_and_tokens(tmp_path: Path) -> None:
                 "",
                 "## Raw API Messages",
                 "",
-                json.dumps([{"role": "system", "content": "SOUL"}, {"role": "user", "content": "hi"}]),
+                json.dumps(
+                    [
+                        {"role": "system", "content": "SOUL"},
+                        {"role": "user", "content": "hi"},
+                    ]
+                ),
                 "",
                 "## Tool Schemas",
                 "",
-                json.dumps([{"type": "function", "function": {"name": "chat_startup_context"}}]),
+                json.dumps(
+                    [{"type": "function", "function": {"name": "chat_startup_context"}}]
+                ),
                 "",
                 "## Debug Metadata",
                 "",
-                json.dumps({"schema": "hermes.context_dump.v2", "session_key": "discord:1"}),
+                json.dumps(
+                    {"schema": "hermes.context_dump.v2", "session_key": "discord:1"}
+                ),
             ]
         ),
         encoding="utf-8",
@@ -79,7 +88,9 @@ def test_dump_parse_flags_missing_required_sections(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("command", ["sync", "restart", "logs", "smoke", "diff-odin"])
 def test_odin_commands_require_explicit_odin_flag(command: str) -> None:
-    args = _parse_dev_args([command, "--to", "odin"] if command == "sync" else [command])
+    args = _parse_dev_args(
+        [command, "--to", "odin"] if command == "sync" else [command]
+    )
 
     with pytest.raises(SystemExit, match="requires --odin"):
         dev.cmd_dev(args)

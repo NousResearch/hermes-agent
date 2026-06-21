@@ -18,7 +18,9 @@ def format_context_window_token_line(
     prefix = f"Context: {base_context_version}; skills: {skills}."
     if context_length > 0:
         pct = min(999.0, approx_tokens / context_length * 100)
-        threshold_part = f", compress at ~{threshold_tokens:,}" if threshold_tokens else ""
+        threshold_part = (
+            f", compress at ~{threshold_tokens:,}" if threshold_tokens else ""
+        )
         return (
             f"🧮 {prefix} Loaded ~{approx_tokens:,} / {context_length:,} "
             f"prompt tokens ({pct:.0f}%{threshold_part})."

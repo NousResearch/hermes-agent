@@ -23,7 +23,15 @@ def test_discord_casual_chat_uses_lightweight_toolsets(monkeypatch) -> None:
         user_text="what is the 6th highest mountain?",
     )
 
-    assert selected == ["budget", "channel-notes", "chat", "clarify", "memory", "session_search", "skills"]
+    assert selected == [
+        "budget",
+        "channel-notes",
+        "chat",
+        "clarify",
+        "memory",
+        "session_search",
+        "skills",
+    ]
 
 
 def test_discord_work_intent_keeps_configured_toolsets(monkeypatch) -> None:

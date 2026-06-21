@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 
 DISCORD_API = "https://discord.com/api/v10"
@@ -37,7 +37,9 @@ class SmokeReport:
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(self), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(asdict(self), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
 
 class DiscordRest:
@@ -58,7 +60,9 @@ class DiscordRest:
         response.raise_for_status()
         return response.json()
 
-    def channel_messages_after(self, channel_id: str, after_message_id: str) -> list[dict[str, Any]]:
+    def channel_messages_after(
+        self, channel_id: str, after_message_id: str
+    ) -> list[dict[str, Any]]:
         response = requests.get(
             f"{DISCORD_API}/channels/{channel_id}/messages",
             headers=self.headers,
@@ -69,7 +73,9 @@ class DiscordRest:
         return list(reversed(response.json()))
 
     def download(self, url: str, path: Path) -> None:
-        response = requests.get(url, headers={"Authorization": self.headers["Authorization"]}, timeout=30)
+        response = requests.get(
+            url, headers={"Authorization": self.headers["Authorization"]}, timeout=30
+        )
         response.raise_for_status()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(response.content)
@@ -100,14 +106,20 @@ def run_smoke(
         timeout_seconds=timeout_seconds,
     )
     if not response:
-        report.errors.append("Timed out waiting for Hermes response to validation ping.")
+        report.errors.append(
+            "Timed out waiting for Hermes response to validation ping."
+        )
         report.checks["ping_response"] = False
         return report
     report.response_message_id = str(response.get("id") or "")
     content = str(response.get("content") or "")
     report.checks["ping_response"] = True
-    report.checks["route_banner_mentions_model"] = "using" in content.lower() and "openrouter" in content.lower()
-    report.checks["context_tokens_visible"] = "context" in content.lower() and "token" in content.lower()
+    report.checks["route_banner_mentions_model"] = (
+        "using" in content.lower() and "openrouter" in content.lower()
+    )
+    report.checks["context_tokens_visible"] = (
+        "context" in content.lower() and "token" in content.lower()
+    )
 
     dump_request = client.send_message(channel_id, f"<@{bot_user_id}> /context-dump")
     dump_response = _wait_for_bot_message(
@@ -126,7 +138,9 @@ def run_smoke(
 
     attachment = _first_context_dump_attachment(dump_response)
     if attachment is None:
-        report.errors.append("Hermes /context-dump response did not include a .message.txt attachment.")
+        report.errors.append(
+            "Hermes /context-dump response did not include a .message.txt attachment."
+        )
         report.checks["context_dump_attachment"] = False
         return report
     report.context_dump_attachment = str(attachment.get("filename") or "")
@@ -147,13 +161,32 @@ def run_smoke(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run live Discord validation against Hermes.")
-    parser.add_argument("--channel-id", default=os.getenv("HERMES_CONTEXT_VALIDATION_CHANNEL_ID", DEFAULT_CHANNEL_ID))
+    parser = argparse.ArgumentParser(
+        description="Run live Discord validation against Hermes."
+    )
+    parser.add_argument(
+        "--channel-id",
+        default=os.getenv("HERMES_CONTEXT_VALIDATION_CHANNEL_ID", DEFAULT_CHANNEL_ID),
+    )
     parser.add_argument("--bot-user-id", default=os.getenv("HERMES_BOT_USER_ID", ""))
     parser.add_argument("--timeout-seconds", type=int, default=60)
-    parser.add_argument("--output-dir", type=Path, default=Path(os.getenv("HERMES_CONTEXT_VALIDATION_OUTPUT_DIR", "/tmp/hermes-context-smoke")))
-    parser.add_argument("--token", default=os.getenv("HERMES_CONTEXT_VALIDATION_DISCORD_TOKEN", ""))
-    parser.add_argument("--token-kind", choices=("bot", "bearer"), default=os.getenv("HERMES_CONTEXT_VALIDATION_TOKEN_KIND", "bot"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(
+            os.getenv(
+                "HERMES_CONTEXT_VALIDATION_OUTPUT_DIR", "/tmp/hermes-context-smoke"
+            )
+        ),
+    )
+    parser.add_argument(
+        "--token", default=os.getenv("HERMES_CONTEXT_VALIDATION_DISCORD_TOKEN", "")
+    )
+    parser.add_argument(
+        "--token-kind",
+        choices=("bot", "bearer"),
+        default=os.getenv("HERMES_CONTEXT_VALIDATION_TOKEN_KIND", "bot"),
+    )
     return parser
 
 
@@ -164,7 +197,9 @@ def main(argv: list[str] | None = None) -> int:
         errors.append("Missing --bot-user-id or HERMES_BOT_USER_ID.")
     if not args.token:
         errors.append("Missing --token or HERMES_CONTEXT_VALIDATION_DISCORD_TOKEN.")
-    report = SmokeReport(ok=False, channel_id=str(args.channel_id), bot_user_id=str(args.bot_user_id))
+    report = SmokeReport(
+        ok=False, channel_id=str(args.channel_id), bot_user_id=str(args.bot_user_id)
+    )
     if errors:
         report.errors.extend(errors)
         report.write(args.output_dir / "discord_context_smoke_report.json")

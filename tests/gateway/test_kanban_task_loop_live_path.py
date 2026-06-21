@@ -97,7 +97,6 @@ def test_fix2_strict_convergence_rejects_blocked_task(isolated_home):
     conn.close()
     assert m["converged"] is False, "blocked task must block strict convergence"
     assert m["non_done"] == 1
-    assert m["converged_ratio"] is True, "ratio path preserved (10/11=0.9, 1/11=0.09<0.2)"
 
 
 def test_fix2_strict_convergence_accepts_all_done(isolated_home):
@@ -198,6 +197,59 @@ def test_fix3_completed_event_has_check_children_action(isolated_home):
     comp = next(e for e in ed if e["kind"] == "completed")
     assert comp["recommended_action"] == "check_children_promoted"
     assert any(c["id"] == "t2" for c in comp["children"])
+
+
+def test_detect_task_loop_multi_event_batched_correctness(isolated_home):
+    """Multiple terminal events must each map to their own task info + children
+    after the N+1 → batched-query refactor. Catches batch-mapping bugs
+    (e.g. a dict keyed wrong so every event gets the first task's data)."""
+    runner = _make_runner()
+    board = "multi-event"
+    _seed_board(
+        isolated_home, board,
+        owners=[("feishu", "chat_f")],
+        tasks=[
+            ("p1", "done", "parent-one"),
+            ("p2", "done", "parent-two"),
+            ("p3", "done", "parent-three"),
+            ("c1", "done", "child-of-p1"),
+            ("c2", "ready", "child-of-p2"),
+        ],
+        events=[
+            ("p1", "completed", {"summary": "p1 done"}),
+            ("p2", "completed", {"summary": "p2 done"}),
+            ("p3", "completed", {"summary": "p3 done"}),
+        ],
+    )
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect(board=board)
+    conn.execute("INSERT INTO task_links(parent_id,child_id) VALUES('p1','c1')")
+    conn.execute("INSERT INTO task_links(parent_id,child_id) VALUES('p2','c2')")
+    conn.execute(
+        "UPDATE tasks SET consecutive_failures=5, last_failure_error='boom' WHERE id='p3'"
+    )
+    conn.commit(); conn.close()
+
+    stats = runner._detect_task_loop(board, [], runner.task_loop_engine._last_event_id)
+    assert stats is not None
+    ed = {e["task_id"]: e for e in stats["event_details"]}
+
+    assert set(ed.keys()) == {"p1", "p2", "p3"}, f"expected all 3 events, got {set(ed.keys())}"
+
+    assert ed["p1"]["title"] == "parent-one"
+    assert ed["p2"]["title"] == "parent-two"
+    assert ed["p3"]["title"] == "parent-three"
+
+    assert any(c["id"] == "c1" and c["status"] == "done" for c in ed["p1"]["children"]), (
+        f"p1 children wrong: {ed['p1']['children']}"
+    )
+    assert any(c["id"] == "c2" and c["status"] == "ready" for c in ed["p2"]["children"]), (
+        f"p2 children wrong: {ed['p2']['children']}"
+    )
+    assert ed["p3"]["children"] == [], "p3 has no children"
+
+    assert ed["p3"]["consecutive_failures"] == 5
+    assert ed["p3"]["error"] == "boom"
 
 
 @pytest.mark.asyncio

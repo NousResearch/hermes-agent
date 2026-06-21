@@ -3018,6 +3018,11 @@ def set_board_owner(
     bumps ``updated_at`` (and ``user_id`` when supplied). Run inside a
     :func:`write_txn` — like :func:`_append_event`, this executes raw SQL on
     an already-open connection rather than managing its own transaction.
+
+    ``platform`` is lowercased + stripped (platform names are case-insensitive
+    enums); ``chat_id`` is stripped but NOT lowercased because chat ids are
+    case-sensitive on several platforms (e.g. Discord). Do not "fix" this
+    asymmetry without auditing every platform adapter.
     """
     now = int(time.time())
     conn.execute(

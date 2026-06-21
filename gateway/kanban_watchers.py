@@ -26,6 +26,60 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.run")
 
 
+def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
+    """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
+
+    Only one gateway process machine-wide may run the embedded kanban
+    dispatcher: concurrent dispatchers double the reclaim frequency (each
+    runs its own ``release_stale_claims`` → promote → dispatch loop), double
+    claim-attempt events in the event log, and — with ``wal_autocheckpoint=0`` —
+    concurrent manual WAL checkpoints can corrupt index pages. The
+    ``dispatch_in_gateway`` config flag is the primary control; this lock is the
+    backstop that survives config drift and same-profile restart races.
+
+    Delegates to :func:`gateway.status._try_acquire_file_lock` (``fcntl`` on
+    POSIX, ``msvcrt`` on Windows) so the guard is cross-platform.
+
+    Returns ``(handle, "held")`` on success — the caller keeps the file handle
+    for the process lifetime and **must** release it via
+    :func:`_release_singleton_lock` when done. ``(None, "contended")`` when
+    another process holds the lock (caller must NOT dispatch). ``(None,
+    "unavailable")`` when locking cannot be performed (non-POSIX filesystem
+    without flock, or the status.py helpers are unimportable) — caller falls
+    back to config-only control.
+    """
+    try:
+        from gateway.status import _try_acquire_file_lock  # deferred; same package
+    except ImportError:
+        return None, "unavailable"
+    try:
+        Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+        handle = open(str(lock_path), "a+", encoding="utf-8")
+    except OSError:
+        return None, "unavailable"
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return None, "contended"
+    return handle, "held"
+
+
+def _release_singleton_lock(handle) -> None:
+    """Release a dispatcher singleton lock acquired via :func:`_acquire_singleton_lock`."""
+    if handle is None:
+        return
+    try:
+        from gateway.status import _release_file_lock
+        _release_file_lock(handle)
+    except Exception:
+        pass
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+
+
 
 _ACTION_BY_KIND = {
     "completed": "check_children_promoted",
@@ -305,13 +359,6 @@ def compute_board_convergence(
         and new_tasks_created == 0
         and verification_failed == 0
     )
-    converged_ratio = (
-        total > 0
-        and new_tasks_created == 0
-        and blocked_ratio < blocked_ratio_threshold
-        and resolve_rate > resolve_rate_threshold
-        and verification_failed == 0
-    )
 
     return {
         "total_tasks": total,
@@ -324,7 +371,6 @@ def compute_board_convergence(
         "new_tasks_created": new_tasks_created,
         "verification_failed": verification_failed,
         "converged": converged,
-        "converged_ratio": converged_ratio,
         "non_done": non_done,
         "time_window_seconds": time_window_seconds,
     }
@@ -1404,15 +1450,31 @@ class GatewayKanbanWatchersMixin:
                     ).fetchall()
 
                 event_details: list = []
+                all_tids = [r[1] for r in recent_rows]
+                _tid_ph = ",".join("?" * len(all_tids)) or "''"
+                tinfo_rows = conn.execute(
+                    "SELECT id, title, assignee, result, consecutive_failures, "
+                    "last_failure_error, max_retries FROM tasks "
+                    f"WHERE id IN ({_tid_ph})",
+                    all_tids,
+                ).fetchall()
+                tinfo_by_id = {row[0]: row for row in tinfo_rows}
+                child_rows = conn.execute(
+                    "SELECT l.parent_id, t.id, t.status, t.title "
+                    "FROM task_links l JOIN tasks t ON t.id = l.child_id "
+                    f"WHERE l.parent_id IN ({_tid_ph})",
+                    all_tids,
+                ).fetchall()
+                children_by_parent: dict = {}
+                for crow in child_rows:
+                    children_by_parent.setdefault(crow[0], []).append({
+                        "id": crow[1], "status": crow[2], "title": crow[3],
+                    })
                 for r in recent_rows:
                     _eid, _tid, _kind, _payload = r
-                    _tinfo = conn.execute(
-                        "SELECT title, assignee, result, consecutive_failures, "
-                        "last_failure_error, max_retries FROM tasks WHERE id=?",
-                        (_tid,),
-                    ).fetchone()
-                    _title = _tinfo[0] if _tinfo else "?"
-                    _assignee = _tinfo[1] if _tinfo else "?"
+                    _tinfo = tinfo_by_id.get(_tid)
+                    _title = _tinfo[1] if _tinfo else "?"
+                    _assignee = _tinfo[2] if _tinfo else "?"
                     _summary = ""
                     _payload_obj: dict = {}
                     if _payload:
@@ -1421,20 +1483,12 @@ class GatewayKanbanWatchersMixin:
                             _summary = _payload_obj.get("summary", "") or ""
                         except Exception:
                             _summary = ""
-                    if not _summary and _tinfo and _tinfo[2]:
-                        _summary = _tinfo[2][:200]
-                    _children: list = []
-                    for crow in conn.execute(
-                        "SELECT t.id, t.status, t.title FROM task_links l "
-                        "JOIN tasks t ON t.id = l.child_id WHERE l.parent_id = ?",
-                        (_tid,),
-                    ).fetchall():
-                        _children.append({
-                            "id": crow[0], "status": crow[1], "title": crow[2],
-                        })
+                    if not _summary and _tinfo and _tinfo[3]:
+                        _summary = _tinfo[3][:200]
+                    _children = children_by_parent.get(_tid, [])
                     _error = (
                         _payload_obj.get("error")
-                        or (_tinfo[4] if _tinfo and _tinfo[4] else None)
+                        or (_tinfo[5] if _tinfo and _tinfo[5] else None)
                         or (_summary if _kind in ("gave_up", "blocked", "verification_failed") else None)
                     )
                     event_details.append({
@@ -1444,7 +1498,7 @@ class GatewayKanbanWatchersMixin:
                         "assignee": _assignee,
                         "summary": _summary,
                         "consecutive_failures": (
-                            _tinfo[3] if _tinfo else _payload_obj.get("failures")
+                            _tinfo[4] if _tinfo else _payload_obj.get("failures")
                         ),
                         "effective_limit": _payload_obj.get("effective_limit"),
                         "error": _error,
@@ -2082,12 +2136,13 @@ class GatewayKanbanWatchersMixin:
                 self._failing_task_ids(slug, threshold) if force_urgent else []
             )
 
-            # Rule 1: ready non-empty + no terminal + no force → skip.
-            if (
-                stats["ready_count"] > 0
-                and not stats["has_terminal_events"]
-                and not force_urgent
-            ):
+            # Rule 1: no terminal events + no force → skip injection.
+            # The orchestrator only needs to act when something HAPPENED
+            # (a task completed/crashed/blocked) or is stuck (force-failure).
+            # A board with running tasks but no new events is just working —
+            # injecting "Workers idle. no events" every cooldown spams the
+            # home channel with no actionable content.
+            if not stats["has_terminal_events"] and not force_urgent:
                 continue
 
             # Auto-complete parents whose children are all done.

@@ -17,7 +17,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import os
+import re
 import shlex
 import sys
 import time
@@ -27,6 +29,8 @@ from typing import Any, Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
+
+logger = logging.getLogger("hermes_cli.kanban")
 
 
 # ---------------------------------------------------------------------------
@@ -1280,14 +1284,14 @@ def _detect_delivery_channels() -> list[tuple[str, str]]:
                         cid = cid.split(":", 1)[0]
                     if not cid:
                         continue
-                    if " " in cid or "(" in cid or "Platform" in cid:
+                    if not re.match(r"^[a-zA-Z0-9_@:.\-]+$", cid):
                         continue
                     key = (plat, cid)
                     if key not in seen:
                         seen.add(key)
                         candidates.append(key)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("kanban: channel_directory.json parse failed: %s", exc)
 
     if not candidates:
         try:

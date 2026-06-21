@@ -3825,6 +3825,73 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             renderer.reset(leave_alternate_screen=False)
         except Exception:
             pass
+        def _request_clean_tui_exit(self, app, *, reason: str = "user_exit") -> None:
+        """Exit prompt_toolkit cleanly without leaving dead TUI chrome behind."""
+        self._should_exit = True
+
+        # Release any modal prompt that may be waiting on a queue.
+        try:
+            if self._secret_state:
+                self._cancel_secret_capture()
+
+            if self._sudo_state:
+                self._sudo_state["response_queue"].put("")
+                self._sudo_state = None
+
+            if self._approval_state:
+                self._approval_state["response_queue"].put("deny")
+                self._approval_state = None
+
+            if self._slash_confirm_state:
+                self._submit_slash_confirm_response("cancel")
+
+            if self._model_picker_state:
+                self._close_model_picker()
+
+            if self._clarify_state:
+                self._clarify_state["response_queue"].put(
+                    "The user exited the CLI. Stop waiting for clarification."
+                )
+                self._clarify_state = None
+                self._clarify_freetext = False
+
+        except Exception:
+            pass
+
+        # If the agent is mid-response, interrupt it before tearing down the UI.
+        try:
+            if self.agent and getattr(self, "_agent_running", False):
+                self.agent.interrupt(f"received {reason}")
+        except TypeError:
+            try:
+                self.agent.interrupt()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Clear input and attachments so nothing is left in a half-dead state.
+        try:
+            app.current_buffer.reset()
+        except Exception:
+            pass
+
+        try:
+            self._attached_images.clear()
+        except Exception:
+            pass
+
+        # Clear prompt_toolkit's visible UI before exiting.
+        try:
+            self._clear_prompt_toolkit_screen(app)
+        except Exception:
+            pass
+
+        # Exit the prompt_toolkit application.
+        try:
+            app.exit()
+        except Exception:
+            pass
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state.
@@ -12670,28 +12737,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 self._should_exit = True
                 event.app.exit()
-
-        @kb.add('c-d')
+        @kb.add('c-d', eager=True)
         def handle_ctrl_d(event):
-            """Ctrl+D: delete char under cursor (standard readline behaviour).
-            Only exit when the input is empty — same as bash/zsh. Pending
-            attached images count as input and block the EOF-exit so the
-            user doesn't lose them silently.
-            """
-            buf = event.app.current_buffer
-            if buf.text:
-                buf.delete()
-            elif self._attached_images:
-                # Empty text but pending attachments — no-op, don't exit.
-                return
-            else:
-                self._should_exit = True
-                event.app.exit()
-
-        _modal_prompt_active = Condition(
-            lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state)
-        )
-
+            """Ctrl+D: cleanly close the Hermes CLI instead of leaving a dead TUI."""
+            self._request_clean_tui_exit(event.app, reason="Ctrl+D")
         @kb.add('escape', filter=_modal_prompt_active, eager=True)
         def handle_escape_modal(event):
             """ESC cancels active secret/sudo prompts."""

@@ -134,6 +134,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "mistral": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.mistral.ai/v1",
+        base_url_env_var="MISTRAL_BASE_URL",
+    ),
     "alibaba": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
@@ -300,6 +305,10 @@ ALIASES: Dict[str, str] = {
 
     # deepseek
     "deep-seek": "deepseek",
+
+    # mistral
+    "mistral-ai": "mistral",
+    "mistralai": "mistral",
 
     # alibaba
     "dashscope": "alibaba",

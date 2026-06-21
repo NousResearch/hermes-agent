@@ -38,6 +38,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
+| **Mistral AI** | `MISTRAL_API_KEY` in `~/.hermes/.env` (provider: `mistral`; aliases: `mistral-ai`, `mistralai`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
@@ -257,6 +258,10 @@ hermes chat --provider arcee --model trinity-large-thinking
 # Use the exact model ID returned by GMI's /v1/models endpoint.
 hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Requires: GMI_API_KEY in ~/.hermes/.env
+
+# Mistral AI (Mistral, Codestral, Devstral)
+hermes chat --provider mistral --model mistral-large-latest
+# Requires: MISTRAL_API_KEY in ~/.hermes/.env
 ```
 
 Or set the provider permanently in `config.yaml`:
@@ -266,7 +271,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `MISTRAL_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -315,6 +320,29 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### Mistral AI
+
+[Mistral AI](https://mistral.ai) serves its models over an OpenAI-compatible Chat Completions API, so tool calling and streaming work through the standard provider path. Set `MISTRAL_API_KEY` in `~/.hermes/.env` and pick **Mistral AI** in `hermes model`, or pass `--provider mistral`.
+
+```bash
+hermes chat --provider mistral --model mistral-large-latest
+# Requires: MISTRAL_API_KEY in ~/.hermes/.env
+
+# Short alias
+hermes chat --provider mistralai --model codestral-latest
+```
+
+Or set it permanently in `config.yaml`, with no endpoint needed since the provider is first-class:
+```yaml
+model:
+  provider: "mistral"
+  default: "mistral-large-latest"
+```
+
+The picker reads the live catalog from [models.dev](https://models.dev) and merges in a curated fallback (`mistral-large-latest`, `mistral-medium-latest`, `mistral-small-latest`, `codestral-latest`, `devstral-medium-latest`, `ministral-8b-latest`) when the catalog is unreachable. That fallback is a deliberately small set of current general chat and coding models, not the full lineup; vision-capable and other Mistral model IDs stay reachable through the live catalog or by passing the ID directly. Use any model ID Mistral exposes; the `-latest` aliases always track the current release.
+
+This is LLM inference over Mistral's REST API; it does not use the `mistralai` Python SDK. Get your API key at [console.mistral.ai](https://console.mistral.ai/). The base URL can be overridden with `MISTRAL_BASE_URL`.
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 
@@ -1074,7 +1102,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
-| [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
+| [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | First-class provider: use `--provider mistral` with `MISTRAL_API_KEY` (see above) |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
 | [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | Enterprise OpenAI |
 | [LocalAI](https://localai.io) | `http://localhost:8080/v1` | Self-hosted, multi-model |

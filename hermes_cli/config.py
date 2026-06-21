@@ -3592,7 +3592,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "MISTRAL_API_KEY": {
-        "description": "Mistral API key for Voxtral TTS and transcription (STT)",
+        "description": "Mistral API key for LLM inference (provider: mistral), Voxtral TTS, and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
         "password": True,

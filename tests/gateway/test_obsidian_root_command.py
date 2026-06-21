@@ -48,8 +48,8 @@ def test_obsidian_browser_payload_lists_root_folders_and_note_urls(tmp_path, mon
 def test_telegram_adapter_sends_root_browser_keyboard(tmp_path, monkeypatch):
     async def scenario():
         from gateway.platforms.base import SendResult
-        import gateway.platforms.telegram as telegram_mod
-        from gateway.platforms.telegram import TelegramAdapter
+        import plugins.platforms.telegram.adapter as telegram_mod
+        from plugins.platforms.telegram.adapter import TelegramAdapter
 
         class FakeButton:
             def __init__(self, text, callback_data=None, url=None):

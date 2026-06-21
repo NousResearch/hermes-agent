@@ -1707,6 +1707,12 @@ class MCPServerTask:
             float(self._config.get("keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL)),
         )
 
+        # Entering a healthy wait state means the session is established and
+        # ready, so clear any lingering "deliberate teardown" flag from a prior
+        # cycle. New in-flight calls on this fresh session must not be treated
+        # as reconnect casualties.
+        self._reconnecting = False
+
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:

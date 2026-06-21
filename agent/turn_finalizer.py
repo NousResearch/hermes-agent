@@ -27,6 +27,28 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _sync_final_response_to_last_assistant(messages, final_response):
+    """Make the durable assistant turn match the finalized response text."""
+    if final_response is None:
+        return
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            msg["content"] = final_response
+            return
+
+
+def _extract_post_llm_response_override(hook_result):
+    """Return a post_llm_call response override, if the hook supplied one."""
+    if isinstance(hook_result, str):
+        return hook_result if hook_result else None
+    if isinstance(hook_result, dict):
+        for key in ("response", "override_response", "assistant_response"):
+            value = hook_result.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 def finalize_turn(
     agent,
     *,
@@ -135,12 +157,10 @@ def finalize_turn(
     # Clean up VM and browser for this task after conversation completes
     agent._cleanup_task_resources(effective_task_id)
 
-    # Persist session to both JSON log and SQLite only after private retry
-    # scaffolding has been removed. Otherwise a later user "continue" turn
-    # can replay assistant("(empty)") / recovery nudges and fall into the
-    # same empty-response loop again.
+    # Remove private retry scaffolding before any durable snapshot is written.
+    # Otherwise a later user "continue" turn can replay assistant("(empty)") /
+    # recovery nudges and fall into the same empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
-    agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -284,6 +304,12 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    # Keep post_llm_call observers aligned with any transform_llm_output result.
+    # Some plugins use the hook for external persistence and inspect the
+    # conversation_history snapshot, so update the in-memory assistant turn
+    # before handing it to the hook.
+    _sync_final_response_to_last_assistant(messages, final_response)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
@@ -291,7 +317,7 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
+            _post_results = _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
                 task_id=effective_task_id,
@@ -302,8 +328,21 @@ def finalize_turn(
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
+            for _hook_result in _post_results:
+                _override = _extract_post_llm_response_override(_hook_result)
+                if _override:
+                    final_response = _override
+                    _response_transformed = True
+                    break
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
+
+    # Persist the finalized assistant text, not the raw model output.  Hooks
+    # such as transform_llm_output/post_llm_call may render or override the
+    # user-visible response after the tool loop; the session log, SQLite DB,
+    # external memory sync, and next-turn replay must all see that same text.
+    _sync_final_response_to_last_assistant(messages, final_response)
+    agent._persist_session(messages, conversation_history)
 
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything

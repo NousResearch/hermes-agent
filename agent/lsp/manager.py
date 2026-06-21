@@ -42,6 +42,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
+from utils import is_truthy_value
 from agent.lsp.client import (
     DIAGNOSTICS_DOCUMENT_WAIT,
     LSPClient,
@@ -201,7 +202,7 @@ class LSPService:
         if not isinstance(lsp_cfg, dict):
             lsp_cfg = {}
 
-        enabled = bool(lsp_cfg.get("enabled", True))
+        enabled = is_truthy_value(lsp_cfg.get("enabled"), default=True)
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
         install_strategy = lsp_cfg.get("install_strategy", "auto")

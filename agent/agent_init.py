@@ -1061,7 +1061,7 @@ def init_agent(
     try:
         from hermes_cli.config import load_config as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
-        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+        agent._session_json_enabled = is_truthy_value(_sess_cfg.get("write_json_snapshots"), default=False)
     except Exception:
         pass
     # logs_dir is retained unconditionally for request_dump_*.json (debug

@@ -65,6 +65,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True),
+    CommandDef(
+        "login",
+        "Login for provider-backed Hermes sessions",
+        "Configuration",
+        args_hint="[login|refresh|status|logout] [provider flags]",
+        cli_only=True,
+        subcommands=("login", "refresh", "status", "logout"),
+    ),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",

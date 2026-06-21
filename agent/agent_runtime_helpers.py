@@ -285,6 +285,19 @@ def sanitize_tool_call_arguments(
             if not isinstance(function, dict):
                 continue
 
+            function_name = function.get("name")
+            if not isinstance(function_name, str) or not function_name.strip():
+                tool_call_id = tool_call.get("id")
+                function["name"] = "__unknown_tool__"
+                log.warning(
+                    "Missing tool_call function name repaired before request "
+                    "(session=%s, message_index=%s, tool_call_id=%s)",
+                    session_id or "-",
+                    message_index,
+                    tool_call_id or "-",
+                )
+                repaired += 1
+
             arguments = function.get("arguments")
             if arguments is None or arguments == "":
                 function["arguments"] = "{}"

@@ -149,6 +149,41 @@ def test_empty_string_arguments_treated_as_empty_object(caplog):
     assert caplog.records == []
 
 
+def test_missing_function_name_repaired_before_provider_request(caplog):
+    messages = [
+        _assistant_message(_tool_call(name="read_file", arguments='{"query":"weather"}')),
+    ]
+    del messages[0]["tool_calls"][0]["function"]["name"]
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        repaired = AIAgent._sanitize_tool_call_arguments(
+            messages,
+            logger=logging.getLogger("run_agent"),
+            session_id="session-123",
+        )
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["name"] == "__unknown_tool__"
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == '{"query":"weather"}'
+    assert any(
+        "Missing tool_call function name repaired before request" in record.message
+        and "session=session-123" in record.message
+        and "tool_call_id=call_1" in record.message
+        for record in caplog.records
+    )
+
+
+def test_blank_function_name_repaired_before_provider_request():
+    messages = [
+        _assistant_message(_tool_call(name="   ", arguments='{"query":"weather"}')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["name"] == "__unknown_tool__"
+
+
 def test_non_assistant_messages_ignored():
     messages = [
         {"role": "user", "content": "hello", "tool_calls": [_tool_call(arguments='{"bad":')]},

@@ -12,6 +12,7 @@ import logging
 import shutil
 import tempfile
 import threading
+import time
 import os
 import re
 import uuid
@@ -51,6 +52,20 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+# Heartbeat file the in-process ticker touches on every loop iteration. The
+# gateway process and the (separate) ``hermes cron status`` process share it
+# so status can tell whether the ticker THREAD is alive, not just whether the
+# gateway PROCESS exists — a ticker that dies silently inside a live gateway
+# would otherwise report healthy (#32612, #32895).
+TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
+# Last tick that completed WITHOUT raising. Distinguishing this from the plain
+# heartbeat lets status detect a ticker that is alive but failing every tick.
+TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
+# Default ticker loop interval (seconds). The single source of truth shared by
+# the in-process ticker (cron/scheduler_provider.py) and the staleness
+# threshold in `hermes cron status` (hermes_cli/cron.py), so the two never
+# drift apart.
+TICKER_INTERVAL_SECONDS = 60
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
@@ -497,6 +512,78 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         return next_run.isoformat()
 
     return None
+
+
+# =============================================================================
+# Ticker heartbeat (liveness signal for `hermes cron status`)
+# =============================================================================
+
+def _atomic_write_epoch(path: Path) -> None:
+    """Atomically write the current epoch time to ``path``.
+
+    Uses the same tmpfile + ``atomic_replace`` pattern as ``save_jobs`` so a
+    concurrent reader in another process (``hermes cron status``) never sees a
+    torn/truncated file. Best-effort: failures are swallowed by callers.
+    """
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".hb_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def record_ticker_heartbeat(success: bool = False) -> None:
+    """Record a ticker liveness signal, and optionally a successful-tick signal.
+
+    The ticker calls this once per loop iteration. ``success=True`` additionally
+    bumps the *last successful tick* marker. We track two distinct signals so
+    `hermes cron status` can tell a thread that is merely *alive and looping*
+    (heartbeat fresh, success stale) from one that is actually *firing jobs*
+    (both fresh) — a ticker stuck failing every tick would otherwise keep the
+    plain heartbeat fresh and falsely report healthy (#32612, #32895).
+
+    Best-effort: a write failure must never disrupt the tick loop.
+    """
+    try:
+        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+    except Exception:
+        pass
+    if success:
+        try:
+            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+        except Exception:
+            pass
+
+
+def _epoch_file_age(path: Path) -> Optional[float]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        return max(0.0, time.time() - float(raw))
+    except Exception:
+        return None
+
+
+def get_ticker_heartbeat_age() -> Optional[float]:
+    """Seconds since the ticker loop last iterated, or None if unknown.
+
+    None = heartbeat file missing/unreadable (older build, never ran, or a
+    torn read). Callers treat None as "cannot determine", not "dead".
+    """
+    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+
+
+def get_ticker_success_age() -> Optional[float]:
+    """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
+    return _epoch_file_age(TICKER_SUCCESS_FILE)
 
 
 # =============================================================================

@@ -2332,6 +2332,12 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
             def _on_done(_f: concurrent.futures.Future) -> None:
                 _remaining[0] -= 1
+                try:
+                    _exc = _f.exception()
+                    if _exc is not None:
+                        logger.error("Cron job future failed in async mode: %s", _exc, exc_info=(type(_exc), _exc, _exc.__traceback__))
+                except Exception:
+                    pass
                 if _remaining[0] <= 0:
                     _sweep_mcp_orphans()
 

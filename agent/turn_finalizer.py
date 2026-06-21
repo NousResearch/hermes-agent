@@ -128,19 +128,53 @@ def finalize_turn(
         and not failed
     )
 
+    # ── Guarded cleanup chain ────────────────────────────────────────────
+    # Each of the three steps below is wrapped independently so that a
+    # failure in one (disk-full, dead Docker socket, locked SQLite) cannot
+    # skip the others or — critically — propagate out of run_conversation
+    # and discard the model's final_response (issue #8049).
+    #
+    # Failures are logged at ERROR with a full traceback and collected in
+    # ``_cleanup_errors``; the partial response is always returned to the
+    # caller.  Clean turns never set ``cleanup_errors`` on the result dict.
+    _cleanup_errors: list[str] = []
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
-    agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
+    try:
+        agent._save_trajectory(
+            messages, _summarize_user_message_for_log(user_message), completed
+        )
+    except Exception as _save_err:
+        logger.error(
+            "finalize_turn: _save_trajectory raised — response preserved",
+            exc_info=True,
+        )
+        _cleanup_errors.append(f"_save_trajectory: {_save_err}")
 
-    # Clean up VM and browser for this task after conversation completes
-    agent._cleanup_task_resources(effective_task_id)
+    # Clean up VM and browser for this task after conversation completes.
+    try:
+        agent._cleanup_task_resources(effective_task_id)
+    except Exception as _cleanup_err:
+        logger.error(
+            "finalize_turn: _cleanup_task_resources raised — response preserved",
+            exc_info=True,
+        )
+        _cleanup_errors.append(f"_cleanup_task_resources: {_cleanup_err}")
 
     # Persist session to both JSON log and SQLite only after private retry
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
-    agent._drop_trailing_empty_response_scaffolding(messages)
-    agent._persist_session(messages, conversation_history)
+    try:
+        agent._drop_trailing_empty_response_scaffolding(messages)
+        agent._persist_session(messages, conversation_history)
+    except Exception as _persist_err:
+        logger.error(
+            "finalize_turn: _persist_session raised — response preserved",
+            exc_info=True,
+        )
+        _cleanup_errors.append(f"_persist_session: {_persist_err}")
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -354,6 +388,10 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    # Surface cleanup failures so callers (tests, batch runner) can inspect
+    # them without having to dig through logs.  Clean turns never get this key.
+    if _cleanup_errors:
+        result["cleanup_errors"] = _cleanup_errors
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

@@ -1006,13 +1006,25 @@ def _rule_run_status_desync(task, events, runs, now, cfg) -> list[Diagnostic]:
     if not runs:
         return []
     # Newest run = highest id (runs are created monotonically per task).
-    newest = max(runs, key=lambda r: int(_task_field(r, "id", 0) or 0))
+    # ``id`` is normally an int, but a malformed row (string id, unexpected
+    # shape) must not raise ValueError here — ``compute_task_diagnostics``
+    # swallows rule exceptions, so an unguarded ``int()`` would silently drop
+    # the entire diagnostic for this rule. ``_positive_int`` coerces safely
+    # and falls back to 0 for the odd row instead of crashing the whole rule.
+    newest = max(runs, key=lambda r: _positive_int(_task_field(r, "id", 0), 0))
     if _task_field(newest, "status") != "running":
         return []
     if _task_field(newest, "ended_at") is not None:
         return []
 
     run_id = _task_field(newest, "id")
+    # Normalize the id once so the ``run_id`` field, ``data["run_id"]`` and the
+    # detail text all expose the same int contract to consumers (UI/CLI). A
+    # non-numeric id falls back to None rather than raising.
+    run_id_int = _positive_int(run_id, 0) if run_id is not None else None
+    if run_id_int == 0:
+        run_id_int = None
+    run_id_display = run_id_int if run_id_int is not None else run_id
     run_profile = _task_field(newest, "profile")
     assignee = _task_field(task, "assignee") or ""
     # Note: a server-side ``reclaim`` action is intentionally NOT offered
@@ -1034,20 +1046,21 @@ def _rule_run_status_desync(task, events, runs, now, cfg) -> list[Diagnostic]:
         severity="error",
         title="Board lane out of sync with active run",
         detail=(
-            f"This task is in the Ready lane but run #{run_id} is still "
-            f"flagged running (no end time recorded). The board derives "
-            f"lane placement from the task status, so active work is "
-            f"showing as available. Reclaim the task to close the stale "
-            f"run and resync, or confirm the worker for run #{run_id} "
-            f"has actually stopped."
+            f"This task is in the Ready lane but run #{run_id_display} is "
+            f"still flagged running (no end time recorded). The board derives "
+            f"lane placement from the task status, so active work is showing "
+            f"as available. Inspect the open run and confirm the worker for "
+            f"run #{run_id_display} has actually stopped, then re-dispatch the "
+            f"task or close the stale run via admin tooling. (A reclaim won't "
+            f"help here — that path only acts on tasks already in 'running'.)"
         ),
         actions=actions,
         first_seen_at=now,
         last_seen_at=now,
         count=1,
-        run_id=int(run_id) if run_id is not None else None,
+        run_id=run_id_int,
         data={
-            "run_id": run_id,
+            "run_id": run_id_int,
             "run_profile": run_profile,
             "assignee": assignee,
         },

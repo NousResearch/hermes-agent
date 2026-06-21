@@ -820,3 +820,38 @@ def test_run_status_desync_silent_when_not_ready():
     runs = [_open_run(run_id=5, status="running", ended_at=None)]
     diags = kd.compute_task_diagnostics(task, [], runs)
     assert [d for d in diags if d.kind == "run_status_desync"] == []
+
+
+def test_run_status_desync_survives_non_numeric_run_id():
+    """A malformed run row with a non-numeric id must not crash the rule.
+
+    ``compute_task_diagnostics`` swallows rule exceptions, so an unguarded
+    ``int()`` on the id (in the newest-run ``max`` key) would silently drop
+    the entire diagnostic. The safe coercion must skip the bad id and still
+    surface the desync from the valid newest run.
+    """
+    task = _task(status="ready", assignee="x", claim_lock=None)
+    runs = [
+        _open_run(run_id="not-an-int", status="running", ended_at=None),
+        _open_run(run_id=9, status="running", ended_at=None),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    desync = [d for d in diags if d.kind == "run_status_desync"]
+    assert len(desync) == 1
+    d = desync[0]
+    # run_id is normalized to the same int contract everywhere.
+    assert d.run_id == 9
+    assert d.data["run_id"] == 9
+    assert "#9" in d.detail
+
+
+def test_run_status_desync_detail_does_not_misdirect_to_reclaim():
+    """The detail must not tell operators to 'Reclaim the task' — reclaim
+    only acts on tasks already in 'running' and cannot resolve a ready-lane
+    desync (#36910 Copilot review)."""
+    task = _task(status="ready", assignee="x", claim_lock=None)
+    runs = [_open_run(run_id=11, status="running", ended_at=None)]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    desync = [d for d in diags if d.kind == "run_status_desync"]
+    assert len(desync) == 1
+    assert "Reclaim the task to close the stale run" not in desync[0].detail

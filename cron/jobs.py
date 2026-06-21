@@ -291,7 +291,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     Parse schedule string into structured format.
     
     Returns dict with:
-        - kind: "once" | "interval" | "cron"
+        - kind: "once" | "interval" | "cron" | "multi_cron"
         - For "once": "run_at" (ISO timestamp)
         - For "interval": "minutes" (int)
         - For "cron": "expr" (cron expression)
@@ -302,6 +302,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         "every 30m"        → recurring every 30 minutes
         "every 2h"         → recurring every 2 hours
         "0 9 * * *"        → cron expression
+        "40 8 * * *; 0 19 * * *" → multiple cron expressions for one job
         "2026-02-03T14:00" → once at timestamp
     """
     schedule = schedule.strip()
@@ -317,6 +318,30 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "minutes": minutes,
             "display": f"every {minutes}m"
         }
+
+    # Multiple cron expressions separated by semicolon or newline.  This keeps a
+    # single logical job when the desired exact times cannot be represented by
+    # one cron expression, e.g. 08:40 and 19:00.
+    cron_candidates = [part.strip() for part in re.split(r"[;\n]+", schedule) if part.strip()]
+    if len(cron_candidates) > 1:
+        if not HAS_CRONITER:
+            raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
+        expressions: list[str] = []
+        for expr in cron_candidates:
+            parts = expr.split()
+            if len(parts) < 5 or not all(re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]):
+                break
+            try:
+                croniter(expr)
+            except Exception as e:
+                raise ValueError(f"Invalid cron expression '{expr}': {e}")
+            expressions.append(expr)
+        if len(expressions) == len(cron_candidates):
+            return {
+                "kind": "multi_cron",
+                "exprs": expressions,
+                "display": "; ".join(expressions),
+            }
     
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]
@@ -450,7 +475,45 @@ def _compute_grace_seconds(schedule: dict) -> int:
         except Exception:
             pass
 
+    if kind == "multi_cron" and HAS_CRONITER:
+        try:
+            now = _hermes_now()
+            next_runs: list[datetime] = []
+            for expr in schedule.get("exprs") or []:
+                cron = croniter(expr, now)
+                next_runs.append(cron.get_next(datetime))
+                next_runs.append(cron.get_next(datetime))
+            next_runs = sorted(next_runs)
+            if len(next_runs) >= 2:
+                period_seconds = int((next_runs[1] - next_runs[0]).total_seconds())
+                grace = period_seconds // 2
+                return max(MIN_GRACE, min(grace, MAX_GRACE))
+        except Exception:
+            pass
+
     return MIN_GRACE
+
+
+def _compute_next_multi_cron_run(schedule: Dict[str, Any], base_time: datetime) -> Optional[str]:
+    if not HAS_CRONITER:
+        logger.warning(
+            "Cannot compute next run for multi-cron schedule %r: 'croniter' is "
+            "not installed. croniter is a core dependency as of v0.9.x; "
+            "reinstall hermes-agent or run 'pip install croniter' in your "
+            "runtime env.",
+            schedule.get("exprs"),
+        )
+        return None
+
+    next_runs: list[datetime] = []
+    for expr in schedule.get("exprs") or []:
+        try:
+            next_runs.append(croniter(expr, base_time).get_next(datetime))
+        except Exception as exc:
+            logger.warning("Cannot compute next run for cron expression %r: %s", expr, exc)
+    if not next_runs:
+        return None
+    return min(next_runs).isoformat()
 
 
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
@@ -495,6 +558,12 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
+
+    elif schedule["kind"] == "multi_cron":
+        base_time = now
+        if last_run_at:
+            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+        return _compute_next_multi_cron_run(schedule, base_time)
 
     return None
 
@@ -1004,7 +1073,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
                     kind = job.get("schedule", {}).get("kind")
-                    if kind in {"cron", "interval"}:
+                    if kind in {"cron", "interval", "multi_cron"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
                             job["last_error"] = (
@@ -1048,7 +1117,7 @@ def advance_next_run(job_id: str) -> bool:
         for job in jobs:
             if job["id"] == job_id:
                 kind = job.get("schedule", {}).get("kind")
-                if kind not in {"cron", "interval"}:
+                if kind not in {"cron", "interval", "multi_cron"}:
                     return False
                 now = _hermes_now().isoformat()
                 new_next = compute_next_run(job["schedule"], now)
@@ -1167,7 +1236,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # next_run_at unset.  Without this branch, such jobs are
             # silently skipped forever; recompute next_run_at from the
             # schedule so they pick up at their next scheduled tick.
-            if not recovered_next and kind in {"cron", "interval"}:
+            if not recovered_next and kind in {"cron", "interval", "multi_cron"}:
                 recovered_next = compute_next_run(schedule, now.isoformat())
                 if recovered_next:
                     recovery_kind = kind
@@ -1198,7 +1267,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
-            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+            if kind in {"cron", "interval", "multi_cron"} and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())

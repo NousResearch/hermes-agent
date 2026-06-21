@@ -10,7 +10,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 
@@ -75,6 +75,48 @@ def _safe_which(cmd: str) -> str | None:
         return shutil.which(cmd)
     except Exception:
         return None
+
+
+def _config_string_set(section: str, key: str) -> set[str]:
+    """Return a lowercase set from a config list/string at section.key.
+
+    Doctor uses this for operator-declared optional integrations that should
+    be skipped rather than warned about (for example machines that will never
+    use Discord, Home Assistant, or MiniMax OAuth). Unknown/missing config is
+    intentionally a no-op so doctor remains backwards compatible.
+    """
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        return set()
+    raw_section = cfg.get(section) if isinstance(cfg, dict) else {}
+    if not isinstance(raw_section, dict):
+        return set()
+    raw_value = raw_section.get(key, [])
+    if isinstance(raw_value, str):
+        values = [raw_value]
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = list(raw_value)
+    else:
+        return set()
+    return {str(v).strip().lower() for v in values if str(v).strip()}
+
+
+def _doctor_ignored_auth_providers() -> set[str]:
+    return _config_string_set("doctor", "ignore_auth_providers")
+
+
+def _doctor_ignored_toolsets() -> set[str]:
+    return _config_string_set("doctor", "ignore_toolsets")
+
+
+def _is_doctor_auth_ignored(*names: str) -> bool:
+    ignored = _doctor_ignored_auth_providers()
+    return any(str(name).strip().lower() in ignored for name in names)
+
+
+def _is_doctor_tool_ignored(name: str) -> bool:
+    return str(name or "").strip().lower() in _doctor_ignored_toolsets()
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -144,6 +186,8 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
         if name == "honcho" and _honcho_is_configured_for_doctor():
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
+            continue
+        if _is_doctor_tool_ignored(str(name or "")):
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
@@ -1074,11 +1118,14 @@ def run_doctor(args):
             get_minimax_oauth_auth_status,
         )
 
-        nous_status = get_nous_auth_status()
-        if nous_status.get("logged_in"):
-            check_ok("Nous Portal auth", "(logged in)")
+        if _is_doctor_auth_ignored("nous", "nous portal", "nous portal auth"):
+            check_info("Nous Portal auth skipped (disabled in doctor.ignore_auth_providers)")
         else:
-            check_warn("Nous Portal auth", "(not logged in)")
+            nous_status = get_nous_auth_status()
+            if nous_status.get("logged_in"):
+                check_ok("Nous Portal auth", "(logged in)")
+            else:
+                check_warn("Nous Portal auth", "(not logged in)")
 
         codex_status = get_codex_auth_status()
         if codex_status.get("logged_in"):
@@ -1098,12 +1145,15 @@ def run_doctor(args):
                     "from an existing Codex CLI login)"
                 )
 
-        minimax_status = get_minimax_oauth_auth_status()
-        if minimax_status.get("logged_in"):
-            region = minimax_status.get("region", "global")
-            check_ok("MiniMax OAuth", f"(logged in, region={region})")
+        if _is_doctor_auth_ignored("minimax", "minimax oauth"):
+            check_info("MiniMax OAuth skipped (disabled in doctor.ignore_auth_providers)")
         else:
-            check_warn("MiniMax OAuth", "(not logged in)")
+            minimax_status = get_minimax_oauth_auth_status()
+            if minimax_status.get("logged_in"):
+                region = minimax_status.get("region", "global")
+                check_ok("MiniMax OAuth", f"(logged in, region={region})")
+            else:
+                check_warn("MiniMax OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 

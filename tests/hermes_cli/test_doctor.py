@@ -162,6 +162,36 @@ class TestDoctorToolAvailabilityOverrides:
         assert available == []
         assert unavailable == [kanban_entry]
 
+    def test_drops_operator_ignored_toolsets_from_doctor_warnings(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor,
+            "load_config",
+            lambda: {"doctor": {"ignore_toolsets": ["discord", "browser-cdp"]}},
+        )
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [
+                {"name": "discord", "env_vars": ["DISCORD_BOT_TOKEN"]},
+                {"name": "browser-cdp", "env_vars": []},
+                {"name": "spotify", "env_vars": []},
+            ],
+        )
+
+        assert available == []
+        assert unavailable == [{"name": "spotify", "env_vars": []}]
+
+    def test_doctor_auth_ignore_matching_supports_aliases(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor,
+            "load_config",
+            lambda: {"doctor": {"ignore_auth_providers": ["nous", "minimax oauth"]}},
+        )
+
+        assert doctor._is_doctor_auth_ignored("Nous Portal", "nous")
+        assert doctor._is_doctor_auth_ignored("minimax oauth")
+        assert not doctor._is_doctor_auth_ignored("google gemini")
+
     def test_kanban_doctor_detail_explains_worker_gate(self, monkeypatch):
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 

@@ -19,8 +19,9 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
-    get_all_skills_dirs,
+    external_skills_precede_local,
     get_disabled_skill_names,
+    get_external_skills_dirs,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_environment,
@@ -1267,7 +1268,8 @@ def build_skills_system_prompt(
     descriptions are dropped, and a footer note explains the demotion.
     """
     skills_dir = get_skills_dir()
-    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+    external_dirs = get_external_skills_dirs()
+    external_precedence = external_skills_precede_local()
 
     if not skills_dir.exists() and not external_dirs:
         return ""
@@ -1285,6 +1287,7 @@ def build_skills_system_prompt(
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
+        external_precedence,
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
@@ -1298,7 +1301,10 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    # Only use the local-dir snapshot when local skills have precedence.  If a
+    # canonical external dir is configured to shadow local copies, scan in
+    # effective resolution order so the prompt index and skill_view agree.
+    snapshot = None if external_precedence else _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
@@ -1330,26 +1336,41 @@ def build_skills_system_prompt(
             for k, v in (snapshot.get("category_descriptions") or {}).items()
         }
     else:
-        # Cold path: full filesystem scan + write snapshot for next time
+        # Cold path: full filesystem scan + write snapshot for next time.  In
+        # external-precedence mode, scan external dirs first and skip duplicate
+        # local names so canonical/team skills appear in the mandatory index.
         skill_entries: list[dict] = []
-        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
-            skill_entries.append(entry)
-            if not is_compatible:
+        seen_frontmatter_names: set[str] = set()
+        local_scan_dirs = [skills_dir]
+        if external_precedence:
+            local_scan_dirs = [*external_dirs, skills_dir]
+
+        for scan_dir in local_scan_dirs:
+            if not scan_dir.exists():
                 continue
-            skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
-                continue
-            if not _skill_should_show(
-                extract_skill_conditions(frontmatter),
-                available_tools,
-                available_toolsets,
-            ):
-                continue
-            skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
-            )
+            for skill_file in iter_skill_index_files(scan_dir, "SKILL.md"):
+                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                entry = _build_snapshot_entry(skill_file, scan_dir, frontmatter, desc)
+                if scan_dir == skills_dir:
+                    skill_entries.append(entry)
+                if not is_compatible:
+                    continue
+                skill_name = entry["skill_name"]
+                frontmatter_name = entry["frontmatter_name"]
+                if frontmatter_name in seen_frontmatter_names:
+                    continue
+                if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if not _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                ):
+                    continue
+                seen_frontmatter_names.add(frontmatter_name)
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (frontmatter_name, entry["description"])
+                )
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1365,12 +1386,13 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read skill description %s: %s", desc_file, e)
 
-        _write_skills_snapshot(
-            skills_dir,
-            _build_skills_manifest(skills_dir),
-            skill_entries,
-            category_descriptions,
-        )
+        if not external_precedence:
+            _write_skills_snapshot(
+                skills_dir,
+                _build_skills_manifest(skills_dir),
+                skill_entries,
+                category_descriptions,
+            )
 
     # ── External skill directories ─────────────────────────────────────
     # Scan external dirs directly (no snapshot caching — they're read-only
@@ -1381,7 +1403,7 @@ def build_skills_system_prompt(
         for name, _desc in cat_skills:
             seen_skill_names.add(name)
 
-    for ext_dir in external_dirs:
+    for ext_dir in ([] if external_precedence else external_dirs):
         if not ext_dir.exists():
             continue
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):

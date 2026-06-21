@@ -618,11 +618,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan in effective resolution order.  Local wins by default;
+    # skills.external_dirs_precedence lets canonical external mirrors win.
+    from agent.skill_utils import external_skills_precede_local
+
+    external_dirs = get_external_skills_dirs()
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    if external_skills_precede_local():
+        dirs_to_scan.extend(external_dirs)
+        if SKILLS_DIR.exists():
+            dirs_to_scan.append(SKILLS_DIR)
+    else:
+        if SKILLS_DIR.exists():
+            dirs_to_scan.append(SKILLS_DIR)
+        dirs_to_scan.extend(external_dirs)
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -964,7 +973,10 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import (
+            external_skills_precede_local,
+            get_external_skills_dirs,
+        )
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -980,11 +992,19 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-        # Build list of all skill directories to search
+        # Build list of all skill directories to search in effective
+        # resolution order.  Local wins by default; canonical external mirrors
+        # can opt into shadowing local copies via config.
+        external_dirs = get_external_skills_dirs()
         all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
-        all_dirs.extend(get_external_skills_dirs())
+        if external_skills_precede_local():
+            all_dirs.extend(external_dirs)
+            if SKILLS_DIR.exists():
+                all_dirs.append(SKILLS_DIR)
+        else:
+            if SKILLS_DIR.exists():
+                all_dirs.append(SKILLS_DIR)
+            all_dirs.extend(external_dirs)
 
         if not all_dirs:
             return json.dumps(
@@ -1085,23 +1105,26 @@ def skill_view(
                 "Skill name collision for '%s': %d candidates — %s",
                 name, len(candidates), "; ".join(paths),
             )
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        f"Ambiguous skill name '{name}': {len(candidates)} skills "
-                        "match across your local skills dir and external_dirs. "
-                        "Refusing to guess — load one explicitly by its categorized path."
-                    ),
-                    "matches": paths,
-                    "hint": (
-                        "Pass the full relative path instead of the bare name "
-                        "(e.g., 'category/skill-name'), or rename one of the "
-                        "colliding skills so each name is unique."
-                    ),
-                },
-                ensure_ascii=False,
-            )
+            if not external_skills_precede_local():
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Ambiguous skill name '{name}': {len(candidates)} skills "
+                            "match across your local skills dir and external_dirs. "
+                            "Refusing to guess — load one explicitly by its categorized path."
+                        ),
+                        "matches": paths,
+                        "hint": (
+                            "Pass the full relative path instead of the bare name "
+                            "(e.g., 'category/skill-name'), or rename one of the "
+                            "colliding skills so each name is unique. Set "
+                            "skills.external_dirs_precedence=true only when a "
+                            "configured external dir is the canonical source."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
 
         if candidates:
             skill_dir, skill_md = candidates[0]

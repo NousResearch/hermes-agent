@@ -1977,6 +1977,10 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # When true, configured external_dirs are searched before the editable
+        # local ~/.hermes/skills dir.  Use this for read-only canonical/team
+        # skill mirrors that should override stale local copies.
+        "external_dirs_precedence": False,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

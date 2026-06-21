@@ -102,6 +102,16 @@ class TestGetAllSkillsDirs:
         assert result[0] == hermes_home / "skills"
         assert result[1] == external_skills_dir.resolve()
 
+    def test_external_precedence_puts_external_first(self, hermes_home, external_skills_dir):
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n  external_dirs_precedence: true\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_all_skills_dirs
+            result = get_all_skills_dirs()
+        assert result[0] == external_skills_dir.resolve()
+        assert result[1] == hermes_home / "skills"
+
 
 class TestExternalSkillsInFindAll:
     def test_external_skills_found(self, hermes_home, external_skills_dir):
@@ -139,6 +149,27 @@ class TestExternalSkillsInFindAll:
         assert len(matching) == 1
         assert matching[0]["description"] == "Local version"
 
+    def test_external_precedence_overrides_local(self, hermes_home, external_skills_dir):
+        """Configured canonical external skill dirs can shadow local copies."""
+        local_skills = hermes_home / "skills"
+        local_skill = local_skills / "my-external-skill"
+        local_skill.mkdir(parents=True)
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n  external_dirs_precedence: true\n"
+        )
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from tools.skills_tool import _find_all_skills
+            skills = _find_all_skills()
+        matching = [s for s in skills if s["name"] == "my-external-skill"]
+        assert len(matching) == 1
+        assert matching[0]["description"] == "A skill from an external directory"
+
 
 class TestExternalSkillView:
     def test_skill_view_finds_external(self, hermes_home, external_skills_dir):
@@ -154,3 +185,47 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+    def test_skill_view_uses_external_when_precedence_enabled(self, hermes_home, external_skills_dir):
+        local_skills = hermes_home / "skills"
+        local_skill = local_skills / "my-external-skill"
+        local_skill.mkdir(parents=True)
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal only.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n  external_dirs_precedence: true\n"
+        )
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from tools.skills_tool import skill_view
+            result = json.loads(skill_view("my-external-skill"))
+        assert result["success"] is True
+        assert "external things" in result["content"]
+        assert "Local only" not in result["content"]
+
+    def test_prompt_index_uses_external_when_precedence_enabled(self, hermes_home, external_skills_dir):
+        local_skills = hermes_home / "skills"
+        local_skill = local_skills / "my-external-skill"
+        local_skill.mkdir(parents=True)
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal only.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n  external_dirs_precedence: true\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.prompt_builder import (
+                build_skills_system_prompt,
+                clear_skills_system_prompt_cache,
+            )
+            from agent.skill_utils import _external_dirs_cache_clear
+
+            _external_dirs_cache_clear()
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+            prompt = build_skills_system_prompt()
+
+        assert "my-external-skill: A skill from an external directory" in prompt
+        assert "my-external-skill: Local version" not in prompt

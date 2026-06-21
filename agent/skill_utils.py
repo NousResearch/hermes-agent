@@ -496,15 +496,37 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
-def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+def external_skills_precede_local() -> bool:
+    """Return whether configured external skill dirs should shadow local skills.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    By default, the editable local ``~/.hermes/skills`` directory wins so
+    existing installations keep their historical behavior.  Operators that mount
+    a canonical read-only skill corpus (for example a shared team/MarrowKeep
+    mirror) can set ``skills.external_dirs_precedence: true`` so the prompt
+    index, ``skills_list``, and ``skill_view`` all resolve duplicates from the
+    canonical external source first.
     """
-    dirs = [get_skills_dir()]
-    dirs.extend(get_external_skills_dirs())
-    return dirs
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+    if not isinstance(skills_cfg, dict):
+        return False
+    return bool(skills_cfg.get("external_dirs_precedence", False))
+
+
+def get_all_skills_dirs() -> List[Path]:
+    """Return skill directories in effective resolution order.
+
+    Local skills normally come first for backward compatibility.  When
+    ``skills.external_dirs_precedence`` is true, external dirs come first so a
+    canonical read-only skill corpus can override stale local shims/copies.
+    The local dir is always included even if it doesn't exist yet — callers
+    handle that.
+    """
+    local = get_skills_dir()
+    external = get_external_skills_dirs()
+    if external_skills_precede_local():
+        return [*external, local]
+    return [local, *external]
 
 
 # ── Condition extraction ──────────────────────────────────────────────────

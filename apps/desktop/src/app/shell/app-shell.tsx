@@ -22,7 +22,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
-import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
+import { TITLEBAR_HEIGHT, resolveTitlebarFullscreen, titlebarControlsPosition } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 interface AppShellProps {
@@ -79,7 +79,7 @@ export function AppShell({
   const fileBrowserWidthOverride = useStore($paneWidthOverride(FILE_BROWSER_PANE_ID))
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
-  const isFullscreen = Boolean(connection?.isFullscreen) || viewportFullscreen
+  const isFullscreen = resolveTitlebarFullscreen(connection?.isFullscreen, viewportFullscreen, connection?.windowButtonPosition)
   // Every secondary window (new-session scratch, subagent watch, cmd-click
   // pop-out) is a compact side panel — none of them carry the full titlebar
   // tool cluster. Gate on isSecondaryWindow, never the narrower new-session flag.

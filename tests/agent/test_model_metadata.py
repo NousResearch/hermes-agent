@@ -519,6 +519,101 @@ class TestCodexOAuthContextLength:
 
 
 # =========================================================================
+# Local endpoint model metadata
+# =========================================================================
+
+class _EndpointMetadataResponse:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class TestLocalEndpointModelMetadata:
+    def setup_method(self):
+        import agent.model_metadata as mm
+
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+
+    def test_lmstudio_metadata_strips_api_v1_before_native_models_probe(self, monkeypatch):
+        """LM Studio configs may store the native `/api/v1` endpoint directly."""
+        import agent.model_metadata as mm
+
+        requested_urls: list[str] = []
+        expected_url = "http://127.0.0.1:1234/api/v1/models"
+
+        monkeypatch.setattr(
+            mm,
+            "detect_local_server_type",
+            lambda base_url, api_key="": "lm-studio",
+        )
+
+        def fake_get(url: str, **kwargs):
+            requested_urls.append(url)
+            if url != expected_url:
+                raise RuntimeError(f"unexpected URL: {url}")
+            return _EndpointMetadataResponse(
+                {
+                    "models": [
+                        {
+                            "key": "local-model",
+                            "name": "Local Model",
+                            "loaded_instances": [
+                                {"config": {"context_length": 8192}}
+                            ],
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+
+        metadata = mm.fetch_endpoint_model_metadata(
+            "http://127.0.0.1:1234/api/v1",
+            force_refresh=True,
+        )
+
+        assert requested_urls == [expected_url]
+        assert metadata["local-model"]["context_length"] == 8192
+
+    def test_lmstudio_metadata_keeps_plain_v1_endpoint_compatible(self, monkeypatch):
+        """Plain OpenAI-compatible `/v1` URLs should continue to resolve normally."""
+        import agent.model_metadata as mm
+
+        requested_urls: list[str] = []
+        expected_url = "http://127.0.0.1:1234/api/v1/models"
+
+        monkeypatch.setattr(
+            mm,
+            "detect_local_server_type",
+            lambda base_url, api_key="": "lm-studio",
+        )
+
+        def fake_get(url: str, **kwargs):
+            requested_urls.append(url)
+            if url != expected_url:
+                raise RuntimeError(f"unexpected URL: {url}")
+            return _EndpointMetadataResponse(
+                {"models": [{"key": "plain-v1-model", "name": "Plain V1"}]}
+            )
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+
+        metadata = mm.fetch_endpoint_model_metadata(
+            "http://127.0.0.1:1234/v1",
+            force_refresh=True,
+        )
+
+        assert requested_urls == [expected_url]
+        assert "plain-v1-model" in metadata
+
+
+# =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================
 

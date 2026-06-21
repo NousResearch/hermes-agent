@@ -538,6 +538,17 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+def _lmstudio_server_root_url(base_url: str) -> str:
+    """Return the HTTP origin/root to use for LM Studio native API probes."""
+
+    normalized = _normalize_base_url(base_url)
+    lowered = normalized.lower()
+    for suffix in ("/api/v1", "/v1"):
+        if lowered.endswith(suffix):
+            return normalized[: -len(suffix)].rstrip("/")
+    return normalized.rstrip("/")
+
+
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
@@ -546,9 +557,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     import httpx
 
     normalized = _normalize_base_url(base_url)
-    server_url = normalized
-    if server_url.endswith("/v1"):
-        server_url = server_url[:-3]
+    server_url = _lmstudio_server_root_url(normalized)
 
     headers = _auth_headers(api_key)
 
@@ -774,7 +783,7 @@ def fetch_endpoint_model_metadata(
     if is_local_endpoint(normalized):
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
+                server_url = _lmstudio_server_root_url(normalized)
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,

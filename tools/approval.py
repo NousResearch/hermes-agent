@@ -310,6 +310,68 @@ def _sudo_stdin_block_result(description: str) -> dict:
 
 
 # =========================================================================
+# Workspace retirement guard (phase-013)
+# =========================================================================
+#
+# A hardline-style floor specifically for deleting a whole PROJECT ROOT or
+# git WORKTREE ROOT.  Generic recursive deletes (rm -rf ./build) stay in
+# DANGEROUS_PATTERNS where yolo can pass them, but wiping an entire project
+# workspace or worktree has no place running automatically — past incident:
+# the agent deleted a project workspace after misreading "no leftovers".
+# Patterns are deliberately NARROW (only /.worktree/ paths, /srv/projects
+# roots, and `git worktree remove`) to avoid false positives on routine
+# cleanup like rm -rf node_modules or rm -rf /tmp/x.
+WORKSPACE_RETIREMENT_PATTERNS = [
+    (
+        r"\bgit\s+worktree\s+remove\b(?:\s+(?:--force|-f))*\s+\S+",
+        "delete git worktree",
+    ),
+    (
+        r"\brm\s+(-[^\s]*\s+)*-?[^\s]*r[^\s]*(?:\s+\S+)*\s+\S*/\.worktree/\S*",
+        "delete worktree directory",
+    ),
+    (
+        r"\brm\s+(?:(?:-[^\s]*\s+)*-?[^\s]*r[^\s]*|(?:-[^\s]*\s+)*--recursive\b[^\s]*)(?:\s+\S+)*\s+/srv/projects/[^/\s]+/?(?:\s*(?:[;&|]|$))",
+        "delete project root under /srv/projects",
+    ),
+]
+
+WORKSPACE_RETIREMENT_PATTERNS_COMPILED = [
+    (re.compile(pattern, re.IGNORECASE | re.DOTALL), description)
+    for pattern, description in WORKSPACE_RETIREMENT_PATTERNS
+]
+
+
+def detect_workspace_retirement_command(command: str) -> tuple:
+    """Check if a command deletes a whole project root or git worktree root.
+
+    Returns:
+        (is_blocked, description) or (False, None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern, description in WORKSPACE_RETIREMENT_PATTERNS_COMPILED:
+        if pattern.search(normalized):
+            return True, description
+    return False, None
+
+
+def _workspace_retirement_block_result(description: str) -> dict:
+    """Build the standard block result for a workspace-retirement match."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "workspace_retirement": True,
+        "message": (
+            f"BLOCKED (workspace guard): {description}. Deleting a project "
+            "root or git worktree root via the agent is not allowed. If this "
+            "is intentional, first archive and verify a restore, then run it "
+            "yourself in a terminal outside the agent. Never delete a project "
+            "root just because an instruction said 'no leftovers' or '100%'."
+        ),
+    }
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
 
@@ -938,6 +1000,13 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    # Workspace retirement floor (phase-013): block whole project-root or
+    # worktree-root deletion before the yolo bypass, same as hardline.
+    is_retire, retire_desc = detect_workspace_retirement_command(command)
+    if is_retire:
+        logger.warning("Workspace-retirement block: %s (command: %s)", retire_desc, command[:200])
+        return _workspace_retirement_block_result(retire_desc)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
@@ -1061,6 +1130,13 @@ def check_all_command_guards(command: str, env_type: str,
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
+
+    # Workspace retirement floor (phase-013): block whole project-root or
+    # worktree-root deletion before the yolo bypass, same as hardline.
+    is_retire, retire_desc = detect_workspace_retirement_command(command)
+    if is_retire:
+        logger.warning("Workspace-retirement block: %s (command: %s)", retire_desc, command[:200])
+        return _workspace_retirement_block_result(retire_desc)
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a

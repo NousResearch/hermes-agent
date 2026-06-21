@@ -320,6 +320,18 @@ class TestThinkingCallback:
         )
         assert len(calls) == 0
 
+    def test_thinking_callback_keeps_stripped_preview(self):
+        """Subagent thinking relay should still expose the stripped preview."""
+        calls = []
+        self._simulate_thinking_callback(
+            "<think>internal reasoning</think> visible summary",
+            lambda name, preview=None: calls.append((name, preview))
+        )
+        assert len(calls) == 1
+        assert calls[0][0] == "_thinking"
+        assert "internal reasoning" in calls[0][1]
+        assert "visible summary" in calls[0][1]
+
 
 # =========================================================================
 # Gateway batch flush tests

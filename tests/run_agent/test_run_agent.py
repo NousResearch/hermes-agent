@@ -2039,6 +2039,30 @@ class TestBuildAssistantMessage:
         assert result["content"] == ""
 
 
+class TestReasoningAvailableProgress:
+    def test_emits_only_extracted_reasoning(self, agent):
+        calls = []
+        agent.tool_progress_callback = lambda *args, **kwargs: calls.append(args)
+
+        msg = _mock_assistant_msg(
+            content="<think>internal analysis</think>The actual answer."
+        )
+
+        agent._fire_reasoning_available(msg)
+
+        assert calls == [("reasoning.available", "_thinking", "internal analysis", None)]
+
+    def test_skips_plain_answer_text(self, agent):
+        calls = []
+        agent.tool_progress_callback = lambda *args, **kwargs: calls.append(args)
+
+        msg = _mock_assistant_msg(content="The actual answer only.")
+
+        agent._fire_reasoning_available(msg)
+
+        assert calls == []
+
+
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
         agent.tools = []

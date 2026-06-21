@@ -4272,6 +4272,26 @@ class AIAgent:
             except Exception:
                 pass
 
+    def _fire_reasoning_available(self, assistant_message) -> None:
+        """Fire structured reasoning progress if registered.
+
+        This reuses the existing reasoning extractor so the callback only
+        receives tagged/structured reasoning, never ordinary assistant reply
+        text.
+        """
+        cb = self.tool_progress_callback
+        if cb is None:
+            return
+
+        reasoning_text = self._extract_reasoning(assistant_message)
+        if not reasoning_text:
+            return
+
+        try:
+            cb("reasoning.available", "_thinking", reasoning_text[:500], None)
+        except Exception:
+            pass
+
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
 

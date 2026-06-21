@@ -3689,11 +3689,8 @@ def run_conversation(
                         agent.tool_progress_callback("_thinking", first_line)
                     except Exception:
                         pass
-                elif _think_text:
-                    try:
-                        agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
-                    except Exception:
-                        pass
+                else:
+                    agent._fire_reasoning_available(assistant_message)
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times

@@ -93,8 +93,14 @@ class PtySession:
             await ws.send_bytes(snap)
 
     def detach(self, ws) -> None:
-        if self._ws is ws:
-            self._ws = None
+        # Only the currently-attached socket may mark the session detached.
+        # A superseded socket's handler also calls detach on its way out
+        # (its ``finally`` runs after the new tab attached); flipping
+        # ``attached`` then would make a session with a live viewer look
+        # idle and reapable.
+        if self._ws is not ws:
+            return
+        self._ws = None
         self.attached = False
         self.last_detached_at = time.monotonic()
 
@@ -106,7 +112,9 @@ class PtySession:
             except (asyncio.CancelledError, Exception):
                 pass
         try:
-            self.bridge.close()
+            # bridge.close() joins the child — blocking; keep it off the
+            # event loop (#53227).
+            await asyncio.to_thread(self.bridge.close)
         except Exception:
             pass
 
@@ -138,7 +146,9 @@ class PtySessionRegistry:
             self._sessions.pop(key, None)
         if len(self._sessions) >= self._max:
             self._reap_one_idle_or_raise()
-        bridge = spawn()
+        # PTY spawn does blocking fork/exec work — keep it off the event
+        # loop (#53227).
+        bridge = await asyncio.to_thread(spawn)
         session = PtySession(key, bridge, buffer_cap=self._buffer_cap,
                              read_timeout=self._read_timeout)
         await session.start()

@@ -719,6 +719,16 @@ export function usePromptActions({
 
             if (recoveredId) {
               activeSessionIdRef.current = recoveredId
+              // The optimistic user message was staged under the now-defunct
+              // runtime id, but the gateway will stream this turn's reply tagged
+              // with recoveredId — and use-message-stream keys strictly off that
+              // id, so updateSessionState(recoveredId, …) builds a FRESH session
+              // view with no user turn. Re-key the local id and re-seed the
+              // optimistic message under recoveredId so the prompt stays in the
+              // live transcript (seedOptimistic is idempotent), and so the
+              // catch-block error fallback below targets the recovered session.
+              sessionId = recoveredId
+              seedOptimistic(recoveredId)
               await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
             } else {
               submitErr = firstErr

@@ -1320,6 +1320,92 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
+                                    session_name: str) -> bool:
+    """Confirm a live PID is genuinely *this* session's agent-browser daemon.
+
+    The orphan reaper scans world-writable, predictably-named temp paths
+    (``/tmp/agent-browser-h_*`` etc.) and reads a daemon PID from a ``.pid``
+    file we do not write ourselves — the agent-browser daemon writes it.  A
+    same-user actor can therefore plant a fake socket dir whose ``.pid`` points
+    at an arbitrary victim process, or a recycled PID can land on an unrelated
+    process after the real daemon exits.  Either way, terminating that PID
+    (a *tree* kill via ``_terminate_host_pid``) is an arbitrary-process DoS.
+
+    Before reaping we require, via ``psutil`` (a hard dependency, cross-platform
+    for same-user processes — the only processes the reaper can signal):
+
+      1. **Identity** — the process looks like agent-browser: ``agent-browser``
+         appears in its name or command line.
+      2. **Binding** — the process is bound to *this* session's socket dir: the
+         socket dir path (or its basename) appears in the command line, or in
+         ``AGENT_BROWSER_SOCKET_DIR`` in the process environment.
+
+    Requirement (2) is the real spoof defense: a planted process pointing at a
+    victim PID will not have the victim's cmdline/environ referencing our
+    socket dir.  An attacker would need a process that genuinely embeds this
+    exact session path — i.e. a real daemon they already own and could signal
+    directly.  Fail-closed: any ambiguity (unreadable cmdline, no match) means
+    we refuse to reap and leave the process and its socket dir alone.
+
+    Returns ``True`` only when both checks pass.
+    """
+    try:
+        import psutil
+    except ImportError:  # psutil is a hard dep; defensive only
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "psutil unavailable for identity verification",
+            daemon_pid, session_name)
+        return False
+
+    try:
+        proc = psutil.Process(daemon_pid)
+        name = (proc.name() or "").lower()
+        cmdline = " ".join(proc.cmdline() or []).lower()
+    except psutil.NoSuchProcess:
+        # Vanished between the liveness check and now — nothing to reap.
+        return False
+    except (psutil.AccessDenied, OSError) as exc:
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "could not read process identity (%s)",
+            daemon_pid, session_name, exc)
+        return False
+
+    looks_like_browser = "agent-browser" in name or "agent-browser" in cmdline
+    if not looks_like_browser:
+        logger.warning(
+            "Refusing to reap PID %d (session %s): not an agent-browser "
+            "process (name=%r)", daemon_pid, session_name, name)
+        return False
+
+    # Binding check: the live process must reference *this* socket dir.
+    socket_dir_l = socket_dir.lower()
+    socket_base_l = os.path.basename(socket_dir).lower()
+    bound = socket_dir_l in cmdline or (
+        socket_base_l and socket_base_l in cmdline)
+    if not bound:
+        try:
+            env_dir = (proc.environ() or {}).get(
+                "AGENT_BROWSER_SOCKET_DIR", "")
+            bound = bool(env_dir) and os.path.normpath(env_dir) == \
+                os.path.normpath(socket_dir)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            # environ() can be denied even same-user on some platforms.
+            # cmdline already failed to bind — fail closed.
+            bound = False
+
+    if not bound:
+        logger.warning(
+            "Refusing to reap agent-browser PID %d: not bound to session "
+            "socket dir %s (possible recycled PID or planted pid file)",
+            daemon_pid, socket_dir)
+        return False
+
+    return True
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1413,6 +1499,17 @@ def _reap_orphaned_browser_sessions():
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
             shutil.rmtree(socket_dir, ignore_errors=True)
+            continue
+
+        # The PID is live — but the .pid file lives in a world-writable,
+        # predictably-named temp dir we don't write ourselves, and PIDs get
+        # recycled after the real daemon exits.  Verify the process really is
+        # *this* session's agent-browser daemon before tree-killing it; refuse
+        # otherwise (don't touch the process, leave the socket dir for a later
+        # sweep once the imposter PID is gone).  Fixes the arbitrary same-user
+        # process DoS in issue #14073.
+        if not _verify_reapable_browser_daemon(
+                daemon_pid, socket_dir, session_name):
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.

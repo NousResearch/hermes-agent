@@ -12,6 +12,8 @@ import asyncio
 import logging
 import os
 import re
+import shlex
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -71,6 +73,88 @@ def _confirm(question: str, default: bool = True) -> bool:
 def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
     from hermes_cli.cli_output import prompt as _shared_prompt
     return _shared_prompt(question, default=default, password=password)
+
+
+def _is_interactive_stdin() -> bool:
+    return bool(getattr(sys.stdin, "isatty", lambda: False)())
+
+
+def _prompt_required(question: str, *, default: str = "") -> str:
+    """Prompt until a non-empty value is provided or input is cancelled."""
+    suffix = f" [{default}]" if default else ""
+    while True:
+        try:
+            value = input(color(f"  {question}{suffix}: ", Colors.YELLOW)).strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return ""
+        if value:
+            return value
+        if default:
+            return default
+        _warning("A value is required.")
+
+
+def _pick_mcp_option(
+    title: str,
+    options: List[Tuple[str, str]],
+    *,
+    default_index: int = 0,
+) -> Optional[str]:
+    """Show a picker for a short MCP CLI choice and return the option key."""
+    labels = [label for _, label in options]
+    try:
+        from hermes_cli.curses_ui import curses_single_select
+
+        idx = curses_single_select(title, labels, default_index=default_index)
+    except Exception:
+        logger.debug("MCP picker failed; falling back to numbered prompt", exc_info=True)
+        print(color(f"\n  {title}", Colors.YELLOW))
+        for i, label in enumerate(labels, 1):
+            marker = "→" if i - 1 == default_index else " "
+            print(f"  {marker} {i}. {label}")
+        print()
+        try:
+            val = input(
+                color(f"  Choice [1-{len(labels)}] ({default_index + 1}): ", Colors.DIM)
+            ).strip()
+            idx = default_index if not val else int(val) - 1
+        except (ValueError, KeyboardInterrupt, EOFError):
+            return None
+
+    if idx is None:
+        return None
+    if 0 <= idx < len(options):
+        print()
+        return options[idx][0]
+    return None
+
+
+def _choose_http_auth_method(auth_type: Optional[str]) -> Optional[str]:
+    """Resolve HTTP auth mode for `hermes mcp add`.
+
+    Explicit CLI flags continue to win. In interactive mode, ask directly
+    instead of assuming API-key auth after a yes/no prompt.
+    """
+    if auth_type == "oauth":
+        return "oauth"
+    if auth_type == "header":
+        return "api_key"
+    if auth_type:
+        return auth_type
+    if not _is_interactive_stdin():
+        # Preserve non-interactive safety: do not prompt or assume credentials.
+        return "none"
+
+    return _pick_mcp_option(
+        "Authentication method for this HTTP MCP server",
+        [
+            ("oauth", "OAuth — browser-based OAuth / PKCE (recommended for hosted MCPs)"),
+            ("api_key", "API key — Authorization: Bearer <token> from .env"),
+            ("none", "None — no authentication"),
+        ],
+        default_index=0,
+    )
 
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
@@ -298,7 +382,7 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
 
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
-    name = args.name
+    name = getattr(args, "name", None)
     url = getattr(args, "url", None)
     # Read from `mcp_command` (set by --command via explicit dest) — see
     # mcp_add_p.add_argument("--command", dest="mcp_command", ...) in
@@ -310,6 +394,62 @@ def cmd_mcp_add(args):
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
+
+    interactive = _is_interactive_stdin()
+
+    if not name:
+        if not interactive:
+            _error("Must specify a server name.")
+            _info('Example: hermes mcp add work --url "https://mcp.example.com/mcp"')
+            return
+        print()
+        _info("Add a new MCP server")
+        name = _prompt_required("Server name")
+        if not name:
+            _info("Cancelled.")
+            return
+
+    if interactive and not url and not command and not preset_name:
+        transport_options = [
+            ("url", "Hosted URL — HTTP/SSE endpoint, best for managed MCPs"),
+            ("command", "Local command — stdio server launched by Hermes"),
+        ]
+        if _MCP_PRESETS:
+            transport_options.append(
+                ("preset", f"Preset — known template ({', '.join(sorted(_MCP_PRESETS))})")
+            )
+        transport = _pick_mcp_option(
+            "How should Hermes connect to this MCP server?",
+            transport_options,
+            default_index=0,
+        )
+        if transport is None:
+            _info("Cancelled.")
+            return
+        if transport == "url":
+            url = _prompt_required("MCP endpoint URL")
+            if not url:
+                _info("Cancelled.")
+                return
+        elif transport == "command":
+            command = _prompt_required("Stdio command")
+            if not command:
+                _info("Cancelled.")
+                return
+            raw_args = _prompt("Command arguments", default="").strip()
+            if raw_args:
+                try:
+                    cmd_args = shlex.split(raw_args)
+                except ValueError as exc:
+                    _error(f"Invalid command arguments: {exc}")
+                    return
+        elif transport == "preset":
+            if _MCP_PRESETS:
+                _info(f"Available presets: {', '.join(sorted(_MCP_PRESETS))}")
+            preset_name = _prompt_required("Preset name")
+            if not preset_name:
+                _info("Cancelled.")
+                return
 
     server_config: Dict[str, Any] = {}
     try:
@@ -336,7 +476,7 @@ def cmd_mcp_add(args):
         _info("Examples:")
         _info('  hermes mcp add ink --url "https://mcp.ml.ink/mcp"')
         _info('  hermes mcp add github --command npx --args @modelcontextprotocol/server-github')
-        _info('  hermes mcp add myserver --preset mypreset')
+        _info('  hermes mcp add myserver --preset codex')
         return
 
     # Check if server already exists
@@ -365,55 +505,56 @@ def cmd_mcp_add(args):
 
     # ── Authentication ────────────────────────────────────────────────
 
-    if url and auth_type == "oauth":
-        print()
-        _info(f"Starting OAuth flow for '{name}'...")
-        oauth_ok = False
-        try:
-            from tools.mcp_oauth_manager import get_manager
-            oauth_auth = get_manager().get_or_build_provider(name, url, None)
-            if oauth_auth:
-                server_config["auth"] = "oauth"
-                _success("OAuth configured (tokens will be acquired on first connection)")
-                oauth_ok=True
-            else:
-                _warning("OAuth setup failed — MCP SDK auth module not available")
-        except Exception as exc:
-            _warning(f"OAuth error: {exc}")
-
-        if not oauth_ok:
-            _info("This server may not support OAuth.")
-            if _confirm("Continue without authentication?", default=True):
-                # Don't store auth: oauth — server doesn't support it
-                pass
-            else:
-                _info("Cancelled.")
-                return
-
-    elif url:
-        # Prompt for API key / Bearer token for HTTP servers
+    if url:
         print()
         _info(f"Connecting to {url}")
-        needs_auth = _confirm("Does this server require authentication?", default=True)
-        if needs_auth:
-            if auth_type == "header" or not auth_type:
-                env_key = _env_key_for_server(name)
-                existing_key = get_env_value(env_key)
-                if existing_key:
-                    _success(f"{env_key}: already configured")
-                    api_key = existing_key
-                else:
-                    api_key = _prompt("API key / Bearer token", password=True)
-                    if api_key:
-                        api_key = _strip_bearer_prefix(api_key)
-                        save_env_value(env_key, api_key)
-                        _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
+        auth_method = _choose_http_auth_method(auth_type)
+        if auth_method is None:
+            _info("Cancelled.")
+            return
 
-                # Set header with env var interpolation
-                if api_key or existing_key:
-                    server_config["headers"] = {
-                        "Authorization": f"Bearer ${{{env_key}}}"
-                    }
+        if auth_method == "oauth":
+            _info(f"Starting OAuth setup for '{name}'...")
+            oauth_ok = False
+            try:
+                from tools.mcp_oauth_manager import get_manager
+                oauth_auth = get_manager().get_or_build_provider(name, url, None)
+                if oauth_auth:
+                    server_config["auth"] = "oauth"
+                    _success("OAuth configured (tokens will be acquired on first connection)")
+                    oauth_ok = True
+                else:
+                    _warning("OAuth setup failed — MCP SDK auth module not available")
+            except Exception as exc:
+                _warning(f"OAuth error: {exc}")
+
+            if not oauth_ok:
+                _info("This server may not support OAuth.")
+                if _confirm("Continue without authentication?", default=True):
+                    # Don't store auth: oauth — server doesn't support it
+                    pass
+                else:
+                    _info("Cancelled.")
+                    return
+
+        elif auth_method == "api_key":
+            env_key = _env_key_for_server(name)
+            existing_key = get_env_value(env_key)
+            if existing_key:
+                _success(f"{env_key}: already configured")
+                api_key = existing_key
+            else:
+                api_key = _prompt("API key / Bearer token", password=True)
+                if api_key:
+                    api_key = _strip_bearer_prefix(api_key)
+                    save_env_value(env_key, api_key)
+                    _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
+
+            # Set header with env var interpolation
+            if api_key or existing_key:
+                server_config["headers"] = {
+                    "Authorization": f"Bearer ${{{env_key}}}"
+                }
 
     # ── Discovery: connect and list tools ─────────────────────────────
 

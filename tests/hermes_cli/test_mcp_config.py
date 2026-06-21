@@ -201,8 +201,8 @@ class TestMcpAdd:
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server", mock_probe
         )
-        # No auth, accept all tools
-        inputs = iter(["n", ""])  # no auth needed, enable all
+        # Non-interactive path skips auth prompt; accept all tools.
+        inputs = iter([""])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         from hermes_cli.mcp_config import cmd_mcp_add
@@ -218,6 +218,162 @@ class TestMcpAdd:
         config = load_config()
         assert "ink" in config.get("mcp_servers", {})
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
+
+    def test_add_http_server_interactive_oauth_choice(self, tmp_path, capsys, monkeypatch):
+        """Interactive HTTP add offers OAuth as an explicit auth method."""
+        from unittest.mock import MagicMock
+
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        monkeypatch.setattr("hermes_cli.mcp_config.sys.stdin", fake_stdin)
+
+        class FakeManager:
+            def get_or_build_provider(self, name, url, config):
+                assert name == "hosted"
+                assert url == "https://mcp.example.com/mcp"
+                return object()
+
+        def mock_probe(name, config, **kw):
+            assert config["auth"] == "oauth"
+            return [("search", "Search")]
+
+        monkeypatch.setattr("tools.mcp_oauth_manager.get_manager", lambda: FakeManager())
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_single_select", lambda *a, **kw: 0)
+        inputs = iter([""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="hosted", url="https://mcp.example.com/mcp"))
+        out = capsys.readouterr().out
+        assert "OAuth configured" in out
+        assert "Saved" in out
+        assert load_config()["mcp_servers"]["hosted"]["auth"] == "oauth"
+
+    def test_add_http_server_interactive_prompts_for_missing_name_and_url(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """`hermes mcp add` can collect name, transport, and auth interactively."""
+        from unittest.mock import MagicMock
+
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        monkeypatch.setattr("hermes_cli.mcp_config.sys.stdin", fake_stdin)
+
+        def mock_probe(name, config, **kw):
+            assert name == "work"
+            assert config["url"] == "https://mcp.example.com/mcp"
+            assert "auth" not in config
+            assert "headers" not in config
+            return [("search", "Search")]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        picker_choices = iter([0, 2])  # transport: url, auth: none
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_single_select",
+            lambda *a, **kw: next(picker_choices),
+        )
+        inputs = iter([
+            "work",                         # server name
+            "https://mcp.example.com/mcp",  # endpoint URL
+            "",                             # enable all tools
+        ])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name=None))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+        assert load_config()["mcp_servers"]["work"]["url"] == "https://mcp.example.com/mcp"
+
+    def test_add_http_server_interactive_api_key_choice(self, tmp_path, capsys, monkeypatch):
+        """Auth picker can choose API-key mode and persist an Authorization header."""
+        from unittest.mock import MagicMock
+
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        monkeypatch.setattr("hermes_cli.mcp_config.sys.stdin", fake_stdin)
+
+        def mock_probe(name, config, **kw):
+            assert config["headers"] == {"Authorization": "Bearer ${MCP_HOSTED_API_KEY}"}
+            return [("search", "Search")]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_single_select", lambda *a, **kw: 1)
+        monkeypatch.setattr("hermes_cli.mcp_config.get_env_value", lambda key: "secret-token")
+        inputs = iter([""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="hosted", url="https://mcp.example.com/mcp"))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+        assert "headers" in load_config()["mcp_servers"]["hosted"]
+
+    def test_add_interactive_transport_picker_cancel_does_not_save(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Cancelling the transport picker exits before writing config."""
+        from unittest.mock import MagicMock
+
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        monkeypatch.setattr("hermes_cli.mcp_config.sys.stdin", fake_stdin)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_single_select", lambda *a, **kw: None)
+        monkeypatch.setattr("builtins.input", lambda _: "work")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name=None))
+        out = capsys.readouterr().out
+        assert "Cancelled" in out
+        assert "mcp_servers" not in load_config()
+
+    def test_add_interactive_auth_picker_cancel_does_not_save(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Cancelling the auth picker exits before probing or writing config."""
+        from unittest.mock import MagicMock
+
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        monkeypatch.setattr("hermes_cli.mcp_config.sys.stdin", fake_stdin)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_single_select", lambda *a, **kw: None)
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="hosted", url="https://mcp.example.com/mcp"))
+        out = capsys.readouterr().out
+        assert "Cancelled" in out
+        assert "mcp_servers" not in load_config()
+
+    def test_add_interactive_preset_name_ctrl_c_cancels(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Ctrl-C at the preset-name prompt cancels instead of looping forever."""
+        from unittest.mock import MagicMock
+
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        monkeypatch.setattr("hermes_cli.mcp_config.sys.stdin", fake_stdin)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_single_select", lambda *a, **kw: 2)
+        monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="work"))
+        out = capsys.readouterr().out
+        assert "Cancelled" in out
+        assert "mcp_servers" not in load_config()
 
     def test_add_stdio_server(self, tmp_path, capsys, monkeypatch):
         """Add a stdio server."""
@@ -260,7 +416,7 @@ class TestMcpAdd:
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server", mock_probe_fail
         )
-        inputs = iter(["n", "y"])  # no auth, yes save disabled
+        inputs = iter(["y"])  # yes save disabled
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         from hermes_cli.mcp_config import cmd_mcp_add

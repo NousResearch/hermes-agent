@@ -89,8 +89,9 @@ def test_dashboard_slot_reports_up_when_enabled(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1",
-         # The default dashboard host is 0.0.0.0, which now engages the
-         # OAuth auth gate. Without a provider registered (no
+         # The default dashboard host is 127.0.0.1 (loopback), but pin the
+         # insecure opt-in so the auth gate doesn't fail-closed before the
+         # slot can come up. Without a provider registered (no
          # HERMES_DASHBOARD_OAUTH_CLIENT_ID in this test env), start_server
          # would fail closed and the slot would never come up. Pin the
          # explicit insecure opt-in to keep this test focused on the s6
@@ -122,9 +123,10 @@ def test_dashboard_opt_in_starts(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the process can come up. See
-         # test_dashboard_slot_reports_up_when_enabled for the full rationale.
+         # Default bind is 127.0.0.1 (loopback); pin the insecure opt-in so
+         # the auth gate doesn't fail-closed before the process can come up.
+         # See test_dashboard_slot_reports_up_when_enabled for the full
+         # rationale.
          "-e", "HERMES_DASHBOARD_INSECURE=1",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
@@ -145,9 +147,9 @@ def test_dashboard_port_override(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1", "-e", "HERMES_DASHBOARD_PORT=9120",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the port is bound. See
-         # test_dashboard_slot_reports_up_when_enabled for the full rationale.
+         # Default bind is 127.0.0.1 (loopback) — see
+         # test_dashboard_slot_reports_up_when_enabled for the rationale on
+         # why we still pin the insecure opt-in for this test.
          "-e", "HERMES_DASHBOARD_INSECURE=1",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
@@ -155,10 +157,12 @@ def test_dashboard_port_override(
     # The dashboard process appearing in pgrep doesn't mean it's bound
     # to the port yet — uvicorn takes another second or two to come up.
     # The image doesn't ship ss/netstat, so probe /proc/net/tcp directly:
-    # port 9120 = 0x23A0, state 0A = LISTEN.
+    # port 9120 = 0x23A0, state 0A = LISTEN. Match any local IP — the
+    # dashboard now defaults to loopback (127.0.0.1 → 7F000001 in hex)
+    # after the #49567 fix, and IPv6 ::1 lives only in /proc/net/tcp6.
     ok, stdout = _poll(
         container_name,
-        "grep -E ' 0+:23A0 .* 0A ' /proc/net/tcp /proc/net/tcp6 "
+        "grep -E ':23A0 .* 0A ' /proc/net/tcp /proc/net/tcp6 "
         "2>/dev/null",
         deadline_s=60.0,
     )
@@ -179,10 +183,10 @@ def test_dashboard_restarts_after_crash(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the supervised dashboard can come up.
-         # See test_dashboard_slot_reports_up_when_enabled for the full
-         # rationale.
+         # Default bind is 127.0.0.1 (loopback); pin the insecure opt-in so
+         # the auth gate doesn't fail-closed before the supervised dashboard
+         # can come up. See test_dashboard_slot_reports_up_when_enabled for
+         # the full rationale.
          "-e", "HERMES_DASHBOARD_INSECURE=1",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,

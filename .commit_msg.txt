@@ -1,0 +1,21 @@
+test(docker): update port_override regex to match loopback bind
+
+The default dashboard host in docker/s6-rc.d/dashboard/run changed from
+0.0.0.0 to 127.0.0.1 in the previous commit (fixes #49567). The IPv4
+listen entry for 127.0.0.1:9120 in /proc/net/tcp is `7F000001:23A0`, but
+the existing test_dashboard_port_override grep was `' 0+:23A0 .* 0A '`,
+which only matched literal `0+` wildcards (i.e. 0.0.0.0:9120). Loopback
+binds became invisible to the probe and the test failed in CI.
+
+Loosen the regex to match any local IP — the test's contract is the
+port override, not the bind host. IPv6 ::1 only ever appears in
+/proc/net/tcp6, which the probe already greps.
+
+Also update the four "Default bind is 0.0.0.0" comments to reflect the
+new default. The two remaining 0.0.0.0 references in
+test_dashboard_oauth_gate_engages_on_non_loopback_bind are correct —
+that test explicitly exercises non-loopback binding.
+
+No-op for production code; test-only.
+
+Refs #49567

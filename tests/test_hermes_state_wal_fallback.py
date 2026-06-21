@@ -13,12 +13,17 @@ See: https://www.sqlite.org/wal.html — "WAL does not work over a network
 filesystem".
 """
 
-import sqlite3
 from unittest.mock import patch
 
 import pytest
 
 import hermes_state
+# Use the same sqlite3 driver hermes_state uses (pysqlite3 when available), so
+# test Connection subclasses + factory wrappers stay driver-consistent with
+# production code. Stdlib sqlite3 lacks FTS5 trigram tokenizer required by
+# SessionDB schema; using stdlib here would cause spurious "no such tokenizer"
+# failures even though pysqlite3 is installed.
+sqlite3 = hermes_state.sqlite3
 from hermes_state import (
     SessionDB,
     apply_wal_with_fallback,

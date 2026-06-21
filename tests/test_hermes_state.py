@@ -1,10 +1,18 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
-import sqlite3
 import time
 import pytest
 
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
+# Use the same sqlite3 driver hermes_state uses (pysqlite3 when available),
+# so test Connection subclasses + factory wrappers stay driver-consistent
+# with production code. Stdlib sqlite3 lacks the FTS5 trigram tokenizer that
+# SessionDB schema requires; injecting stdlib connections via the test's
+# factory wrapper would otherwise strip pysqlite3 capabilities and cause
+# spurious "no such tokenizer: trigram" failures even when production has
+# pysqlite3 installed.
+import hermes_state as _hermes_state
+sqlite3 = _hermes_state.sqlite3
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -2269,7 +2277,7 @@ class TestSchemaInit:
         the old bot should not eagerly mutate the state DB for this feature.
         """
         old_db = tmp_path / "old.db"
-        import sqlite3
+        from hermes_state import sqlite3
 
         conn = sqlite3.connect(old_db)
         conn.executescript(
@@ -2336,7 +2344,7 @@ class TestSchemaInit:
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
         """The /topic opt-in path owns the DB migration for Telegram topic mode."""
         old_db = tmp_path / "old.db"
-        import sqlite3
+        from hermes_state import sqlite3
 
         conn = sqlite3.connect(old_db)
         conn.executescript(
@@ -2500,7 +2508,7 @@ class TestSchemaInit:
 
     def test_migration_from_v2(self, tmp_path):
         """Simulate a v2 database and verify migration adds title column."""
-        import sqlite3
+        from hermes_state import sqlite3
 
         db_path = tmp_path / "migrate_test.db"
         conn = sqlite3.connect(str(db_path))
@@ -2641,7 +2649,7 @@ class TestSchemaInit:
         so the new v7 block was skipped and reasoning_content was never
         created — causing 'no such column' on /continue.
         """
-        import sqlite3
+        from hermes_state import sqlite3
 
         db_path = tmp_path / "gap_test.db"
         conn = sqlite3.connect(str(db_path))
@@ -3909,7 +3917,7 @@ class TestFTS5ToolCallMigration:
         """Simulate an existing user: build a v10-shaped DB by hand, insert a
         row with tool_calls, then open via SessionDB (which runs migrations).
         After upgrade, the tool_calls token must be searchable."""
-        import sqlite3
+        from hermes_state import sqlite3
 
         db_path = tmp_path / "legacy.db"
 
@@ -4010,7 +4018,7 @@ class TestApplyWalProbe:
 
     def test_skips_set_pragma_when_already_wal(self, tmp_path):
         """Already-WAL connection must not trigger the set-pragma."""
-        import sqlite3
+        from hermes_state import sqlite3
         from hermes_state import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):
@@ -4044,7 +4052,7 @@ class TestApplyWalProbe:
 
     def test_sets_wal_on_fresh_connection(self, tmp_path):
         """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
-        import sqlite3
+        from hermes_state import sqlite3
         from hermes_state import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):
@@ -4072,7 +4080,7 @@ class TestApplyWalProbe:
         """20 threads calling connect() on the same DB must not see disk I/O error."""
         import sys
         import threading
-        import sqlite3
+        from hermes_state import sqlite3
         from hermes_state import apply_wal_with_fallback
 
         db_path = tmp_path / "concurrent.db"
@@ -4115,7 +4123,7 @@ class TestApplyWalProbe:
 
     def test_fallback_to_delete_still_works(self, tmp_path):
         """When set-pragma raises a WAL-incompat error, falls back to DELETE."""
-        import sqlite3
+        from hermes_state import sqlite3
         from hermes_state import apply_wal_with_fallback
 
         class _IncompatConn(sqlite3.Connection):
@@ -4142,7 +4150,7 @@ class TestApplyWalProbe:
 
     def test_probe_failure_falls_through_to_set_pragma(self, tmp_path):
         """When the read probe raises OperationalError, fall through to set-pragma."""
-        import sqlite3
+        from hermes_state import sqlite3
         from hermes_state import apply_wal_with_fallback
 
         class _ProbeFails(sqlite3.Connection):
@@ -4168,7 +4176,7 @@ class TestApplyWalProbe:
 
     def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
         """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
-        import sqlite3
+        from hermes_state import sqlite3
         import pytest
         from hermes_state import apply_wal_with_fallback
 
@@ -4195,7 +4203,7 @@ class TestApplyWalProbe:
 
     def test_returns_wal_not_delete_from_probe(self, tmp_path):
         """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
-        import sqlite3
+        from hermes_state import sqlite3
         from hermes_state import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):

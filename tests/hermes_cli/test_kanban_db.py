@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -15,6 +14,14 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+# Use hermes_state's sqlite3 alias (pysqlite3 when available) so test-side
+# raw connections match the driver kanban_db.connect() uses internally.
+# Stdlib sqlite3 on this OL8 host is 3.26.0 (older error-message format
+# from PRAGMA database_list on torn-extend ("database disk image is
+# malformed" instead of the manual "torn-extend ... page count mismatch"
+# from _check_file_length_invariant), causing regex-match test failures.
+import hermes_state as _hermes_state
+sqlite3 = _hermes_state.sqlite3
 
 
 @pytest.fixture
@@ -3052,7 +3059,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     file, where downgrading is safe because nobody else has WAL state
     yet).
     """
-    import sqlite3 as _sqlite3
+    from hermes_state import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
     home = tmp_path / ".hermes"
@@ -3164,7 +3171,7 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
     'duplicate column name: consecutive_failures'.  Without the idempotency
     guard that crashes the dispatcher on the first tick after every restart.
     """
-    import sqlite3
+    from hermes_state import sqlite3
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -3191,7 +3198,7 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
 def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home):
     """Full _migrate_add_optional_columns must not raise when columns already
     exist (issue #21708 race window — two connections migrate concurrently)."""
-    import sqlite3
+    from hermes_state import sqlite3
 
     # Schema already in fully-migrated state (all optional columns present).
     conn = sqlite3.connect(":memory:")

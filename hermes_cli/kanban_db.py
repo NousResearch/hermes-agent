@@ -77,7 +77,22 @@ import os
 import re
 import secrets
 import shutil
-import sqlite3
+# Use the same sqlite3 driver hermes_state uses (pysqlite3 when available,
+# stdlib otherwise). Keeps DatabaseError/OperationalError class identity
+# consistent across the two DBs so callers' `except sqlite3.X` / `pytest.raises`
+# work uniformly, and gives kanban_db the FTS5 trigram tokenizer (stdlib 3.26
+# on OL8 lacks it).
+import os as _os_kanban_sqlite_driver
+_sqlite_driver_pref = _os_kanban_sqlite_driver.environ.get("HERMES_SQLITE_DRIVER", "auto").strip().lower()
+if _sqlite_driver_pref in {"stdlib", "sqlite3"}:
+    import sqlite3
+else:
+    try:
+        import pysqlite3 as sqlite3  # type: ignore[no-redef]
+    except ImportError:
+        if _sqlite_driver_pref in {"pysqlite3", "modern"}:
+            raise
+        import sqlite3
 import subprocess
 import sys
 import threading

@@ -90,6 +90,39 @@ def test_openviking_env_writer_restricts_file_permissions(tmp_path):
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
+def test_openviking_env_writer_strips_embedded_newlines_in_values(tmp_path):
+    # A secret pasted with an embedded CR/LF must not spill onto a new line,
+    # or the round-trip re-parses the tail as a separate KEY=VALUE entry and
+    # injects an arbitrary variable into the persisted credentials file.
+    env_path = tmp_path / ".env"
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "good\nINJECTED_KEY=attacker"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=goodINJECTED_KEY=attacker"]
+    # No injected line means a follow-up read sees no rogue key.
+    parsed = dict(line.split("=", 1) for line in lines if "=" in line)
+    assert set(parsed) == {"OPENVIKING_API_KEY"}
+    assert "INJECTED_KEY" not in parsed
+
+
+def test_openviking_env_writer_strips_newlines_when_updating_existing_key(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENVIKING_API_KEY=old\n", encoding="utf-8")
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "new\r\nROGUE=1"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=newROGUE=1"]
+    assert all(not line.startswith("ROGUE=") for line in lines)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_ovcli_config_writer_restricts_file_permissions(tmp_path):
     config_path = tmp_path / "ovcli.conf"

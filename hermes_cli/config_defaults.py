@@ -3217,6 +3217,25 @@ DEFAULT_CONFIG = {
         # Per-probe timeout (seconds) for the opt-in `hermes doctor --live`
         # real-call backend probes (Firecrawl/FAL/browser/MCP/TTS/STT).
         "live_probe_timeout": 10,
+        # Auth providers the operator has intentionally left unconfigured on
+        # this machine. Matching rows are SKIPPED entirely by `hermes doctor`
+        # (a single info line is printed instead of a warning, and the row is
+        # kept out of the final summary) so an operator who will never use,
+        # say, MiniMax or xAI is not nagged about it. Case-insensitive; match
+        # by row label or a short alias. Accepted names:
+        #   "nous" / "nous portal"   -> Nous Portal auth
+        #   "codex" / "openai codex" -> OpenAI Codex auth
+        #   "minimax"                -> MiniMax OAuth
+        #   "xai"                    -> xAI OAuth
+        # Empty by default (every provider is checked).
+        "ignore_auth_providers": [],
+        # Toolsets the operator has intentionally left unconfigured on this
+        # machine. Matching entries are dropped from the doctor "Tool
+        # Availability" warnings (and the summary tally) rather than flagged
+        # as missing. Case-insensitive; match by toolset id/name as shown in
+        # the doctor output (e.g. "discord", "home-assistant", "spotify").
+        # Empty by default (every toolset is reported).
+        "ignore_toolsets": [],
     },
 
     # ``hermes update`` behaviour.

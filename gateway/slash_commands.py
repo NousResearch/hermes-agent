@@ -2853,14 +2853,14 @@ class GatewaySlashCommandsMixin:
                     # and the topic kept its auto-assigned name. No-ops off
                     # Telegram topic lanes and when auto-rename is disabled.
                     schedule_rename = getattr(
-                        self, "_schedule_telegram_topic_title_rename", None
+                        self, "_schedule_visible_conversation_title_rename", None
                     )
                     if callable(schedule_rename):
                         try:
                             schedule_rename(source, session_id, sanitized)
                         except Exception:
                             logger.debug(
-                                "Failed to rename Telegram topic from /title",
+                                "Failed to rename visible conversation from /title",
                                 exc_info=True,
                             )
                     return t("gateway.title.set_to", title=sanitized)

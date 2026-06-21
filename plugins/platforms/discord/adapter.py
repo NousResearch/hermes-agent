@@ -4558,6 +4558,57 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-thread helpers
     # ------------------------------------------------------------------
 
+    def _sanitize_conversation_title(self, name: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not cleaned:
+            return "Hermes Chat"
+        if len(cleaned) > 100:
+            cleaned = cleaned[:97].rstrip() + "..."
+        return cleaned
+
+    async def rename_conversation(
+        self,
+        source: Any,
+        name: str,
+        *,
+        session_id: Optional[str] = None,
+        session_db: Any = None,
+    ) -> bool:
+        """Rename the Discord thread/channel backing the current session."""
+        if getattr(source, "chat_type", None) != "thread":
+            return False
+        thread_id = str(getattr(source, "thread_id", None) or getattr(source, "chat_id", "") or "")
+        if not thread_id:
+            return False
+        return await self.rename_thread(thread_id, self._sanitize_conversation_title(name))
+
+    async def rename_thread(self, thread_id: str, name: str) -> bool:
+        """Best-effort rename for an existing Discord thread/channel."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        try:
+            tid = int(thread_id)
+        except (TypeError, ValueError):
+            return False
+
+        try:
+            thread = self._client.get_channel(tid)
+            if thread is None:
+                thread = await self._client.fetch_channel(tid)
+        except Exception as exc:
+            logger.debug("[%s] Could not resolve Discord thread %s for rename: %s", self.name, thread_id, exc)
+            return False
+
+        edit = getattr(thread, "edit", None)
+        if edit is None:
+            return False
+        try:
+            await edit(name=name, reason="Hermes session auto-title")
+            return True
+        except Exception as exc:
+            logger.debug("[%s] Failed to rename Discord thread %s: %s", self.name, thread_id, exc)
+            return False
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 

@@ -1791,6 +1791,68 @@ class TelegramAdapter(BasePlatformAdapter):
         self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id), replace_existing=force_create)
         return str(thread_id)
 
+    def _sanitize_conversation_title(self, name: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not cleaned:
+            return "Hermes Chat"
+        if len(cleaned) > 120:
+            cleaned = cleaned[:117].rstrip() + "..."
+        return cleaned
+
+    def _topic_auto_rename_disabled(self) -> bool:
+        value = (getattr(self.config, "extra", None) or {}).get("disable_topic_auto_rename")
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    async def rename_conversation(
+        self,
+        source: Any,
+        name: str,
+        *,
+        session_id: Optional[str] = None,
+        session_db: Any = None,
+    ) -> bool:
+        """Rename the Telegram DM topic backing the current session."""
+        chat_id = getattr(source, "chat_id", None)
+        thread_id = getattr(source, "thread_id", None)
+        if getattr(source, "chat_type", None) != "dm" or not chat_id or not thread_id:
+            return False
+        if str(thread_id) in {"", "1"}:
+            return False
+        if self._topic_auto_rename_disabled():
+            return False
+
+        try:
+            operator_topic = self._get_dm_topic_info(str(chat_id), str(thread_id))
+        except Exception:
+            operator_topic = None
+        if isinstance(operator_topic, dict):
+            return False
+
+        if session_db is not None and session_id is not None:
+            try:
+                binding = session_db.get_telegram_topic_binding(
+                    chat_id=str(chat_id),
+                    thread_id=str(thread_id),
+                )
+                if binding and str(binding.get("session_id") or "") != str(session_id):
+                    return False
+            except Exception:
+                logger.debug("[%s] Failed to verify Telegram topic binding before rename", self.name, exc_info=True)
+                return False
+
+        await self.rename_dm_topic(
+            chat_id=chat_id,
+            thread_id=thread_id,
+            name=self._sanitize_conversation_title(name),
+        )
+        return True
+
     async def rename_dm_topic(
         self,
         chat_id: int,

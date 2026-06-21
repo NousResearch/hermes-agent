@@ -14,14 +14,22 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_event(text="/title", platform=Platform.TELEGRAM,
-                user_id="12345", chat_id="67890"):
+def _make_event(
+    text="/title",
+    platform=Platform.TELEGRAM,
+    user_id="12345",
+    chat_id="67890",
+    chat_type="dm",
+    thread_id=None,
+):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
         user_name="testuser",
+        chat_type=chat_type,
+        thread_id=thread_id,
     )
     return MessageEvent(text=text, source=source)
 
@@ -173,14 +181,39 @@ class TestHandleTitleCommand:
         db.create_session("test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
-        runner._schedule_telegram_topic_title_rename = MagicMock()
+        runner._schedule_visible_conversation_title_rename = MagicMock()
 
         event = _make_event(text="/title My Topic Name")
         result = await runner._handle_title_command(event)
 
         assert "My Topic Name" in result
-        runner._schedule_telegram_topic_title_rename.assert_called_once_with(
+        runner._schedule_visible_conversation_title_rename.assert_called_once_with(
             event.source, "test_session_123", "My Topic Name"
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_propagates_to_discord_thread_rename(self, tmp_path):
+        """/title <name> also renames the visible Discord thread, not just the DB."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "discord")
+
+        runner = _make_runner(session_db=db)
+        runner._schedule_visible_conversation_title_rename = MagicMock()
+
+        event = _make_event(
+            text="/title Better Thread Name",
+            platform=Platform.DISCORD,
+            chat_id="4242",
+            chat_type="thread",
+            thread_id="4242",
+        )
+        result = await runner._handle_title_command(event)
+
+        assert "Better Thread Name" in result
+        runner._schedule_visible_conversation_title_rename.assert_called_once_with(
+            event.source, "test_session_123", "Better Thread Name"
         )
         db.close()
 
@@ -193,12 +226,12 @@ class TestHandleTitleCommand:
         db.set_session_title("test_session_123", "Existing Title")
 
         runner = _make_runner(session_db=db)
-        runner._schedule_telegram_topic_title_rename = MagicMock()
+        runner._schedule_visible_conversation_title_rename = MagicMock()
 
         event = _make_event(text="/title")
         await runner._handle_title_command(event)
 
-        runner._schedule_telegram_topic_title_rename.assert_not_called()
+        runner._schedule_visible_conversation_title_rename.assert_not_called()
         db.close()
 
     @pytest.mark.asyncio

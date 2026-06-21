@@ -157,6 +157,19 @@ def _make_runner(session_db=None):
     return runner
 
 
+def _make_rename_capable_telegram_adapter(config):
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = object.__new__(TelegramAdapter)
+    adapter.config = config
+    adapter._bot = SimpleNamespace(edit_forum_topic=AsyncMock())
+    adapter._dm_topics = {}
+    adapter._dm_topics_config = []
+    adapter._get_dm_topic_info = MagicMock(return_value=None)
+    adapter.rename_dm_topic = AsyncMock()
+    return adapter
+
+
 @pytest.mark.asyncio
 async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(monkeypatch):
     import gateway.run as gateway_run
@@ -845,15 +858,16 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         session_id="sess-topic",
     )
     runner = _make_runner(session_db=db)
-    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = _make_rename_capable_telegram_adapter(runner.config.platforms[Platform.TELEGRAM])
+    runner.adapters[Platform.TELEGRAM] = adapter
 
-    await runner._rename_telegram_topic_for_session_title(
+    await runner._rename_visible_conversation_for_session_title(
         _make_source(thread_id="42"),
         "sess-topic",
         "  Build   Telegram Topic UX  ",
     )
 
-    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+    adapter.rename_dm_topic.assert_awaited_once_with(
         chat_id="208214988",
         thread_id="42",
         name="Build Telegram Topic UX",
@@ -873,15 +887,16 @@ async def test_auto_generated_title_does_not_rename_topic_bound_to_other_session
         session_id="sess-other",
     )
     runner = _make_runner(session_db=db)
-    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = _make_rename_capable_telegram_adapter(runner.config.platforms[Platform.TELEGRAM])
+    runner.adapters[Platform.TELEGRAM] = adapter
 
-    await runner._rename_telegram_topic_for_session_title(
+    await runner._rename_visible_conversation_for_session_title(
         _make_source(thread_id="42"),
         "sess-topic",
         "Wrong Session Title",
     )
 
-    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
+    adapter.rename_dm_topic.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -898,29 +913,17 @@ async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
         session_id="sess-topic",
     )
     runner = _make_runner(session_db=db)
-    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = _make_rename_capable_telegram_adapter(runner.config.platforms[Platform.TELEGRAM])
+    adapter._get_dm_topic_info = MagicMock(return_value={"name": "Research", "skill": "arxiv"})
+    runner.adapters[Platform.TELEGRAM] = adapter
 
-    # Give the adapter a concrete class with _get_dm_topic_info so the
-    # class-based lookup in _rename_telegram_topic_for_session_title
-    # actually finds it (a MagicMock auto-attr would be skipped).
-    class _FakeAdapter:
-        def _get_dm_topic_info(self, chat_id, thread_id):
-            return {"name": "Research", "skill": "arxiv"}
-
-        async def rename_dm_topic(self, **kwargs):
-            return None
-
-    fake = _FakeAdapter()
-    fake.rename_dm_topic = AsyncMock()
-    runner.adapters[Platform.TELEGRAM] = fake
-
-    await runner._rename_telegram_topic_for_session_title(
+    await runner._rename_visible_conversation_for_session_title(
         _make_source(thread_id="17585"),
         "sess-topic",
         "Auto-generated title",
     )
 
-    fake.rename_dm_topic.assert_not_called()
+    adapter.rename_dm_topic.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -937,69 +940,61 @@ async def test_disable_topic_auto_rename_extra_skips_rename(tmp_path):
         session_id="sess-topic",
     )
     runner = _make_runner(session_db=db)
-    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = _make_rename_capable_telegram_adapter(runner.config.platforms[Platform.TELEGRAM])
+    runner.adapters[Platform.TELEGRAM] = adapter
     # Flip the operator switch.
     runner.config.platforms[Platform.TELEGRAM].extra["disable_topic_auto_rename"] = True
 
-    await runner._rename_telegram_topic_for_session_title(
+    await runner._rename_visible_conversation_for_session_title(
         _make_source(thread_id="42"),
         "sess-topic",
         "Auto-generated title",
     )
 
-    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
+    adapter.rename_dm_topic.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_schedule_topic_rename_respects_disable_flag(tmp_path):
-    """The scheduling entry-point must also honour disable_topic_auto_rename."""
+async def test_schedule_visible_rename_delegates_disable_flag_to_adapter(tmp_path):
+    """The shared scheduler delegates platform-specific rename policy to adapters."""
     db = SessionDB(db_path=tmp_path / "state.db")
     runner = _make_runner(session_db=db)
-    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = _make_rename_capable_telegram_adapter(runner.config.platforms[Platform.TELEGRAM])
+    runner.adapters[Platform.TELEGRAM] = adapter
     runner.config.platforms[Platform.TELEGRAM].extra["disable_topic_auto_rename"] = "yes"
 
-    # If the flag is honoured we never schedule the coroutine, so
-    # _rename_telegram_topic_for_session_title is never invoked.
-    called = False
-
-    async def _spy(*args, **kwargs):
-        nonlocal called
-        called = True
-
-    runner._rename_telegram_topic_for_session_title = _spy
-
-    runner._schedule_telegram_topic_title_rename(
+    runner._schedule_visible_conversation_title_rename(
         _make_source(thread_id="42"),
         "sess-topic",
         "Auto-generated title",
     )
 
-    # Give any (incorrectly scheduled) coroutine a chance to run.
+    # Give the scheduled coroutine a chance to run.
     import asyncio
-    await asyncio.sleep(0)
-    assert called is False
+    await asyncio.sleep(0.05)
+
+    adapter.rename_dm_topic.assert_not_called()
 
 
 def test_telegram_topic_auto_rename_disabled_string_truthy(tmp_path):
     """Common truthy string forms ('1', 'true', 'on', 'yes') must disable rename."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    runner = _make_runner(session_db=db)
-    source = _make_source(thread_id="42")
+    runner = _make_runner(session_db=SessionDB(db_path=tmp_path / "state.db"))
+    adapter = _make_rename_capable_telegram_adapter(runner.config.platforms[Platform.TELEGRAM])
 
     cfg_extra = runner.config.platforms[Platform.TELEGRAM].extra
     for value in ("1", "true", "TRUE", "yes", "on"):
         cfg_extra["disable_topic_auto_rename"] = value
-        assert runner._telegram_topic_auto_rename_disabled(source) is True, value
+        assert adapter._topic_auto_rename_disabled() is True, value
 
     for value in ("0", "false", "no", "off", "", None):
         cfg_extra["disable_topic_auto_rename"] = value
-        assert runner._telegram_topic_auto_rename_disabled(source) is False, value
+        assert adapter._topic_auto_rename_disabled() is False, value
 
     # Explicit bools still work.
     cfg_extra["disable_topic_auto_rename"] = True
-    assert runner._telegram_topic_auto_rename_disabled(source) is True
+    assert adapter._topic_auto_rename_disabled() is True
     cfg_extra["disable_topic_auto_rename"] = False
-    assert runner._telegram_topic_auto_rename_disabled(source) is False
+    assert adapter._topic_auto_rename_disabled() is False
 
 
 def test_general_topic_is_treated_as_root_lobby(tmp_path):

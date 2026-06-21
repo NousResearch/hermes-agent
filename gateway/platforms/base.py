@@ -2368,6 +2368,25 @@ class BasePlatformAdapter(ABC):
         """
         return None
 
+    async def rename_conversation(
+        self,
+        source: Any,
+        name: str,
+        *,
+        session_id: Optional[str] = None,
+        session_db: Any = None,
+    ) -> bool:
+        """Rename the platform-visible conversation container for ``source``.
+
+        This is the title-sync counterpart to ``create_handoff_thread``: when
+        Hermes names a session, thread/topic-capable adapters can reflect that
+        title in the visible Discord thread, Telegram topic, etc.
+
+        Default implementation returns ``False`` — adapters that can safely
+        rename the active conversation override this.
+        """
+        return False
+
 
     async def edit_message(
         self,

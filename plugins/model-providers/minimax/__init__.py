@@ -29,6 +29,32 @@ def _is_minimax_m3(model: str | None) -> bool:
 class MiniMaxProfile(ProviderProfile):
     """MiniMax — M3 OpenAI-compatible reasoning controls."""
 
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch MiniMax's live catalog with the provider's auth semantics.
+
+        MiniMax's default Hermes route is the Anthropic-compatible endpoint,
+        which expects ``x-api-key`` rather than ``Authorization: Bearer``.
+        The base ``ProviderProfile`` fetcher is intentionally OpenAI-style, so
+        use the shared probing helper with ``api_mode='anthropic_messages'``.
+        """
+        try:
+            from hermes_cli.models import fetch_api_models
+
+            return fetch_api_models(
+                api_key,
+                base_url or self.base_url,
+                timeout=timeout,
+                api_mode="anthropic_messages",
+            )
+        except Exception:
+            return None
+
     def build_api_kwargs_extras(
         self,
         *,

@@ -287,6 +287,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5-flash",
     ],
     "xai": _xai_curated_models(),
+    "groq": [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3-32b",
+        "qwen/qwen3.6-27b",
+        "groq/compound",
+        "groq/compound-mini",
+    ],
+    "cerebras": [
+        "gpt-oss-120b",
+        "zai-glm-4.7",
+    ],
     "nvidia": [
         # NVIDIA flagship reasoning models
         "nvidia/nemotron-3-super-120b-a12b",
@@ -332,8 +347,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax": [
         "MiniMax-M3",
         "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
         "MiniMax-M2",
     ],
     "minimax-oauth": [
@@ -344,8 +362,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax-cn": [
         "MiniMax-M3",
         "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
         "MiniMax-M2",
     ],
     "anthropic": [
@@ -2133,6 +2154,8 @@ def _resolve_copilot_catalog_api_key() -> str:
 #     OpenRouter's 400+ catalog. Blindly merging would dump everything.
 #   - "nous": curated list and Portal /models endpoint are the source of
 #     truth for the subscription tier.
+#   - "groq": models.dev currently includes STT/safeguard/prompt-guard
+#     entries that are poor agent chat defaults; keep the curated list tight.
 # Also excluded: providers that already have dedicated live-endpoint
 # branches below (copilot, anthropic, ollama-cloud, custom,
 # stepfun, openai-codex) — those paths handle freshness themselves.
@@ -2146,7 +2169,7 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "togetherai",
     "cohere",
     "perplexity",
-    "groq",
+    "cerebras",
     "nvidia",
     "huggingface",
     "zai",

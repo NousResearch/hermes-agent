@@ -1,0 +1,4 @@
+name: groq
+kind: model-provider
+description: GroqCloud OpenAI-compatible inference provider
+version: 1.0.0

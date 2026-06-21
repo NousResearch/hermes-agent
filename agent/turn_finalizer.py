@@ -332,6 +332,21 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    _skill_verification_result = None
+    if final_response and not interrupted:
+        try:
+            from agent.skill_verification import run_before_final_verifications
+
+            _skill_verification_result = run_before_final_verifications(
+                agent.session_id or ""
+            )
+            if _skill_verification_result and _skill_verification_result.blocked:
+                final_response = _skill_verification_result.message
+                failed = True
+                completed = False
+        except Exception as exc:
+            logger.warning("skill before-final verification failed: %s", exc)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
@@ -407,6 +422,8 @@ def finalize_turn(
     # (the response is still returned either way — #8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
+    if _skill_verification_result is not None:
+        result["skill_verification"] = _skill_verification_result.to_dict()
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

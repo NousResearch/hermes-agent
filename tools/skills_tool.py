@@ -1613,6 +1613,13 @@ def _skill_view_with_bump(args, **kw):
     try:
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
+            if not args.get("file_path"):
+                try:
+                    from agent.skill_verification import record_skill_view_payload
+
+                    record_skill_view_payload(kw.get("session_id"), parsed)
+                except Exception:
+                    pass
             # Use the resolved skill name from the payload when present —
             # qualified forms ("plugin:skill") return with the canonical name.
             resolved = parsed.get("name") or name

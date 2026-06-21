@@ -122,6 +122,242 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state.status == "active"
 
 
+def test_goal_state_is_bound_to_lineage_root(hermes_home):
+    from hermes_cli.goals import GoalManager, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("lineage-root-session", "tui")
+    db.create_session("lineage-child-session", "tui", parent_session_id="lineage-root-session")
+    db.create_session("lineage-grandchild-session", "tui", parent_session_id="lineage-child-session")
+
+    GoalManager("lineage-grandchild-session").set("keep this goal on the thread")
+
+    assert db.get_meta(_meta_key("lineage-grandchild-session")) is None
+    assert db.get_meta(_meta_key("lineage-child-session")) is None
+    assert db.get_meta(_meta_key("lineage-root-session")) is not None
+    child_state = GoalManager("lineage-child-session").state
+    root_state = GoalManager("lineage-root-session").state
+    assert child_state is not None
+    assert root_state is not None
+    assert child_state.goal == "keep this goal on the thread"
+    assert root_state.goal == "keep this goal on the thread"
+
+
+def test_legacy_tip_goal_migrates_to_lineage_root(hermes_home):
+    from hermes_cli.goals import GoalManager, GoalState, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("legacy-root-session", "tui")
+    db.create_session("legacy-child-session", "tui", parent_session_id="legacy-root-session")
+    db.set_meta(_meta_key("legacy-child-session"), GoalState(goal="legacy child goal").to_json())
+
+    mgr = GoalManager("legacy-child-session")
+
+    assert mgr.state is not None
+    assert mgr.state.goal == "legacy child goal"
+    assert db.get_meta(_meta_key("legacy-root-session")) is not None
+    root_state = GoalManager("legacy-root-session").state
+    assert root_state is not None
+    assert root_state.goal == "legacy child goal"
+
+
+def test_newer_legacy_tip_goal_beats_stale_root_goal(hermes_home):
+    from hermes_cli.goals import GoalManager, GoalState, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("stale-root-session", "tui")
+    db.create_session("newer-child-session", "tui", parent_session_id="stale-root-session")
+    db.set_meta(
+        _meta_key("stale-root-session"),
+        GoalState(goal="old cleared root", status="cleared", created_at=1.0, last_turn_at=2.0).to_json(),
+    )
+    db.set_meta(
+        _meta_key("newer-child-session"),
+        GoalState(goal="new active child", status="active", created_at=3.0).to_json(),
+    )
+
+    mgr = GoalManager("newer-child-session")
+
+    assert mgr.state is not None
+    assert mgr.state.goal == "new active child"
+    root_state = GoalManager("stale-root-session").state
+    assert root_state is not None
+    assert root_state.goal == "new active child"
+
+
+def test_active_legacy_tip_goal_beats_stale_root_terminal_goal(hermes_home):
+    from hermes_cli.goals import GoalManager, GoalState, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("fresh-root-session", "tui")
+    db.create_session("stale-child-session", "tui", parent_session_id="fresh-root-session")
+    db.set_meta(_meta_key("fresh-root-session"), GoalState(goal="fresh cleared root", status="cleared").to_json())
+    db.set_meta(
+        _meta_key("stale-child-session"),
+        GoalState(goal="stale active child", status="active", created_at=1.0).to_json(),
+    )
+
+    mgr = GoalManager("stale-child-session")
+
+    assert mgr.state is not None
+    assert mgr.state.goal == "stale active child"
+    assert mgr.state.status == "active"
+
+
+def test_active_tip_goal_still_beats_newer_root_terminal_goal(hermes_home):
+    from hermes_cli.goals import GoalManager, GoalState, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("fresh-root-session-2", "tui")
+    db.create_session("stale-child-session-2", "tui", parent_session_id="fresh-root-session-2")
+    db.set_meta(
+        _meta_key("fresh-root-session-2"),
+        GoalState(goal="fresh cleared root", status="cleared", created_at=3.0, last_turn_at=4.0).to_json(),
+    )
+    db.set_meta(
+        _meta_key("stale-child-session-2"),
+        GoalState(goal="stale active child", status="active", created_at=1.0).to_json(),
+    )
+
+    mgr = GoalManager("stale-child-session-2")
+
+    assert mgr.state is not None
+    assert mgr.state.goal == "stale active child"
+    assert mgr.state.status == "active"
+
+
+def test_legacy_parent_goal_migrates_to_lineage_root(hermes_home):
+    from hermes_cli.goals import GoalManager, GoalState, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("parent-root-session", "tui")
+    db.create_session("legacy-parent-session", "tui", parent_session_id="parent-root-session")
+    db.create_session("parent-grandchild-session", "tui", parent_session_id="legacy-parent-session")
+    db.set_meta(
+        _meta_key("legacy-parent-session"),
+        GoalState(goal="legacy parent goal", status="active", created_at=1.0).to_json(),
+    )
+
+    mgr = GoalManager("parent-grandchild-session")
+
+    assert mgr.state is not None
+    assert mgr.state.goal == "legacy parent goal"
+    root_state = GoalManager("parent-root-session").state
+    assert root_state is not None
+    assert root_state.goal == "legacy parent goal"
+
+
+def test_delegate_session_does_not_inherit_parent_goal(hermes_home):
+    from hermes_cli.goals import GoalManager, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("delegate-parent-session", "tui")
+    db.create_session(
+        "delegate-child-session",
+        "subagent",
+        parent_session_id="delegate-parent-session",
+        model_config={"_delegate_from": "delegate-parent-session"},
+    )
+
+    GoalManager("delegate-parent-session").set("parent-only goal")
+
+    assert GoalManager("delegate-child-session").state is None
+    GoalManager("delegate-child-session").set("child-only goal")
+    assert db.get_meta(_meta_key("delegate-parent-session")) is not None
+    assert db.get_meta(_meta_key("delegate-child-session")) is not None
+    assert GoalManager("delegate-parent-session").state.goal == "parent-only goal"
+    assert GoalManager("delegate-child-session").state.goal == "child-only goal"
+
+
+def test_deleted_lineage_root_migrates_goal_to_orphaned_child(hermes_home):
+    from hermes_cli.goals import GoalManager, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("delete-root-session", "tui")
+    db.create_session("delete-child-session", "tui", parent_session_id="delete-root-session")
+    GoalManager("delete-root-session").set("survive root delete")
+
+    assert db.delete_session("delete-root-session") is True
+
+    child = db.get_session("delete-child-session")
+    assert child is not None
+    assert child.get("parent_session_id") is None
+    assert db.get_meta(_meta_key("delete-child-session")) is not None
+    child_state = GoalManager("delete-child-session").state
+    assert child_state is not None
+    assert child_state.goal == "survive root delete"
+
+
+def test_bulk_deleted_lineage_root_migrates_goal_to_orphaned_child(hermes_home):
+    from hermes_cli.goals import GoalManager, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("bulk-delete-root-session", "tui")
+    db.create_session("bulk-delete-child-session", "tui", parent_session_id="bulk-delete-root-session")
+    GoalManager("bulk-delete-root-session").set("survive bulk root delete")
+
+    assert db.delete_sessions(["bulk-delete-root-session"]) == 1
+
+    child = db.get_session("bulk-delete-child-session")
+    assert child is not None
+    assert child.get("parent_session_id") is None
+    assert db.get_meta(_meta_key("bulk-delete-child-session")) is not None
+    child_state = GoalManager("bulk-delete-child-session").state
+    assert child_state is not None
+    assert child_state.goal == "survive bulk root delete"
+
+
+def test_empty_deleted_lineage_root_migrates_goal_to_orphaned_child(hermes_home):
+    from hermes_cli.goals import GoalManager, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("empty-delete-root-session", "tui")
+    db.create_session("empty-delete-child-session", "tui", parent_session_id="empty-delete-root-session")
+    GoalManager("empty-delete-root-session").set("survive empty root delete")
+    db.end_session("empty-delete-root-session", "tui_shutdown")
+
+    assert db.delete_empty_sessions() == 1
+
+    child = db.get_session("empty-delete-child-session")
+    assert child is not None
+    assert child.get("parent_session_id") is None
+    assert db.get_meta(_meta_key("empty-delete-child-session")) is not None
+    child_state = GoalManager("empty-delete-child-session").state
+    assert child_state is not None
+    assert child_state.goal == "survive empty root delete"
+
+
+def test_pruned_lineage_root_migrates_goal_to_orphaned_child(hermes_home):
+    from hermes_cli.goals import GoalManager, _meta_key
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session("prune-root-session", "tui")
+    db.create_session("prune-child-session", "tui", parent_session_id="prune-root-session")
+    GoalManager("prune-root-session").set("survive prune root delete")
+    db.end_session("prune-root-session", "tui_shutdown")
+
+    assert db.prune_sessions(older_than_days=0) == 1
+
+    child = db.get_session("prune-child-session")
+    assert child is not None
+    assert child.get("parent_session_id") is None
+    assert db.get_meta(_meta_key("prune-child-session")) is not None
+    child_state = GoalManager("prune-child-session").state
+    assert child_state is not None
+    assert child_state.goal == "survive prune root delete"
+
+
 def test_goal_pause_after_set(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)

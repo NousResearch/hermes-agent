@@ -1419,6 +1419,15 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
         },
+        "goal_judge": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+            "max_tokens": 4096,
+        },
         # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
         # single-shape tool returns DB content directly). The old
         # ``auxiliary.session_search.*`` block was removed here. Existing

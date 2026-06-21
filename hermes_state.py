@@ -103,6 +103,46 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
     return ids
 
+
+def _migrate_goal_meta_to_orphaned_children(
+    conn,
+    parent_ids: List[str],
+    *,
+    exclude_ids: Optional[List[str]] = None,
+) -> None:
+    """Copy ``goal:<parent>`` state to child rows that are about to be orphaned."""
+    parents = [sid for sid in parent_ids if sid]
+    if not parents:
+        return
+    excluded = {sid for sid in (exclude_ids or []) if sid}
+    ph = ",".join("?" * len(parents))
+    rows = conn.execute(
+        f"SELECT id, parent_session_id FROM sessions WHERE parent_session_id IN ({ph})",
+        parents,
+    ).fetchall()
+    for row in rows:
+        child_id = row["id"]
+        if child_id in excluded:
+            continue
+        parent_id = row["parent_session_id"]
+        parent_goal = conn.execute(
+            "SELECT value FROM state_meta WHERE key = ?",
+            (f"goal:{parent_id}",),
+        ).fetchone()
+        if parent_goal is None:
+            continue
+        child_key = f"goal:{child_id}"
+        child_goal = conn.execute(
+            "SELECT 1 FROM state_meta WHERE key = ?",
+            (child_key,),
+        ).fetchone()
+        if child_goal is not None:
+            continue
+        conn.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+            (child_key, parent_goal["value"]),
+        )
+
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
@@ -4013,6 +4053,11 @@ class SessionDB:
             if cursor.fetchone()[0] == 0:
                 return False
             removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
+            _migrate_goal_meta_to_orphaned_children(
+                conn,
+                [session_id],
+                exclude_ids=removed_delegate_ids,
+            )
             # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
@@ -4127,6 +4172,11 @@ class SessionDB:
 
             existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
+            _migrate_goal_meta_to_orphaned_children(
+                conn,
+                existing,
+                exclude_ids=existing + removed_delegate_ids,
+            )
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
@@ -4224,6 +4274,11 @@ class SessionDB:
                 return 0
 
             placeholders = ",".join("?" * len(session_ids))
+            _migrate_goal_meta_to_orphaned_children(
+                conn,
+                list(session_ids),
+                exclude_ids=list(session_ids),
+            )
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({placeholders})",
@@ -4284,6 +4339,11 @@ class SessionDB:
 
             # Orphan any sessions whose parent is about to be deleted
             placeholders = ",".join("?" * len(session_ids))
+            _migrate_goal_meta_to_orphaned_children(
+                conn,
+                list(session_ids),
+                exclude_ids=list(session_ids),
+            )
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({placeholders})",

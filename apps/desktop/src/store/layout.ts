@@ -33,8 +33,13 @@ const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
 export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
+// The in-app browser tab — a navigable webview, distinct from the preview pane.
+export const RIGHT_RAIL_BROWSER_TAB_ID = 'browser'
 
-export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
+export type RightRailTabId =
+  | typeof RIGHT_RAIL_PREVIEW_TAB_ID
+  | typeof RIGHT_RAIL_BROWSER_TAB_ID
+  | `file:${string}`
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })

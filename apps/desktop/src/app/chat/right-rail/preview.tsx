@@ -6,8 +6,10 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $browserState } from '@/store/browser'
 import {
   $rightRailActiveTabId,
+  RIGHT_RAIL_BROWSER_TAB_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
@@ -21,6 +23,7 @@ import {
   type PreviewTarget
 } from '@/store/preview'
 
+import { BrowserPane } from './browser-pane'
 import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
@@ -41,8 +44,9 @@ interface ChatPreviewRailProps {
 
 interface RailTab {
   id: RightRailTabId
+  kind: 'browser' | 'file' | 'preview'
   label: string
-  target: PreviewTarget
+  target?: PreviewTarget
 }
 
 function tabLabelFor(target: PreviewTarget): string {
@@ -58,13 +62,25 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const activeTabId = useStore($rightRailActiveTabId)
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
+  const browserState = useStore($browserState)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
-      ...(previewTarget ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab] : []),
-      ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
+      ...(browserState.open
+        ? [
+            {
+              id: RIGHT_RAIL_BROWSER_TAB_ID,
+              kind: 'browser',
+              label: browserState.title?.trim() || t.browser.tab
+            } as RailTab
+          ]
+        : []),
+      ...(previewTarget
+        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, kind: 'preview', label: t.preview.tab, target: previewTarget } as RailTab]
+        : []),
+      ...filePreviewTabs.map(({ id, target }) => ({ id, kind: 'file', label: tabLabelFor(target), target }) as RailTab)
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab]
+    [browserState.open, browserState.title, filePreviewTabs, previewTarget, t.browser.tab, t.preview.tab]
   )
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
@@ -80,6 +96,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   }
 
   const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID
+  const isBrowser = activeTab.id === RIGHT_RAIL_BROWSER_TAB_ID
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) text-(--ui-text-tertiary)">
@@ -158,13 +175,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <PreviewPane
-          embedded
-          onRestartServer={isPreview ? onRestartServer : undefined}
-          reloadRequest={previewReloadRequest}
-          setTitlebarToolGroup={setTitlebarToolGroup}
-          target={activeTab.target}
-        />
+        {isBrowser ? (
+          <BrowserPane />
+        ) : activeTab.target ? (
+          <PreviewPane
+            embedded
+            onRestartServer={isPreview ? onRestartServer : undefined}
+            reloadRequest={previewReloadRequest}
+            setTitlebarToolGroup={setTitlebarToolGroup}
+            target={activeTab.target}
+          />
+        ) : null}
       </div>
     </aside>
   )

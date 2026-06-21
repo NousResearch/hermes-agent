@@ -1,5 +1,6 @@
 import { Fragment, memo, type ReactNode, useState } from 'react'
 
+import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { StatusRow } from '@/components/chat/status-row'
 import { TerminalOutput } from '@/components/chat/terminal-output'
 import { Button } from '@/components/ui/button'
@@ -96,7 +97,17 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
 
   const canOpen = item.type === 'subagent' && !!onOpen
   const hasOutput = item.type === 'background' && !!item.output
-  const onActivate = canOpen ? onOpen : hasOutput ? () => setOutputOpen(open => !open) : undefined
+
+  // A running background job → clicking the row surfaces the terminal panel for
+  // a quick "what's running right now" peek. A finished job with captured output
+  // → toggle its inline output. Subagents → open their session.
+  const onActivate = canOpen
+    ? onOpen
+    : item.type === 'background' && running
+      ? () => setTerminalTakeover(true)
+      : hasOutput
+        ? () => setOutputOpen(open => !open)
+        : undefined
 
   return (
     <Fragment>

@@ -2,6 +2,7 @@ import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
+import { openWebLink } from '@/store/browser'
 
 import { cn } from './utils'
 
@@ -204,6 +205,10 @@ interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'>
   href: string
   children?: ReactNode
   showExternalIcon?: boolean
+  // When true, a plain click opens the URL in the in-app browser panel (fast,
+  // on-the-fly preview); ⌘/Ctrl-click or middle-click still routes to the system
+  // browser. Used for chat-transcript links. Default false = always system.
+  openInApp?: boolean
 }
 
 export function ExternalLinkIcon({ className }: { className?: string }) {
@@ -215,6 +220,7 @@ export function ExternalLink({
   className,
   href,
   onClick,
+  openInApp = false,
   showExternalIcon = true,
   ...rest
 }: ExternalLinkProps) {
@@ -224,6 +230,17 @@ export function ExternalLink({
     <a
       className={cn('font-semibold text-foreground underline underline-offset-4 decoration-current/20', className)}
       href={target}
+      onAuxClick={
+        openInApp
+          ? event => {
+              if (event.button === 1) {
+                event.preventDefault()
+                event.stopPropagation()
+                openWebLink(target, { button: 1 })
+              }
+            }
+          : undefined
+      }
       onClick={event => {
         event.stopPropagation()
         onClick?.(event)
@@ -233,7 +250,12 @@ export function ExternalLink({
         }
 
         event.preventDefault()
-        openExternalLink(target)
+
+        if (openInApp) {
+          openWebLink(target, { metaKey: event.metaKey, ctrlKey: event.ctrlKey })
+        } else {
+          openExternalLink(target)
+        }
       }}
       rel="noopener noreferrer"
       target="_blank"
@@ -249,15 +271,17 @@ interface PrettyLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
   href: string
   label?: string
   fallbackLabel?: string
+  // See ExternalLink.openInApp.
+  openInApp?: boolean
 }
 
-export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: PrettyLinkProps) {
+export function PrettyLink({ className, fallbackLabel, href, label, openInApp, ...rest }: PrettyLinkProps) {
   const target = useMemo(() => normalizeExternalUrl(href), [href])
   const fetched = useLinkTitle(label ? null : target)
   const display = fetched || label?.trim() || fallbackLabel?.trim() || urlSlugTitleLabel(target)
 
   return (
-    <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>
+    <ExternalLink className={cn('wrap-break-word', className)} href={target} openInApp={openInApp} title={target} {...rest}>
       <span className="font-medium">{display}</span>
     </ExternalLink>
   )

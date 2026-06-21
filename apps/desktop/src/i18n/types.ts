@@ -1294,6 +1294,20 @@ export interface Translations {
     addToChat: string
   }
 
+  browser: {
+    tab: string
+    back: string
+    forward: string
+    reload: string
+    stop: string
+    addressBar: string
+    addressPlaceholder: string
+    newBrowserTab: string
+    openBrowser: string
+    failedToLoad: string
+    unreachable: string
+    tryAgain: string
+  }
   preview: {
     tab: string
     closeTab: (label: string) => string

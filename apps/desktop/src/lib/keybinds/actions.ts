@@ -91,6 +91,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
   { id: 'view.showTerminal', category: 'view', defaults: TERMINAL_TOGGLE_DEFAULTS },
+  // ⌘⇧B — sibling to ⌘B (toggle sidebar); B for browser.
+  { id: 'view.showBrowser', category: 'view', defaults: ['mod+shift+b'] },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },

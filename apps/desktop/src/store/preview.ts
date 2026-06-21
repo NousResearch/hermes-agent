@@ -1,6 +1,13 @@
 import { atom, computed } from 'nanostores'
 
-import { $rightRailActiveTabId, RIGHT_RAIL_PREVIEW_TAB_ID, type RightRailTabId, selectRightRailTab } from './layout'
+import { closeBrowser as closeBrowserTab } from './browser'
+import {
+  $rightRailActiveTabId,
+  RIGHT_RAIL_BROWSER_TAB_ID,
+  RIGHT_RAIL_PREVIEW_TAB_ID,
+  type RightRailTabId,
+  selectRightRailTab
+} from './layout'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 export interface PreviewTarget {
@@ -396,6 +403,12 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
 }
 
 export function closeRightRailTab(tabId: RightRailTabId) {
+  if (tabId === RIGHT_RAIL_BROWSER_TAB_ID) {
+    closeBrowserTab()
+
+    return
+  }
+
   if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
     if ($previewTarget.get()) {
       dismissPreviewTarget()

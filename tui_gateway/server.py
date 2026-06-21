@@ -3141,6 +3141,14 @@ def _agent_cbs(sid: str) -> dict:
             {k: v for k, v in (("start", start), ("count", count)) if v is not None},
             timeout=30,
         ),
+        # browser_navigate / browser_read tools (desktop GUI): same blocking
+        # bridge — the renderer answers browser.navigate.respond / browser.read.respond.
+        "browser_navigate_callback": lambda url=None: _block(
+            "browser.navigate.request", sid, ({"url": url} if url else {}), timeout=30
+        ),
+        "browser_read_callback": lambda: _block(
+            "browser.read.request", sid, {}, timeout=30
+        ),
     }
 
 
@@ -7573,6 +7581,18 @@ def _(rid, params: dict) -> dict:
 @method("terminal.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the serialized terminal buffer + line metadata.
+    return _respond(rid, params, "text")
+
+
+@method("browser.navigate.respond")
+def _(rid, params: dict) -> dict:
+    # `url` is the resolved URL after the in-app browser navigation settled.
+    return _respond(rid, params, "url")
+
+
+@method("browser.read.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string of the in-app browser nav-state.
     return _respond(rid, params, "text")
 
 

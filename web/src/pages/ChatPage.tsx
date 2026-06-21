@@ -25,6 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { HangulComposer, isCompatJamo } from "@/lib/hangul";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -607,6 +608,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    // Hoisted composition-guard state so the cleanup can tear it down.
+    let compositionCleanup: (() => void) | null = null;
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
@@ -705,14 +708,113 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // behave normally.
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
+
+      // ------------------------------------------------------------------
+      // Hangul IME bridge (iPad / touch-device fix)
+      // ------------------------------------------------------------------
+      // iPad WebKit (all iPad browsers use it) does not drive IME composition
+      // inside xterm.js's hidden textarea — xterm continuously moves/clears
+      // that textarea, which resets WebKit's composition context. So each
+      // *committed* compatibility jamo (ㅎ U+314E, ㅏ U+314F, ㄴ U+3134 …)
+      // arrives as its own onData event instead of the composed syllable 한
+      // that a desktop OS IME would have produced before the PTY ever saw it.
+      //
+      // We bridge by running the standard Hangul input automaton in the
+      // browser (lib/hangul.ts): jamo are folded into precomposed syllable
+      // blocks, and because a syllable grows in place (ㅎ → 하 → 한) we rewrite
+      // the on-screen composing glyph by sending backspaces over what we last
+      // emitted, then the new glyph — exactly what an OS IME does.
+      //
+      // When a browser DOES drive native composition (desktop, some Android),
+      // xterm emits finished syllables (U+AC00 block), never lone compat jamo,
+      // so the automaton below simply never engages and input passes through.
+      //
+      // Optional on-screen trace: append ?imedebug=1 to the dashboard URL.
+      const imeDebug =
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("imedebug") === "1";
+      let debugPanel: HTMLDivElement | null = null;
+      const debugLog: string[] = [];
+      const dlog = (msg: string) => {
+        if (!debugPanel) return;
+        debugLog.push(`${Date.now() % 100000} ${msg}`);
+        if (debugLog.length > 40) debugLog.shift();
+        debugPanel.textContent = "🔬 " + debugLog.join(" | ");
+      };
+      if (imeDebug) {
+        debugPanel = document.createElement("div");
+        debugPanel.style.cssText = [
+          "position:fixed", "bottom:0", "left:0", "right:0",
+          "max-height:120px", "overflow-y:auto",
+          "background:rgba(0,0,0,0.85)", "color:#0f0",
+          "font-family:monospace", "font-size:11px", "padding:6px",
+          "z-index:9999", "pointer-events:none",
+          "border-top:1px solid #0f0",
+        ].join(";");
+        debugPanel.textContent = "🔬 IME debug — type Korean here → ";
+        document.body.appendChild(debugPanel);
+      }
+
+      const composer = new HangulComposer();
+
+      // If a browser fires real composition events we defer to xterm's native
+      // handling (it sends the composed text on compositionend); the automaton
+      // only owns the lone-jamo path. `nativeComposing` gates the two apart.
+      let nativeComposing = false;
+      const textarea = term.textarea;
+      const onCompStart = () => {
+        nativeComposing = true;
+        composer.flush();
+        dlog("compositionstart");
+      };
+      const onCompEnd = (e: Event) => {
+        nativeComposing = false;
+        dlog(`compositionend data="${(e as CompositionEvent).data ?? ""}"`);
+      };
+      textarea?.addEventListener("compositionstart", onCompStart);
+      textarea?.addEventListener("compositionend", onCompEnd);
+
+      compositionCleanup = () => {
+        textarea?.removeEventListener("compositionstart", onCompStart);
+        textarea?.removeEventListener("compositionend", onCompEnd);
+        debugPanel?.remove();
+        debugPanel = null;
+        compositionCleanup = null;
+      };
+
       onDataDisposable = term.onData((data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
+        if (SGR_MOUSE_RE.test(data)) return;
 
-        if (SGR_MOUSE_RE.test(data)) {
+        if (imeDebug) {
+          const bytes = [...data]
+            .map((c) => c.charCodeAt(0).toString(16))
+            .join(" ");
+          dlog(`onData hex=${bytes} data="${data}"`);
+        }
+
+        // Lone compatibility jamo from the broken-IME path → fold into the
+        // automaton. We send only *committed* syllables (the TUI never sees the
+        // in-progress one); no backspaces, because the TUI's input tokenizer
+        // drops a 0x7f that's glued to following text. See lib/hangul.ts.
+        if (!nativeComposing && isCompatJamo(data)) {
+          const committed = composer.feed(data);
+          if (imeDebug) dlog(`compose committed="${committed}" hold="${composer.composing}"`);
+          if (committed) ws.send(committed);
           return;
         }
 
-        ws.send(data);
+        // User pressed backspace mid-syllable: the pending syllable isn't on
+        // screen yet, so just cancel it and swallow the keystroke.
+        if (composer.composing && (data === "\x7f" || data === "\b")) {
+          composer.discard();
+          return;
+        }
+
+        // Anything else (ASCII, space, enter, composed syllables, paste)
+        // commits the pending syllable first, then forwards the input.
+        const pending = composer.flush();
+        ws.send(pending + data);
       });
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
@@ -729,6 +831,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
+      // Tear down the IME composition guard (textarea listeners + timer).
+      compositionCleanup?.();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(

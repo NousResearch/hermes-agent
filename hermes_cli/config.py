@@ -6776,6 +6776,18 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
+    elif value.lstrip()[:1] in {'[', '{'}:
+        # JSON array/object literal — store as a native list/dict so callers
+        # that expect structured config (e.g. mcp_servers.<name>.args) get a
+        # real YAML list, not a JSON-encoded string. Only applied when the
+        # value actually parses as a JSON list/object; anything else (a plain
+        # string that merely starts with a bracket) is left untouched.
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, (list, dict)):
+            value = parsed
 
     _set_nested(user_config, key, value)
     

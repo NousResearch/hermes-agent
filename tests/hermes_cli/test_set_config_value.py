@@ -301,3 +301,33 @@ class TestSecretRedactionInDisplay:
 
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# JSON array/object literals — regression tests for #50168
+# ---------------------------------------------------------------------------
+
+class TestJsonLiteralValues:
+    """A JSON array/object value must be stored as a native YAML list/dict so
+    consumers like mcp_servers.<name>.args receive a real list, not a
+    JSON-encoded string.
+    """
+
+    def test_json_array_becomes_native_list(self, _isolated_hermes_home):
+        import yaml
+        set_config_value("mcp_servers.mimir.args", '["--db","/path/to/db"]')
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["mcp_servers"]["mimir"]["args"] == ["--db", "/path/to/db"]
+
+    def test_json_object_becomes_native_dict(self, _isolated_hermes_home):
+        import yaml
+        set_config_value("mcp_servers.mimir.env", '{"DB_PATH":"/path"}')
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["mcp_servers"]["mimir"]["env"] == {"DB_PATH": "/path"}
+
+    def test_plain_string_with_leading_bracket_is_untouched(self, _isolated_hermes_home):
+        """A non-JSON value that merely starts with '[' stays a string."""
+        import yaml
+        set_config_value("some.note", "[draft] remember this")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["some"]["note"] == "[draft] remember this"

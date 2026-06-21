@@ -2748,8 +2748,11 @@ class Migrator:
             self.record("approvals-config", "openclaw.json approvals.mode",
                         "config.yaml approvals.mode", "migrated", f"Mapped '{mode}' -> '{hermes_mode}'")
 
-        # Archive full approvals config
-        if len(approvals) > 1 and self.archive_dir:
+        # Archive full approvals config (any non-empty block, not only when 2+
+        # top-level keys exist - the old `len > 1` condition silently dropped
+        # exec.rules / requireReason / timeout for the typical single-key layout
+        # {"exec": {mode, rules, requireReason, timeout}})
+        if approvals and self.archive_dir:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "approvals-config.json"

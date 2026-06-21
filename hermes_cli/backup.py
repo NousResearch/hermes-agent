@@ -124,6 +124,89 @@ _IMPORT_SKIP_NAMES = {
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
 
+# Reserved archive subtree for provider state that lives OUTSIDE HERMES_HOME
+# (e.g. ~/.honcho, ~/.hindsight). The active memory provider declares these via
+# MemoryProvider.backup_paths(); they're stored under this prefix encoded
+# relative to the user's home directory, and restored to their original
+# home-relative location on import. Anything not under home is skipped.
+_EXTERNAL_PREFIX = "_external/"
+
+
+def _collect_memory_provider_external_paths() -> List[Path]:
+    """Return existing absolute paths the active memory provider stores
+    outside HERMES_HOME, resolved from config only (no network, no init).
+
+    Reads ``memory.provider`` from config, loads just that provider, and asks
+    it for ``backup_paths()``. Returns an empty list when no external provider
+    is active or the provider can't be loaded — backup must never fail because
+    of a flaky plugin.
+    """
+    try:
+        from plugins.memory import _get_active_memory_provider, load_memory_provider
+    except Exception:
+        return []
+
+    try:
+        active = _get_active_memory_provider()
+    except Exception:
+        active = None
+    if not active:
+        return []
+
+    try:
+        provider = load_memory_provider(active)
+    except Exception:
+        provider = None
+    if provider is None:
+        return []
+
+    try:
+        declared = provider.backup_paths() or []
+    except Exception as exc:
+        logger.warning("backup_paths() failed for memory provider %r: %s", active, exc)
+        return []
+
+    out: List[Path] = []
+    seen: set = set()
+    for raw in declared:
+        try:
+            p = Path(raw).expanduser()
+        except Exception:
+            continue
+        if not p.exists():
+            continue
+        try:
+            resolved = p.resolve()
+        except (OSError, ValueError):
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(p)
+    return out
+
+
+def _iter_external_files(base: Path) -> List[Path]:
+    """Yield regular files under *base* (a file or a directory), skipping
+    symlinks, caches, and pyc files. *base* itself may be a file."""
+    files: List[Path] = []
+    if base.is_file() and not base.is_symlink():
+        files.append(base)
+        return files
+    if not base.is_dir():
+        return files
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        dp = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+        for fname in filenames:
+            fpath = dp / fname
+            if fpath.is_symlink():
+                continue
+            if fpath.name in _EXCLUDED_NAMES or fpath.name.endswith(_EXCLUDED_SUFFIXES):
+                continue
+            files.append(fpath)
+    return files
+
 
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
@@ -262,12 +345,36 @@ def run_backup(args) -> None:
 
             files_to_add.append((fpath, rel))
 
-    if not files_to_add:
+    # External memory-provider state (e.g. ~/.honcho, ~/.hindsight) lives
+    # outside HERMES_HOME, so the walk above never sees it. Ask the active
+    # provider for its declared paths and stage them under the reserved
+    # ``_external/`` arc prefix, encoded relative to the user's home dir.
+    # Only paths under home are captured (security + portability); anything
+    # else is skipped with a note.
+    home_dir = Path.home().resolve()
+    external_to_add: list[tuple[Path, str]] = []  # (absolute, arcname)
+    skipped_external: list[str] = []
+    for base in _collect_memory_provider_external_paths():
+        try:
+            base_resolved = base.resolve()
+            base_resolved.relative_to(home_dir)
+        except (ValueError, OSError):
+            skipped_external.append(str(base))
+            continue
+        for fpath in _iter_external_files(base):
+            try:
+                rel_to_home = fpath.resolve().relative_to(home_dir)
+            except (ValueError, OSError):
+                continue
+            arcname = _EXTERNAL_PREFIX + rel_to_home.as_posix()
+            external_to_add.append((fpath, arcname))
+
+    if not files_to_add and not external_to_add:
         print("No files to back up.")
         return
 
     # Create the zip
-    file_count = len(files_to_add)
+    file_count = len(files_to_add) + len(external_to_add)
     print(f"Backing up {file_count} files ...")
 
     total_bytes = 0
@@ -306,6 +413,17 @@ def run_backup(args) -> None:
             if i % 500 == 0:
                 print(f"  {i}/{file_count} files ...")
 
+        # External memory-provider state, stored under the ``_external/`` arc
+        # prefix. These never include ``.db`` files in practice (config/env
+        # blobs), so a straight zf.write is fine.
+        for abs_path, arcname in external_to_add:
+            try:
+                zf.write(abs_path, arcname=arcname)
+                total_bytes += abs_path.stat().st_size
+            except (PermissionError, OSError, ValueError) as exc:
+                errors.append(f"  {arcname}: {exc}")
+                continue
+
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
 
@@ -316,6 +434,20 @@ def run_backup(args) -> None:
     print(f"  Original:    {_format_size(total_bytes)}")
     print(f"  Compressed:  {_format_size(zip_size)}")
     print(f"  Time:        {elapsed:.1f}s")
+
+    if external_to_add:
+        print(
+            f"\n  Included {len(external_to_add)} memory-provider file(s) "
+            f"stored outside {display_hermes_home()}."
+        )
+
+    if skipped_external:
+        print(
+            f"\n  Skipped {len(skipped_external)} memory-provider path(s) "
+            f"outside your home directory (not portable):"
+        )
+        for p in sorted(skipped_external)[:10]:
+            print(f"    {p}")
 
     if skipped_dirs:
         print(f"\n  Excluded directories:")
@@ -442,10 +574,44 @@ def run_import(args) -> None:
 
         errors = []
         restored = 0
+        restored_external = 0
         skipped_runtime: list[str] = []
+        home_dir = Path.home().resolve()
         t0 = time.monotonic()
 
         for member in members:
+            # External memory-provider state captured under the reserved
+            # ``_external/`` arc prefix restores to its original home-relative
+            # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
+            if member.startswith(_EXTERNAL_PREFIX):
+                ext_rel = member[len(_EXTERNAL_PREFIX):]
+                if not ext_rel:
+                    continue
+                target = home_dir / ext_rel
+                # Security: the resolved target must stay under the home dir.
+                try:
+                    target.resolve().relative_to(home_dir)
+                except ValueError:
+                    errors.append(f"  {member}: path traversal blocked")
+                    continue
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(target, "wb") as dst:
+                        dst.write(src.read())
+                    # External provider configs commonly hold credentials.
+                    if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
+                        try:
+                            os.chmod(target, 0o600)
+                        except OSError:
+                            pass
+                    restored += 1
+                    restored_external += 1
+                except (PermissionError, OSError) as exc:
+                    errors.append(f"  {member}: {exc}")
+                if restored % 500 == 0:
+                    print(f"  {restored}/{file_count} files ...")
+                continue
+
             # Strip prefix if detected
             if prefix and member.startswith(prefix):
                 rel = member[len(prefix):]
@@ -493,6 +659,12 @@ def run_import(args) -> None:
         print()
         print(f"Import complete: {restored} files restored in {elapsed:.1f}s")
         print(f"  Target: {display_hermes_home()}")
+
+        if restored_external:
+            print(
+                f"\n  Restored {restored_external} memory-provider file(s) to "
+                f"their original location(s) outside {display_hermes_home()}."
+            )
 
         if errors:
             print(f"\n  Warnings ({len(errors)} files skipped):")

@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
 
 from datetime import datetime, timezone
@@ -581,6 +582,16 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
 
 class HindsightMemoryProvider(MemoryProvider):
     """Hindsight long-term memory with knowledge graph and multi-strategy retrieval."""
+
+    def backup_paths(self) -> List[str]:
+        """Hindsight's legacy shared config and embedded-mode profile env
+        files live under ~/.hindsight (see _load_config / line ~509)."""
+        try:
+            from pathlib import Path
+            legacy_dir = Path.home() / ".hindsight"
+            return [str(legacy_dir)]
+        except Exception:
+            return []
 
     def __init__(self):
         self._config = None
@@ -1322,6 +1333,30 @@ class HindsightMemoryProvider(MemoryProvider):
         # doesn't block the chat. Redirect stdout/stderr to a log file to
         # prevent rich startup output from spamming the terminal.
         if self._mode == "local_embedded":
+            # PostgreSQL's initdb refuses to run as root by design, so the
+            # embedded daemon can never initialize its data directory under
+            # root. Without this guard the daemon-start thread would fail,
+            # retry, and loop forever — each cycle reloading embedding models
+            # (~958MB RAM, ~33% CPU) with no user-visible error. Detect root
+            # up front and skip daemon startup with a clear message instead.
+            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                msg = (
+                    "Hindsight local_embedded mode cannot run as root "
+                    "(PostgreSQL initdb refuses root). Skipping the embedded "
+                    "memory daemon. Run Hermes as a non-root user, or switch "
+                    "to cloud / local_external mode via 'hermes memory setup'."
+                )
+                logger.warning(msg)
+                # Surface to the terminal too — a daemon that never starts
+                # would otherwise fail silently and the user would only see
+                # Hermes get sluggish. (issue #13125)
+                try:
+                    print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
+                except Exception:
+                    pass
+                self._mode = "disabled"
+                return
+
             def _start_daemon():
                 import traceback
                 log_dir = get_hermes_home() / "logs"

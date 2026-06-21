@@ -2077,3 +2077,162 @@ class TestRestoreCronJobsIfEmptied:
         result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
         assert result is not None
         assert result["job_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Memory-provider external paths (~/.honcho, ~/.hindsight, ...) — captured via
+# MemoryProvider.backup_paths() and restored to their original home-relative
+# location, NOT under HERMES_HOME. (backup/import cycle data-loss fix)
+# ---------------------------------------------------------------------------
+
+class TestMemoryProviderExternalPaths:
+    def _make_min_tree(self, hermes_home: Path) -> None:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+        (hermes_home / ".env").write_text("OPENROUTER_API_KEY=sk-test\n")
+        (hermes_home / "state.db").write_bytes(b"x")
+
+    def test_backup_captures_external_paths_under_external_prefix(self, tmp_path, monkeypatch):
+        """Provider state under ~/.honcho is archived beneath _external/,
+        encoded relative to the home directory."""
+        hermes_home = tmp_path / ".hermes"
+        self._make_min_tree(hermes_home)
+        # External provider state living OUTSIDE HERMES_HOME.
+        honcho = tmp_path / ".honcho"
+        honcho.mkdir()
+        (honcho / "config.json").write_text('{"peer":"alice"}')
+        (honcho / "sub").mkdir()
+        (honcho / "sub" / "x.json").write_text('{"a":1}')
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(
+            backup_mod, "_collect_memory_provider_external_paths", lambda: [honcho]
+        )
+
+        out_zip = tmp_path / "backup.zip"
+        backup_mod.run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert "_external/.honcho/config.json" in names
+        assert "_external/.honcho/sub/x.json" in names
+        # In-home files still present.
+        assert "config.yaml" in names
+
+    def test_backup_skips_external_paths_outside_home(self, tmp_path, monkeypatch):
+        """A declared path outside the home dir is not portable and must be
+        skipped, never archived."""
+        hermes_home = tmp_path / ".hermes"
+        self._make_min_tree(hermes_home)
+        outside = tmp_path.parent / "outside-home-secret"
+        outside.mkdir(exist_ok=True)
+        (outside / "leak.json").write_text('{"secret":1}')
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(
+            backup_mod, "_collect_memory_provider_external_paths", lambda: [outside]
+        )
+
+        out_zip = tmp_path / "backup.zip"
+        backup_mod.run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert not any(n.startswith("_external/") for n in names)
+        assert not any("leak.json" in n for n in names)
+        (outside / "leak.json").unlink()
+        outside.rmdir()
+
+    def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
+        """_external/ members restore to ~/<relpath>, not under HERMES_HOME,
+        and credential-shaped files get 0600."""
+        dst_home = tmp_path / "dst"
+        dst_home.mkdir()
+        hermes_home = dst_home / ".hermes"
+        hermes_home.mkdir()
+
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: {}\n")
+            zf.writestr(".env", "X=1\n")
+            zf.writestr("state.db", "")
+            zf.writestr("_external/.honcho/config.json", '{"peer":"bob"}')
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: dst_home)
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        restored = dst_home / ".honcho" / "config.json"
+        assert restored.exists()
+        assert restored.read_text() == '{"peer":"bob"}'
+        # Credential-shaped file tightened.
+        assert (restored.stat().st_mode & 0o777) == 0o600
+        # External state did NOT leak into HERMES_HOME.
+        assert not (hermes_home / "_external").exists()
+
+    def test_import_blocks_external_path_traversal(self, tmp_path, monkeypatch):
+        """A malicious _external/ member that escapes the home dir is blocked."""
+        dst_home = tmp_path / "dst"
+        dst_home.mkdir()
+        hermes_home = dst_home / ".hermes"
+        hermes_home.mkdir()
+        sentinel = tmp_path / "PWNED"
+
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: {}\n")
+            zf.writestr(".env", "X=1\n")
+            zf.writestr("state.db", "")
+            zf.writestr("_external/../../PWNED", "pwned")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: dst_home)
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert not sentinel.exists()
+
+    def test_abc_backup_paths_defaults_empty(self):
+        """The ABC default returns [] so providers opt in explicitly."""
+        from agent.memory_provider import MemoryProvider
+
+        class _Dummy(MemoryProvider):
+            @property
+            def name(self):
+                return "dummy"
+
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                pass
+
+            def get_tool_schemas(self):
+                return []
+
+        assert _Dummy().backup_paths() == []
+
+    def test_honcho_provider_declares_global_config_dir(self, tmp_path, monkeypatch):
+        """The honcho provider's backup_paths() resolves to ~/.honcho."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        paths = HonchoMemoryProvider().backup_paths()
+        assert str(tmp_path / ".honcho") in paths
+
+    def test_hindsight_provider_declares_legacy_dir(self, tmp_path, monkeypatch):
+        """The hindsight provider's backup_paths() resolves to ~/.hindsight."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from plugins.memory.hindsight import HindsightMemoryProvider
+
+        paths = HindsightMemoryProvider().backup_paths()
+        assert str(tmp_path / ".hindsight") in paths

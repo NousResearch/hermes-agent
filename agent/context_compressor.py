@@ -656,9 +656,8 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+        self.threshold_tokens = self._compute_threshold_tokens(
+            context_length, self.threshold_percent
         )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
@@ -667,6 +666,62 @@ class ContextCompressor(ContextEngine):
         self.max_summary_tokens = min(
             int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
         )
+
+        # Reset cross-call calibration state captured under the PREVIOUS model.
+        # These fields encode "the provider proved this prompt fit" / "preflight
+        # can be deferred" decisions that are only valid for the model that
+        # produced them. Carrying them across a switch to a smaller-context
+        # model would let should_defer_preflight_to_real_usage() suppress a
+        # preflight compression the new model actually needs — the exact
+        # oversized-send-after-switch failure in #23767. The new model's first
+        # response repopulates them via update_from_response(). Setting
+        # last_prompt_tokens to 0 (NOT -1) is deliberate: 0 is the documented
+        # "no real usage yet -> use the rough estimate" state, so the post-
+        # response should_compress path falls back to estimate_request_tokens_rough
+        # rather than skipping compression. -1 is a different sentinel
+        # (#36718, "compression just ran, await real usage") and must not be set here.
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+        self.last_total_tokens = 0
+        self.last_real_prompt_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.last_compression_rough_tokens = 0
+        self.awaiting_real_usage_after_compression = False
+        self._ineffective_compression_count = 0
+
+    # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
+    # window, compacting at the percentage (50% → 32K of a 64K window) wastes
+    # half the usable context. Trigger near the top of the window instead so a
+    # minimum-context model uses most of its budget before compacting — same
+    # rationale as the gpt-5.5/Codex 85% autoraise.
+    _MIN_CTX_TRIGGER_RATIO = 0.85
+
+    @staticmethod
+    def _compute_threshold_tokens(context_length: int, threshold_percent: float) -> int:
+        """Compute the compaction trigger threshold in tokens.
+
+        The base value is ``context_length * threshold_percent``, floored at
+        ``MINIMUM_CONTEXT_LENGTH`` so large-context models don't compress
+        prematurely at 50%. BUT that floor degenerates at small windows: for a
+        model whose ``context_length`` is at/below the minimum (e.g. a 64K
+        local model), ``max(0.5*64000, 64000) == 64000`` makes the threshold
+        equal the ENTIRE window — auto-compression can never fire because the
+        provider rejects the request before usage reaches 100% (#14690).
+
+        When the floor would meet or exceed the context window, trigger at
+        ``_MIN_CTX_TRIGGER_RATIO`` (85%) of the window — high enough that a
+        small model uses most of its context before compacting, but below
+        100% so compaction fires before the provider rejects the request.
+        """
+        pct_value = int(context_length * threshold_percent)
+        floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
+        # If flooring pushed the threshold to/over the window it can never be
+        # reached. Trigger at 85% of the window so a minimum-context model
+        # rides most of its budget before compacting instead of wasting half.
+        if context_length > 0 and floored >= context_length:
+            return max(1, min(int(context_length * ContextCompressor._MIN_CTX_TRIGGER_RATIO),
+                              context_length - 1))
+        return floored
 
     def __init__(
         self,
@@ -708,10 +763,11 @@ class ContextCompressor(ContextEngine):
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+        # for models right at the minimum. _compute_threshold_tokens also
+        # guards the degenerate case where the floor would equal/exceed the
+        # window (small models), so auto-compression can still fire (#14690).
+        self.threshold_tokens = self._compute_threshold_tokens(
+            self.context_length, threshold_percent
         )
         self.compression_count = 0
 
@@ -1535,6 +1591,22 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
+            # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels)
+            # return a well-formed HTTP 200 with an empty or whitespace-only
+            # ``content`` instead of an error or empty ``choices``. That payload
+            # passes ``_validate_llm_response`` (a ``message`` exists), so it
+            # reaches here and would otherwise be stored as a prefix-only
+            # summary with no body — silently wiping the compacted turns and
+            # making the model forget the in-progress task (#11978, #11914).
+            # Treat empty content as a failure so it routes through the same
+            # main-model fallback + cooldown machinery as a transport error,
+            # rather than replacing real context with an empty summary.
+            if not content.strip():
+                raise RuntimeError(
+                    "Context compression LLM returned empty content "
+                    f"(provider={self.provider or 'auto'} "
+                    f"model={self.summary_model or self.model})"
+                )
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
@@ -1545,16 +1617,27 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_error = None
             self._last_summary_auth_failure = False
             return self._with_summary_prefix(summary)
-        except RuntimeError:
-            # No provider configured — long cooldown, unlikely to self-resolve
-            self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
-            self._last_summary_error = "no auxiliary LLM provider configured"
-            logger.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary "
-                            "for %d seconds.",
-                            _SUMMARY_FAILURE_COOLDOWN_SECONDS)
-            return None
         except Exception as e:
+            # ``call_llm`` raises ``RuntimeError`` for two very different cases:
+            #   1. No provider configured ("No LLM provider configured ...") —
+            #      a permanent misconfiguration, long cooldown is correct.
+            #   2. An empty/invalid response from a configured provider
+            #      (``_validate_llm_response`` empty-``choices``/``None``, or our
+            #      empty-``content`` guard above) — a transient/proxy fault that
+            #      should fall back to the main model first, exactly like the
+            #      transport errors handled below.
+            # Only (1) belongs in the long no-provider cooldown; (2) and every
+            # other exception flow into the generic fallback logic so they get
+            # a main-model retry before any cooldown. (#11978, #11914)
+            if isinstance(e, RuntimeError) and "no llm provider configured" in str(e).lower():
+                # No provider configured — long cooldown, unlikely to self-resolve
+                self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+                self._last_summary_error = "no auxiliary LLM provider configured"
+                logger.warning("Context compression: no provider available for "
+                                "summary. Middle turns will be dropped without summary "
+                                "for %d seconds.",
+                                _SUMMARY_FAILURE_COOLDOWN_SECONDS)
+                return None
             # If the summary model is different from the main model and the
             # error looks permanent (model not found, 503, 404), fall back to
             # using the main model instead of entering cooldown that leaves

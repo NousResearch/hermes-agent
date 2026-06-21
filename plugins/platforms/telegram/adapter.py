@@ -196,6 +196,24 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
+    r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$'
+)
+
+
+def _separate_chunk_indicator_from_fence(text: str) -> str:
+    """Move ``(N/M)`` chunk markers off Telegram code-fence lines.
+
+    ``truncate_message()`` appends chunk indicators to the end of a chunk. When
+    the chunk had to close an in-progress fenced code block, that creates a
+    line like ````` \\(1/2\\)`` after MarkdownV2 escaping. Telegram does not
+    treat that as a clean closing fence, so it can reject MarkdownV2 and fall
+    back to plain text. Put the indicator on its own line immediately after the
+    closing fence.
+    """
+    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
+
+
 # ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
@@ -334,6 +352,55 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+# ---------------------------------------------------------------------------
+# Rich-message newline normalization
+# ---------------------------------------------------------------------------
+
+# Matches a protected region whose internal newlines must stay bare in the
+# rich-message path: a fenced code block (```...```) OR a GFM pipe-table block
+# (a header row, a delimiter row of dashes/pipes, then any pipe data rows).
+# Telegram renders both natively, so injecting Markdown hard breaks inside them
+# would corrupt the code block / table.
+_RICH_PROTECTED_REGION_RE = re.compile(
+    r'(?:```[^\n]*\n[\s\S]*?```)'                       # fenced code block
+    r'|(?:^[^\n]*\|[^\n]*\n'                            # table header row (has a pipe)
+    r'[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*'  # delimiter
+    r'(?:\n[^\n]*\|[^\n]*)*)',                          # data rows (newline-led, trailing \n left for prose)
+    re.MULTILINE,
+)
+
+
+def _rich_normalize_linebreaks(text: str) -> str:
+    """Convert single ``\\n`` to Markdown hard breaks for the rich-message path.
+
+    Standard Markdown treats a lone ``\\n`` as whitespace (soft break), so
+    Bot API 10.1 ``sendRichMessage`` collapses multi-line content — e.g.
+    slash-command lists joined with ``"\\n".join(lines)`` — into a single
+    paragraph.  Adding two trailing spaces before each single newline
+    forces a hard line break (``<br>``) in the rendered output.
+
+    Paragraph breaks (``\\n\\n``), fenced code blocks, and GFM pipe-table
+    blocks are left untouched: tables render natively in the rich path and a
+    hard break injected into a row separator would corrupt the table.
+    """
+    if not text or '\n' not in text:
+        return text
+
+    out: list[str] = []
+    # Split off protected regions (fenced code OR table blocks) and only inject
+    # hard breaks in the prose between them. Boundary newlines are handled by
+    # the original single-\n regex, which sees each prose run as a whole string.
+    pos = 0
+    for m in _RICH_PROTECTED_REGION_RE.finditer(text):
+        prose = text[pos:m.start()]
+        out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', prose))
+        out.append(m.group(0))  # protected region kept verbatim
+        pos = m.end()
+    tail = text[pos:]
+    out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', tail))
+    return ''.join(out)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -422,10 +489,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # Bot API 10.1 Rich Messages: render constructs the legacy MarkdownV2
         # path degrades (tables → bullet lists, task lists, <details>, block
         # math) via sendRichMessage / editMessageText's rich_message param using
-        # the raw agent markdown. Enabled by default; users can opt out for
+        # the raw agent markdown. Disabled by default so Telegram messages stay
+        # easy to copy as plain text; users can opt in for richer rendering on
         # clients that accept but render rich messages poorly via
-        # platforms.telegram.extra.rich_messages: false.
-        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", True)
+        # platforms.telegram.extra.rich_messages: true.  Keep this opt-in:
+        # current Telegram clients can make rich messages difficult to copy
+        # as plain text, which is worse than degraded table/task-list rendering
+        # for command snippets and mobile handoffs.
+        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -981,6 +1052,16 @@ class TelegramAdapter(BasePlatformAdapter):
         r"int|prod|sqrt|lim|infty|begin\{(?:equation|align|matrix|cases)\}))",
         re.IGNORECASE | re.DOTALL,
     )
+    _RICH_CJK_RE = re.compile(
+        "["
+        "\u3040-\u30ff"  # Hiragana, Katakana
+        "\u3400-\u4dbf"  # CJK Extension A
+        "\u4e00-\u9fff"  # CJK Unified Ideographs
+        "\uac00-\ud7af"  # Hangul syllables
+        "\uf900-\ufaff"  # CJK Compatibility Ideographs
+        "\U00020000-\U000323af"  # CJK extensions and compatibility supplement
+        "]"
+    )
 
     def _has_telegram_desktop_details_math_crash_shape(self, content: str) -> bool:
         """Return True for rich-message details+math content that crashes TDesktop.
@@ -997,6 +1078,16 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._RICH_MATH_IN_DETAILS_RE.search(details_block):
                 return True
         return False
+
+    def _has_telegram_desktop_cjk_rich_garble_shape(self, content: str) -> bool:
+        """Return True for CJK content that current TDesktop rich drafts garble.
+
+        Telegram Mac/Desktop Bot API 10.1 rich-message rendering currently
+        leaves overlapping draft/overlay glyph artifacts for CJK text (#47653).
+        The legacy MarkdownV2 path renders the same text cleanly, so skip rich
+        delivery up front until affected clients age out.
+        """
+        return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
         """Return True for markdown constructs that the legacy path degrades.
@@ -1036,6 +1127,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and content.strip()
             and self._needs_rich_rendering(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
+            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
@@ -1089,8 +1181,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Never pass ``format_message(content)`` here — that converts to
         MarkdownV2 and would escape/destroy rich syntax like table pipes.
+
+        Single newlines are normalized to Markdown hard breaks so that
+        multi-line content (slash-command lists, etc.) renders correctly
+        in the rich-message path.  See ``_rich_normalize_linebreaks``.
         """
-        payload: Dict[str, Any] = {"markdown": content}
+        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -1353,6 +1449,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and content
             and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
+            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
@@ -2436,7 +2533,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 # MarkdownV2-special parentheses so Telegram doesn't reject the
                 # chunk and fall back to plain text.
                 chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    _separate_chunk_indicator_from_fence(
+                        re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    )
                     for chunk in chunks
                 ]
             
@@ -2910,7 +3009,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if finalize:
                 # Use format_message + parse_mode for the final chunk;
                 # mirror edit_message's main happy-path.
-                formatted = self.format_message(first_chunk)
+                formatted = _separate_chunk_indicator_from_fence(
+                    self.format_message(first_chunk)
+                )
                 try:
                     await self._bot.edit_message_text(
                         chat_id=int(chat_id),
@@ -2971,7 +3072,9 @@ class TelegramAdapter(BasePlatformAdapter):
             for use_markdown in (True, False) if finalize else (False,):
                 try:
                     if use_markdown:
-                        text = self.format_message(chunk)
+                        text = _separate_chunk_indicator_from_fence(
+                            self.format_message(chunk)
+                        )
                     else:
                         # Plain attempt: on finalize the MarkdownV2 attempt
                         # failed, so degrade to clean stripped text, never

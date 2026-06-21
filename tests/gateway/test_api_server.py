@@ -461,14 +461,33 @@ class TestConcurrencyCap:
         assert resp.headers.get("Retry-After")
 
     def test_cap_counts_both_buckets(self):
-        # /v1/runs (tracked by _run_streams) + chat/responses (inflight)
+        # /v1/runs (active background tasks, tracked by _active_run_tasks)
+        # + chat/responses (inflight)
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 4
         adapter._inflight_agent_runs = 2
-        adapter._run_streams = {"r1": object(), "r2": object()}
+        adapter._active_run_tasks = {"r1": object(), "r2": object()}
         resp = adapter._concurrency_limited_response()
         assert resp is not None
         assert resp.status == 429
+
+    def test_completed_runs_release_cap_slot(self):
+        # Regression (#7483 follow-up): a /v1/runs whose agent has finished
+        # but whose SSE was never consumed leaves a record in _run_streams
+        # (cleared only on SSE-consume or the 300s orphan-TTL sweep). That
+        # buffered, already-completed stream must NOT keep counting against
+        # the concurrency cap, or 10 cheap unconsumed POSTs lock out every
+        # agent endpoint for 5 minutes — inverting the cap into a DoS lever.
+        # The cap counts active background tasks (_active_run_tasks), which
+        # the run's finally block pops on completion.
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 3
+        adapter._inflight_agent_runs = 0
+        # 5 completed-but-unconsumed runs linger in _run_streams ...
+        adapter._run_streams = {f"r{i}": object() for i in range(5)}
+        # ... but none are still running.
+        adapter._active_run_tasks = {}
+        assert adapter._concurrency_limited_response() is None
 
     def test_zero_disables_cap(self):
         adapter = _make_adapter()

@@ -3636,13 +3636,18 @@ class APIServerAdapter(BasePlatformAdapter):
         The cap bounds total in-flight agent activity across every
         agent-serving endpoint: the non-streaming chat/responses paths
         (tracked by ``_inflight_agent_runs``) plus the ``/v1/runs`` streaming
-        path (tracked by ``_run_streams``). A configured value of 0 disables
-        the cap entirely.
+        path (tracked by ``_active_run_tasks`` — the set of still-running
+        ``_run_and_close`` background tasks). A run that has finished frees
+        its slot immediately via that task's ``finally`` block, even when its
+        event stream is still pending SSE consumption or orphan-TTL sweep
+        (``_run_streams`` outlives the run by design); counting active tasks
+        keeps the cap bounding live work rather than buffered, already-completed
+        streams. A configured value of 0 disables the cap entirely.
         """
         limit = self._max_concurrent_runs
         if limit <= 0:
             return None
-        inflight = self._inflight_agent_runs + len(self._run_streams)
+        inflight = self._inflight_agent_runs + len(self._active_run_tasks)
         if inflight >= limit:
             return web.json_response(
                 _openai_error(

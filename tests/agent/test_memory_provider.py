@@ -2,10 +2,11 @@
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager
+from agent.memory_manager import MemoryManager, inject_memory_provider_tools
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -229,6 +230,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.queue_prefetch_all("next turn")
+        mgr.flush_pending(timeout=5)
         assert p1.queued_prefetches == ["next turn"]
         assert p2.queued_prefetches == ["next turn"]
 
@@ -240,6 +242,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.sync_all("user msg", "assistant msg")
+        mgr.flush_pending(timeout=5)
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
 
@@ -253,7 +256,7 @@ class TestMemoryManager:
         ]
 
         mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
-
+        mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
 
     def test_sync_all_omits_messages_for_legacy_provider(self):
@@ -262,7 +265,7 @@ class TestMemoryManager:
         mgr.add_provider(p)
 
         mgr.sync_all("user msg", "assistant msg", messages=[{"role": "tool"}])
-
+        mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg")]
 
     def test_sync_failure_doesnt_block_others(self):
@@ -275,6 +278,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.sync_all("user", "assistant")
+        mgr.flush_pending(timeout=5)
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
 
@@ -462,7 +466,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_discover_finds_user_plugins(self, tmp_path, monkeypatch):
         """discover_memory_providers() includes user-installed plugins."""
-        from plugins.memory import discover_memory_providers, _get_user_plugins_dir
+        from plugins.memory import discover_memory_providers
         self._make_user_memory_plugin(tmp_path, "myexternal")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",
@@ -532,6 +536,147 @@ class TestUserInstalledProviderDiscovery:
         providers = discover_memory_providers()
         names = [n for n, _, _ in providers]
         assert "notmemory" not in names
+
+    def test_load_user_plugin_with_relative_import(self, tmp_path, monkeypatch):
+        """User plugins may import sibling modules with relative imports.
+
+        Regression: _load_provider_from_dir() imports user plugins under the
+        synthetic ``_hermes_user_memory.<name>`` package but never registered
+        that parent namespace in sys.modules, so any relative import inside
+        the plugin raised
+        ``ModuleNotFoundError: No module named '_hermes_user_memory'``.
+        """
+        from plugins.memory import load_memory_provider
+        plugin_dir = tmp_path / "plugins" / "relimport"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "helper.py").write_text("PROVIDER_NAME = 'relimport'\n")
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "from . import helper\n"
+            "class MyProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return helper.PROVIDER_NAME\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        p = load_memory_provider("relimport")
+        assert p is not None
+        assert p.name == "relimport"
+
+    def test_load_user_plugin_with_nested_subpackage(self, tmp_path, monkeypatch):
+        """User plugins may keep their implementation in a nested subpackage.
+
+        Plugin repos that target several runtimes commonly expose a thin root
+        ``__init__.py`` re-exporting from a deeper package, and the
+        intermediate directory may be a namespace package (no __init__.py).
+        Both must resolve through the synthetic parent namespace.
+        """
+        from plugins.memory import load_memory_provider
+        plugin_dir = tmp_path / "plugins" / "nestedimpl"
+        impl_dir = plugin_dir / "adapters" / "hermes"  # adapters/ has no __init__.py
+        impl_dir.mkdir(parents=True)
+        (impl_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class MyProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'nestedimpl'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from .adapters.hermes import MyProvider\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(MyProvider())\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        p = load_memory_provider("nestedimpl")
+        assert p is not None
+        assert p.name == "nestedimpl"
+
+
+class TestUserInstalledProviderCli:
+    """CLI commands of user-installed providers must be discoverable.
+
+    Mirror of the relative-import regression above:
+    discover_plugin_cli_commands() imports the active provider's cli.py as
+    ``_hermes_user_memory.<name>.cli`` without registering the parent
+    packages, so a cli.py with a relative import could never load.
+    """
+
+    def _make_plugin_with_cli(self, tmp_path, name):
+        plugin_dir = tmp_path / "plugins" / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "from . import config\n"
+            "class MyProvider(MemoryProvider):\n"
+            "    @property\n"
+            f"    def name(self): return {name!r}\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(MyProvider())\n"
+        )
+        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n")
+        (plugin_dir / "cli.py").write_text(
+            "from . import config\n"
+            "def register_cli(subparser):\n"
+            "    subparser.add_argument('--status', action='store_true')\n"
+        )
+        return plugin_dir
+
+    def _activate(self, tmp_path, monkeypatch, name):
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_active_memory_provider",
+            lambda: name,
+        )
+
+    def test_cli_discovered_for_user_plugin_with_relative_import(
+        self, tmp_path, monkeypatch
+    ):
+        """discover_plugin_cli_commands() loads a user provider's cli.py."""
+        from plugins.memory import discover_plugin_cli_commands
+        self._make_plugin_with_cli(tmp_path, "extcli")
+        self._activate(tmp_path, monkeypatch, "extcli")
+        commands = discover_plugin_cli_commands()
+        assert len(commands) == 1
+        assert commands[0]["name"] == "extcli"
+        assert callable(commands[0]["setup_fn"])
+
+    def test_provider_load_after_cli_discovery(self, tmp_path, monkeypatch):
+        """The provider still loads after CLI discovery ran first.
+
+        CLI discovery registers a synthetic parent package shell for the
+        relative imports in cli.py; _load_provider_from_dir() must load the
+        real plugin module instead of reusing that shell.
+        """
+        from plugins.memory import discover_plugin_cli_commands, load_memory_provider
+        self._make_plugin_with_cli(tmp_path, "extcliload")
+        self._activate(tmp_path, monkeypatch, "extcliload")
+        assert len(discover_plugin_cli_commands()) == 1
+        p = load_memory_provider("extcliload")
+        assert p is not None
+        assert p.name == "extcliload"
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +980,81 @@ class TestMemoryContextFencing:
         assert combined.index("weather") < fence_start
 
 
+class TestFlattenMessageContent:
+    """Multimodal message content (list of typed parts) must flatten to a
+    plain string before reaching providers — a raw list crashes their regex
+    sanitization with ``expected string or bytes-like object, got 'list'``.
+
+    The memory boundary reuses ``_summarize_user_message_for_log`` (the same
+    helper logging/trajectory use) with ``sep="\\n"`` instead of a forked copy.
+    """
+
+    def test_string_passthrough(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log("hello", sep="\n") == "hello"
+
+    def test_none_is_empty(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(None, sep="\n") == ""
+
+    def test_text_parts_joined_with_sep(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert _summarize_user_message_for_log(content, sep="\n") == "first\nsecond"
+
+    def test_default_sep_is_space(self):
+        """Logging/trajectory callers (the default) keep the space-join."""
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert _summarize_user_message_for_log(content) == "first second"
+
+    def test_image_part_becomes_marker(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xyz"}},
+        ]
+        assert _summarize_user_message_for_log(content, sep="\n") == "[1 image] look at this"
+
+    def test_image_only_message(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        assert _summarize_user_message_for_log(content, sep="\n") == "[2 images]"
+
+    def test_unknown_parts_skipped(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [{"type": "audio", "data": "..."}, {"type": "text", "text": "ok"}, 42]
+        assert _summarize_user_message_for_log(content, sep="\n") == "ok"
+
+    def test_bare_strings_in_list(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(["plain", "strings"], sep="\n") == "plain\nstrings"
+
+    def test_scalar_fallback(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(42, sep="\n") == "42"
+
+    def test_flattened_output_is_regex_safe(self):
+        """The original failure: sanitize_context(list) raised TypeError."""
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        from agent.memory_manager import sanitize_context
+        content = [
+            {"type": "text", "text": "fix this bug"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        # Must not raise.
+        assert sanitize_context(_summarize_user_message_for_log(content, sep="\n"))
+
+
 # ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
 # ---------------------------------------------------------------------------
@@ -1101,38 +1321,25 @@ class TestMemoryToolToolsetGate:
     causing 10x latency on local models (Qwen3-30B: 1.7s → 42s) and
     tool-call loops on small models.
 
-    These tests mirror the gate logic in agent/agent_init.py around the
-    memory provider tool injection block. The gate condition is:
+    These tests exercise the shared gate used by agent init and ACP refreshes.
+    The gate condition is:
 
         enabled_toolsets is None        → no filter, inject (backward compat)
-        "memory" in enabled_toolsets    → user opted in, inject
+        selected toolsets include memory → user opted in, inject
         otherwise (incl. [])            → skip injection
     """
 
     @staticmethod
     def _run_memory_injection(enabled_toolsets, memory_manager):
-        """Simulate the gated memory-tool injection block from agent_init.py."""
-        tools = []
-        valid_tool_names = set()
-
-        if memory_manager and tools is not None and (
-            enabled_toolsets is None or "memory" in enabled_toolsets
-        ):
-            _existing = {
-                t.get("function", {}).get("name")
-                for t in tools
-                if isinstance(t, dict)
-            }
-            for _schema in memory_manager.get_all_tool_schemas():
-                _tname = _schema.get("name", "")
-                if _tname and _tname in _existing:
-                    continue
-                tools.append({"type": "function", "function": _schema})
-                if _tname:
-                    valid_tool_names.add(_tname)
-                    _existing.add(_tname)
-
-        return tools, valid_tool_names
+        """Run the shared memory-tool injection helper against a fake agent."""
+        fake_agent = SimpleNamespace(
+            _memory_manager=memory_manager,
+            enabled_toolsets=enabled_toolsets,
+            tools=[],
+            valid_tool_names=set(),
+        )
+        inject_memory_provider_tools(fake_agent)
+        return fake_agent.tools, fake_agent.valid_tool_names
 
     def _mgr_with_tools(self, *tool_names):
         """Build a MemoryManager whose providers expose the named tool schemas."""
@@ -1157,6 +1364,13 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
         assert "fact_store" in names
 
+    def test_composite_toolset_with_memory_injects(self):
+        """Composite toolsets that include memory should inject provider tools."""
+        mgr = self._mgr_with_tools("hindsight_recall")
+        tools, names = self._run_memory_injection(["hermes-acp"], mgr)
+        assert "hindsight_recall" in names
+        assert any(t["function"]["name"] == "hindsight_recall" for t in tools)
+
     def test_empty_toolsets_blocks_injection(self):
         """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
         mgr = self._mgr_with_tools("fact_store")
@@ -1165,7 +1379,7 @@ class TestMemoryToolToolsetGate:
         assert names == set()
 
     def test_toolsets_without_memory_blocks_injection(self):
-        """Toolset list that doesn't name 'memory' must suppress injection."""
+        """Toolsets that don't include memory must suppress injection."""
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection(["terminal", "web"], mgr)
         assert tools == []

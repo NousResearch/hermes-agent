@@ -115,6 +115,15 @@ class ContextEngine(ABC):
         """
         return False
 
+    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
+        """Return True when preflight should trust recent real usage instead.
+
+        Built-in compression uses this to avoid re-compacting from known-noisy
+        rough estimates after a compressed request has already fit. Third-party
+        engines can ignore it safely.
+        """
+        return False
+
     # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:

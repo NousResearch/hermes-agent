@@ -13,6 +13,7 @@ from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
+    SOURCE_MANUAL_DEVICE_CODE,
     STATUS_EXHAUSTED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
@@ -33,7 +34,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "google-antigravity", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -272,9 +273,6 @@ def auth_add_command(args) -> None:
                 print("Rehydrating Nous session from shared credentials...")
                 rehydrated = auth_mod._try_import_shared_nous_state(
                     timeout_seconds=getattr(args, "timeout", None) or 15.0,
-                    min_key_ttl_seconds=max(
-                        60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))
-                    ),
                 )
                 if rehydrated is not None:
                     custom_label = (getattr(args, "label", None) or "").strip() or None
@@ -297,7 +295,6 @@ def auth_add_command(args) -> None:
             timeout_seconds=getattr(args, "timeout", None) or 15.0,
             insecure=bool(getattr(args, "insecure", False)),
             ca_bundle=getattr(args, "ca_bundle", None),
-            min_key_ttl_seconds=max(60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))),
         )
         # Honor `--label <name>` so nous matches other providers' UX.  The
         # helper embeds this into providers.nous so that label_from_token
@@ -311,27 +308,39 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
-        # Clear any existing suppression marker so a re-link after `hermes auth
-        # remove openai-codex` works without the new tokens being skipped.
-        auth_mod.unsuppress_credential_source(provider, "device_code")
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
+        # Add a distinct, self-contained pool entry per account (matching the
+        # xai-oauth / google-gemini-cli / qwen-oauth patterns) instead of
+        # routing through the singleton ``_save_codex_tokens`` save path.
+        # The singleton round-trip collapsed every added account into the
+        # latest login: a second ``hermes auth add openai-codex`` overwrote
+        # the first account's singleton-mirrored ``device_code`` entry rather
+        # than creating an independent one (#39236). ``manual:device_code``
+        # entries refresh from their own token pair, so they need no singleton
+        # shadow.
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
             label=label,
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
-            source=f"{SOURCE_MANUAL}:device_code",
+            source=SOURCE_MANUAL_DEVICE_CODE,
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
         )
+        first_credential = not pool.entries()
         pool.add_entry(entry)
+        # Adding the first Codex credential should make it the active provider
+        # (the old singleton save path did this implicitly via
+        # _save_provider_state). Subsequent adds leave the active provider as-is.
+        if first_credential:
+            auth_mod.mark_provider_active_if_unset(provider)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
@@ -341,30 +350,25 @@ def auth_add_command(args) -> None:
             open_browser=not getattr(args, "no_browser", False),
             manual_paste=bool(getattr(args, "manual_paste", False)),
         )
-        label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds["tokens"]["access_token"],
-            _oauth_default_label(provider, len(pool.entries()) + 1),
-        )
-        entry = PooledCredential(
-            provider=provider,
-            id=uuid.uuid4().hex[:6],
-            label=label,
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:xai_pkce",
-            access_token=creds["tokens"]["access_token"],
-            refresh_token=creds["tokens"].get("refresh_token"),
-            base_url=creds.get("base_url"),
+        auth_mod._save_xai_oauth_tokens(
+            creds["tokens"],
+            discovery=creds.get("discovery"),
+            redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
         )
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        pool = load_pool(provider)
+        entry = next((e for e in pool.entries() if getattr(e, "source", "") == "loopback_pkce"), None)
+        shown_label = entry.label if entry is not None else label_from_token(
+            creds["tokens"]["access_token"], _oauth_default_label(provider, 1)
+        )
+        print(f'Saved {provider} OAuth credentials: "{shown_label}"')
         return
 
     if provider == "google-gemini-cli":
         from agent.google_oauth import run_gemini_oauth_login_pure
 
         creds = run_gemini_oauth_login_pure()
+        auth_mod._mark_google_gemini_cli_active(creds)
         label = (getattr(args, "label", None) or "").strip() or (
             creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
         )
@@ -382,8 +386,30 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    if provider == "google-antigravity":
+        from agent.antigravity_oauth import run_antigravity_oauth_login_pure
+
+        creds = run_antigravity_oauth_login_pure()
+        label = (getattr(args, "label", None) or "").strip() or (
+            creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:antigravity_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
     if provider == "qwen-oauth":
         creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        auth_mod._mark_qwen_oauth_active(creds)
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["api_key"],
             _oauth_default_label(provider, len(pool.entries()) + 1),

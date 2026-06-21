@@ -104,6 +104,7 @@ _PREFIX_PATTERNS = [
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
+    r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
@@ -119,9 +120,25 @@ _JSON_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Authorization headers
+# Authorization headers — any scheme (Bearer, Basic, Token, Digest, …) plus the
+# bare-credential form, and Proxy-Authorization. The credential token is masked
+# while the header name and scheme word are preserved for debuggability. The
+# previous rule only matched ``Bearer``, so ``Basic <base64 user:pass>`` and
+# ``token <pat>`` leaked verbatim into logs/transcripts.
 _AUTH_HEADER_RE = re.compile(
-    r"(Authorization:\s*Bearer\s+)(\S+)",
+    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(\S+)",
+    re.IGNORECASE,
+)
+
+# API-key style auth headers carrying a single opaque value (no scheme word).
+# Anthropic and many providers authenticate with ``x-api-key``; values without
+# a known vendor prefix (custom/local backends) would otherwise leak when a
+# request or curl command is logged or echoed into tool output / transcripts.
+_SECRET_HEADER_NAMES = (
+    r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
+)
+_SECRET_HEADER_RE = re.compile(
+    rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)",
     re.IGNORECASE,
 )
 
@@ -149,10 +166,6 @@ _JWT_RE = re.compile(
     r"eyJ[A-Za-z0-9_-]{10,}"           # Header (always starts with eyJ)
     r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
 )
-
-# Discord user/role mentions: <@123456789012345678> or <@!123456789012345678>
-# Snowflake IDs are 17-20 digit integers that resolve to specific Discord accounts.
-_DISCORD_MENTION_RE = re.compile(r"<@!?(\d{17,20})>")
 
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
@@ -331,7 +344,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Disabled by default — enable via security.redact_secrets: true in config.yaml.
+    Enabled by default. Disable via security.redact_secrets: false in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
 
@@ -377,11 +390,19 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
-    # Authorization headers — _AUTH_HEADER_RE is "Authorization: Bearer ..."
-    # case-insensitive, so "uthorization" is the cheapest substring gate that
-    # covers both "Authorization" and "authorization" without a casefold().
+    # Authorization headers — _AUTH_HEADER_RE matches any scheme after
+    # "[Proxy-]Authorization:" case-insensitively, so "uthorization" is the
+    # cheapest substring gate that covers every casing without a casefold().
     if "uthorization" in text or "UTHORIZATION" in text:
         text = _AUTH_HEADER_RE.sub(
+            lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)),
+            text,
+        )
+
+    # API-key style headers (x-api-key, api-key, …). Header values are
+    # colon-separated, so gate on ":" — the regex itself is the precise filter.
+    if ":" in text:
+        text = _SECRET_HEADER_RE.sub(
             lambda m: m.group(1) + _mask_token(m.group(2)),
             text,
         )
@@ -418,10 +439,6 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
-
-    # Discord user/role mentions (<@snowflake_id>)
-    if "<@" in text:
-        text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     if "+" in text:

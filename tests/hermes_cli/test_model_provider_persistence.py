@@ -6,7 +6,6 @@ isinstance(model, dict)) to silently fail — leaving the provider unset and
 falling back to auto-detection.
 """
 
-import os
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -192,15 +191,12 @@ class TestProviderPersistsAfterModelSave:
         }
 
         # Patch fetch_api_models so the named custom flow returns one model;
-        # patch simple_term_menu to force the input() fallback; patch input to
-        # auto-select the first model from the fallback prompt.
-        from unittest.mock import MagicMock
-        fake_menu_module = MagicMock()
-        fake_menu_module.TerminalMenu.side_effect = OSError("no tty in test")
+        # force the curses menu to error so the input() fallback runs; patch
+        # input to auto-select the first model from the fallback prompt.
         with patch("hermes_cli.auth._save_model_choice"), \
              patch("hermes_cli.auth.deactivate_provider"), \
              patch("hermes_cli.models.fetch_api_models", return_value=["gpt-5.4"]), \
-             patch.dict("sys.modules", {"simple_term_menu": fake_menu_module}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=OSError("no tty in test")), \
              patch("builtins.input", return_value="1"):
             _model_flow_named_custom({}, provider_info)
 
@@ -319,6 +315,41 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("provider") == "opencode-go"
         assert model.get("default") == "minimax-m2.5"
         assert model.get("api_mode") == "anthropic_messages"
+
+    def test_antigravity_oauth_provider_saved_when_selected(self, config_home):
+        """_model_flow_google_antigravity should persist provider/base_url/model together."""
+        from hermes_cli.main import _model_flow_google_antigravity
+        from hermes_cli.config import load_config
+
+        with patch(
+            "hermes_cli.auth.get_antigravity_oauth_auth_status",
+            return_value={"logged_in": True, "email": "user@example.com"},
+        ), patch(
+            "hermes_cli.auth.resolve_antigravity_oauth_runtime_credentials",
+            return_value={
+                "provider": "google-antigravity",
+                "api_key": "tok",
+                "base_url": "antigravity-pa://google",
+                "project_id": "proj-123",
+            },
+        ), patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["gemini-3-flash-agent", "claude-sonnet-4-6"],
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="claude-sonnet-4-6",
+        ):
+            _model_flow_google_antigravity(load_config(), "old-model")
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict), f"model should be dict, got {type(model)}"
+        assert model.get("provider") == "google-antigravity"
+        assert model.get("base_url") == "antigravity-pa://google"
+        assert model.get("default") == "claude-sonnet-4-6"
+        assert "api_mode" not in model
 
 
 

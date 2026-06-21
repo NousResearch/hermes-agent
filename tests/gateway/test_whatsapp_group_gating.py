@@ -6,7 +6,7 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
                   dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
-    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
     if require_mention is not None:
@@ -306,7 +306,6 @@ def test_status_broadcast_chats_are_always_dropped():
     (a contact's WhatsApp Story update). These pseudo-chats aren't real
     conversations and the adapter must drop them regardless of dm_policy.
     """
-    from gateway.platforms.whatsapp import WhatsAppAdapter
 
     # Even on the most permissive config — open DMs, no allowlist — Stories
     # and Channel posts must not reach the agent.
@@ -359,7 +358,7 @@ def test_real_dm_still_processed_after_broadcast_filter():
 
 
 def test_is_broadcast_chat_helper_recognizes_common_jids():
-    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     assert WhatsAppAdapter._is_broadcast_chat("status@broadcast") is True
     assert WhatsAppAdapter._is_broadcast_chat("STATUS@BROADCAST") is True

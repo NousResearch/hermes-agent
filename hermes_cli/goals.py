@@ -279,6 +279,44 @@ def clear_goal(session_id: str) -> None:
     save_goal(session_id, state)
 
 
+def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
+    """Carry a persistent /goal from a parent session to its continuation.
+
+    Context compression rotates ``session_id`` to a fresh child session,
+    but ``load_goal`` does a flat ``goal:<session_id>`` lookup with no
+    parent-lineage walk — so an active goal silently dies at the
+    compaction boundary (#33618). Copy the goal onto the new session and
+    archive the old row as ``cleared`` so exactly one active goal row
+    exists per logical conversation (avoids the "two active goals"
+    hazard of a pure copy).
+
+    Returns True when a goal was migrated, False when there was nothing
+    to migrate or the DB was unavailable. Best-effort and never raises —
+    a failure here must not block compression.
+    """
+    if not old_session_id or not new_session_id or old_session_id == new_session_id:
+        return False
+    try:
+        state = load_goal(old_session_id)
+        if state is None or getattr(state, "status", None) == "cleared":
+            return False
+        # Don't clobber a goal already set on the child (e.g. a resumed
+        # lineage that re-established its own goal).
+        if load_goal(new_session_id) is not None:
+            return False
+        save_goal(new_session_id, state)
+        # Archive the parent's row so it isn't double-counted as active.
+        clear_goal(old_session_id)
+        logger.debug(
+            "GoalManager: migrated goal %s -> %s (%s)",
+            old_session_id, new_session_id, reason or "rotation",
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("GoalManager: goal migration failed: %s", exc)
+        return False
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Judge
 # ──────────────────────────────────────────────────────────────────────
@@ -747,6 +785,153 @@ class GoalManager:
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Kanban worker goal loop
+# ──────────────────────────────────────────────────────────────────────
+
+# Continuation prompt fed back to a kanban goal-mode worker that has not
+# yet completed/blocked its task. The card's own acceptance criteria are
+# the goal — the worker already has the full task body in its first turn,
+# so we keep this short and point it back at the lifecycle contract.
+KANBAN_GOAL_CONTINUATION_TEMPLATE = (
+    "[Continuing toward this kanban task — judge says it is not done yet]\n"
+    "Reason: {reason}\n\n"
+    "Take the next concrete step toward completing the task. When the work "
+    "is genuinely finished, call kanban_complete with a summary. If you are "
+    "blocked and need human input, call kanban_block with a reason. Do not "
+    "stop without calling one of them."
+)
+
+# Fed when the judge believes the work is done but the worker never called
+# kanban_complete / kanban_block. One explicit nudge to terminate the task
+# the right way before the loop gives up.
+KANBAN_GOAL_FINALIZE_TEMPLATE = (
+    "[The work looks complete, but the task is still open]\n"
+    "Reason: {reason}\n\n"
+    "If the task is genuinely done, call kanban_complete now with a short "
+    "summary of what you did. If something still blocks completion, call "
+    "kanban_block with the reason instead."
+)
+
+
+def run_kanban_goal_loop(
+    *,
+    task_id: str,
+    goal_text: str,
+    run_turn,
+    task_status_fn,
+    block_fn,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    first_response: str = "",
+    log=None,
+) -> Dict[str, Any]:
+    """Drive a kanban worker through a Ralph-style goal loop.
+
+    The dispatcher spawns a goal-mode worker exactly like a normal worker
+    (``hermes -p <profile> chat -q "work kanban task <id>"``). The worker's
+    first turn has already run by the time this is called; ``first_response``
+    is that turn's reply. From here we:
+
+    1. Check whether the worker already terminated the task (called
+       ``kanban_complete`` / ``kanban_block``). If so, stop — nothing to do.
+    2. Otherwise judge the latest response against ``goal_text`` (the card's
+       title + body). ``continue`` → feed a continuation prompt and run
+       another turn IN THE SAME SESSION via ``run_turn``. ``done`` but the
+       task is still open → one explicit "call kanban_complete" nudge.
+    3. When the turn budget is exhausted and the worker still hasn't
+       terminated the task, ``block_fn`` is invoked so the card lands in a
+       sticky ``blocked`` state for human review (NOT a silent exit).
+
+    This function performs NO SessionDB persistence — a worker process is
+    ephemeral, so the turn budget lives in a local counter. It is fully
+    decoupled from the CLI for testability: callers inject ``run_turn``
+    (str -> str), ``task_status_fn`` (() -> str|None), and ``block_fn``
+    (reason: str -> None).
+
+    Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
+    outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
+    ``"blocked_by_worker"``, or ``"stopped"``.
+    """
+
+    def _log(msg: str) -> None:
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    max_turns = int(max_turns or DEFAULT_MAX_TURNS)
+    if max_turns < 1:
+        max_turns = DEFAULT_MAX_TURNS
+
+    last_response = first_response or ""
+    # The first turn already consumed one unit of budget.
+    turns_used = 1
+    nudged_to_finalize = False
+
+    while True:
+        # Did the worker terminate the task itself this turn?
+        try:
+            status = task_status_fn()
+        except Exception as exc:
+            _log(f"kanban goal loop: status check failed ({exc}); stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": "status check failed"}
+
+        if status == "done":
+            _log(f"kanban goal loop: task {task_id} completed by worker after {turns_used} turn(s)")
+            return {"outcome": "completed_by_worker", "turns_used": turns_used, "reason": "worker completed the task"}
+        if status == "blocked":
+            _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
+            return {"outcome": "blocked_by_worker", "turns_used": turns_used, "reason": "worker blocked the task"}
+        if status not in ("running", "ready"):
+            # Reclaimed / archived / unexpected — let the dispatcher own it.
+            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
+
+        # Still open — judge whether the latest response satisfies the card.
+        verdict, reason, _parse_failed = judge_goal(goal_text, last_response)
+        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        if verdict == "done":
+            if nudged_to_finalize:
+                # Already asked once to call kanban_complete and it still
+                # didn't — block for review rather than spin.
+                _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
+                try:
+                    block_fn(
+                        f"Goal-mode worker's output looked complete but it never "
+                        f"called kanban_complete after a finalize nudge ({reason})."
+                    )
+                except Exception as exc:
+                    _log(f"kanban goal loop: block_fn failed ({exc})")
+                return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
+            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
+            nudged_to_finalize = True
+        else:
+            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
+
+        # Budget check BEFORE spending another turn.
+        if turns_used >= max_turns:
+            _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
+            try:
+                block_fn(
+                    f"Goal-mode worker exhausted its turn budget "
+                    f"({turns_used}/{max_turns}) without completing the task. "
+                    f"Last judge verdict: {_truncate(reason, 300)}"
+                )
+            except Exception as exc:
+                _log(f"kanban goal loop: block_fn failed ({exc})")
+            return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
+
+        # Run another turn in the same session.
+        try:
+            last_response = run_turn(prompt) or ""
+        except Exception as exc:
+            _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"run_turn error: {type(exc).__name__}"}
+        turns_used += 1
+
+
 __all__ = [
     "GoalState",
     "GoalManager",
@@ -754,9 +939,13 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "KANBAN_GOAL_CONTINUATION_TEMPLATE",
+    "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",
     "load_goal",
     "save_goal",
     "clear_goal",
+    "migrate_goal_to_session",
     "judge_goal",
+    "run_kanban_goal_loop",
 ]

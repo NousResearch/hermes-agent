@@ -29,6 +29,7 @@ Design notes
 from __future__ import annotations
 
 import ctypes
+import locale
 import os
 import re
 import shlex
@@ -50,6 +51,20 @@ _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IG
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+
+
+def _schtasks_encoding() -> str:
+    """Best-effort console encoding for decoding ``schtasks.exe`` output.
+
+    On localized Windows (e.g. Chinese), ``schtasks`` emits text in the OEM/ANSI
+    code page rather than UTF-8. Decoding with the wrong codec raised
+    ``UnicodeDecodeError`` inside ``subprocess``' reader threads. Prefer the
+    locale's preferred encoding and fall back to UTF-8.
+    """
+    try:
+        return locale.getpreferredencoding(False) or "utf-8"
+    except Exception:
+        return "utf-8"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +127,12 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
             [schtasks, *args],
             capture_output=True,
             text=True,
+            # Localized Windows emits schtasks output in the console code page,
+            # not UTF-8. Decode with the locale encoding and replace undecodable
+            # bytes so a non-UTF-8 status line never surfaces a UnicodeDecodeError
+            # traceback from subprocess' reader threads (issue #38172).
+            encoding=_schtasks_encoding(),
+            errors="replace",
             timeout=_SCHTASKS_TIMEOUT_S,
             # CREATE_NO_WINDOW avoids a flashing console window when the CLI
             # is itself hosted in a TUI. See tools/browser_tool.py for the
@@ -288,6 +309,29 @@ def get_startup_entry_path() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Stable working directory
+# ---------------------------------------------------------------------------
+
+def _stable_gateway_working_dir(project_root: Path) -> str:
+    """Return a stable cwd for detached/startup gateway runs.
+
+    Mirror the POSIX service invariant: anchor at ``HERMES_HOME`` whenever it
+    exists so Scheduled Task / Startup launches do not fail at the ``cd`` step
+    after a transient checkout or worktree is moved away. Fall back to the
+    source checkout only if ``HERMES_HOME`` cannot be resolved yet.
+    """
+    from hermes_cli.config import get_hermes_home
+
+    try:
+        home = get_hermes_home()
+        if home and Path(home).is_dir():
+            return str(Path(home).resolve())
+    except Exception:
+        pass
+    return str(project_root)
+
+
+# ---------------------------------------------------------------------------
 # Script rendering
 # ---------------------------------------------------------------------------
 
@@ -300,7 +344,7 @@ def _build_gateway_cmd_script(
     """Build the ``gateway.cmd`` wrapper content (CRLF-terminated).
 
     The script:
-      - cd's into the project directory
+      - cd's into a stable working directory
       - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
       - invokes ``pythonw -m hermes_cli.main [--profile X] gateway run``
         directly so the wrapper cmd.exe exits without a visible gateway console
@@ -336,13 +380,26 @@ def _build_gateway_cmd_script(
 
 
 def _build_startup_launcher(script_path: Path) -> str:
-    """The tiny .cmd that goes in the Startup folder. Just minimizes and chains."""
+    """The tiny .cmd that goes in the Startup folder. Just minimizes and chains.
+
+    Defense-in-depth: bail out silently if the target script is gone. Test
+    fixtures historically wrote Startup entries pointing at pytest tmp_path
+    directories that vanish after the test session. Without the existence
+    guard, every subsequent Windows login flashes a cmd.exe window that
+    fails to find the target. The check + ``exit /b 0`` keeps that case
+    silent.
+    """
+    quoted_target = _quote_cmd_script_arg(str(script_path))
     lines = [
         "@echo off",
         f"rem {_TASK_DESCRIPTION}",
+        # If the wrapper script is gone (typical for stale entries from
+        # uninstalled/migrated installs), silently no-op instead of
+        # flashing a cmd window with a "file not found" error.
+        f"if not exist {quoted_target} exit /b 0",
         # ``start "" /min`` detaches with a minimized console window.
         # ``/d /c`` on cmd.exe skips AUTORUN and runs the target script once.
-        f'start "" /min cmd.exe /d /c {_quote_cmd_script_arg(str(script_path))}',
+        f'start "" /min cmd.exe /d /c {quoted_target}',
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -359,7 +416,7 @@ def _write_task_script() -> Path:
     )
 
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()).resolve())
     profile_arg = _profile_arg(hermes_home)
 
@@ -432,6 +489,8 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     if delete_detail and "cannot find" not in delete_detail.lower():
         last_err = f"{last_err.strip()} (delete detail: {delete_detail})"
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
+
+
 
 
 def _install_startup_entry(script_path: Path) -> Path:
@@ -526,7 +585,8 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     )
 
     python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(get_python_path())
-    working_dir = str(PROJECT_ROOT)
+    project_root = str(PROJECT_ROOT)
+    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()).resolve())
     profile_arg = _profile_arg(hermes_home)
 
@@ -541,7 +601,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         "HERMES_GATEWAY_DETACHED": "1",
         "VIRTUAL_ENV": str(venv_dir),
     }
-    _prepend_pythonpath(env_overlay, [working_dir, *extra_pythonpath] if extra_pythonpath else [])
+    _prepend_pythonpath(env_overlay, [project_root, *extra_pythonpath] if extra_pythonpath else [project_root])
     return argv, working_dir, env_overlay
 
 
@@ -881,7 +941,10 @@ def uninstall() -> None:
         else:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
-    for path, label in [(startup_entry, "Windows login item"), (script_path, "Task script")]:
+    for path, label in [
+        (startup_entry, "Windows login item"),
+        (script_path, "Task script"),
+    ]:
         try:
             path.unlink()
             print(f"✓ Removed {label}: {path}")
@@ -939,6 +1002,139 @@ def _gateway_pids() -> list[int]:
     return list(find_gateway_pids())
 
 
+def _print_deep_probes() -> None:
+    """Print PASS/FAIL per individual probe of gateway liveness.
+
+    The default ``status`` output collapses several signals into one
+    ✓ / ✗ line, which is great when they agree and confusing when they
+    don't. The deep-probe block shows each underlying check independently
+    so the user can see exactly which signal is wrong.
+
+    Probes:
+      [1] PID file present
+      [2] Lock file present and held by some process
+      [3] gateway.status.get_running_pid() returns a PID
+      [4] _pid_exists(pid) — OS confirms the process is alive
+      [5] gateway_state.json exists and parses (and is fresh-ish)
+      [6] Last lifecycle event in gateway-exit-diag.log
+    """
+    import json
+    from datetime import datetime, timezone
+
+    from hermes_cli.config import get_hermes_home
+
+    home = Path(get_hermes_home()).resolve()
+    pid_path = home / "gateway.pid"
+    lock_path = home / "gateway.lock"
+    state_path = home / "gateway_state.json"
+    diag_path = home / "logs" / "gateway-exit-diag.log"
+
+    print()
+    print("Deep probes:")
+
+    def _mark(ok: bool) -> str:
+        return "PASS" if ok else "FAIL"
+
+    # [1] PID file
+    pid_exists = pid_path.exists()
+    pid_value: int | None = None
+    if pid_exists:
+        try:
+            data = json.loads(pid_path.read_text(encoding="utf-8"))
+            pid_value = int(data.get("pid")) if data.get("pid") is not None else None
+            print(f"  [1] {_mark(True):4s}  PID file present: {pid_path} (pid={pid_value})")
+        except Exception as exc:
+            print(f"  [1] {_mark(False):4s}  PID file present but unreadable: {exc}")
+    else:
+        print(f"  [1] {_mark(False):4s}  PID file missing: {pid_path}")
+
+    # [2] Lock file present + held
+    lock_held = False
+    lock_present = lock_path.exists()
+    if lock_present:
+        try:
+            from gateway.status import is_gateway_runtime_lock_active
+
+            lock_held = is_gateway_runtime_lock_active(lock_path)
+            print(f"  [2] {_mark(lock_held):4s}  Lock file held by a live process: {lock_path}")
+        except Exception as exc:
+            print(f"  [2] {_mark(False):4s}  Could not probe lock: {exc}")
+    else:
+        print(f"  [2] {_mark(False):4s}  Lock file missing: {lock_path}")
+
+    # [3] get_running_pid()
+    running_pid: int | None = None
+    try:
+        from gateway.status import get_running_pid
+
+        running_pid = get_running_pid(cleanup_stale=False)
+        print(f"  [3] {_mark(running_pid is not None):4s}  get_running_pid() => {running_pid}")
+    except Exception as exc:
+        print(f"  [3] {_mark(False):4s}  get_running_pid() raised: {exc!r}")
+
+    # [4] _pid_exists() on the probed PID
+    candidate_pid = running_pid if running_pid is not None else pid_value
+    if candidate_pid is not None:
+        try:
+            from gateway.status import _pid_exists
+
+            alive = bool(_pid_exists(candidate_pid))
+            print(f"  [4] {_mark(alive):4s}  _pid_exists({candidate_pid}) => {alive}")
+        except Exception as exc:
+            print(f"  [4] {_mark(False):4s}  _pid_exists raised: {exc!r}")
+    else:
+        print(f"  [4] {_mark(False):4s}  No candidate PID to verify")
+
+    # [5] runtime status file
+    if state_path.exists():
+        try:
+            state_data = json.loads(state_path.read_text(encoding="utf-8"))
+            gateway_state = state_data.get("gateway_state")
+            updated_at = state_data.get("updated_at")
+            age_str = ""
+            if updated_at:
+                try:
+                    updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                    now = datetime.now(timezone.utc)
+                    age_seconds = int((now - updated_dt).total_seconds())
+                    age_str = f" (updated {age_seconds}s ago)"
+                except Exception:
+                    pass
+            ok = gateway_state == "running"
+            print(f"  [5] {_mark(ok):4s}  gateway_state.json state={gateway_state!r}{age_str}")
+        except Exception as exc:
+            print(f"  [5] {_mark(False):4s}  gateway_state.json present but unreadable: {exc}")
+    else:
+        print(f"  [5] {_mark(False):4s}  gateway_state.json missing: {state_path}")
+
+    # [6] Last lifecycle event from the exit-diag log
+    if diag_path.exists():
+        try:
+            with open(diag_path, "rb") as fh:
+                # Read last ~4KB; one event is well under 500 bytes.
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 4096))
+                tail = fh.read().decode("utf-8", errors="replace").splitlines()
+            last_event = next((ln for ln in reversed(tail) if ln.strip()), "")
+            if last_event:
+                try:
+                    event = json.loads(last_event)
+                    tag = event.get("tag", "?")
+                    pid = event.get("pid", "?")
+                    ts = event.get("ts", "?")
+                    healthy = tag in ("gateway.start",)
+                    print(f"  [6] {_mark(healthy):4s}  Last lifecycle event: tag={tag} pid={pid} ts={ts}")
+                except Exception:
+                    print(f"  [6] {_mark(False):4s}  Last lifecycle line not JSON: {last_event[:120]}")
+            else:
+                print(f"  [6] {_mark(False):4s}  exit-diag log empty: {diag_path}")
+        except Exception as exc:
+            print(f"  [6] {_mark(False):4s}  exit-diag log unreadable: {exc}")
+    else:
+        print(f"  [6] {_mark(False):4s}  exit-diag log missing: {diag_path}")
+
+
 def status(deep: bool = False) -> None:
     """Print a status report for the Windows gateway service."""
     _assert_windows()
@@ -966,9 +1162,12 @@ def status(deep: bool = False) -> None:
 
     if deep:
         print()
-        print(f"  Task name:     {task_name}")
-        print(f"  Task script:   {get_task_script_path()}")
-        print(f"  Startup entry: {get_startup_entry_path()}")
+        print(f"  Task name:        {task_name}")
+        print(f"  Task script:      {get_task_script_path()}")
+        print(f"  Startup entry:    {get_startup_entry_path()}")
+        # Surface the per-probe truth so the user can see *which* signal
+        # is lying when the high-level summary disagrees with reality.
+        _print_deep_probes()
 
     if not task_installed and not startup_installed and not pids:
         print()
@@ -1103,10 +1302,54 @@ def stop() -> None:
         print("✗ No gateway was running")
 
 
+def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -> bool:
+    """Block until no gateway process is detectable, or the timeout elapses.
+
+    ``stop()`` can return while the previous gateway is still draining
+    in-flight agents (the drain runs up to the restart-drain timeout). Uses the
+    authoritative ``get_running_pid()`` (lock + liveness + start-time +
+    gateway-shape) plus the now-strict ``_gateway_pids()`` scan so a relaunch
+    never races a still-alive old process.
+    """
+    from gateway.status import get_running_pid
+
+    deadline = time.monotonic() + max(timeout_s, interval_s)
+    while time.monotonic() < deadline:
+        if get_running_pid() is None and not _gateway_pids():
+            return True
+        time.sleep(interval_s)
+    return get_running_pid() is None and not _gateway_pids()
+
+
 def restart() -> None:
-    """Stop the gateway then start it again."""
+    """Stop the gateway then start it again.
+
+    Waits for the old gateway to be authoritatively gone before relaunching --
+    otherwise ``start()``'s "already running" guard sees the still-draining old
+    process and no-ops, and when that process later exits nothing replaces it (a
+    silent outage). Fails loudly if the process can't be cleared or the relaunch
+    doesn't produce a running gateway.
+    """
     _assert_windows()
+    from hermes_cli.gateway import kill_gateway_processes
+
     stop()
+
+    if not _wait_for_gateway_absent(timeout_s=30.0):
+        print("⚠ Gateway still present after stop; forcing termination before restart...")
+        kill_gateway_processes(all_profiles=False, force=True)
+        if not _wait_for_gateway_absent(timeout_s=10.0):
+            raise RuntimeError(
+                "Gateway process still detected after force kill; refusing to "
+                "start a duplicate. Investigate stray PIDs before retrying."
+            )
+
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
     start()
+
+    if not _wait_for_gateway_ready(timeout_s=15.0):
+        raise RuntimeError(
+            "Gateway restart did not produce a running gateway process. "
+            "Check logs/gateway.log and run `hermes gateway status`."
+        )

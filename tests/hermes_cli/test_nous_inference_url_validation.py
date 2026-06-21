@@ -1,8 +1,8 @@
 """Regression tests for Nous Portal inference_base_url host-allowlist validation.
 
-A poisoned ``inference_base_url`` from the Portal refresh / agent-key-mint
-response (network MITM, malicious response injection) would otherwise be
-persisted to auth.json and forwarded the user's legitimate agent_key
+A poisoned ``inference_base_url`` from a Portal refresh response (network
+MITM, malicious response injection) would otherwise be persisted to
+auth.json and forwarded with the user's legitimate invoke JWT
 bearer on every subsequent proxy request, exfiltrating their inference
 budget and opening a response-injection channel into the IDE / chat
 client. ``_validate_nous_inference_url_from_network()`` blocks any URL
@@ -11,7 +11,7 @@ outside the allowlist at the source.
 These tests verify:
 
 1. The validator's host + scheme rules.
-2. Each of the five NETWORK call sites in ``auth.py`` calls the validator
+2. Each of the two NETWORK call sites in ``auth.py`` calls the validator
    rather than the unrestricted ``_optional_base_url`` helper.
 3. The proxy adapter applies the validator as belt-and-suspenders.
 4. The env-var override path (``NOUS_INFERENCE_BASE_URL``) is NOT
@@ -22,7 +22,6 @@ These tests verify:
 from __future__ import annotations
 
 import logging
-import pytest
 
 from hermes_cli.auth import (
     DEFAULT_NOUS_INFERENCE_URL,
@@ -125,7 +124,7 @@ class TestValidatorRules:
 
 
 class TestCallSiteWiring:
-    """Verify the validator is actually wired into all 5 NETWORK call sites.
+    """Verify the validator is actually wired into all auth.py NETWORK call sites.
 
     These are not behaviour-end-to-end tests (the surrounding code is
     several hundred lines per site with extensive HTTP mocking
@@ -162,7 +161,7 @@ class TestCallSiteWiring:
             )
 
     def test_validator_wired_at_all_known_call_sites(self):
-        """All 5 known NETWORK sites use the validator. If this count
+        """All 2 known auth.py NETWORK sites use the validator. If this count
         drops, someone removed protection; if it grows, audit the new
         site to be sure validation is appropriate."""
         source = self._read_auth_source()
@@ -172,8 +171,8 @@ class TestCallSiteWiring:
         mint_count = source.count(
             '_validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))'
         )
-        assert refresh_count == 3, f"expected 3 refresh sites, found {refresh_count}"
-        assert mint_count == 2, f"expected 2 mint sites, found {mint_count}"
+        assert refresh_count == 2, f"expected 2 refresh sites, found {refresh_count}"
+        assert mint_count == 0, f"expected 0 mint sites, found {mint_count}"
 
     def test_proxy_adapter_also_validates(self):
         """The Nous proxy adapter applies the validator as defense-in-depth
@@ -212,3 +211,83 @@ class TestEnvOverrideNotGated:
                     "env override path must not gate through the network "
                     "validator — it would break documented dev/staging use."
                 )
+
+
+class TestHealsPoisonedStoredValue:
+    """A stored inference_base_url that is NOT in the allowlist (e.g. a
+    stale ``stg-inference-api.nousresearch.com`` persisted before the
+    allowlist existed) must be HEALED back to the production default on
+    the next refresh — not silently retained.
+
+    Before the fix, the refresh sites only assigned the validated URL
+    ``if refreshed_url:`` and otherwise left the poisoned value in place,
+    so the "falling back to default" warning was logged but never
+    actually took effect — every subsequent call kept hitting the dead
+    staging endpoint (real incident: opus-4.8 routed to nous, nous pinned
+    to staging, every request + the aux compression call 401'd).
+    """
+
+    def test_refresh_resets_rejected_url_to_default(self, monkeypatch):
+        import hermes_cli.auth as auth
+
+        poisoned = "https://stg-inference-api.nousresearch.com/v1"
+        state = {
+            "access_token": "tok",
+            "refresh_token": "rtok",
+            "client_id": "hermes-cli",
+            "portal_base_url": auth.DEFAULT_NOUS_PORTAL_URL,
+            "inference_base_url": poisoned,
+        }
+
+        # Force the refresh branch and return another rejected (staging) URL,
+        # exercising the validator-returns-None heal path.
+        monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: "needs_refresh")
+        monkeypatch.setattr(
+            auth,
+            "_refresh_access_token",
+            lambda **k: {
+                "access_token": "newtok",
+                "refresh_token": "newrtok",
+                "expires_in": 3600,
+                "inference_base_url": poisoned,  # Portal still hands back staging
+            },
+        )
+        # Skip the JWT usability assertions (orthogonal to URL healing).
+        monkeypatch.setattr(auth, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_select_nous_invoke_jwt", lambda *a, **k: None)
+
+        result = auth.refresh_nous_oauth_from_state(state, force_refresh=True)
+
+        assert result["inference_base_url"] == auth.DEFAULT_NOUS_INFERENCE_URL, (
+            "rejected Portal URL must heal to the production default, "
+            f"got {result['inference_base_url']!r}"
+        )
+
+    def test_refresh_keeps_valid_url(self, monkeypatch):
+        """A legitimate allowlisted URL from the Portal is preserved."""
+        import hermes_cli.auth as auth
+
+        good = "https://inference-api.nousresearch.com/v1"
+        state = {
+            "access_token": "tok",
+            "refresh_token": "rtok",
+            "client_id": "hermes-cli",
+            "portal_base_url": auth.DEFAULT_NOUS_PORTAL_URL,
+            "inference_base_url": good,
+        }
+        monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: "needs_refresh")
+        monkeypatch.setattr(
+            auth,
+            "_refresh_access_token",
+            lambda **k: {
+                "access_token": "newtok",
+                "refresh_token": "newrtok",
+                "expires_in": 3600,
+                "inference_base_url": good,
+            },
+        )
+        monkeypatch.setattr(auth, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_select_nous_invoke_jwt", lambda *a, **k: None)
+
+        result = auth.refresh_nous_oauth_from_state(state, force_refresh=True)
+        assert result["inference_base_url"] == good

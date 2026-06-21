@@ -22,14 +22,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
-    _CORS_HEADERS,
     _derive_chat_session_id,
     check_api_server_requirements,
     cors_middleware,
@@ -338,6 +337,40 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai",
+                "base_url": "https://example.test/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"agent": {"max_turns": 200}})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 200)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["max_iterations"] == 200
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -385,6 +418,63 @@ class TestAuth:
         result = adapter._check_auth(mock_request)
         assert result is not None
         assert result.status == 401
+
+
+# ---------------------------------------------------------------------------
+# Concurrency cap (gateway.api_server.max_concurrent_runs) — #7483
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrencyCap:
+    def test_resolve_defaults_to_10_when_unset(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 10
+
+    def test_resolve_reads_config_value(self):
+        cfg = {"gateway": {"api_server": {"max_concurrent_runs": 3}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 3
+
+    def test_resolve_clamps_negative_to_zero(self):
+        cfg = {"gateway": {"api_server": {"max_concurrent_runs": -5}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 0
+
+    def test_resolve_malformed_falls_back_to_default(self):
+        cfg = {"gateway": {"api_server": {"max_concurrent_runs": "not-an-int"}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 10
+
+    def test_under_cap_returns_none(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 5
+        adapter._inflight_agent_runs = 2
+        assert adapter._concurrency_limited_response() is None
+
+    def test_at_cap_returns_429_with_retry_after(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 3
+        adapter._inflight_agent_runs = 3
+        resp = adapter._concurrency_limited_response()
+        assert resp is not None
+        assert resp.status == 429
+        assert resp.headers.get("Retry-After")
+
+    def test_cap_counts_both_buckets(self):
+        # /v1/runs (tracked by _run_streams) + chat/responses (inflight)
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 4
+        adapter._inflight_agent_runs = 2
+        adapter._run_streams = {"r1": object(), "r2": object()}
+        resp = adapter._concurrency_limited_response()
+        assert resp is not None
+        assert resp.status == 429
+
+    def test_zero_disables_cap(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 0
+        adapter._inflight_agent_runs = 9999
+        assert adapter._concurrency_limited_response() is None
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +589,20 @@ class TestHealthEndpoint:
             assert data["platform"] == "hermes-agent"
 
     @pytest.mark.asyncio
+    async def test_health_reports_version(self, adapter):
+        """GET /health must expose a non-empty version so orchestrators (e.g.
+        AgentOS) can read the gateway version without scraping. Regression
+        guard for the missing-version gap."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert "version" in data
+            assert isinstance(data["version"], str)
+            assert data["version"] != ""
+
+    @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
         """GET /v1/health should return the same response as /health."""
         app = _create_app(adapter)
@@ -508,6 +612,7 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+            assert data.get("version")
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +641,10 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_state"] == "running"
                 assert data["platforms"] == {"telegram": {"state": "connected"}}
                 assert data["active_agents"] == 2
+                # Derived busy/drainable: this endpoint is served BY the live
+                # gateway, so running + 2 agents ⇒ busy and drainable.
+                assert data["gateway_busy"] is True
+                assert data["gateway_drainable"] is True
                 assert isinstance(data["pid"], int)
                 assert "updated_at" in data
 
@@ -551,6 +660,9 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "ok"
                 assert data["gateway_state"] is None
                 assert data["platforms"] == {}
+                # No runtime file ⇒ state None ⇒ not busy, not drainable.
+                assert data["gateway_busy"] is False
+                assert data["gateway_drainable"] is False
 
     @pytest.mark.asyncio
     async def test_health_detailed_does_not_require_auth(self, auth_adapter):

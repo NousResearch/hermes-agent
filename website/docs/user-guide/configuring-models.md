@@ -12,7 +12,7 @@ Hermes uses two kinds of model slots:
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom.
 
 :::tip Fastest path: Nous Portal
-[Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal status`.
+[Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
 
 - Portal subscribers also get **10% off token-billed providers**.
 :::
@@ -47,13 +47,17 @@ Type in the filter box to narrow by provider name, slug, or model ID.
 
 Pick a model, hit **Switch**, and Hermes writes it to `~/.hermes/config.yaml` under the `model` section. **This applies to new sessions only** — any chat tab you already have open keeps running whatever model it started with. To hot-swap the current chat, use the `/model` slash command inside it.
 
+### Mid-session switches and context warnings
+
+When you switch models **inside an active session** (Herm TUI model picker, `hermes` CLI, or `/model` on Telegram/Discord), Hermes estimates whether your **next message** will run **preflight context compression** against the new model's window. If the session is already near or above that model's compression threshold (see [Context Compression](./configuration.md#context-compression)), the switch reply includes a warning — the same `warning_message` path used for expensive-model notices. The switch still applies immediately; compression runs on the **first user message after the switch**, before the model answers.
+
 ## Setting auxiliary models
 
-Click **Show auxiliary** to reveal the eight task slots:
+Click **Show auxiliary** to reveal the 11 task slots:
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
-Every auxiliary task defaults to `auto` — meaning Hermes uses your main model for that job too. Override a specific task when you want a cheaper or faster model for a side-job.
+Every auxiliary task defaults to `auto` — meaning Hermes tries your main model for that job too. If that route is unavailable or hits a capacity-style failure, `auto` follows any task-specific `auxiliary.<task>.fallback_chain`, then the main `fallback_providers` / `fallback_model` chain, then Hermes' built-in auxiliary discovery chain. Override a specific task when you want a cheaper or faster model for a side-job.
 
 ### Common override patterns
 
@@ -66,6 +70,10 @@ Every auxiliary task defaults to `auto` — meaning Hermes uses your main model 
 | **Web Extract** | When you use `web_extract` heavily. Same logic as compression — summarization doesn't need reasoning. |
 | **Skills Hub** | `hermes skills search` uses this. Usually fine at `auto`. |
 | **MCP** | MCP tool routing. Usually fine at `auto`. |
+| **Triage Specifier** | Routes the Kanban triage specifier (`hermes kanban specify`) that expands a rough one-liner into a concrete spec. A cheap, capable model works well. |
+| **Kanban Decomposer** | Routes Kanban task decomposition — splits a triage task into a graph of child tasks for specialist profiles. |
+| **Profile Describer** | Routes profile-description generation (`hermes profile describe --auto` / the dashboard auto-generate button). Short, cheap call. |
+| **Curator** | Routes the curator skill-usage review pass. Can run for minutes on reasoning models, so a cheaper aux model is often worthwhile. |
 
 ### Per-task override
 
@@ -84,7 +92,7 @@ Every model card on the page has a **Use as** dropdown. This is the fast path �
 The dropdown has:
 
 - **Main model** — same as clicking Change on the main row.
-- **All auxiliary tasks** — assigns this model to all 8 aux slots at once. Useful when you just want every side-job on a cheap flash model.
+- **All auxiliary tasks** — assigns this model to all 11 aux slots at once. Useful when you just want every side-job on a cheap flash model.
 - **Individual task options** — Vision, Web Extract, Compression, etc. The currently-assigned model for each task is marked `current`.
 
 Cards are badged with `main` or `aux · <task>` when they're currently assigned to something — so you can see at a glance which of your historical models are wired in where.
@@ -125,7 +133,21 @@ auxiliary:
     # ... other fields unchanged
 ```
 
-`provider: auto` with `model: ''` tells Hermes to use the main model for that task.
+`provider: auto` with `model: ''` tells Hermes to use the main model for that task, while still honoring fallback policy if the main route cannot serve the auxiliary call.
+
+Optional task-specific fallback chains live under the same auxiliary task:
+
+```yaml
+auxiliary:
+  title_generation:
+    provider: auto
+    model: ''
+    fallback_chain:
+      - provider: openrouter
+        model: inclusionai/ring-2.6-1t:free
+```
+
+When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain before the built-in auxiliary discovery chain.
 
 ## When does it take effect?
 
@@ -206,7 +228,7 @@ hermes model            # Interactive provider + model picker (the canonical way
 
 `hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.model` in `~/.hermes/config.yaml`.
 
-To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config get model` and `hermes status`.
+To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config show | grep '^model\.'` and `hermes status`.
 
 ### Direct config edit
 

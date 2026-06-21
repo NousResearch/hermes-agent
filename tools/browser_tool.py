@@ -33,8 +33,8 @@ Environment Variables:
   requires Scale Plan (default: "false")
 - BROWSERBASE_KEEP_ALIVE: Enable keepAlive for session reconnection after disconnects,
   requires paid plan (default: "true")
-- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
-  beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in seconds (max 21600 = 6h).
+  Set to extend beyond project default. Common values: 600 (10min), 1800 (30min) (default: none)
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
@@ -55,7 +55,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import shutil
 import sys
@@ -63,12 +62,12 @@ import tempfile
 import threading
 import time
 import requests
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
-from hermes_cli.config import cfg_get
+from utils import env_int, is_truthy_value
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
 try:
     from tools.website_policy import check_website_access
@@ -79,10 +78,12 @@ try:
     from tools.url_safety import (
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
+        normalize_url_for_request as _normalize_url_for_request,
     )
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
+    _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
@@ -618,7 +619,7 @@ def _is_local_mode() -> bool:
 
 
 def _is_local_backend() -> bool:
-    """Return True when the browser runs locally (no cloud provider).
+    """Return True when the browser runs locally AND the terminal is also local.
 
     SSRF protection is only meaningful for cloud backends (Browserbase,
     BrowserUse) where the agent could reach internal resources on a remote
@@ -626,8 +627,20 @@ def _is_local_backend() -> bool:
     Chromium without a cloud provider — the user already has full terminal
     and network access on the same machine, so the check adds no security
     value.
+
+    However, when the terminal runs in a container (docker, modal, daytona,
+    ssh, singularity), the browser on the host can access internal networks
+    that the terminal cannot.  In this case, SSRF protection should be
+    enabled even though the browser is technically "local".
     """
-    return _is_camofox_mode() or _get_cloud_provider() is None
+    if _is_camofox_mode():
+        return True
+    if _get_cloud_provider() is not None:
+        return False
+    # When terminal runs in a container, browser on host can access
+    # internal networks the terminal can't → treat as non-local.
+    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    return terminal_backend in ("local", "")
 
 
 _auto_local_for_private_urls_resolved = False
@@ -1176,10 +1189,28 @@ _cleanup_done = False
 # Inactivity Timeout Configuration
 # =============================================================================
 
-# Session inactivity timeout (seconds) - cleanup if no activity for this long
-# Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
-# especially when subagents are doing multi-step browser tasks.
-BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+# Session inactivity timeout (seconds) - cleanup if no activity for this long.
+# config.yaml is authoritative; BROWSER_INACTIVITY_TIMEOUT remains a legacy
+# fallback so old deployments keep working if they have not migrated yet.
+DEFAULT_SESSION_INACTIVITY_TIMEOUT = int(
+    DEFAULT_CONFIG.get("browser", {}).get("inactivity_timeout", 120)
+)
+
+
+def _get_session_inactivity_timeout() -> int:
+    result = env_int("BROWSER_INACTIVITY_TIMEOUT", DEFAULT_SESSION_INACTIVITY_TIMEOUT)
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "inactivity_timeout")
+        if val is not None:
+            result = max(int(val), 30)  # Floor at 30s to avoid instant reaping
+    except Exception as e:
+        logger.debug("Could not read inactivity_timeout from config: %s", e)
+    return result
+
+
+BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -1289,6 +1320,92 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
+                                    session_name: str) -> bool:
+    """Confirm a live PID is genuinely *this* session's agent-browser daemon.
+
+    The orphan reaper scans world-writable, predictably-named temp paths
+    (``/tmp/agent-browser-h_*`` etc.) and reads a daemon PID from a ``.pid``
+    file we do not write ourselves — the agent-browser daemon writes it.  A
+    same-user actor can therefore plant a fake socket dir whose ``.pid`` points
+    at an arbitrary victim process, or a recycled PID can land on an unrelated
+    process after the real daemon exits.  Either way, terminating that PID
+    (a *tree* kill via ``_terminate_host_pid``) is an arbitrary-process DoS.
+
+    Before reaping we require, via ``psutil`` (a hard dependency, cross-platform
+    for same-user processes — the only processes the reaper can signal):
+
+      1. **Identity** — the process looks like agent-browser: ``agent-browser``
+         appears in its name or command line.
+      2. **Binding** — the process is bound to *this* session's socket dir: the
+         socket dir path (or its basename) appears in the command line, or in
+         ``AGENT_BROWSER_SOCKET_DIR`` in the process environment.
+
+    Requirement (2) is the real spoof defense: a planted process pointing at a
+    victim PID will not have the victim's cmdline/environ referencing our
+    socket dir.  An attacker would need a process that genuinely embeds this
+    exact session path — i.e. a real daemon they already own and could signal
+    directly.  Fail-closed: any ambiguity (unreadable cmdline, no match) means
+    we refuse to reap and leave the process and its socket dir alone.
+
+    Returns ``True`` only when both checks pass.
+    """
+    try:
+        import psutil
+    except ImportError:  # psutil is a hard dep; defensive only
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "psutil unavailable for identity verification",
+            daemon_pid, session_name)
+        return False
+
+    try:
+        proc = psutil.Process(daemon_pid)
+        name = (proc.name() or "").lower()
+        cmdline = " ".join(proc.cmdline() or []).lower()
+    except psutil.NoSuchProcess:
+        # Vanished between the liveness check and now — nothing to reap.
+        return False
+    except (psutil.AccessDenied, OSError) as exc:
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "could not read process identity (%s)",
+            daemon_pid, session_name, exc)
+        return False
+
+    looks_like_browser = "agent-browser" in name or "agent-browser" in cmdline
+    if not looks_like_browser:
+        logger.warning(
+            "Refusing to reap PID %d (session %s): not an agent-browser "
+            "process (name=%r)", daemon_pid, session_name, name)
+        return False
+
+    # Binding check: the live process must reference *this* socket dir.
+    socket_dir_l = socket_dir.lower()
+    socket_base_l = os.path.basename(socket_dir).lower()
+    bound = socket_dir_l in cmdline or (
+        socket_base_l and socket_base_l in cmdline)
+    if not bound:
+        try:
+            env_dir = (proc.environ() or {}).get(
+                "AGENT_BROWSER_SOCKET_DIR", "")
+            bound = bool(env_dir) and os.path.normpath(env_dir) == \
+                os.path.normpath(socket_dir)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            # environ() can be denied even same-user on some platforms.
+            # cmdline already failed to bind — fail closed.
+            bound = False
+
+    if not bound:
+        logger.warning(
+            "Refusing to reap agent-browser PID %d: not bound to session "
+            "socket dir %s (possible recycled PID or planted pid file)",
+            daemon_pid, socket_dir)
+        return False
+
+    return True
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1382,6 +1499,17 @@ def _reap_orphaned_browser_sessions():
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
             shutil.rmtree(socket_dir, ignore_errors=True)
+            continue
+
+        # The PID is live — but the .pid file lives in a world-writable,
+        # predictably-named temp dir we don't write ourselves, and PIDs get
+        # recycled after the real daemon exits.  Verify the process really is
+        # *this* session's agent-browser daemon before tree-killing it; refuse
+        # otherwise (don't touch the process, leave the socket dir for a later
+        # sweep once the imposter PID is gone).  Fixes the arbitrary same-user
+        # process DoS in issue #14073.
+        if not _verify_reapable_browser_daemon(
+                daemon_pid, socket_dir, session_name):
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
@@ -1579,7 +1707,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2311,6 +2439,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "error": "Blocked: URL contains what appears to be an API key or token. "
                      "Secrets must not be sent in URLs.",
         })
+    url = _normalize_url_for_request(url)
+    normalized_decoded = urllib.parse.unquote(url)
+    if _PREFIX_RE.search(url) or _PREFIX_RE.search(normalized_decoded):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL contains what appears to be an API key or token. "
+                     "Secrets must not be sent in URLs.",
+        })
 
     # SSRF protection — block private/internal addresses before navigating.
     # Skipped for local backends (Camofox, headless Chromium without a cloud
@@ -2875,6 +3011,22 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 "error": f"JavaScript evaluation is not supported by this browser backend. {err}",
             }
             return json.dumps(_copy_fallback_warning(response, result))
+        # A live DOM node / NodeList / Window can't be JSON-serialized by CDP
+        # and fails the eval with "Object reference chain is too long".  The
+        # supervisor fast path retries with returnByValue=false, but the CLI
+        # subprocess can't, so turn the cryptic protocol error into actionable
+        # guidance instead of surfacing it raw.
+        if "reference chain is too long" in err.lower():
+            response = {
+                "success": False,
+                "error": (
+                    "Expression returned a live DOM node / NodeList / Window, "
+                    "which can't be serialized. Extract a primitive value "
+                    "(e.g. .innerText, .href, .src, .value) or use "
+                    "JSON.stringify() / a snapshot tool instead."
+                ),
+            }
+            return json.dumps(_copy_fallback_warning(response, result))
         response = {
             "success": False,
             "error": err,
@@ -3045,17 +3197,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
-    Take a screenshot of the current page and analyze it with vision AI.
+    Take a screenshot of the current page for visual inspection.
 
-    This tool captures what's visually displayed in the browser and sends it
-    to Gemini for analysis. Useful for understanding visual content that the
-    text-based snapshot may not capture (CAPTCHAs, verification challenges,
-    images, complex layouts, etc.).
+    Captures what's visually displayed in the browser. When the active model
+    supports native vision, the screenshot is attached directly to the
+    conversation so the model can inspect it on the next turn; otherwise Hermes
+    falls back to the auxiliary vision model and returns a text analysis. Useful
+    for visual content the text-based snapshot may not capture (CAPTCHAs,
+    verification challenges, images, complex layouts, etc.).
 
-    The screenshot is saved persistently and its file path is returned alongside
-    the analysis, so it can be shared with users via MEDIA:<path> in the response.
+    The screenshot is saved persistently and its file path is returned so it
+    can be shared with users via MEDIA:<path> in the response.
 
     Args:
         question: What you want to know about the page visually
@@ -3063,7 +3217,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         task_id: Task identifier for session isolation
 
     Returns:
-        JSON string with vision analysis results and screenshot_path
+        A JSON string with vision analysis results and screenshot_path, or a
+        multimodal tool-result envelope carrying the screenshot and metadata.
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
@@ -3187,6 +3342,34 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_bytes = screenshot_path.read_bytes()
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
+
+        # Fast path: when native image routing is in effect for the active main
+        # model, attach the screenshot directly instead of describing it through
+        # an auxiliary vision LLM. The model inspects the pixels on its next
+        # turn — no aux call, no information loss. Consistent with vision_analyze.
+        from tools.vision_tools import (
+            _build_native_vision_tool_result,
+            _should_use_native_vision_fast_path,
+        )
+
+        if _should_use_native_vision_fast_path():
+            native_result = _build_native_vision_tool_result(
+                image_url=str(screenshot_path),
+                question=question,
+                image_data_url=data_url,
+                image_size_bytes=len(_screenshot_bytes),
+            )
+            meta = native_result.setdefault("meta", {})
+            meta["screenshot_path"] = str(screenshot_path)
+            if _lp_fallback_warning:
+                meta["fallback_warning"] = _lp_fallback_warning
+            if annotate and result.get("data", {}).get("annotations"):
+                meta["annotations"] = result["data"]["annotations"]
+            native_result["text_summary"] = (
+                f"{native_result.get('text_summary', '')} "
+                f"Screenshot path: {screenshot_path}"
+            ).strip()
+            return native_result
 
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"

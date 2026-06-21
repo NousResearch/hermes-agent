@@ -712,6 +712,76 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
+    """A request for bare ``provider="custom"`` must resolve a literal
+    ``providers.custom`` entry (e.g. a cliproxy endpoint) instead of falling
+    through to the global default. Regression for cron jobs stored with
+    ``provider: "custom"`` failing with ``auth_unavailable: providers=codex``.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "custom": {
+                    "api": "https://cliproxy.example.com/v1",
+                    "api_key": "cliproxy-key",
+                    "default_model": "gpt-5.4",
+                    "name": "CLIProxy",
+                }
+            }
+        },
+    )
+    # Reaching resolve_provider for bare custom with a matching entry means the
+    # named-custom path was bypassed — that is the bug we are fixing.
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider must not be called; providers.custom should match"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://cliproxy.example.com/v1"
+    assert resolved["api_key"] == "cliproxy-key"
+    assert resolved["requested_provider"] == "custom"
+
+
+def test_bare_custom_without_named_entry_still_falls_through(monkeypatch):
+    """No literal providers.custom entry → bare custom keeps the legacy
+    model.base_url trust-path behavior, unchanged by the fix."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "http://127.0.0.1:8082/v1",
+            "default": "my-local-model",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {"providers": {"some-other-proxy": {"api": "https://x.example/v1"}}},
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://127.0.0.1:8082/v1"
+
+
 def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
     """After v11→v12 migration deletes custom_providers, resolution should
     still find entries in the providers dict via get_compatible_custom_providers."""
@@ -791,6 +861,54 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["requested_provider"] == "mycorp-proxy"
     assert resolved["source"] == "custom_provider:MyCorp Proxy"
     assert resolved["model"] == "acme-large"
+
+
+def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
+    """Named custom providers on one gateway must keep their own credentials and protocol."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("GPT_KEY", "gpt-secret")
+    monkeypatch.setenv("CLAUDE_KEY", "claude-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "gpt",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "GPT_KEY",
+                    "api_mode": "codex_responses",
+                    "model": "gpt-5.5",
+                },
+                {
+                    "name": "claude",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "CLAUDE_KEY",
+                    "api_mode": "anthropic_messages",
+                    "model": "claude-opus-4-8",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:claude")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.example.com"
+    assert resolved["api_key"] == "claude-secret"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["requested_provider"] == "custom:claude"
+    assert resolved["model"] == "claude-opus-4-8"
 
 
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):

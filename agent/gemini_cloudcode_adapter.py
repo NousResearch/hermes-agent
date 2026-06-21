@@ -93,11 +93,14 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         args = {"_raw": args_raw}
     if not isinstance(args, dict):
         args = {"_value": args}
+    function_call = {
+        "name": fn.get("name") or "",
+        "args": args,
+    }
+    if tool_call.get("id"):
+        function_call["id"] = str(tool_call["id"])
     return {
-        "functionCall": {
-            "name": fn.get("name") or "",
-            "args": args,
-        },
+        "functionCall": function_call,
         # Sentinel signature — matches opencode-gemini-auth's approach.
         # Without this, Code Assist rejects function calls that originated
         # outside its own chain.
@@ -122,12 +125,13 @@ def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
     except json.JSONDecodeError:
         parsed = None
     response = parsed if isinstance(parsed, dict) else {"output": content}
-    return {
-        "functionResponse": {
-            "name": name,
-            "response": response,
-        },
+    function_response = {
+        "name": name,
+        "response": response,
     }
+    if message.get("tool_call_id"):
+        function_response["id"] = str(message["tool_call_id"])
+    return {"functionResponse": function_response}
 
 
 def _build_gemini_contents(
@@ -358,8 +362,9 @@ def _translate_gemini_response(
                 args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
             except (TypeError, ValueError):
                 args_str = "{}"
+            call_id = str(fc.get("id") or "").strip() or f"call_{uuid.uuid4().hex[:12]}"
             tool_calls.append(SimpleNamespace(
-                id=f"call_{uuid.uuid4().hex[:12]}",
+                id=call_id,
                 type="function",
                 index=i,
                 function=SimpleNamespace(name=str(fc["name"]), arguments=args_str),
@@ -554,6 +559,7 @@ def _translate_stream_event(
                 model=model,
                 tool_call_delta={
                     "index": idx,
+                    "id": str(fc.get("id") or "").strip(),
                     "name": name,
                     "arguments": args_str,
                 },

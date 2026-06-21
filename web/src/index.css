@@ -83,6 +83,15 @@
   --theme-radius: 0.5rem;
   --theme-spacing-mul: 1;
   --theme-density: comfortable;
+
+  /* Data-series accents — consumed by Analytics + Models pages for the
+     input-vs-output token visualisations (chart bars, table values,
+     legend swatches). Defaults are tuned for the Hermes-teal LENS_0
+     look: cream input + emerald-400 output read as warm/cool against
+     the dark canvas. Themes override via ThemeProvider, which emits
+     these as `--series-input-token` / `--series-output-token`. */
+  --series-input-token: #ffe6cb;
+  --series-output-token: #34d399;
 }
 
 /* Theme tokens cascade into the document root so every descendant inherits
@@ -115,6 +124,8 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+  --font-sans: var(--theme-font-sans);
+  --font-mono: var(--theme-font-mono);
 }
 
 #root {

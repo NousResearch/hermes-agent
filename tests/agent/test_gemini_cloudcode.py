@@ -18,8 +18,6 @@ import json
 import stat
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -612,6 +610,7 @@ class TestBuildGeminiRequest:
         fc_part = next(p for p in model_turn["parts"] if "functionCall" in p)
         assert fc_part["functionCall"]["name"] == "get_weather"
         assert fc_part["functionCall"]["args"] == {"city": "SF"}
+        assert fc_part["functionCall"]["id"] == "call_1"
 
     def test_tool_result_translation(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
@@ -634,6 +633,7 @@ class TestBuildGeminiRequest:
         fr_part = next(p for p in last["parts"] if "functionResponse" in p)
         assert fr_part["functionResponse"]["name"] == "get_weather"
         assert fr_part["functionResponse"]["response"] == {"temp": 72}
+        assert fr_part["functionResponse"]["id"] == "c1"
 
     def test_tools_translated_to_function_declarations(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
@@ -792,7 +792,7 @@ class TestTranslateGeminiResponse:
             "response": {
                 "candidates": [{
                     "content": {"parts": [{
-                        "functionCall": {"name": "lookup", "args": {"q": "weather"}},
+                        "functionCall": {"name": "lookup", "args": {"q": "weather"}, "id": "provider-call-1"},
                     }]},
                     "finishReason": "STOP",
                 }],
@@ -800,6 +800,7 @@ class TestTranslateGeminiResponse:
         }
         result = _translate_gemini_response(resp, model="gemini-2.5-flash")
         tc = result.choices[0].message.tool_calls[0]
+        assert tc.id == "provider-call-1"
         assert tc.function.name == "lookup"
         assert json.loads(tc.function.arguments) == {"q": "weather"}
         assert result.choices[0].finish_reason == "tool_calls"

@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@nous-research/ui": "0.16.0",
+    "@nous-research/ui": "0.18.2",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
     "@tailwindcss/vite": "^4.2.1",
@@ -25,26 +27,29 @@
     "leva": "^0.10.1",
     "lucide-react": "^0.577.0",
     "motion": "^12.38.0",
+    "qrcode": "^1.5.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-router-dom": "^7.14.1",
+    "react-router-dom": "^7.17.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
     "unicode-animations": "^1.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
-    "@types/node": "^24.12.0",
+    "@types/node": "^24.13.2",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
     "three": "^0.180.0",
-    "typescript": "~5.9.3",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "vite": "^8.0.16",
+    "vitest": "^4.1.5"
   }
 }

@@ -49,6 +49,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
+| **Google Antigravity (OAuth)** | `hermes model` → "Google Antigravity (OAuth)" (provider: `google-antigravity`, aliases: `antigravity`, `antigravity-oauth`, `agy`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
@@ -66,7 +67,7 @@ In the `model:` config section, you can use either `default:` or `model:` as the
 ```bash
 hermes setup --portal     # fresh install — OAuth + provider + gateway in one command
 hermes model              # existing install — pick "Nous Portal" from the list
-hermes portal status      # inspect login + routing at any time
+hermes portal info        # inspect login + routing at any time
 ```
 
 Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription).
@@ -77,6 +78,64 @@ Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscr
 
 **JWT auth (automatic).** Hermes prefers scoped `inference:invoke` JWTs for Portal requests with the legacy opaque session-key path as a fallback. No configuration is required — credentials are managed by the OAuth flow and rotate transparently. Revoked refresh tokens are quarantined to avoid replay loops.
 
+
+### Google Antigravity via OAuth (`google-antigravity`)
+
+The `google-antigravity` provider uses Antigravity's Code Assist backend and
+Antigravity OAuth scopes. It is a native Hermes integration: Hermes runs its
+own browser PKCE login, stores credentials under
+`~/.hermes/auth/antigravity_oauth.json`, and talks directly to the Antigravity
+Code Assist endpoints. It does not shell out to `agy` for inference, and it
+does not depend on the Antigravity CLI's local token storage.
+
+**Quick start:**
+
+```bash
+hermes model
+# -> pick "Google Antigravity (OAuth)"
+# -> browser opens to accounts.google.com, sign in
+# -> pick one of the models available to your Antigravity account
+```
+
+Hermes discovers Antigravity models from `fetchAvailableModels` after login.
+The visible list depends on the authenticated account and subscription, and can
+include Antigravity-only Gemini agent models plus Claude and GPT-OSS entries
+when the account is entitled. If live discovery fails, Hermes falls back to a
+small curated list so the provider remains selectable.
+
+Supported aliases:
+
+```text
+google-antigravity
+google-antigravity-oauth
+antigravity
+antigravity-oauth
+antigravity-cli
+agy
+agy-cli
+```
+
+Optional overrides:
+
+```bash
+HERMES_ANTIGRAVITY_CLIENT_ID=your-client.apps.googleusercontent.com
+HERMES_ANTIGRAVITY_CLIENT_SECRET=...
+HERMES_ANTIGRAVITY_CLI_PATH=/path/to/agy
+HERMES_ANTIGRAVITY_PROJECT_ID=your-project
+```
+
+If the client ID/secret are not set explicitly, Hermes tries to discover the
+desktop OAuth client credentials from the installed Antigravity CLI (`agy`) on
+`PATH`, `HERMES_ANTIGRAVITY_CLI_PATH`, or common Antigravity install/cache
+locations. Those client credentials are used only to start and refresh Hermes'
+own OAuth session; Hermes still keeps its access/refresh tokens in `~/.hermes`.
+
+:::note Windows credential storage
+The Antigravity CLI may keep its own login in platform-specific storage such as
+Windows Credential Manager. Hermes intentionally keeps separate credentials in
+`~/.hermes` so development profiles and production Hermes profiles do not share
+tokens accidentally.
+:::
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
@@ -89,7 +148,7 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 :::
 
 :::tip Nous Tool Gateway
-Paid Nous Portal subscribers also get access to the **[Tool Gateway](/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. On a fresh install, `hermes setup --portal` logs you in, sets Nous as your provider, and turns the gateway on in one command. Existing users can enable it from `hermes model` or per-tool from `hermes tools`. Inspect routing at any time with `hermes portal status`.
+Paid Nous Portal subscribers also get access to the **[Tool Gateway](/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. On a fresh install, `hermes setup --portal` logs you in, sets Nous as your provider, and turns the gateway on in one command. Existing users can enable it from `hermes model` or per-tool from `hermes tools`. Inspect routing at any time with `hermes portal info`.
 :::
 
 ### Two Commands for Model Management
@@ -494,7 +553,7 @@ Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compat
 
 ```bash
 # StepFun
-hermes chat --provider stepfun --model step-3-mini
+hermes chat --provider stepfun --model step-3.5-flash
 # Requires: STEPFUN_API_KEY in ~/.hermes/.env
 ```
 
@@ -502,7 +561,7 @@ Or set it permanently in `config.yaml`:
 ```yaml
 model:
   provider: "stepfun"
-  default: "step-3-mini"
+  default: "step-3.5-flash"
 ```
 
 The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).
@@ -791,6 +850,8 @@ hermes model
 | `--tool-call-parser <name>` | Parser for the model's tool call format |
 
 Supported parsers: `hermes` (Qwen 2.5, Hermes 2/3), `llama3_json` (Llama 3.x), `mistral`, `deepseek_v3`, `deepseek_v31`, `xlam`, `pythonic`. Without these flags, tool calls won't work — the model will output tool calls as text.
+
+**Qwen reasoning parsers:** Hermes preserves structured reasoning metadata such as `reasoning`, `reasoning_content`, and streamed reasoning deltas when OpenAI-compatible servers return them. That metadata is treated as reasoning/thinking trace data, not as a replacement for the assistant's visible answer. For Qwen reasoning models served by vLLM, make sure the final user-visible response still appears in `content`. If `--reasoning-parser qwen3` leaves `content` empty in your deployment, either disable that parser or pass a server-supported request option such as `chat_template_kwargs.enable_thinking: false` through `extra_body`.
 
 :::tip
 vLLM supports human-readable sizes: `--max-model-len 64k` (lowercase k = 1000, uppercase K = 1024).
@@ -1272,6 +1333,14 @@ extra_body:
     enable_thinking: true
 ```
 
+For Qwen reasoning models served by vLLM, this same shape can be used to disable thinking when a reasoning parser separates all generated text into reasoning fields and leaves the assistant `content` empty:
+
+```yaml
+extra_body:
+  chat_template_kwargs:
+    enable_thinking: false
+```
+
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.
@@ -1522,7 +1591,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `google-antigravity`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

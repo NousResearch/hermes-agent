@@ -1170,6 +1170,7 @@ def start_service() -> None:
     try:
         import win32service
     except ImportError:
+        print("⚠ pywin32 not available — falling back to detached gateway start")
         start()
         return
 
@@ -1190,7 +1191,8 @@ def start_service() -> None:
         finally:
             win32service.CloseServiceHandle(scm)
     except Exception as exc:
-        print(f"⚠ Service start failed: {exc}")
+        print(f"✗ Windows Service start failed: {exc}")
+        print("  Falling back to detached gateway start...")
         start()
 
 

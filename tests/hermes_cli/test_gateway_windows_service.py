@@ -264,17 +264,8 @@ class TestGatewayCrashRecovery:
 class TestSvcStopImportPath:
     """Test SvcStop planned marker import stability (Blocker 7)."""
 
-    def test_planned_stop_marker_import_path(self):
-        """gateway.status.write_planned_stop_marker should be importable."""
-        try:
-            from gateway.status import write_planned_stop_marker
-            assert callable(write_planned_stop_marker)
-        except ImportError:
-            # If gateway.status is not available, the service should handle it gracefully
-            pytest.skip("gateway.status not available in test environment")
-
-    def test_svc_stop_handles_import_error(self):
-        """SvcStop should not crash if import fails."""
+    def test_svc_stop_handles_write_failure(self):
+        """SvcStop should log warning if marker write fails."""
         from hermes_cli._hermes_gateway_service import HermesGatewayService
 
         service = HermesGatewayService.__new__(HermesGatewayService)
@@ -283,13 +274,62 @@ class TestSvcStopImportPath:
         # Mock ReportServiceStatus to avoid SCM calls
         service.ReportServiceStatus = MagicMock()
 
-        # SvcStop should not raise even if import fails
-        with patch.dict('sys.modules', {'gateway.status': None}):
-            # This should not raise
+        # Mock _write_planned_stop_marker to raise
+        service._write_planned_stop_marker = MagicMock(side_effect=Exception("write failed"))
+
+        # SvcStop should not raise even if marker write fails
+        with patch('hermes_cli._hermes_gateway_service.logging') as mock_logging:
             service.SvcStop()
+            # Should log warning
+            mock_logging.warning.assert_called_once()
+            assert "planned-stop marker" in str(mock_logging.warning.call_args)
 
         # stop_event should still be set
         assert service._stop_event.is_set()
+
+    def test_svc_stop_writes_marker_on_success(self):
+        """SvcStop should call _write_planned_stop_marker on success."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+
+        # Mock ReportServiceStatus to avoid SCM calls
+        service.ReportServiceStatus = MagicMock()
+
+        # Mock _write_planned_stop_marker to succeed
+        service._write_planned_stop_marker = MagicMock()
+
+        service.SvcStop()
+
+        # Should call _write_planned_stop_marker
+        service._write_planned_stop_marker.assert_called_once()
+
+        # stop_event should be set
+        assert service._stop_event.is_set()
+
+    def test_write_planned_stop_marker_creates_file(self):
+        """_write_planned_stop_marker should create the marker file."""
+        import json
+        import tempfile
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+
+        # Use a temporary directory for HERMES_HOME
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict('os.environ', {'HERMES_HOME': tmpdir}):
+                service._write_planned_stop_marker()
+
+                # Check that marker file was created
+                marker_path = Path(tmpdir) / ".gateway-planned-stop.json"
+                assert marker_path.exists()
+
+                # Check that marker contains required fields
+                with open(marker_path, 'r') as f:
+                    data = json.load(f)
+                assert 'target_pid' in data
+                assert 'written_at' in data
 
 
 class TestServiceScriptNameArgument:

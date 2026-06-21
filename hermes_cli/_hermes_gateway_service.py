@@ -123,22 +123,66 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         """Called by SCM to stop the service."""
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
 
-        # Write planned-stop marker (reuse existing mechanism, R-06)
-        # Use stable import path from hermes_cli (Blocker 7)
+        # Write planned-stop marker (self-contained, no unstable imports)
+        # This reuses the same mechanism as `hermes gateway stop` on Windows
         try:
-            from hermes_cli.gateway import get_hermes_home
-            from gateway.status import write_planned_stop_marker
-            import ctypes
-
-            pid = ctypes.windll.kernel32.GetCurrentProcessId()
-            write_planned_stop_marker(pid)
-        except Exception:
-            # Best-effort: if marker can't be written, stop_event will
-            # still unblock SvcDoRun
-            pass
+            self._write_planned_stop_marker()
+        except Exception as exc:
+            logging.warning("Failed to write planned-stop marker: %s", exc)
 
         # Signal SvcDoRun to return
         self._stop_event.set()
+
+    def _write_planned_stop_marker(self):
+        """Write planned-stop marker file (self-contained implementation).
+
+        This is a simplified version of gateway.status.write_planned_stop_marker
+        that doesn't require importing gateway.status (which may not be
+        available in the SCM service environment).
+        """
+        import json
+        import ctypes
+        from datetime import datetime, timezone
+
+        # Get HERMES_HOME from environment or default
+        hermes_home = os.environ.get("HERMES_HOME")
+        if not hermes_home:
+            # Try to resolve from user profile
+            appdata = os.environ.get("APPDATA", "")
+            if appdata:
+                hermes_home = os.path.join(appdata, "hermes")
+            else:
+                # Fallback to user home
+                hermes_home = os.path.join(os.path.expanduser("~"), ".hermes")
+
+        marker_path = Path(hermes_home) / ".gateway-planned-stop.json"
+
+        # Get current process ID
+        pid = ctypes.windll.kernel32.GetCurrentProcessId()
+
+        # Get process start time (simplified - use current time as fallback)
+        try:
+            import psutil
+            target_start_time = int(psutil.Process(pid).create_time())
+        except Exception:
+            target_start_time = None
+
+        record = {
+            "target_pid": pid,
+            "target_start_time": target_start_time,
+            "stopper_pid": pid,  # Self-stop
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Write atomically (same pattern as gateway.status._write_json_file)
+        tmp_path = marker_path.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp_path.replace(marker_path)
+
+        logging.info("Planned-stop marker written to %s", marker_path)
 
 
 def configure_recovery_actions(service_name: str | None = None):

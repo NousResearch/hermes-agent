@@ -10,6 +10,18 @@
 /home/linux-nat/projects/hermes-agent
 ```
 
+> หมายเหตุ · สภาพจริงที่ตรวจพบบนเครื่อง (2026-06-21 · อ่านอย่างเดียว) ·
+> path ด้านบนยัง **ไม่มีอยู่จริง** บนเครื่อง · ของจริงที่กำลังรันอยู่คือ ·
+>
+> - Hermes Agent + Dashboard รันจาก `/home/linux-nat/SynerryTools/hermes-agent/main`
+>   (บริการ `hermes-dashboard.service` พอร์ต 9119 สถานะ active)
+> - ศูนย์ความรู้ทีมรันจาก `/home/linux-nat/projects/hermes-knowledge-portal`
+> - บริการ `hermes-knowledge-backup.service` และ `hermes-knowledge-export.service`
+>   สถานะ **failed** (น่าจะเพราะดิสก์เต็ม 93%) · ต้องกู้เครื่องก่อน
+>
+> เจ้าของงานต้องตัดสินใจ · จะย้ายของจริงมาที่ path มาตรฐานด้านบน หรือแก้เอกสาร
+> ให้ชี้ path จริง · ผมไม่เดาเจตนา จึงบันทึกสภาพจริงไว้ให้ก่อน
+
 ## เข้าเครื่อง
 
 ```bash

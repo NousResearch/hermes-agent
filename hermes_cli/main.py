@@ -1959,12 +1959,18 @@ def _launch_tui(
                 _git_repo_root,
                 _prune_stale_worktrees,
                 _setup_worktree,
+                load_cli_config,
             )
 
             repo = _git_repo_root()
             if repo:
                 _prune_stale_worktrees(repo)
-            wt_info = _setup_worktree()
+            # Honor the worktree_sync toggle here too: branch from the freshly
+            # fetched remote tip by default, but respect worktree_sync: false
+            # (branch from local HEAD — offline / pinned base). The CLI chat
+            # path already does this; the TUI launch path used to ignore it.
+            _sync_base = load_cli_config().get("worktree_sync", True)
+            wt_info = _setup_worktree(sync_base=_sync_base)
         except Exception as exc:
             print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
             wt_info = None

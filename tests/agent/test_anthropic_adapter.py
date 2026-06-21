@@ -109,8 +109,10 @@ class TestBuildAnthropicClient:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
+            # Updated 2026-06-04: _COMMON_BETAS now includes the two betas the
+            # official Copilot Chat extension sends — see Worker-A wave1 RE.
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,advanced-tool-use-2025-11-20,context-management-2025-06-27"
             }
 
     def test_custom_base_url_strips_trailing_v1(self):
@@ -1073,6 +1075,72 @@ class TestBuildAnthropicKwargs:
             reasoning_config=None,
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
+
+    def test_copilot_vision_header_added_for_image_request(self):
+        """Image-bearing requests to Copilot get Copilot-Vision-Request: true.
+
+        Without it, Copilot's /v1/messages proxy returns an empty content block
+        (HTTP 200) and the loop fails the turn as an invalid response.
+        """
+        _png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+            "HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": _png}},
+                ],
+            }
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            base_url="https://api.githubcopilot.com",
+        )
+        assert kwargs.get("extra_headers", {}).get("Copilot-Vision-Request") == "true"
+
+    def test_copilot_no_vision_header_without_image(self):
+        """Text-only Copilot requests must NOT carry the vision header."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            base_url="https://api.githubcopilot.com",
+        )
+        assert "Copilot-Vision-Request" not in kwargs.get("extra_headers", {})
+
+    def test_direct_anthropic_image_request_has_no_copilot_header(self):
+        """The Copilot-only header must never leak to api.anthropic.com."""
+        _png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+            "HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": _png}},
+                ],
+            }
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            base_url="https://api.anthropic.com",
+        )
+        assert "Copilot-Vision-Request" not in kwargs.get("extra_headers", {})
 
     def test_fast_mode_oauth_default_omits_context_1m_beta(self):
         """Default OAuth fast-mode avoids context-1m for subscriptions without it."""

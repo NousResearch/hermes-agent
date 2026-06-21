@@ -5,6 +5,17 @@ from unittest.mock import MagicMock, patch
 from run_agent import AIAgent
 
 
+# Per-call volatile headers — copilot_request_headers() generates fresh UUIDs
+# for X-Request-Id and X-Interaction-Id on every call (mirrors VS Code Copilot
+# Chat's trace-correlation behavior). Strip them on both sides before asserting
+# structural equality.
+_VOLATILE_COPILOT_HEADERS = ("X-Request-Id", "X-Interaction-Id")
+
+
+def _strip_volatile_copilot(headers):
+    return {k: v for k, v in headers.items() if k not in _VOLATILE_COPILOT_HEADERS}
+
+
 @patch("run_agent.OpenAI")
 def test_openrouter_base_url_applies_or_headers(mock_openai):
     mock_openai.return_value = MagicMock()
@@ -107,6 +118,35 @@ def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
 
     headers = agent._client_kwargs["default_headers"]
     assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
+
+
+@patch("run_agent.OpenAI")
+def test_copilot_base_url_uses_canonical_text_header_profile(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="gh-token",
+        base_url="https://api.githubcopilot.com",
+        model="gpt-5.4",
+        provider="copilot",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.githubcopilot.com")
+
+    from hermes_cli.copilot_auth import copilot_request_headers
+
+    headers = agent._client_kwargs["default_headers"]
+    # NOTE: prod path uses copilot_default_headers() (no model arg) at base-URL
+    # bootstrap time — the model isn't known yet. So expected = no slug. Slug is
+    # injected later by per-request builders that DO know the model.
+    assert _strip_volatile_copilot(headers) == _strip_volatile_copilot(
+        copilot_request_headers(is_agent_turn=True)
+    )
+    assert "Copilot-Vision-Request" not in headers
+    # Sanity: no slug at this stage (slug is per-request, not per-client)
+    assert "X-Copilot-Agent-Slug" not in headers
 
 
 @patch("run_agent.OpenAI")

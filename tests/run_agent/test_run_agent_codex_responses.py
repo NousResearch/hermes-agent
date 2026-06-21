@@ -1073,7 +1073,7 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     assert closed["value"] is True
     assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
     assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
-    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
+    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "copilot-developer-cli"
     assert isinstance(agent.client, _RebuiltClient)
 
 

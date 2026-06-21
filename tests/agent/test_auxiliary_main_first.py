@@ -361,7 +361,7 @@ class TestResolveVisionMainFirst:
 
         captured = {}
 
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
+        def fake_headers(*, is_agent_turn=False, is_vision=False, **_kwargs):
             captured["is_agent_turn"] = is_agent_turn
             captured["is_vision"] = is_vision
             return {"Copilot-Vision-Request": "true"} if is_vision else {}
@@ -405,7 +405,7 @@ class TestResolveVisionMainFirst:
 
         captured = {}
 
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
+        def fake_headers(*, is_agent_turn=False, is_vision=False, **_kwargs):
             captured["is_agent_turn"] = is_agent_turn
             captured["is_vision"] = is_vision
             return {"Copilot-Vision-Request": "true"} if is_vision else {}

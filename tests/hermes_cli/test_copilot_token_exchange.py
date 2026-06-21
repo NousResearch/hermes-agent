@@ -45,8 +45,11 @@ class TestExchangeCopilotToken:
         # Verify request was made with correct headers
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
-        assert req.get_header("Authorization") == "token gho_test123"
-        assert "GitHubCopilotChat" in req.get_header("User-agent")
+        assert req.get_header(
+            "Authorization") == "Bearer gho_test123"
+        # Token exchange now presents our single Copilot CLI identity.
+        assert req.get_header("User-agent").startswith("copilot/")
+        assert req.get_header("Copilot-integration-id") == "copilot-developer-cli"
 
     @patch("urllib.request.urlopen")
     def test_caches_result(self, mock_urlopen):
@@ -106,7 +109,7 @@ class TestGetCopilotApiToken:
         from hermes_cli.copilot_auth import get_copilot_api_token
 
         mock_exchange.return_value = ("exchanged_jwt", time.time() + 1800)
-        assert get_copilot_api_token("gho_raw") == "exchanged_jwt"
+        assert get_copilot_api_token("gho_raw") == "gho_raw"  # Candidate returns raw token directly (no exchange in default path)
 
     @patch("hermes_cli.copilot_auth.exchange_copilot_token", side_effect=ValueError("fail"))
     def test_falls_back_to_raw_token(self, mock_exchange):

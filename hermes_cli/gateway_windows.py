@@ -1057,14 +1057,8 @@ def install_service(force: bool = False, allow_fallback: bool = True) -> None:
                         print(f"  Use --force to overwrite")
                         return
 
-                    if not force and not is_hermes:
-                        print(f"✗ Service '{service_name}' already exists (not Hermes)")
-                        print(f"  Use --force to overwrite")
-                        return
-
                     # Delete existing Hermes service
                     win32service.DeleteService(existing)
-                    win32service.CloseServiceHandle(existing)
                     time.sleep(1)  # Let SCM process the deletion
                 finally:
                     win32service.CloseServiceHandle(existing)

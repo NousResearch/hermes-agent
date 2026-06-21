@@ -5906,7 +5906,7 @@ def _gateway_command_inner(args):
                     elevated_handoff=getattr(args, 'elevated_handoff', False),
                 )
             else:
-                # Default: try Service first, fallback to Scheduled Task
+                # Default: Scheduled Task (defers to Windows Service if already registered)
                 gateway_windows.install(
                     force=force,
                     start_now=getattr(args, 'start_now', None),

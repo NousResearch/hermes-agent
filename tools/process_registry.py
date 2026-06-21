@@ -829,7 +829,34 @@ class ProcessRegistry:
                 )
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Process has exited -- get exit code captured by the wrapper shell.
+                    # Process has exited.  Do one final read of the log file
+                    # before finishing: output written between this iteration's
+                    # `cat` (above) and the process's actual exit only lives on
+                    # disk now and would otherwise be dropped from the buffer.
+                    # This is the tail that matters most (test summaries, build
+                    # results, final tracebacks) and is exactly what
+                    # notify_on_complete reports.  Mirrors the local backends,
+                    # where _reader_loop drains stdout to EOF and
+                    # _reconcile_local_exit does a final non-blocking drain.
+                    final_result = env.execute(
+                        f"cat {quoted_log_path} 2>/dev/null", timeout=10
+                    )
+                    final_output = final_result.get("output", "")
+                    if final_output:
+                        final_delta = (
+                            final_output[prev_output_len:]
+                            if len(final_output) > prev_output_len
+                            else ""
+                        )
+                        prev_output_len = len(final_output)
+                        with session._lock:
+                            session.output_buffer = final_output
+                            if len(session.output_buffer) > session.max_output_chars:
+                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        if final_delta:
+                            self._check_watch_patterns(session, final_delta)
+
+                    # get exit code captured by the wrapper shell.
                     exit_result = env.execute(
                         f"cat {quoted_exit_path} 2>/dev/null",
                         timeout=5,

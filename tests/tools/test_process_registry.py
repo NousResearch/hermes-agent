@@ -621,6 +621,7 @@ class TestSpawnEnvSanitization:
                 self._responses = iter([
                     {"output": "hello\n"},
                     {"output": "1\n"},
+                    {"output": "hello\n"},
                     {"output": "0\n"},
                 ])
 
@@ -642,7 +643,65 @@ class TestSpawnEnvSanitization:
 
         assert env.commands[0][0] == "cat '/path with spaces/hermes_bg.log' 2>/dev/null"
         assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
-        assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
+        # On exit, a final log read precedes the exit-code read so the tail is
+        # captured with the same quoting.
+        assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.log' 2>/dev/null"
+        assert env.commands[3][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
+
+    def test_env_poller_captures_output_tail_written_before_exit(self, registry):
+        """Output produced between the last poll and process exit must survive.
+
+        Regression: the poller only re-read the log at the top of each 2s
+        iteration.  When the same iteration detected exit it jumped straight to
+        the exit-code read and finished, dropping anything the process wrote in
+        the final window — the most important tail (test summaries, build
+        results, completion markers) right when notify_on_complete fires.
+        """
+        session = _make_session(sid="proc_tail")
+        session.exited = False
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+                self._responses = iter([
+                    # First poll: only the partial prefix is on disk.
+                    {"output": "building...\n"},
+                    # kill -0: process already gone (non-zero).
+                    {"output": "1\n"},
+                    # Final log read on exit: now the full tail is flushed.
+                    {"output": "building...\nALL TESTS PASSED\n"},
+                    # Exit-code file.
+                    {"output": "0\n"},
+                ])
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return next(self._responses)
+
+        env = FakeEnv()
+        watched = []
+
+        with patch("tools.process_registry.time.sleep", return_value=None), \
+            patch.object(registry, "_move_to_finished"), \
+            patch.object(
+                registry,
+                "_check_watch_patterns",
+                side_effect=lambda s, delta: watched.append(delta),
+            ):
+            registry._env_poller_loop(
+                session,
+                env,
+                "/tmp/hermes_bg.log",
+                "/tmp/hermes_bg.pid",
+                "/tmp/hermes_bg.exit",
+            )
+
+        # The final tail is present in the buffer, not just the prefix.
+        assert "ALL TESTS PASSED" in session.output_buffer
+        assert session.output_buffer == "building...\nALL TESTS PASSED\n"
+        assert session.exit_code == 0
+        # The newly flushed tail is scanned for watch patterns as a delta.
+        assert any("ALL TESTS PASSED" in d for d in watched)
 
 
 # =========================================================================

@@ -742,6 +742,36 @@ class TestBuildGeminiRequest:
         assert tc["thinkingBudget"] == 1024
         assert tc["includeThoughts"] is True
 
+    def test_max_tokens_none_defaults_to_gemini_output_ceiling(self):
+        """max_tokens=None must set maxOutputTokens to the model ceiling, not omit it.
+
+        Gemini's Code Assist API applies a low internal default when
+        maxOutputTokens is absent, truncating tool calls mid-stream.  Hermes
+        passes max_tokens=None when no cap is configured; this must be
+        translated to the published ceiling (65535) so the model's full budget
+        is available.  Mirrors the same assertion in test_gemini_native_adapter.
+        """
+        from agent.gemini_cloudcode_adapter import (
+            GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+            build_gemini_request,
+        )
+
+        req = build_gemini_request(
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=None,
+        )
+        assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
+
+    def test_explicit_max_tokens_is_respected(self):
+        """An explicit max_tokens value must pass through unchanged."""
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=4096,
+        )
+        assert req["generationConfig"]["maxOutputTokens"] == 4096
+
 
 class TestWrapCodeAssistRequest:
     def test_envelope_shape(self):

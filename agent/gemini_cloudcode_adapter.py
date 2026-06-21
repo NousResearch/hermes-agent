@@ -48,6 +48,14 @@ from agent.google_code_assist import (
 
 logger = logging.getLogger(__name__)
 
+# Published max output-token ceiling shared by every current Gemini text model
+# (2.5 + 3.x: flash, flash-lite, pro). Used as the default when the caller
+# passes max_tokens=None, because Gemini's Code Assist API applies a low
+# internal default and truncates output (unlike OpenAI-compat endpoints where
+# an omitted limit means full budget). Mirrors the constant in
+# gemini_native_adapter.py — same root cause, different request path.
+GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
+
 
 # =============================================================================
 # Request translation: OpenAI → Gemini
@@ -282,6 +290,15 @@ def build_gemini_request(
         generation_config["temperature"] = float(temperature)
     if isinstance(max_tokens, int) and max_tokens > 0:
         generation_config["maxOutputTokens"] = max_tokens
+    else:
+        # Gemini's Code Assist API does NOT treat an omitted maxOutputTokens as
+        # "use the model's full output budget" — it applies a low internal
+        # default and the model stops early with finishReason=MAX_TOKENS,
+        # truncating tool calls mid-stream (Hermes then retries 3× and refuses
+        # the incomplete call). Default to the ceiling shared by all current
+        # Gemini text models (2.5 + 3.x). Same fix as gemini_native_adapter.py
+        # (PR #39730); the cloudcode path was not covered by that change.
+        generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     if isinstance(top_p, (int, float)):
         generation_config["topP"] = float(top_p)
     if isinstance(stop, str) and stop:

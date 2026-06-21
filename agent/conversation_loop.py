@@ -935,7 +935,7 @@ def run_conversation(
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
-        max_compression_attempts = 3
+        max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -2963,6 +2963,19 @@ def run_conversation(
                     )
 
                 if is_payload_too_large:
+                    # P3: oversized-single-message file-reference offload.
+                    # If a SINGLE message dominates the window, history
+                    # compression can't help; offload it to a file ref
+                    # (reusing the paste pattern) and retry instead of
+                    # dead-ending with 413. Gated off by default; enabled
+                    # via compression.never_413 or chunk_oversized_input.
+                    if (getattr(agent, "never_413", False)
+                            or getattr(agent, "chunk_oversized_input", False)):
+                        if agent._offload_oversized_message(messages):
+                            conversation_history = None
+                            time.sleep(1)
+                            restart_with_compressed_messages = True
+                            break
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
                         # Terminal — surface the buffered retry trace.
@@ -3035,6 +3048,18 @@ def run_conversation(
                 )
 
                 if is_context_length_error:
+                    # P3: oversized-single-message file-reference offload
+                    # (same as the 413 path). "prompt is too long" frequently
+                    # classifies as context_overflow rather than 413. Gated
+                    # off by default; enabled via compression.never_413 or
+                    # chunk_oversized_input.
+                    if (getattr(agent, "never_413", False)
+                            or getattr(agent, "chunk_oversized_input", False)):
+                        if agent._offload_oversized_message(messages):
+                            conversation_history = None
+                            time.sleep(1)
+                            restart_with_compressed_messages = True
+                            break
                     compressor = agent.context_compressor
                     old_ctx = compressor.context_length
 

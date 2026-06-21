@@ -5147,6 +5147,108 @@ class AIAgent:
             force=force,
         )
 
+    def _offload_oversized_message(self, messages: list) -> bool:
+        """P3: offload a single oversized message to a file reference.
+
+        When ONE message alone exceeds the model's context window, history
+        compression cannot help (it can only drop OTHER messages).  Rather
+        than dead-ending with a 413 ``payload_too_large``, we reuse the
+        ``paste.collapse`` pattern: write the oversized message body to
+        ``$HERMES_HOME/pastes/`` and replace it in-place with a short file
+        reference the agent can re-read on demand via its file tools.
+
+        Returns True if a message was offloaded (caller should retry), or
+        False if no oversized text message was found (caller falls through
+        to the existing failure path unchanged).
+
+        This is gated by the caller on ``never_413`` /
+        ``chunk_oversized_input`` so default behavior is unchanged.
+        """
+        from agent.model_metadata import estimate_messages_tokens_rough
+
+        if not messages:
+            return False
+
+        # Per-policy: file-reference is the default for an oversized single
+        # message (D-P3c; no part-count math; the reference is tiny).  Find
+        # the largest text message and, if it alone dominates the window,
+        # offload it.  Walk from the tail so the most-recent (usually the
+        # culprit) is found first on ties.
+        ctx_len = getattr(
+            getattr(self, "context_compressor", None), "context_length", 0
+        ) or 0
+
+        biggest_idx = -1
+        biggest_tokens = 0
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            content = msg.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            # Never offload the system head or a tool-protocol message:
+            # only user/assistant text bodies are safe to externalize.
+            if msg.get("role") not in {"user", "assistant"}:
+                continue
+            t = estimate_messages_tokens_rough([{"role": "user", "content": content}])
+            if t > biggest_tokens:
+                biggest_tokens = t
+                biggest_idx = i
+
+        if biggest_idx < 0:
+            return False
+
+        # Only offload when this single message is genuinely the problem:
+        # it alone is at least ~70% of the window (so compressing the rest
+        # would not have saved us).  Guards against needless offloading when
+        # the overflow is really an accumulation of many small messages
+        # (which existing compression handles correctly).
+        if ctx_len and biggest_tokens < int(ctx_len * 0.70):
+            return False
+
+        body = messages[biggest_idx].get("content", "")
+        line_count = body.count("\n") + 1
+
+        try:
+            from hermes_constants import display_hermes_home as _dhh_fn
+            from pathlib import Path
+            from datetime import datetime
+
+            paste_dir = Path(_dhh_fn()) / "pastes"
+            paste_dir.mkdir(parents=True, exist_ok=True)
+            ref_path = (
+                paste_dir
+                / f"oversized_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
+            )
+            ref_path.write_text(body, encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - filesystem edge
+            logger.error(f"{self.log_prefix}P3 offload failed to write file: {exc}")
+            return False
+
+        placeholder = (
+            f"[Large message offloaded: ~{biggest_tokens:,} tokens, "
+            f"{line_count} lines → {ref_path}]\n"
+            f"The full content was saved to the file above because it exceeded "
+            f"the model's context window. Read it with your file tools "
+            f"(read_file / search_files) when you need its contents."
+        )
+        messages[biggest_idx] = {
+            **messages[biggest_idx],
+            "content": placeholder,
+        }
+
+        # Honest UX: tell the user exactly what happened (no silent magic).
+        self._buffer_status(
+            f"📎 Message too large (~{biggest_tokens:,} tokens), saved to "
+            f"{ref_path} and passed as a file reference; I'll read it on "
+            f"demand."
+        )
+        self._flush_status_buffer()
+        logger.info(
+            f"{self.log_prefix}P3 offloaded oversized message "
+            f"(~{biggest_tokens:,} tokens) to {ref_path}"
+        )
+        return True
+
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:

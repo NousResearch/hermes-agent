@@ -17,7 +17,7 @@ Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
+- Single `memory` tool with action parameter: add, replace, remove
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
@@ -143,8 +143,7 @@ class MemoryStore:
 
         The live ``memory_entries`` / ``user_entries`` lists keep the
         original text so the user can still SEE poisoned entries via
-        ``memory(action=read)`` and remove them — silently dropping them
-        would hide the attack from the user.
+        see poisoned entries by inspecting the source files directly, and remove them — silently dropping them would hide the attack from the user.
 
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
@@ -205,7 +204,7 @@ class MemoryStore:
                 sanitized.append(
                     f"[BLOCKED: {filename} entry contained threat pattern(s): "
                     f"{', '.join(findings)}. Removed from system prompt; "
-                    f"use memory(action=read) to inspect and memory(action=remove) "
+                    f"use memory(action=remove) "
                     f"to delete the original.]"
                 )
             else:
@@ -904,6 +903,38 @@ def _apply_batch_write_gate(
     )
 
 
+def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> str:
+    """Build a recoverable error for a replace/remove call that arrived without
+    ``old_text``.
+
+    ``replace``/``remove`` are inherently targeted -- without ``old_text`` there
+    is no entry to act on, so we cannot fulfil the call. But returning a bare
+    "old_text is required" is a dead-end: some structured-output clients omit the
+    optional ``old_text`` field (it isn't, and can't be, schema-required without
+    a top-level combinator the Codex backend rejects -- see
+    tests/tools/test_memory_tool_schema.py). So instead we return the current
+    entry inventory plus an explicit retry instruction, letting the model reissue
+    the call with ``old_text`` set to a unique substring of the entry it means.
+    Mirrors the batch path's ``_batch_error`` shape. (issues #43412, #49466)
+    """
+    entries = store._entries_for(target)
+    current = store._char_count(target)
+    limit = store._char_limit(target)
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"'{action}' needs old_text -- a short unique substring of the entry "
+                f"to {action}. None was provided. Reissue the {action} with old_text "
+                f"set to part of one of the current_entries below."
+            ),
+            "current_entries": entries,
+            "usage": f"{current:,}/{limit:,}",
+        },
+        ensure_ascii=False,
+    )
+
+
 def memory_tool(
     action: str = None,
     target: str = "memory",
@@ -989,9 +1020,15 @@ def memory_tool(
         return tool_error("Content is required for 'add' action.", success=False)
     if action == "replace" and (not old_text or not content):
         missing = "old_text" if not old_text else "content"
+        if not old_text:
+            # The client/model omitted old_text. Replace is inherently targeted
+            # -- we can't guess which entry. Return the current inventory plus a
+            # retry instruction so the model can reissue with old_text set,
+            # instead of hitting a dead-end error. (issues #43412, #49466)
+            return _missing_old_text_error(store, target, "replace")
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
-        return tool_error("old_text is required for 'remove' action.", success=False)
+        return _missing_old_text_error(store, target, "remove")
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
@@ -1154,7 +1191,7 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove (single-op shape).",
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
             },
             "operations": {
                 "type": "array",

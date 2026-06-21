@@ -1426,13 +1426,23 @@ def register(ctx):
 
     # ── Register proxy commands from graph-discovered skills ──
     def _register_graph_commands():
-        """Scan all skills' SKILL.md frontmatter for commands: and register proxy handlers."""
+        """Scan all skills' SKILL.md frontmatter for commands: and register proxy handlers.
+        Also registers /<skill_name> for every skill in the graph.
+        """
         try:
             skill_dirs = _find_all_skills_dirs()
             skills = _scan_skill_mds(skill_dirs)
             deduped = _dedup_skills(skills)
             _registered = 0
             for _name, _path in deduped.items():
+                # Register /<skill_name> for every skill
+                ctx.register_command(
+                    name=_name,
+                    handler=_make_proxy(_name),
+                    description=f"Proxy to graph-discovered skill: {_name}",
+                )
+                _registered += 1
+                # Also register any explicit commands: from frontmatter
                 try:
                     _text = _path.read_text(encoding="utf-8", errors="replace")
                     _text = _text.lstrip("\ufeff")
@@ -1446,7 +1456,7 @@ def register(ctx):
                             if isinstance(_cmds, list):
                                 for _cmd in _cmds:
                                     _cmd = _cmd.lstrip("/").strip()
-                                    if _cmd:
+                                    if _cmd and _cmd != _name:
                                         ctx.register_command(
                                             name=_cmd,
                                             handler=_make_proxy(_name),

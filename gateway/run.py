@@ -4686,6 +4686,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
             self._cleanup_agent_resources(agent)
 
+    def _should_emit_long_running_notification(
+        self,
+        session_key: Optional[str],
+        agent: Any,
+        executor_task: Optional[Any],
+    ) -> bool:
+        """Only emit the heartbeat while this task still owns the live run.
+
+        Guards against a stale ``running: delegate_task`` heartbeat outliving the
+        run that started it: stop once the executor finishes, the agent is gone,
+        or the session key has been rebound to a different live agent (e.g. the
+        user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
+        """
+        if agent is None:
+            return False
+        if executor_task is not None and executor_task.done():
+            return False
+        if session_key and self._running_agents.get(session_key) is not agent:
+            return False
+        return True
+
     def _cleanup_agent_resources(self, agent: Any) -> None:
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
@@ -9194,6 +9215,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     session_id=session_entry.session_id,
                                 )
                                 try:
+                                    # The hygiene agent rotates the session
+                                    # forward to a continuation id that becomes
+                                    # the gateway session's live row. It must
+                                    # never finalize on close() (today it has no
+                                    # session_db so close() no-ops, but this
+                                    # guards a future where one is wired in).
+                                    _hyg_agent._end_session_on_close = False
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
@@ -16274,6 +16302,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                # Stop heartbeating once this run no longer owns the session
+                # slot or the executor has finished — otherwise a stale
+                # "running: delegate_task" bubble can outlive the run that
+                # spawned it (#12029). _executor_task is a closure var bound
+                # just after this task is scheduled; tolerate the brief window
+                # before then (the first wake is _NOTIFY_INTERVAL away anyway).
+                try:
+                    _exec_ref = _executor_task
+                except NameError:
+                    _exec_ref = None
+                if not self._should_emit_long_running_notification(
+                    session_key, agent_holder[0], _exec_ref
+                ):
+                    break
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available. Default
                 # heartbeat is terse: elapsed + current tool. Verbose

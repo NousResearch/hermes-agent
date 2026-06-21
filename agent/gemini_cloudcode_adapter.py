@@ -564,7 +564,21 @@ def _translate_stream_event(
         mapped = _map_gemini_finish_reason(finish_reason_raw)
         if tool_call_counter[0] > 0:
             mapped = "tool_calls"
-        chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
+        finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
+        # Attach usage from this event's usageMetadata so the streaming loop
+        # records token counts (mirrors the non-streaming path in
+        # _translate_gemini_response and the native adapter's streaming path).
+        usage_meta = inner.get("usageMetadata") or {}
+        if usage_meta:
+            finish_chunk.usage = SimpleNamespace(
+                prompt_tokens=int(usage_meta.get("promptTokenCount") or 0),
+                completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0),
+                total_tokens=int(usage_meta.get("totalTokenCount") or 0),
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=int(usage_meta.get("cachedContentTokenCount") or 0),
+                ),
+            )
+        chunks.append(finish_chunk)
     return chunks
 
 

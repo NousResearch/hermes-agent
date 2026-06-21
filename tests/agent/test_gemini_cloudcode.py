@@ -910,6 +910,40 @@ class TestTranslateStreamEvent:
         )
         assert chunks[-1].choices[0].finish_reason == "tool_calls"
 
+    def test_finish_chunk_carries_usage_metadata(self):
+        """The terminal streaming chunk must surface usageMetadata so the
+        streaming reducer records token counts. Without it the default
+        streaming Code Assist path drops 100% of token/cost accounting (the
+        non-streaming path already extracts usage; this keeps streaming in
+        line — mirrors the native adapter's streaming path).
+        """
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        event = {
+            "response": {
+                "candidates": [{"finishReason": "STOP"}],
+                "usageMetadata": {
+                    "promptTokenCount": 1000,
+                    "candidatesTokenCount": 50,
+                    "totalTokenCount": 1100,
+                    "cachedContentTokenCount": 200,
+                },
+            }
+        }
+        chunks = _translate_stream_event(
+            event, model="gemini-2.5-flash", tool_call_counter=[0],
+        )
+        # Replicate the streaming reducer's usage capture.
+        usage_obj = None
+        for c in chunks:
+            if getattr(c, "usage", None):
+                usage_obj = c.usage
+        assert usage_obj is not None
+        assert usage_obj.prompt_tokens == 1000
+        assert usage_obj.completion_tokens == 50
+        assert usage_obj.total_tokens == 1100
+        assert usage_obj.prompt_tokens_details.cached_tokens == 200
+
 
 class TestMakeStreamChunk:
     def test_reasoning_only_chunk_has_content_none(self):

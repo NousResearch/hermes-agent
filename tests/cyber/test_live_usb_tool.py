@@ -166,18 +166,91 @@ class TestLiveUsbTool:
         assert called["is_block_device"] is False
 
     def test_provision_requires_operator_approval_when_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = {"is_block_device": False}
+
+        def fake_is_block_device(_path) -> bool:  # noqa: ANN001
+            called["is_block_device"] = True
+            return True
+
         monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
         monkeypatch.delenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", raising=False)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", fake_is_block_device)
         monkeypatch.setattr(
             live_usb,
             "_run",
             lambda *_args, **_kw: pytest.fail("provision must fail before invoking provision.sh without approval"),
         )
 
-        out = json.loads(_handle({"action": "provision", "device": "/dev/sdz1"}))
+        out = json.loads(_handle({"action": "provision", "device": "/dev/sdz"}))
 
         assert out["approved"] is False
         assert "operator approval" in out["error"]
+        assert called["is_block_device"] is False
+
+    def test_provision_approved_non_block_device_returns_error_before_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: False)
+        monkeypatch.setattr(
+            live_usb,
+            "_script",
+            lambda *_args, **_kw: pytest.fail("provision must fail before resolving provision.sh"),
+        )
+        monkeypatch.setattr(
+            live_usb,
+            "_run",
+            lambda *_args, **_kw: pytest.fail("provision must fail before invoking provision.sh"),
+        )
+
+        out = json.loads(_handle({
+            "action": "provision",
+            "device": "/dev/sdz",
+            "operator_approval": "approved-live-usb-lane",
+        }))
+
+        assert out == {"error": "Not a block device: /dev/sdz"}
+
+    def test_provision_approved_path_is_mocked_and_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd: list[str], timeout: int = 300) -> dict:
+            captured["cmd"] = cmd
+            captured["timeout"] = timeout
+            return {"rc": 0, "stdout": "mocked provision ok", "stderr": ""}
+
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
+        monkeypatch.setattr(live_usb, "_run", fake_run)
+
+        out = json.loads(_handle({
+            "action": "provision",
+            "device": "/dev/sdz",
+            "operator_approval": "approved-live-usb-lane",
+            "config": "/tmp/hermes-config.tar.gz",
+            "allowed_users": "12345",
+            "model_provider": "openai",
+            "audit": True,
+        }))
+
+        assert out["success"] is True
+        assert captured["timeout"] == 60
+        assert captured["cmd"] == [
+            "bash",
+            str(live_usb._SCRIPTS_DIR / "provision.sh"),
+            "--usb",
+            "/dev/sdz",
+            "--config",
+            "/tmp/hermes-config.tar.gz",
+            "--allowed-users",
+            "12345",
+            "--model-provider",
+            "openai",
+            "--audit",
+        ]
 
     def test_write_approved_path_is_mocked_and_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}

@@ -306,6 +306,8 @@ def _provision(args: dict, **_kw: Any) -> dict:
     device = args.get("device", "")
     if not device:
         return {"error": "device is required"}
+    if not Path(device).is_block_device():
+        return {"error": f"Not a block device: {device}"}
 
     script = _script("provision.sh")
     cmd = ["bash", script, "--usb", device]

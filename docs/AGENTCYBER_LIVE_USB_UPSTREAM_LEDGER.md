@@ -195,3 +195,50 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger before taking a new implementation lane.
+
+### 2026-06-21T20:56:44Z — sync upstream and guard Live USB provision targets
+
+**Commands / status**
+
+- `git status --short --branch`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` with a clean worktree.
+- `git fetch upstream main --prune && git fetch origin main --prune` plus read-only fetch of the active sync branch: upstream advanced from `f72690825` to `f79e0a706`; origin fetched cleanly.
+- Drift after fetch: `HEAD..upstream/main` -> `10`; `upstream/main..HEAD` -> `70`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `194`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- `git merge --no-ff upstream/main`: merged cleanly with the `ort` strategy. Upstream changes touched `cli.py`, gateway WhatsApp/email/auth paths, `hermes_cli/{config,gateway,main,web_server}.py`, platform adapters, release script, TUI gateway server, and upstream tests.
+- Post-merge drift before local Live USB work: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `71`; branch ahead of remote sync branch by `11` commits.
+- An initial combined status summarization command was blocked by the approval guard because it piped tool-list output into `python`; it was not approved and was rerun without that pipe.
+
+**Changed files**
+
+- Upstream merge changed 20 upstream Hermes files, including `cli.py`, `gateway/slash_commands.py`, `gateway/whatsapp_identity.py`, `hermes_cli/config.py`, `hermes_cli/gateway.py`, `hermes_cli/main.py`, `hermes_cli/web_server.py`, `plugins/platforms/{email,whatsapp}/adapter.py`, `scripts/release.py`, `tools/approval.py`, `tui_gateway/server.py`, and directly related upstream tests.
+- `tools/cyber_live_usb.py`: `_provision()` now validates `Path(device).is_block_device()` after root/operator approval and after `device` is present, but before resolving or running `provision.sh`.
+- `tests/cyber/test_live_usb_tool.py`: added provision guard regressions proving missing approval does not touch `Path.is_block_device()`/`_run`, approved non-block targets fail before `_script()`/`_run()`, and an approved mocked provision path preserves command construction without touching real devices.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- `uv run --frozen python -m pytest tests/cyber/test_live_usb_tool.py -q -o addopts= --tb=short` -> `28 passed in 0.49s` after the final test-device wording cleanup.
+- `uv run --frozen python -m ruff check tools/cyber_live_usb.py tests/cyber/test_live_usb_tool.py` -> `All checks passed!`.
+- `scripts/run_tests.sh tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/hermes_cli/test_tools_config.py tests/tools/test_approval_interrupt.py tests/gateway/test_whatsapp_to_jid.py tests/gateway/test_whatsapp_connect.py tests/gateway/test_email.py tests/cli/test_cli_init.py tests/gateway/test_model_command_expensive_confirm.py tests/hermes_cli/test_dashboard_auth_ws_auth.py tests/hermes_cli/test_update_concurrent_quarantine.py` -> `375 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` summary -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, `local_runtime_health_ok: true`; the status output reported secret fields as booleans/presence only.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- `git diff --check && git diff --cached --check` -> passed with no output.
+- Subagent spec review: `PASS`.
+- Subagent quality review: `APPROVED`; its minor note to use whole-device wording in provision tests was fixed before the final focused and expanded verification reruns.
+- Post-verification drift before commit/push: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `71`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `11`.
+
+**Blockers / boundaries**
+
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- Pending: this entry intentionally records pre-commit verification first. After the scoped code/docs commit is pushed, add one bounded ledger-only follow-up with the final commit SHA and remote-tip verification, then stop.
+
+**Next lane**
+
+- Push the guarded sync branch after the scoped commit, then open/review/merge it into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger before taking a new implementation lane.

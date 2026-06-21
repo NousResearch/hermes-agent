@@ -2985,8 +2985,25 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
-    in addition to the built-in kanban-worker."""
+    in addition to the built-in kanban-worker.
+
+    Seeds the per-task skills under the worker's resolved HERMES_HOME so
+    the dispatcher's resolvability filter (which guards against the 2026-06-21
+    researcher + vault-steward crash loop — see
+    ``test_default_spawn_drops_missing_per_task_skill``) accepts them.
+    """
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
+    profile_root = kanban_home / "skills"
+    profile_root.mkdir(exist_ok=True)
+    from hermes_cli.profiles import resolve_profile_env as _rpe
+    monkeypatch.setattr(_rpe.__module__ + ".resolve_profile_env", lambda _name: str(kanban_home))
+    for name in ("translation", "github-code-review"):
+        (profile_root / name / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
+        (profile_root / name / "SKILL.md").write_text(
+            f"---\nname: {name}\n---\n", encoding="utf-8"
+        )
+
     captured = {}
 
     class FakeProc:
@@ -3068,6 +3085,188 @@ def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monke
     assert len(worker_pairs) == 1, (
         f"kanban-worker appeared {len(worker_pairs)} times in argv: {cmd}"
     )
+
+
+def test_default_spawn_drops_missing_per_task_skill(kanban_home, monkeypatch):
+    """Regression for 2026-06-21 researcher + vault-steward crash loop.
+
+    Tasks authored with ``skills=[...]`` referring to names that don't exist
+    under the worker's profile-scoped ``HERMES_HOME`` caused every worker
+    subprocess to exit 60s after spawn with::
+
+        Error: Unknown skill(s): trading-system-safety-audit, ...
+
+    That's ``cli.main()`` raising ``ValueError`` from
+    ``build_preloaded_skills_prompt`` because ``skill_view`` couldn't resolve
+    the name. The dispatcher now filters ``task.skills`` through the same
+    resolvability check used for the built-in ``kanban-worker`` skill, so
+    a missing entry is dropped from argv instead of crashing the worker.
+    """
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
+    # Point resolve_profile_env() at our tmp HERMES_HOME so the dispatcher's
+    # resolvability check sees the same skills tree we seed below. The
+    # function is imported lazily inside _default_spawn, so we patch the
+    # source module rather than kb.
+    profile_root = kanban_home / "skills"
+    profile_root.mkdir(exist_ok=True)
+    from hermes_cli.profiles import resolve_profile_env as _rpe
+    monkeypatch.setattr(_rpe.__module__ + ".resolve_profile_env", lambda _name: str(kanban_home))
+
+    # Only 'obsidian' resolves under this profile — 'trading-system-safety-audit'
+    # does NOT, mirroring the production crash where researcher + vault-steward
+    # profiles lack the trading-system / weather-trader skills that the tasks
+    # asked for.
+    (profile_root / "obsidian" / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
+    (profile_root / "obsidian" / "SKILL.md").write_text(
+        "---\nname: obsidian\n---\n", encoding="utf-8"
+    )
+
+    captured = {}
+
+    class FakeProc:
+        pid = 7
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="mixed skills",
+            assignee="researcher",
+            skills=[
+                "obsidian",                            # resolves → kept
+                "trading-system-safety-audit",         # missing → dropped
+                "weather-trader-forecast-signal-audit",  # missing → dropped
+            ],
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[i + 1] for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
+    ]
+    # Built-in kanban-worker stays.
+    assert "kanban-worker" in skill_names, skill_names
+    # Real skill passes through.
+    assert "obsidian" in skill_names, skill_names
+    # Missing skills are filtered out — otherwise the worker crashes.
+    assert "trading-system-safety-audit" not in skill_names, skill_names
+    assert "weather-trader-forecast-signal-audit" not in skill_names, skill_names
+
+
+def test_default_spawn_logs_dropped_per_task_skill(kanban_home, monkeypatch, caplog):
+    """When the dispatcher drops a missing skill from argv, it must log a
+    warning naming the dropped skill and the missing path. Operators
+    investigating a future crash need to see which skill was filtered and
+    why, not just observe a 'silent' argv change."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    from hermes_cli.profiles import resolve_profile_env as _rpe
+    monkeypatch.setattr(_rpe.__module__ + ".resolve_profile_env", lambda _name: str(kanban_home))
+
+    # No skills seeded under this profile — every per-task skill will be
+    # dropped.
+    captured = {}
+
+    class FakeProc:
+        pid = 11
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="all-missing skills",
+            assignee="researcher",
+            skills=["trading-system-safety-audit", "weather-trader-devops"],
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        with caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
+            kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    # Both skills dropped from argv.
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[i + 1] for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
+    ]
+    assert "trading-system-safety-audit" not in skill_names, skill_names
+    assert "weather-trader-devops" not in skill_names, skill_names
+
+    # Operator-facing warning names both dropped skills.
+    warning_text = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "trading-system-safety-audit" in warning_text, warning_text
+    assert "weather-trader-devops" in warning_text, warning_text
+
+
+def test_default_spawn_keeps_all_per_task_skills_when_all_resolve(
+    kanban_home, monkeypatch,
+):
+    """Sister test to the drop case: when every per-task skill resolves, none
+    are dropped. This guards against an over-eager filter that nukes valid
+    skills alongside invalid ones."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    from hermes_cli.profiles import resolve_profile_env as _rpe
+    monkeypatch.setattr(_rpe.__module__ + ".resolve_profile_env", lambda _name: str(kanban_home))
+
+    profile_root = kanban_home / "skills"
+    profile_root.mkdir(exist_ok=True)
+    for name in ("obsidian", "github-pr-workflow"):
+        (profile_root / name / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
+        (profile_root / name / "SKILL.md").write_text(
+            f"---\nname: {name}\n---\n", encoding="utf-8"
+        )
+
+    captured = {}
+
+    class FakeProc:
+        pid = 13
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="all-valid skills",
+            assignee="researcher",
+            skills=["obsidian", "github-pr-workflow"],
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[i + 1] for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
+    ]
+    assert "obsidian" in skill_names, skill_names
+    assert "github-pr-workflow" in skill_names, skill_names
 
 
 def test_cli_create_skill_flag_repeatable(kanban_home):

@@ -37,7 +37,9 @@ except ImportError:
         "Install with: pip install pywin32"
     )
 
-SERVICE_NAME = "HermesGateway"
+# Service name is read from environment (set by install_service) or defaults
+_DEFAULT_SERVICE_NAME = "HermesGateway"
+SERVICE_NAME = os.environ.get("HERMES_SERVICE_NAME", _DEFAULT_SERVICE_NAME)
 SERVICE_DISPLAY_NAME = "Hermes Agent Gateway"
 SERVICE_DESCRIPTION = (
     "Hermes Agent AI gateway \u2014 messaging platform integration, "
@@ -47,6 +49,9 @@ SERVICE_DESCRIPTION = (
 # Recovery actions: quadratic backoff (Tailscale pattern)
 _RECOVERY_DELAYS_MS = [1000, 2000, 4000, 9000, 16000, 25000, 36000, 49000, 64000]
 _RECOVERY_RESET_PERIOD_S = 60
+
+# Track gateway exit status for RecoveryActions semantics (Blocker 4)
+_gateway_exit_code = 0
 
 
 class HermesGatewayService(win32serviceutil.ServiceFramework):
@@ -62,6 +67,8 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         self._gateway_thread = None
 
     def SvcDoRun(self):
+        global _gateway_exit_code
+
         # CRITICAL: Report SERVICE_RUNNING immediately (R-04)
         # SCM expects this within 30 seconds. MCP discovery blocks 120s.
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
@@ -76,8 +83,20 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         # Block until SvcStop() signals us
         self._stop_event.wait()
 
+        # If gateway crashed (non-zero exit), report SERVICE_STOPPED with
+        # non-zero exit code so SCM triggers RecoveryActions (Blocker 4)
+        if _gateway_exit_code != 0:
+            # Report SERVICE_STOPPED with failure exit code
+            # SCM will see this as a failure and trigger RecoveryActions
+            self.ReportServiceStatus(
+                win32service.SERVICE_STOPPED,
+                win32service.NO_ERROR,
+                _gateway_exit_code,
+            )
+
     def _run_gateway(self):
         """Run the gateway in a background thread."""
+        global _gateway_exit_code
         try:
             # Set environment for detached mode
             os.environ["HERMES_GATEWAY_DETACHED"] = "1"
@@ -86,10 +105,18 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
             from hermes_cli.gateway import run_gateway
 
             run_gateway()
+            # Normal exit
+            _gateway_exit_code = 0
+        except SystemExit as exc:
+            # sys.exit() with non-zero code = failure
+            _gateway_exit_code = exc.code if exc.code else 1
+            logging.warning("Gateway exited with code %s", _gateway_exit_code)
         except Exception as exc:
+            # Unhandled exception = failure
+            _gateway_exit_code = 1
             logging.exception("Gateway crashed: %s", exc)
         finally:
-            # If gateway exits on its own, stop the service
+            # Signal SvcDoRun to return
             self._stop_event.set()
 
     def SvcStop(self):
@@ -97,28 +124,33 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
 
         # Write planned-stop marker (reuse existing mechanism, R-06)
+        # Use stable import path from hermes_cli (Blocker 7)
         try:
+            from hermes_cli.gateway import get_hermes_home
             from gateway.status import write_planned_stop_marker
             import ctypes
 
             pid = ctypes.windll.kernel32.GetCurrentProcessId()
             write_planned_stop_marker(pid)
         except Exception:
+            # Best-effort: if marker can't be written, stop_event will
+            # still unblock SvcDoRun
             pass
 
         # Signal SvcDoRun to return
         self._stop_event.set()
 
 
-def configure_recovery_actions():
+def configure_recovery_actions(service_name: str | None = None):
     """Set SCM RecoveryActions for quadratic backoff restart."""
+    name = service_name or SERVICE_NAME
     try:
         scm = win32service.OpenSCManager(
             None, None, win32service.SC_MANAGER_ALL_ACCESS
         )
         try:
             svc = win32service.OpenService(
-                scm, SERVICE_NAME, win32service.SERVICE_ALL_ACCESS
+                scm, name, win32service.SERVICE_ALL_ACCESS
             )
             try:
                 action_tuples = [(1, d) for d in _RECOVERY_DELAYS_MS]  # 1 = SC_ACTION_RESTART
@@ -147,6 +179,20 @@ def configure_recovery_actions():
 
 def main():
     """Entry point for sc.exe."""
+    global SERVICE_NAME
+
+    # Allow service name override via command-line argument
+    # Usage: python _hermes_gateway_service.py --name HermesGateway-Profile install
+    if "--name" in sys.argv:
+        idx = sys.argv.index("--name")
+        if idx + 1 < len(sys.argv):
+            SERVICE_NAME = sys.argv[idx + 1]
+            # Update class attribute
+            HermesGatewayService._svc_name_ = SERVICE_NAME
+            # Remove from argv so HandleCommandLine doesn't see it
+            sys.argv.pop(idx)
+            sys.argv.pop(idx)
+
     # Configure logging to file (Services run in Session 0)
     try:
         from hermes_constants import get_hermes_home
@@ -167,7 +213,7 @@ def main():
 
     if len(sys.argv) > 1 and sys.argv[1].lower() == "install":
         win32serviceutil.HandleCommandLine(HermesGatewayService)
-        configure_recovery_actions()
+        configure_recovery_actions(SERVICE_NAME)
         print(f"\u2713 Hermes Gateway installed as Windows Service ({SERVICE_NAME})")
         return
 

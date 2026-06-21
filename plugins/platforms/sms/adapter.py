@@ -35,6 +35,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 from gateway.platforms.helpers import redact_phone, strip_markdown
+from utils import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,7 @@ class SmsAdapter(BasePlatformAdapter):
         self._account_sid: str = os.environ["TWILIO_ACCOUNT_SID"]
         self._auth_token: str = os.environ["TWILIO_AUTH_TOKEN"]
         self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
-        self._webhook_port: int = int(
-            os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
-        )
+        self._webhook_port: int = env_int("SMS_WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT)
         self._webhook_host: str = os.getenv("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         self._webhook_url: str = os.getenv("SMS_WEBHOOK_URL", "").strip()
         self._runner = None

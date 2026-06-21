@@ -62,14 +62,13 @@ def load_thinking_config() -> ThinkingState:
 
 # ── Provider support ─────────────────────────────────────────────────────
 
-# Providers that accept chat_template_kwargs in the top-level body
-_BODY_PROVIDERS = {"custom", "llama-cpp", "llama-cpp-gpu-pc"}
-
-# Providers that accept chat_template_kwargs nested in extra_body
-_EXTRA_BODY_PROVIDERS = {"openrouter", "nous"}
-
-# All supported providers (union)
-_SUPPORTED_PROVIDERS = _BODY_PROVIDERS | _EXTRA_BODY_PROVIDERS
+# All providers that support thinking toggle via extra_body
+# (The OpenAI SDK rejects unknown top-level kwargs, so ALL providers
+# must use extra_body to pass chat_template_kwargs to the backend.)
+_SUPPORTED_PROVIDERS = {
+    "custom", "llama-cpp", "llama-cpp-gpu-pc",
+    "openrouter", "nous",
+}
 
 
 def is_provider_supported(provider: str) -> bool:
@@ -86,9 +85,8 @@ def inject_thinking_kwargs(
 ) -> Dict[str, Any]:
     """Inject chat_template_kwargs with enable_thinking into the API payload.
 
-    - llama.cpp (custom providers): top-level body field
-    - OpenRouter/Nous: nested in extra_body
-    - Unsupported providers: no-op
+    All providers use extra_body — the OpenAI SDK rejects unknown top-level
+    kwargs, so even llama.cpp servers need it nested in extra_body.
 
     Returns the modified api_kwargs dict.
     """
@@ -99,12 +97,9 @@ def inject_thinking_kwargs(
         return api_kwargs
 
     kwargs = {"enable_thinking": state.active}
-    normalized_provider = (provider or "").strip().lower()
 
-    if normalized_provider in _BODY_PROVIDERS:
-        api_kwargs["chat_template_kwargs"] = kwargs
-    elif normalized_provider in _EXTRA_BODY_PROVIDERS:
-        api_kwargs.setdefault("extra_body", {})["chat_template_kwargs"] = kwargs
+    # ALL providers: use extra_body (SDK-compatible)
+    api_kwargs.setdefault("extra_body", {})["chat_template_kwargs"] = kwargs
 
     logger.debug(
         "[self-escalation] Injected chat_template_kwargs: %s (provider=%s)",

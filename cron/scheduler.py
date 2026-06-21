@@ -305,6 +305,62 @@ _running_lock = threading.Lock()
 _sequential_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
 
+class _ReadWriteLock:
+    """Writer-preferring readers-writer lock.
+
+    Guards the process-global ``os.environ["TERMINAL_CWD"]`` override that a
+    workdir cron job applies for the whole of its agent run.  Workdir jobs are
+    writers: they mutate the shared env and need exclusive access.  Workdir-less
+    jobs are readers: they only observe ``TERMINAL_CWD`` (indirectly, via the
+    terminal / file / code-exec tools), so any number of them may run
+    concurrently with each other, but none may run alongside a writer — that is
+    exactly what stops a workdir-less job from picking up another job's workdir
+    override and running its commands in the wrong directory.
+
+    Writer preference bounds the wait for a workdir job (dispatched on the
+    single-thread sequential pool) so a stream of workdir-less readers cannot
+    starve it.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writer_active = False
+        self._writers_waiting = 0
+
+    def acquire_read(self) -> None:
+        with self._cond:
+            while self._writer_active or self._writers_waiting > 0:
+                self._cond.wait()
+            self._readers += 1
+
+    def release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def acquire_write(self) -> None:
+        with self._cond:
+            self._writers_waiting += 1
+            try:
+                while self._writer_active or self._readers > 0:
+                    self._cond.wait()
+            finally:
+                self._writers_waiting -= 1
+            self._writer_active = True
+
+    def release_write(self) -> None:
+        with self._cond:
+            self._writer_active = False
+            self._cond.notify_all()
+
+
+# Serializes the per-job TERMINAL_CWD override against every other concurrently
+# running cron job.  See _ReadWriteLock and run_job for the usage contract.
+_terminal_cwd_lock = _ReadWriteLock()
+
+
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent parallel pool."""
     global _parallel_pool, _parallel_pool_max_workers
@@ -2252,9 +2308,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
-    # tick() serializes workdir-jobs outside the parallel pool, so mutating
-    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
-    # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
+    # os.environ["TERMINAL_CWD"] is process-global, so this override is
+    # serialized by _terminal_cwd_lock (acquired just below): a workdir job
+    # holds it as a writer for its whole run, excluding every other job, while
+    # workdir-less jobs hold it as readers and stay parallel with each other.
+    # The sequential pool only keeps workdir jobs from overlapping EACH OTHER;
+    # the lock is what additionally keeps a concurrently-firing workdir-less
+    # parallel-pool job from observing this override and running its shell /
+    # file / code-exec commands in the wrong directory.  For workdir-less jobs
+    # we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
     _job_workdir = (job.get("workdir") or "").strip() or None
     if _job_workdir and not Path(_job_workdir).is_dir():
@@ -2265,6 +2327,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             job_id, _job_workdir,
         )
         _job_workdir = None
+
+    _holds_cwd_write = _job_workdir is not None
+    if _holds_cwd_write:
+        _terminal_cwd_lock.acquire_write()
+    else:
+        _terminal_cwd_lock.acquire_read()
+
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
     if _job_workdir:
         os.environ["TERMINAL_CWD"] = _job_workdir
@@ -2773,6 +2842,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        # Release the cwd lock now that the env is restored, so a waiting
+        # workdir job (or queued reader) can proceed without seeing the override.
+        if _holds_cwd_write:
+            _terminal_cwd_lock.release_write()
+        else:
+            _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
@@ -2999,9 +3074,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
         # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
+        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
+        # they queue on the single-thread sequential pool to run one at a time.
+        # That alone only keeps workdir jobs from overlapping EACH OTHER;
+        # run_job's _terminal_cwd_lock is what additionally stops a concurrently
+        # firing workdir-less parallel-pool job from observing the override.
         sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
         parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
 

@@ -1807,6 +1807,111 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
+
+def _model_flow_cursor(config, current_model=""):
+    """Cursor provider flow via the ``cursor-agent`` CLI."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS, provider_model_ids
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "cursor"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = (
+        status.get("resolved_command") or status.get("command") or "cursor-agent"
+    )
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+    logged_in = status.get("logged_in", False)
+    logged_in_email = status.get("email", "")
+
+    print("  Cursor routes Hermes turns through the `cursor-agent` CLI.")
+    print(
+        "  Auth uses your Cursor subscription — run `cursor-agent login` "
+        "or set CURSOR_API_KEY."
+    )
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    if logged_in:
+        if logged_in_email:
+            print(f"  Logged in: {logged_in_email}")
+        else:
+            print("  Logged in (CURSOR_API_KEY)")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print("  Install Cursor CLI: curl -fsSL https://cursor.com/install | bash")
+        print("  Then run: cursor-agent login")
+        return
+
+    if not logged_in:
+        print("  ⚠ Not logged into Cursor.")
+        print("  Run: cursor-agent login")
+        print("  Or set CURSOR_API_KEY in ~/.hermes/.env")
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+
+    model_list = provider_model_ids(provider_id)
+    if model_list:
+        print(f"  Found {len(model_list)} model(s) from cursor-agent")
+    else:
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(
+                "  ⚠ Could not auto-detect models from cursor-agent — showing defaults."
+            )
+            print('    Use "Enter custom model name" if you do not see your model.')
+
+    normalized_current = (
+        current_model if current_model and current_model != "(not set)" else ""
+    )
+
+    if model_list:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=normalized_current,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+        )
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 

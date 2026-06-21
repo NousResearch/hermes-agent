@@ -269,6 +269,51 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "gpt-5.4"
         assert model.get("api_mode") == "chat_completions"
 
+    def test_cursor_provider_saved_when_selected(self, config_home):
+        """_model_flow_cursor should persist provider/base_url/model together."""
+        from hermes_cli.main import _model_flow_cursor
+        from hermes_cli.config import load_config
+
+        with patch(
+            "hermes_cli.auth.get_external_process_provider_status",
+            return_value={
+                "resolved_command": "/usr/local/bin/cursor-agent",
+                "command": "cursor-agent",
+                "base_url": "cursor://agent",
+                "logged_in": True,
+                "email": "mazovje@gmail.com",
+            },
+        ), patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            return_value={
+                "provider": "cursor",
+                "api_key": "cursor-agent-login",
+                "base_url": "cursor://agent",
+                "command": "/usr/local/bin/cursor-agent",
+                "args": [],
+                "source": "process",
+            },
+        ), patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["auto", "composer-2.5", "composer-2.5-fast"],
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="composer-2.5",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ):
+            _model_flow_cursor(load_config(), "old-model")
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict), f"model should be dict, got {type(model)}"
+        assert model.get("provider") == "cursor"
+        assert model.get("base_url") == "cursor://agent"
+        assert model.get("default") == "composer-2.5"
+        assert model.get("api_mode") == "chat_completions"
+
     def test_opencode_go_models_are_selectable_and_persist_normalized(self, config_home, monkeypatch):
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config

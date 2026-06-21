@@ -1,0 +1,4 @@
+name: cursor
+kind: model-provider
+version: 0.1.0
+description: Cursor external-process provider via cursor-agent CLI

@@ -241,6 +241,27 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "cursor": [
+        "auto",
+        "composer-2.5",
+        "composer-2.5-fast",
+        "composer-2",
+        "composer-2-fast",
+        "gpt-5.5-medium",
+        "gpt-5.5-medium-fast",
+        "gpt-5.5-high",
+        "gpt-5.5-high-fast",
+        "gpt-5.5-low",
+        "gpt-5.5-low-fast",
+        "claude-opus-4-7-medium",
+        "claude-opus-4-7-high",
+        "claude-4.6-sonnet-medium",
+        "claude-4.6-sonnet-medium-thinking",
+        "gemini-3.1-pro",
+        "gemini-3-flash",
+        "grok-4.3",
+        "kimi-k2.5",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1026,6 +1047,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("cursor",         "Cursor",                   "Cursor (100+ models, subscription)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
@@ -1187,6 +1209,11 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "cursor-agent": "cursor",
+    "cursor-cli": "cursor",
+    "cursor-sub": "cursor",
+    "cursor-subscription": "cursor",
+    "anysphere": "cursor",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -2231,6 +2258,24 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "cursor":
+        # Live catalog: shell out via the Cursor provider profile so command
+        # overrides, wrapper args, and important-model ordering stay identical
+        # between the picker and plugin discovery path.
+        try:
+            from providers import get_provider_profile
+            from providers.cursor_utils import prioritize_cursor_models
+
+            profile = get_provider_profile("cursor")
+            if profile:
+                live = profile.fetch_models()
+                if live:
+                    return live
+            static = list(_PROVIDER_MODELS.get("cursor", []))
+            if static:
+                return prioritize_cursor_models(static)
+        except Exception:
+            pass
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:
@@ -2414,6 +2459,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         pass
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
+    if normalized == "cursor":
+        try:
+            from providers.cursor_utils import prioritize_cursor_models
+
+            return prioritize_cursor_models(curated_static)
+        except Exception:
+            return curated_static
     if normalized in _MODELS_DEV_PREFERRED:
         return _merge_with_models_dev(normalized, curated_static)
     return curated_static

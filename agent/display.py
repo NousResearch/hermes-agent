@@ -229,6 +229,20 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         preview = _oneline(str(goal))
         return _truncate_preview(preview, max_len) if preview else None
 
+    if tool_name in {"edit_file", "delete_file", "cursor_edit"}:
+        for key_name in (
+            "path", "target_file", "targetFile", "file_path",
+            "relative_workspace_path", "file", "filePath", "filename",
+        ):
+            if key_name in args and args.get(key_name):
+                preview = _oneline(str(args.get(key_name)))
+                stats = args.get("_diff_stats")
+                if isinstance(stats, dict):
+                    added = int(stats.get("added") or 0)
+                    removed = int(stats.get("removed") or 0)
+                    preview = f"{preview} +{added} -{removed}"
+                return _truncate_preview(preview, max_len) if preview else None
+
     if tool_name == "process":
         action = args.get("action", "")
         sid = args.get("session_id", "")
@@ -442,6 +456,11 @@ def extract_edit_diff(
     snapshot: LocalEditSnapshot | None = None,
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
+    if function_args:
+        diff = function_args.get("_diff_string")
+        if isinstance(diff, str) and diff.strip():
+            return diff
+
     if tool_name == "patch" and result:
         data = safe_json_loads(result)
         if isinstance(data, dict):
@@ -954,6 +973,9 @@ def get_cute_tool_message(
         return _wrap(f"┊ 📖 read      {_path(args.get('path', ''))}  {dur}")
     if tool_name == "write_file":
         return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
+    if tool_name == "edit_file":
+        preview = build_tool_preview(tool_name, args, max_len=35) or ""
+        return _wrap(f"┊ ✏️  edit      {_trunc(preview, 35)}  {dur}")
     if tool_name == "patch":
         return _wrap(f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "search_files":

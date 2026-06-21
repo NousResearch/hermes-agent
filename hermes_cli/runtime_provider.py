@@ -1647,6 +1647,35 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    if provider == "cursor":
+        creds = resolve_external_process_provider_credentials(provider)
+        api_key = creds.get("api_key", "cursor-agent-login")
+        command = creds.get("command", "")
+        args = list(creds.get("args") or [])
+        trace = {
+            "provider": "cursor",
+            "route": "cursor-agent",
+            "auth_source": "CURSOR_API_KEY" if api_key != "cursor-agent-login" else "cursor-agent-login",
+            "config_source": "HERMES_CURSOR_COMMAND"
+            if os.environ.get("HERMES_CURSOR_COMMAND", "").strip()
+            else ("CURSOR_AGENT_PATH" if os.environ.get("CURSOR_AGENT_PATH", "").strip() else "PATH"),
+            "command": command,
+            "args": args,
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "source": creds.get("source", "process"),
+        }
+        return {
+            "provider": "cursor",
+            "api_mode": "chat_completions",
+            "base_url": trace["base_url"],
+            "api_key": api_key,
+            "command": command,
+            "args": args,
+            "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+            "trace": trace,
+        }
+
     # Anthropic (native Messages API)
     if provider == "anthropic":
         # Allow base URL override from config.yaml model.base_url, but only

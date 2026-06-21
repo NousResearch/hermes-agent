@@ -226,6 +226,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
     "gpt-4": 128000,
+    # Cursor Composer — Cursor caps the usable window at 200K even when the
+    # underlying base model supports more.
+    "composer-2.5-fast": 200000,
+    "composer-2.5": 200000,
+    "composer-2-fast": 200000,
+    "composer-2": 200000,
+    "composer": 200000,
     # Google
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)

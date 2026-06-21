@@ -158,17 +158,23 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Explicit Git for Windows paths checked BEFORE shutil.which("bash")
+    # so WSL System32 bash.exe does not shadow Git Bash (issue #47837).
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pf_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
     for candidate in (
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        os.path.join(pf, "Git", "bin", "bash.exe"),
+        os.path.join(pf_x86, "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    # Fallback: PATH lookup but only accept if path contains "Git".
+    # WSL System32 bash.exe lacks MSYS path translation.
+    found = shutil.which("bash")
+    if found and "git" in found.lower():
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

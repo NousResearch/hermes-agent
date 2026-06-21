@@ -800,6 +800,7 @@ def _ensure_graph() -> sqlite3.Connection:
     if _global_conn is None:
         conn = _get_conn()
         _init_db(conn)
+        _migrate_db(conn)
         _global_conn = conn
     if not _global_synced:
         with _graph_lock:
@@ -807,6 +808,25 @@ def _ensure_graph() -> sqlite3.Connection:
                 _sync_graph(_global_conn)
                 _global_synced = True
     return _global_conn
+
+
+# ── Schema migration helper ──────────────────────────────────────────────────
+
+def _migrate_db(conn: sqlite3.Connection) -> None:
+    """Apply schema changes that can't be done via CREATE TABLE IF NOT EXISTS."""
+    # v2: add success_count column
+    try:
+        conn.execute("ALTER TABLE skill_term_stats ADD COLUMN success_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE skill_term_stats ADD COLUMN last_searched TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE skill_term_stats ADD COLUMN last_loaded TEXT")
+    except sqlite3.OperationalError:
+        pass
 
 
 # ── Slash command handler ───────────────────────────────────────────────────

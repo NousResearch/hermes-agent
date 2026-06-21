@@ -1211,16 +1211,32 @@ class HermesACPAgent(acp.Agent):
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         state = self.session_manager.get_session(session_id)
         if state and state.cancel_event:
+            should_interrupt = False
             with state.runtime_lock:
-                if state.is_running and state.current_prompt_text:
+                should_interrupt = bool(state.is_running)
+                if should_interrupt and state.current_prompt_text:
                     state.interrupted_prompt_text = state.current_prompt_text
-            state.cancel_event.set()
-            try:
-                if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
-                    state.agent.interrupt()
-            except Exception:
-                logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
-            logger.info("Cancelled session %s", session_id)
+            if should_interrupt:
+                state.cancel_event.set()
+                try:
+                    if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
+                        state.agent.interrupt()
+                except Exception:
+                    logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
+                logger.info("Cancelled session %s", session_id)
+            else:
+                # Some ACP clients send a best-effort cancel immediately before
+                # submitting the next prompt, even when the previous turn is
+                # already idle. Treat that as a no-op; otherwise a stale
+                # AIAgent interrupt poisons the next prompt and it returns
+                # interrupted_by_user without ever calling the model.
+                state.cancel_event.clear()
+                try:
+                    if getattr(state, "agent", None) and hasattr(state.agent, "clear_interrupt"):
+                        state.agent.clear_interrupt()
+                except Exception:
+                    logger.debug("Failed to clear idle ACP interrupt for %s", session_id, exc_info=True)
+                logger.info("Ignored idle cancel for session %s", session_id)
 
     async def fork_session(
         self,

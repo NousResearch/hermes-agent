@@ -463,9 +463,52 @@ class TestCountOccurrences:
     def test_basic(self):
         from tools.patch_parser import _count_occurrences
         assert _count_occurrences("aaa", "a") == 3
-        assert _count_occurrences("aaa", "aa") == 2
         assert _count_occurrences("hello world", "xyz") == 0
         assert _count_occurrences("", "x") == 0
+
+    def test_self_overlapping_pattern_counted_non_overlapping(self):
+        """Self-overlapping patterns must be counted non-overlapping, per the
+        docstring. Counting overlaps inflates the addition-only ambiguity guard
+        and rejects hints that actually anchor a single, unique location."""
+        from tools.patch_parser import _count_occurrences
+        # "aa" fits twice in "aaaa" without overlap (positions 0 and 2).
+        assert _count_occurrences("aaaa", "aa") == 2
+        # "aa" anchors exactly one non-overlapping spot in "aaa".
+        assert _count_occurrences("aaa", "aa") == 1
+        # Blank-line and repeated-token hints are common and self-overlapping.
+        assert _count_occurrences("\n\n\n", "\n\n") == 1
+        assert _count_occurrences("}}}", "}}") == 1
+
+    def test_empty_pattern_terminates(self):
+        """An empty pattern must not loop forever."""
+        from tools.patch_parser import _count_occurrences
+        assert _count_occurrences("abc", "") == 4
+
+    def test_addition_only_self_overlapping_hint_not_ambiguous(self):
+        """Regression: an addition-only hunk whose context hint occurs once but
+        self-overlaps must not be rejected as ambiguous."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
+@@ }} @@
++    extra = 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            written = None
+            def read_file_raw(self, path):
+                # The hint "}}" appears once but self-overlaps inside "}}}".
+                return SimpleNamespace(content="data = {{}}}\n", error=None)
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True, result.message
+        assert "extra = 1" in file_ops.written
 
 
 class TestParseErrorSignalling:

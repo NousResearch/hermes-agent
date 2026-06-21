@@ -393,7 +393,10 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "piper",
 })
 
-DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
+# Command-provider defaults. Command providers (e.g. a shell script that falls
+# through multiple TTS engines sequentially) can need more wall-clock than
+# single-call HTTP providers. See https://github.com/NousResearch/hermes-agent/issues/50081
+DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 300
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
 COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000

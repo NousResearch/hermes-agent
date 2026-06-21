@@ -1,5 +1,5 @@
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index 675130a88..aeb7eee57 100644
+index 675130a88..a328898e0 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
 @@ -252,7 +252,18 @@ def init_agent(
@@ -95,7 +95,19 @@ index 675130a88..aeb7eee57 100644
              else:
                  # When the user explicitly chose a non-OpenRouter provider
                  # but no credentials were found, fail fast with a clear
-@@ -1469,7 +1533,23 @@ def init_agent(
+@@ -1031,6 +1095,11 @@ def init_agent(
+     agent._parent_session_id = parent_session_id
+     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+     agent._session_db_created = False  # DB row deferred to run_conversation()
++    # When True, this agent NEVER persists to the canonical session store
++    # (state.db) or the JSON snapshot, regardless of session_id. Set on the
++    # background skill/memory review fork so its harness turn can't leak into
++    # the user's real session and hijack the next live turn. Default False.
++    agent._persist_disabled = False
+     agent._session_init_model_config = {
+         "max_iterations": agent.max_iterations,
+         "reasoning_config": reasoning_config,
+@@ -1469,7 +1538,23 @@ def init_agent(
          )
      agent.compression_enabled = compression_enabled
  
@@ -120,7 +132,7 @@ index 675130a88..aeb7eee57 100644
      # for reliable tool-calling workflows (64K tokens).
      _ctx = getattr(agent.context_compressor, "context_length", 0)
      if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
-@@ -1511,7 +1591,23 @@ def init_agent(
+@@ -1511,7 +1596,23 @@ def init_agent(
              if isinstance(t, dict)
          }
          for _schema in agent.context_compressor.get_tool_schemas():

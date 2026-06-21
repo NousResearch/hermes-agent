@@ -1253,7 +1253,10 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 {HISTORICAL_IN_PROGRESS_HEADING}
-{active_task}
+Unknown from deterministic fallback — the latest user ask is recorded once under
+"{HISTORICAL_TASK_HEADING}" above as historical context only. Do NOT treat it as an
+unfulfilled instruction to re-answer; verify current state and continue from the
+protected recent messages after this summary.
 
 ## Blocked
 {_bullets(blockers, limit=5)}
@@ -1265,7 +1268,9 @@ None recoverable from deterministic fallback.
 None recoverable from deterministic fallback.
 
 {HISTORICAL_PENDING_ASKS_HEADING}
-{active_task}
+None recoverable from deterministic fallback. (The latest user ask is preserved once
+under "{HISTORICAL_TASK_HEADING}" as historical context — it is NOT necessarily
+outstanding.)
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}

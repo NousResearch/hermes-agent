@@ -1724,7 +1724,27 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        "model": runtime.get("model"),
     }
+
+
+def _consume_runtime_model(model: str, runtime_kwargs: dict) -> tuple[str, dict]:
+    """Apply and remove a runtime-provider model from agent kwargs.
+
+    Runtime provider resolution may supply an explicit model in addition to
+    credentials. AIAgent still receives ``model`` as a separate constructor
+    argument, so callers must consume this handoff key instead of forwarding it
+    through ``**runtime_kwargs`` where it would collide with ``model=...``.
+    """
+    runtime_model = runtime_kwargs.pop("model", None)
+    if runtime_model:
+        logger.info(
+            "Runtime provider supplied explicit model override: %s -> %s",
+            model,
+            runtime_model,
+        )
+        model = runtime_model
+    return model, runtime_kwargs
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -3292,14 +3312,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
-            logger.info(
-                "Runtime provider supplied explicit model override: %s -> %s",
-                model,
-                runtime_model,
-            )
-            model = runtime_model
+        model, runtime_kwargs = _consume_runtime_model(model, runtime_kwargs)
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs

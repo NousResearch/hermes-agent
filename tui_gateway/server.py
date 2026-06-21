@@ -5058,6 +5058,43 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5007, str(e))
 
 
+@method("session.archive")
+def _(rid, params: dict) -> dict:
+    """Archive or unarchive a session.
+
+    Mirrors the Desktop ``setSessionArchived()`` flow: toggles the
+    ``archived`` flag on the session row (and its compression lineage).
+    Archived sessions are hidden from default lists but keep all messages.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5007)
+    key = session["session_key"]
+    archived = params.get("archived")
+    if archived is None:
+        return _err(rid, 4024, "archived field required")
+    try:
+        ok = db.set_session_archived(key, bool(archived))
+        if ok:
+            return _ok(rid, {"archived": bool(archived), "session_key": key})
+        # rowcount == 0 can mean "already that value" or "missing row".
+        existing_row = db.get_session(key)
+        if existing_row:
+            return _ok(
+                rid,
+                {
+                    "archived": bool(archived),
+                    "session_key": key,
+                },
+            )
+        return _err(rid, 4007, "session not found")
+    except Exception as e:
+        return _err(rid, 5007, str(e))
+
+
 @method("handoff.request")
 def _(rid, params: dict) -> dict:
     """Queue a handoff of this session to a messaging platform.

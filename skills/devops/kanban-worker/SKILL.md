@@ -24,6 +24,27 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
 | `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
 
+## Producing deliverables — use `write_file`, don't just describe
+
+If your task is "produce a report", "draft a plan", "write a script", or any other output-as-file work, the deliverable must exist **on disk** at `$HERMES_KANBAN_WORKSPACE/<filename>` when you call `kanban_complete`. Pasting the contents into your completion summary, a `kanban_comment`, or a chat-style reply does NOT count — downstream workers and human reviewers open the workspace directory; they don't scrape your transcript.
+
+The system prompt (`KANBAN_GUIDANCE`) hammers this point because weaker models (deepseek-v4, grok-4, GLM, gemma) regularly pattern-match "describe what the file would contain" as a valid output. Anchor on the actual tool call:
+
+```python
+# Right — the file lands on disk; reviewer can `cat` it.
+write_file(
+    path=os.environ["HERMES_KANBAN_WORKSPACE"] + "/report.md",
+    content="# Q3 Results\n\n…actual report body…\n",
+)
+
+# Wrong — the agent says it created the file but never called the tool.
+kanban_complete(
+    summary="Wrote report.md with Q3 results: …",  # ← hallucinated
+)
+```
+
+Self-check before `kanban_complete`: for every file you claim to have produced, was there a corresponding `write_file` (or `patch`) call in this run that actually returned success? If not, make the call now or strike the claim from your summary. Use `patch` for targeted edits to a file that already exists; use `write_file` for create-or-overwrite. Both auto-create parent directories.
+
 ## Tenant isolation
 
 If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading or writing persistent memory, prefix memory entries with the tenant so context doesn't leak across tenants:

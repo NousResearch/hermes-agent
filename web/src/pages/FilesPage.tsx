@@ -36,6 +36,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { useI18n } from "@/i18n";
 
 const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -76,6 +77,7 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 }
 
 export default function FilesPage() {
+  const { t } = useI18n();
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -158,7 +160,7 @@ export default function FilesPage() {
   const goToPath = async () => {
     const nextPath = pathInput.trim();
     if (!nextPath) {
-      showToast("Path required", "error");
+      showToast(t.files.pathRequired, "error");
       return;
     }
     await load(nextPath);
@@ -167,11 +169,11 @@ export default function FilesPage() {
   const createDirectory = async () => {
     const name = folderName.trim();
     if (!activePath) {
-      showToast("Directory unavailable", "error");
+      showToast(t.files.directoryUnavailable, "error");
       return;
     }
     if (!name) {
-      showToast("Folder name required", "error");
+      showToast(t.files.folderNameRequired, "error");
       return;
     }
     setCreating(true);
@@ -179,7 +181,7 @@ export default function FilesPage() {
       await api.createDirectory(joinPath(activePath, name));
       setFolderName("");
       setCreateDialogOpen(false);
-      showToast("Folder created", "success");
+      showToast(t.files.folderCreated, "success");
       await load();
     } catch (e) {
       showToast(`Create failed: ${e}`, "error");
@@ -250,7 +252,7 @@ export default function FilesPage() {
     setDeleting(true);
     try {
       await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
-      showToast("Deleted", "success");
+      showToast(t.files.deleted, "success");
       setPendingDelete(null);
       await load();
     } catch (e) {
@@ -285,7 +287,7 @@ export default function FilesPage() {
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
               aria-label="Path"
-              placeholder="Path"
+              placeholder={t.files.pathPlaceholder}
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">
@@ -344,7 +346,7 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+              {uploading ? t.files.uploading : draggingFiles ? t.files.releaseToUpload : t.files.dropHere}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
               {activePath || "Loading"}
@@ -365,10 +367,10 @@ export default function FilesPage() {
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-            <span>Name</span>
-            <span>Size</span>
-            <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span>{t.files.name}</span>
+            <span>{t.files.size}</span>
+            <span>{t.files.modified}</span>
+            <span className="text-right">{t.files.actions}</span>
           </div>
 
           {listing?.parent && (
@@ -390,10 +392,10 @@ export default function FilesPage() {
           {loading && !listing ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Spinner />
-              Loading files...
+              {t.files.loading}
             </div>
           ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">{t.files.noFiles}</div>
           ) : (
             listing?.entries.map((entry) => (
               <div
@@ -480,7 +482,7 @@ export default function FilesPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void createDirectory();
               }}
-              placeholder="Folder name"
+              placeholder={t.files.folderName}
               disabled={creating}
             />
           </div>
@@ -494,7 +496,7 @@ export default function FilesPage() {
               }}
               disabled={creating}
             >
-              Cancel
+              {t.files.cancel}
             </Button>
             <Button
               type="button"

@@ -26,6 +26,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 interface CreatedWebhook {
   url: string;
@@ -47,8 +48,8 @@ function CopyButton({ value }: { value: string }) {
     <Button
       ghost
       size="icon"
-      title="Copy"
-      aria-label="Copy"
+      title={t.webhooks.copySecret}
+      aria-label={t.webhooks.copySecret}
       onClick={handleCopy}
       className="text-muted-foreground hover:text-foreground"
     >
@@ -58,6 +59,7 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export default function WebhooksPage() {
+  const { t } = useI18n();
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabling, setEnabling] = useState(false);
@@ -451,7 +453,7 @@ export default function WebhooksPage() {
                     disabled={creating}
                     prefix={creating ? <Spinner /> : undefined}
                   >
-                    {creating ? "Creating…" : "Create"}
+                    {creating ? {t.webhooks.creating} : {t.webhooks.create}}
                   </Button>
                 </div>
               </div>
@@ -597,8 +599,8 @@ export default function WebhooksPage() {
                   ghost
                   destructive
                   size="icon"
-                  title="Delete"
-                  aria-label="Delete"
+                  title={t.webhooks.delete}
+                  aria-label={t.webhooks.delete}
                   onClick={() => webhookDelete.requestDelete(sub.name)}
                 >
                   <Trash2 />

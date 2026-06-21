@@ -6599,6 +6599,25 @@ def dispatch_once(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        if claimed.skills:
+            try:
+                from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+                profile_home = resolve_profile_env(
+                    normalize_profile_name(claimed.assignee or "")
+                )
+            except Exception:
+                profile_home = None
+            skill_error = _forced_skill_validation_error(claimed.skills, profile_home)
+            if skill_error:
+                block_task(
+                    conn,
+                    claimed.id,
+                    reason=skill_error,
+                    expected_run_id=claimed.current_run_id,
+                )
+                result.auto_blocked.append(claimed.id)
+                continue
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -6972,6 +6991,115 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     except OSError:
         pass
     return False
+
+
+def _forced_skill_validation_error(
+    skill_names: Optional[Iterable[str]],
+    hermes_home: Optional[str],
+) -> Optional[str]:
+    """Return a human-actionable error if worker-forced skills won't resolve.
+
+    ``hermes --skills <name>`` fails during CLI startup when a forced skill is
+    missing or ambiguous. Without preflight validation, Kanban records that as a
+    worker crash and retries the same doomed command until the failure circuit
+    breaker trips. Validate against the assignee profile's skills dir before
+    spawning so the task blocks immediately with the fix: use a category-qualified
+    skill id such as ``dliu/vercel-react-native-skills``.
+    """
+    cleaned = [str(s).strip() for s in (skill_names or []) if str(s).strip()]
+    if not cleaned:
+        return None
+
+    base = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
+    search_dirs: list[Path] = []
+    skills_root = base / "skills"
+    if skills_root.is_dir():
+        search_dirs.append(skills_root)
+
+    config_path = base / "config.yaml"
+    if config_path.is_file():
+        try:
+            import yaml
+
+            parsed = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            raw_dirs = ((parsed.get("skills") or {}).get("external_dirs") or [])
+            if isinstance(raw_dirs, str):
+                raw_dirs = [raw_dirs]
+            if isinstance(raw_dirs, list):
+                for entry in raw_dirs:
+                    expanded = os.path.expanduser(os.path.expandvars(str(entry).strip()))
+                    if not expanded:
+                        continue
+                    p = Path(expanded)
+                    if not p.is_absolute():
+                        p = (base / p).resolve()
+                    else:
+                        p = p.resolve()
+                    if p.is_dir() and p not in search_dirs:
+                        search_dirs.append(p)
+        except Exception as exc:
+            _log.debug("Could not read skills.external_dirs from %s: %s", config_path, exc)
+
+    def _candidate_label(root: Path, skill_md: Path) -> str:
+        if skill_md.name == "SKILL.md":
+            rel = skill_md.parent.relative_to(root)
+        else:
+            rel = skill_md.with_suffix("").relative_to(root)
+        return str(rel).replace(os.sep, "/")
+
+    errors: list[str] = []
+    for name in cleaned:
+        if ":" in name:
+            # Plugin skill namespaces are resolved by the plugin manager, not
+            # by filesystem search. Let the worker handle those.
+            continue
+
+        candidates: list[tuple[str, Path]] = []
+        seen: set[Path] = set()
+
+        def _record(root: Path, skill_md: Path) -> None:
+            try:
+                key = skill_md.resolve()
+            except Exception:
+                key = skill_md
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append((_candidate_label(root, skill_md), skill_md))
+
+        for root in search_dirs:
+            direct = root / name
+            if direct.is_dir() and (direct / "SKILL.md").is_file():
+                _record(root, direct / "SKILL.md")
+            elif direct.with_suffix(".md").is_file():
+                _record(root, direct.with_suffix(".md"))
+
+            # Bare-name lookup matches skill_view(): recurse by directory name
+            # and legacy flat <name>.md. Qualified names have already been
+            # checked via the direct path above.
+            if "/" not in name:
+                try:
+                    for skill_md in root.rglob("SKILL.md"):
+                        if skill_md.parent.name == name:
+                            _record(root, skill_md)
+                    for skill_md in root.rglob(f"{name}.md"):
+                        if skill_md.name != "SKILL.md":
+                            _record(root, skill_md)
+                except OSError:
+                    continue
+
+        if not candidates:
+            errors.append(f"{name!r} not found")
+        elif len(candidates) > 1:
+            suggestions = ", ".join(f"`{label}`" for label, _ in candidates[:6])
+            errors.append(
+                f"{name!r} is ambiguous ({len(candidates)} matches). "
+                f"Use a category-qualified skill id, e.g. {suggestions}"
+            )
+
+    if not errors:
+        return None
+    return "Invalid forced skill(s): " + "; ".join(errors)
 
 
 def _worker_terminal_timeout_env(

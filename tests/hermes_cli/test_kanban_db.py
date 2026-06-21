@@ -1735,6 +1735,54 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_dispatch_blocks_ambiguous_forced_skills_before_spawn(kanban_home):
+    """Ambiguous ``--skill`` values should block, not crash-loop workers.
+
+    Regression for Kanban cards force-loading bare skill names that exist in
+    both a profile skill category and ``skills.external_dirs``. Previously the
+    worker process started, ``hermes --skills`` raised ``Unknown skill(s)``, and
+    the dispatcher retried until the crash circuit breaker tripped.
+    """
+    profile_home = kanban_home / "profiles" / "builder"
+    local_skill = profile_home / "skills" / "dliu" / "demo-skill"
+    external_root = kanban_home.parent / "external-skills"
+    external_skill = external_root / "demo-skill"
+    local_skill.mkdir(parents=True)
+    external_skill.mkdir(parents=True)
+    skill_md = "---\nname: demo-skill\ndescription: Demo.\n---\n# Demo\n"
+    (local_skill / "SKILL.md").write_text(skill_md)
+    (external_skill / "SKILL.md").write_text(skill_md)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n"
+        "  external_dirs:\n"
+        f"    - {external_root}\n"
+    )
+
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="ambiguous skill",
+            assignee="builder",
+            skills=["demo-skill"],
+        )
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, task_id)
+        latest = kb.latest_run(conn, task_id)
+
+    assert spawns == []
+    assert result.auto_blocked == [task_id]
+    assert task.status == "blocked"
+    assert latest is not None
+    assert latest.outcome == "blocked"
+    assert "ambiguous" in (latest.summary or "")
+    assert "dliu/demo-skill" in (latest.summary or "")
+
+
 def test_dispatch_max_spawn_counts_existing_running_tasks(
     kanban_home, all_assignees_spawnable
 ):

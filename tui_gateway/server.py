@@ -2264,8 +2264,8 @@ def _apply_model_switch(
                 custom_providers=custom_provs,
                 config_context_length=_cfg_ctx,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("preflight-compression switch warning failed: %s", exc)
 
     if not confirm_expensive_model:
         try:
@@ -2286,7 +2286,7 @@ def _apply_model_switch(
                 confirm_msg = f"{confirm_msg}\n\n{result.warning_message}"
             return {
                 "value": result.new_model,
-                "warning": warning.message,
+                "warning": confirm_msg,
                 "confirm_required": True,
                 "confirm_message": confirm_msg,
             }

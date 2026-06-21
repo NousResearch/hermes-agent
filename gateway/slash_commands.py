@@ -1173,8 +1173,8 @@ class GatewaySlashCommandsMixin:
                                 custom_providers=custom_provs,
                                 load_gateway_config=_load_gateway_config,
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("preflight-compression switch warning failed: %s", exc)
 
                         # Update cached agent in-place
                         cached_entry = None
@@ -1376,8 +1376,8 @@ class GatewaySlashCommandsMixin:
                 custom_providers=custom_provs,
                 load_gateway_config=_load_gateway_config,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("preflight-compression switch warning failed: %s", exc)
 
         async def _finish_switch() -> str:
             """Apply the resolved switch (agent, session, config) and build the reply."""

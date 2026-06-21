@@ -2,11 +2,13 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { Input } from '@/components/ui/input'
 import {
   Pagination,
   PaginationButton,
@@ -18,15 +20,15 @@ import {
 } from '@/components/ui/pagination'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { Tip } from '@/components/ui/tooltip'
-import { getSessionMessages, listAllProfileSessions } from '@/hermes'
+import { getSessionMessages, listAllProfileSessions, previewArtifact } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
-import { mediaExternalUrl } from '@/lib/media'
+import { filePathFromMediaPath, mediaExternalUrl } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
-import type { SessionInfo, SessionMessage } from '@/types/hermes'
+import type { ArtifactPreviewResponse, SessionInfo, SessionMessage } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -43,6 +45,7 @@ interface ArtifactRecord {
   id: string
   kind: ArtifactKind
   value: string
+  previewPath: string
   href: string
   label: string
   sessionId: string
@@ -134,6 +137,40 @@ function artifactHref(value: string): string {
   }
 
   return value
+}
+
+function isAbsoluteLocalPath(value: string): boolean {
+  return value.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(value)
+}
+
+function resolveArtifactPreviewPath(value: string, cwd?: null | string): string {
+  const path = filePathFromMediaPath(value)
+
+  if (isAbsoluteLocalPath(path) || path.startsWith('~/')) {
+    return path
+  }
+
+  if ((path.startsWith('./') || path.startsWith('../')) && cwd && isAbsoluteLocalPath(cwd)) {
+    const parts = cwd.split(/[\\/]+/).filter(Boolean)
+
+    for (const part of path.split(/[\\/]+/)) {
+      if (!part || part === '.') {
+        continue
+      }
+
+      if (part === '..') {
+        parts.pop()
+      } else {
+        parts.push(part)
+      }
+    }
+
+    const prefix = cwd.startsWith('/') ? '/' : ''
+
+    return `${prefix}${parts.join('/')}`
+  }
+
+  return path
 }
 
 function artifactLabel(value: string): string {
@@ -293,6 +330,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         id: key,
         kind: artifactKind(value),
         value,
+        previewPath: resolveArtifactPreviewPath(value, session.cwd),
         href: artifactHref(value),
         label: artifactLabel(value),
         sessionId: session.id,
@@ -349,13 +387,14 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 type CellCtx = {
   onOpen: (href: string) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
+  onPreview: (path: string) => void | Promise<void>
 }
 
 interface ArtifactColumn {
   Cell: (props: { artifact: ArtifactRecord; ctx: CellCtx }) => React.ReactElement
   bodyClassName: string
   header: (filter: ArtifactFilter, a: Translations['artifacts']) => string
-  id: 'location' | 'primary' | 'session'
+  id: 'actions' | 'location' | 'primary' | 'session'
   width: (filter: ArtifactFilter) => string
 }
 
@@ -379,6 +418,29 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
+  const [manualPreviewPath, setManualPreviewPath] = useState('')
+  const [preview, setPreview] = useState<ArtifactPreviewResponse | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  const loadPreview = useCallback(async (rawPath: string) => {
+    const path = rawPath.trim()
+
+    if (!path) {
+      return
+    }
+
+    setPreviewLoading(true)
+
+    try {
+      const normalizedPath = filePathFromMediaPath(path)
+      setManualPreviewPath(normalizedPath)
+      setPreview(await previewArtifact(normalizedPath))
+    } catch (err) {
+      notifyError(err, 'Artifact preview failed')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }, [])
 
   const refreshArtifacts = useCallback(async () => {
     setRefreshing(true)
@@ -499,9 +561,22 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     })
   }, [])
 
+  const revealPreview = useCallback(async (path: string) => {
+    if (!window.hermesDesktop?.revealPath) {
+      return
+    }
+
+    try {
+      await window.hermesDesktop.revealPath(path)
+    } catch (err) {
+      notifyError(err, 'Reveal in Finder failed')
+    }
+  }, [])
+
   const cellCtx: CellCtx = {
     onOpen: openArtifact,
-    onOpenChat: sessionId => navigate(sessionRoute(sessionId))
+    onOpenChat: sessionId => navigate(sessionRoute(sessionId)),
+    onPreview: loadPreview
   }
 
   return (
@@ -542,76 +617,107 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         </>
       }
     >
-      {!artifacts ? (
-        <PageLoader label={a.indexing} />
-      ) : visibleArtifacts.length === 0 ? (
-        <div className="grid h-full place-items-center px-6 text-center">
-          <div>
-            <div className="text-sm font-medium">{a.noArtifactsTitle}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>
-          </div>
-        </div>
-      ) : (
-        <div className="h-full overflow-y-auto">
-          <div className={cn('flex flex-col gap-3 pb-2', PAGE_INSET_X)}>
-            {visibleImageArtifacts.length > 0 && (
-              <section className="flex flex-col">
-                <div
-                  className={cn(
-                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
-                    PAGE_INSET_NEG_X,
-                    PAGE_INSET_X
-                  )}
-                >
-                  <ArtifactsPagination
-                    className="ml-auto justify-end px-0"
-                    itemLabel={a.itemsImage}
-                    onPageChange={setImagePage}
-                    page={currentImagePage}
-                    pageSize={24}
-                    total={visibleImageArtifacts.length}
-                  />
-                </div>
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] items-start gap-2 pt-1.5">
-                  {pagedImageArtifacts.map(artifact => (
-                    <ArtifactImageCard
-                      artifact={artifact}
-                      failedImage={failedImageIds.has(artifact.id)}
-                      key={artifact.id}
-                      onImageError={markImageFailed}
-                      onOpenChat={sessionId => navigate(sessionRoute(sessionId))}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
+      <div className="flex h-full min-h-0 gap-3 px-3 pb-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <form
+            className="flex shrink-0 items-center gap-2"
+            onSubmit={event => {
+              event.preventDefault()
+              void loadPreview(manualPreviewPath)
+            }}
+          >
+            <Input
+              aria-label="Preview file path"
+              className="h-8 min-w-0 flex-1 text-xs"
+              onChange={event => setManualPreviewPath(event.target.value)}
+              placeholder="Paste a local file path to preview it here"
+              value={manualPreviewPath}
+            />
+            <Button disabled={previewLoading || !manualPreviewPath.trim()} size="sm" type="submit" variant="secondary">
+              {previewLoading ? 'Loading…' : 'Preview'}
+            </Button>
+          </form>
 
-            {visibleFileArtifacts.length > 0 && (
-              <section className="flex flex-col">
-                <div
-                  className={cn(
-                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
-                    PAGE_INSET_NEG_X,
-                    PAGE_INSET_X
-                  )}
-                >
-                  <ArtifactsPagination
-                    className="ml-auto justify-end px-0"
-                    itemLabel={itemsLabel(kindFilter, a)}
-                    onPageChange={setFilePage}
-                    page={currentFilePage}
-                    pageSize={100}
-                    total={visibleFileArtifacts.length}
-                  />
-                </div>
-                <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
-                  <ArtifactTable artifacts={pagedFileArtifacts} ctx={cellCtx} filter={kindFilter} />
-                </div>
-              </section>
-            )}
-          </div>
+          {!artifacts ? (
+            <PageLoader label={a.indexing} />
+          ) : visibleArtifacts.length === 0 ? (
+            <div className="grid h-full place-items-center px-6 text-center">
+              <div>
+                <div className="text-sm font-medium">{a.noArtifactsTitle}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="h-full overflow-y-auto">
+              <div className={cn('flex flex-col gap-3 pb-2', PAGE_INSET_X)}>
+                {visibleImageArtifacts.length > 0 && (
+                  <section className="flex flex-col">
+                    <div
+                      className={cn(
+                        'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
+                        PAGE_INSET_NEG_X,
+                        PAGE_INSET_X
+                      )}
+                    >
+                      <ArtifactsPagination
+                        className="ml-auto justify-end px-0"
+                        itemLabel={a.itemsImage}
+                        onPageChange={setImagePage}
+                        page={currentImagePage}
+                        pageSize={24}
+                        total={visibleImageArtifacts.length}
+                      />
+                    </div>
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] items-start gap-2 pt-1.5">
+                      {pagedImageArtifacts.map(artifact => (
+                        <ArtifactImageCard
+                          artifact={artifact}
+                          failedImage={failedImageIds.has(artifact.id)}
+                          key={artifact.id}
+                          onImageError={markImageFailed}
+                          onOpenChat={sessionId => navigate(sessionRoute(sessionId))}
+                          onPreview={loadPreview}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {visibleFileArtifacts.length > 0 && (
+                  <section className="flex flex-col">
+                    <div
+                      className={cn(
+                        'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
+                        PAGE_INSET_NEG_X,
+                        PAGE_INSET_X
+                      )}
+                    >
+                      <ArtifactsPagination
+                        className="ml-auto justify-end px-0"
+                        itemLabel={itemsLabel(kindFilter, a)}
+                        onPageChange={setFilePage}
+                        page={currentFilePage}
+                        pageSize={100}
+                        total={visibleFileArtifacts.length}
+                      />
+                    </div>
+                    <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+                      <ArtifactTable artifacts={pagedFileArtifacts} ctx={cellCtx} filter={kindFilter} />
+                    </div>
+                  </section>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-      )}
+
+        <ArtifactPreviewPanel
+          loading={previewLoading}
+          onOpen={path => void openArtifact(mediaExternalUrl(path))}
+          onReveal={path => void revealPreview(path)}
+          preview={preview}
+        />
+      </div>
     </PageSearchShell>
   )
 }
@@ -674,9 +780,10 @@ interface ArtifactImageCardProps {
   failedImage: boolean
   onImageError: (id: string) => void
   onOpenChat: (sessionId: string) => void
+  onPreview: (path: string) => void | Promise<void>
 }
 
-function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
+function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat, onPreview }: ArtifactImageCardProps) {
   const { t } = useI18n()
   const a = t.artifacts
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
@@ -720,6 +827,10 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         </div>
 
         <div className="flex flex-wrap gap-1.5">
+          <Button onClick={() => void onPreview(artifact.previewPath)} size="xs" type="button" variant="secondary">
+            <FileText className="size-3" />
+            Preview
+          </Button>
           <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
             <FolderOpen className="size-3" />
             {a.chat}
@@ -835,13 +946,29 @@ function SessionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
   )
 }
 
+function ActionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
+  if (artifact.kind === 'link') {
+    return (
+      <ArtifactCellAction href={artifact.href} title="Open link">
+        <span>Open</span>
+      </ArtifactCellAction>
+    )
+  }
+
+  return (
+    <ArtifactCellAction onClick={() => void ctx.onPreview(artifact.previewPath)} title="Preview artifact">
+      <span>Preview</span>
+    </ArtifactCellAction>
+  )
+}
+
 const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
   {
     Cell: PrimaryCell,
     bodyClassName: 'p-0',
     header: (filter, a) => (filter === 'link' ? a.colTitleLink : filter === 'file' ? a.colTitleFile : a.colTitleDefault),
     id: 'primary',
-    width: filter => (filter === 'link' ? 'w-[50%]' : 'w-[35%]')
+    width: filter => (filter === 'link' ? 'w-[44%]' : 'w-[30%]')
   },
   {
     Cell: LocationCell,
@@ -849,7 +976,7 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
     header: (filter, a) =>
       filter === 'link' ? a.colLocationLink : filter === 'file' ? a.colLocationFile : a.colLocationDefault,
     id: 'location',
-    width: filter => (filter === 'link' ? 'w-[30%]' : 'w-[41%]')
+    width: filter => (filter === 'link' ? 'w-[28%]' : 'w-[34%]')
   },
   {
     Cell: SessionCell,
@@ -857,8 +984,105 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
     header: (_filter, a) => a.colSession,
     id: 'session',
     width: filter => (filter === 'link' ? 'w-[20%]' : 'w-[24%]')
+  },
+  {
+    Cell: ActionCell,
+    bodyClassName: 'p-0',
+    header: () => 'Action',
+    id: 'actions',
+    width: filter => (filter === 'link' ? 'w-[8%]' : 'w-[12%]')
   }
 ]
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return 'Unknown size'
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unitIndex = 0
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
+}
+
+function ArtifactPreviewPanel({
+  loading,
+  onOpen,
+  onReveal,
+  preview
+}: {
+  loading: boolean
+  onOpen: (path: string) => void
+  onReveal: (path: string) => void
+  preview: ArtifactPreviewResponse | null
+}) {
+  return (
+    <aside className="flex min-h-0 w-[26rem] shrink-0 flex-col overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-(--ui-stroke-tertiary) px-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{preview?.name || 'Artifact preview'}</div>
+          <div className="truncate text-[0.625rem] text-(--ui-text-tertiary)">
+            {preview ? `${formatBytes(preview.size)} · ${preview.mime_type}` : 'PDF, images, Markdown, and text files'}
+          </div>
+        </div>
+        {preview && (
+          <div className="flex shrink-0 items-center gap-1">
+            <CopyButton appearance="icon" buttonSize="icon-xs" label="Copy path" text={preview.path} title="Copy path" />
+            <Button onClick={() => onReveal(preview.path)} size="icon-xs" title="Reveal in Finder" type="button" variant="ghost">
+              <FolderOpen className="size-3.5" />
+            </Button>
+            <Button onClick={() => onOpen(preview.path)} size="icon-xs" title="Open externally" type="button" variant="ghost">
+              <ExternalLinkIcon />
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {loading ? (
+          <PageLoader label="Loading preview…" />
+        ) : !preview ? (
+          <div className="grid h-full place-items-center text-center text-xs text-muted-foreground">
+            Select a file from the table or paste a path to preview it here.
+          </div>
+        ) : preview.preview_type === 'image' && preview.data_url ? (
+          <div className="grid h-full place-items-center">
+            <ZoomableImage
+              alt={preview.name}
+              className="max-h-full max-w-full cursor-zoom-in rounded-md object-contain"
+              containerClassName="max-h-full"
+              decoding="async"
+              slot="artifact-preview"
+              src={preview.data_url}
+            />
+          </div>
+        ) : preview.preview_type === 'pdf' && preview.data_url ? (
+          <iframe className="h-full min-h-[28rem] w-full rounded-md border-0 bg-white" src={preview.data_url} title={preview.name} />
+        ) : preview.preview_type === 'markdown' ? (
+          <div className="prose prose-sm max-w-none dark:prose-invert">
+            <CompactMarkdown text={preview.text || ''} />
+          </div>
+        ) : preview.preview_type === 'text' ? (
+          <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-(--ui-text-secondary)">{preview.text}</pre>
+        ) : preview.preview_type === 'too_large' ? (
+          <div className="grid h-full place-items-center text-center text-xs text-muted-foreground">
+            This file is too large to preview in-app. Open it externally or reveal it in Finder.
+          </div>
+        ) : (
+          <div className="grid h-full place-items-center text-center text-xs text-muted-foreground">
+            This file type cannot be previewed yet. Open it externally or reveal it in Finder.
+          </div>
+        )}
+      </div>
+    </aside>
+  )
+}
 
 function ArtifactTable({
   artifacts,

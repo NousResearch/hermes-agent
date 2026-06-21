@@ -1462,6 +1462,112 @@ async def read_managed_file(request: Request, path: str):
     }
 
 
+_ARTIFACT_PREVIEW_TEXT_MAX_BYTES = 1 * 1024 * 1024
+_ARTIFACT_PREVIEW_BINARY_MAX_BYTES = 25 * 1024 * 1024
+_ARTIFACT_TEXT_EXTENSIONS = {
+    ".cfg",
+    ".conf",
+    ".css",
+    ".csv",
+    ".env",
+    ".html",
+    ".ini",
+    ".js",
+    ".json",
+    ".jsx",
+    ".log",
+    ".md",
+    ".py",
+    ".rst",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+_ARTIFACT_IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
+
+
+def _artifact_preview_type(target: Path, mime_type: str) -> str:
+    suffix = target.suffix.lower()
+    normalized_mime = (mime_type or "").split(";", 1)[0].lower()
+    if suffix in _ARTIFACT_IMAGE_EXTENSIONS or normalized_mime.startswith("image/"):
+        return "image"
+    if suffix == ".pdf" or normalized_mime == "application/pdf":
+        return "pdf"
+    if suffix == ".md" or normalized_mime in {"text/markdown", "text/x-markdown"}:
+        return "markdown"
+    if normalized_mime.startswith("text/") or suffix in _ARTIFACT_TEXT_EXTENSIONS:
+        return "text"
+    return "unsupported"
+
+
+@app.get("/api/artifacts/preview")
+async def preview_artifact(request: Request, path: str):
+    """Return a safe in-app preview payload for a local artifact path.
+
+    Uses the same managed-files policy as /api/files so local dashboards can
+    preview files under the user's home directory and hosted dashboards stay
+    locked to their configured files root. Text/Markdown are returned as UTF-8
+    text with a 1MB cap. PDF/image previews are returned as data URLs with a
+    25MB cap. Unsupported files return metadata only.
+    """
+    policy, target, display_path = _resolve_managed_path(path, request)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    try:
+        stat_result = target.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}")
+
+    size = stat_result.st_size
+    mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    preview_type = _artifact_preview_type(target, mime_type)
+    response: Dict[str, Any] = {
+        "name": target.name,
+        "path": display_path,
+        "size": size,
+        "mtime": stat_result.st_mtime,
+        "mime_type": mime_type,
+        "preview_type": preview_type,
+        **_managed_response_meta(policy),
+    }
+
+    if preview_type in {"text", "markdown"}:
+        if size > _ARTIFACT_PREVIEW_TEXT_MAX_BYTES:
+            response["preview_type"] = "too_large"
+            response["max_preview_bytes"] = _ARTIFACT_PREVIEW_TEXT_MAX_BYTES
+            return response
+        try:
+            response["text"] = target.read_text(encoding="utf-8", errors="replace")
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="File is not readable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not read file: {exc}")
+        return response
+
+    if preview_type in {"image", "pdf"}:
+        if size > _ARTIFACT_PREVIEW_BINARY_MAX_BYTES:
+            response["preview_type"] = "too_large"
+            response["max_preview_bytes"] = _ARTIFACT_PREVIEW_BINARY_MAX_BYTES
+            return response
+        try:
+            encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="File is not readable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not read file: {exc}")
+        response["data_url"] = f"data:{mime_type};base64,{encoded}"
+        return response
+
+    return response
+
+
 @app.get("/api/files/download")
 async def download_managed_file(request: Request, path: str):
     """Stream a managed file as an attachment download.

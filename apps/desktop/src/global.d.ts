@@ -60,6 +60,7 @@ declare global {
       setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      revealPath?: (path: string) => Promise<{ ok: boolean; path: string }>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {

@@ -20,7 +20,6 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
-const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -5797,6 +5796,15 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
   }
+})
+
+ipcMain.handle('hermes:path:reveal', async (_event, filePath) => {
+  const target = typeof filePath === 'string' ? filePath.trim() : ''
+  if (!target || !path.isAbsolute(target)) {
+    throw new Error('Path must be absolute')
+  }
+  shell.showItemInFolder(target)
+  return { ok: true, path: target }
 })
 
 // User-configurable default project directory. The renderer reads this on

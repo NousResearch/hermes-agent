@@ -1,3 +1,20 @@
+export type ArtifactPreviewType = 'image' | 'markdown' | 'pdf' | 'text' | 'too_large' | 'unsupported'
+
+export interface ArtifactPreviewResponse {
+  can_change_path?: boolean
+  data_url?: string
+  locked_root?: null | string
+  max_preview_bytes?: number
+  mime_type: string
+  mtime: number
+  name: string
+  path: string
+  preview_type: ArtifactPreviewType
+  root?: null | string
+  size: number
+  text?: string
+}
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string

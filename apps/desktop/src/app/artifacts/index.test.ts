@@ -41,6 +41,22 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('resolves relative artifact preview paths against the session cwd', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ cwd: '/Users/vlad/project' }), [
+      {
+        content: 'Saved report at ./dist/report.pdf',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      previewPath: '/Users/vlad/project/dist/report.pdf',
+      value: './dist/report.pdf'
+    })
+  })
+
   it('indexes http links present in tool JSON payloads', () => {
     const messages: SessionMessage[] = [
       {

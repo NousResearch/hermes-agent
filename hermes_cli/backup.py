@@ -42,7 +42,24 @@ _EXCLUDED_DIRS = {
     "backups",          # prior auto-backups — don't nest backups exponentially
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
+    ".mypy_cache",      # type-checker caches — many small SQLite DBs, regenerated
+    "dropbox-media",    # youtube-ingest bulk media (tens of GB) — sourced from Dropbox,
+                        # not agent state; ballooned the encrypted offsite backup to 100GB+
+    "image_cache",      # cached fetched images — regenerable, not state
 }
+
+# Directory-NAME prefixes to skip anywhere in the tree. Browser-automation debug
+# profiles (browser-access / CDP) are transient junk: they hold dozens of Chrome
+# SQLite DBs (first_party_sets.db, History, Cookies, …) that a LIVE Chrome keeps
+# exclusively locked — backing them up is both worthless on another machine and a
+# hang risk (the SQLite safe-copy blocks on the browser's lock). The 30s
+# busy_timeout in _safe_copy_db is the safety net; excluding them is the root fix.
+_EXCLUDED_DIR_PREFIXES = (
+    "chrome-",          # ALL ~/.hermes/chrome-* browser-automation profiles
+    "chrome_",          #   (chrome-debug-*, chrome-amazon-*, browser-access personas…)
+    "chrome-profile",
+    "playwright-",      # playwright browser user-data dirs
+)
 
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
@@ -67,12 +84,20 @@ _EXCLUDED_NAMES = {
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
 
+# Wall-clock cap for a single SQLite safe-copy. A DB held under an exclusive lock
+# by another process (live Chrome profile, etc.) can never copy a page; this bounds
+# the attempt so the whole backup can't hang, then we fall back to a raw copy.
+_SAFE_COPY_DEADLINE_S = 60.0
+
 
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
     for part in parts:
+        # Directory-name prefix match (browser debug profiles etc.) — anywhere.
+        if part.startswith(_EXCLUDED_DIR_PREFIXES):
+            return True
         if part not in _EXCLUDED_DIRS:
             continue
         # ``hermes-agent`` only matches at the root level (first component).
@@ -119,23 +144,35 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to.  Falls back to raw copy on failure.
 
-    Bounded so it can never hang the whole backup: a ``busy_timeout`` caps how
-    long we wait on a lock, and the copy runs page-wise with a progress guard so
-    a large DB under continuous concurrent writes (e.g. a live gateway writing a
-    1GB+ state.db) cannot restart its copy loop forever. On any timeout/lock
-    error we fall back to a raw file copy rather than blocking indefinitely.
+    Bounded so it can never hang the whole backup. Two guards:
+      * a ``busy_timeout`` caps each lock wait, and
+      * a wall-clock DEADLINE enforced from the per-step ``progress`` callback,
+    so a DB held under an *exclusive* lock by another process (e.g. a live
+    Chrome browser-automation profile, or a 1GB+ gateway state.db under
+    continuous writes) cannot loop in the busy handler forever. On any
+    timeout/lock error we fall back to a raw file copy rather than blocking.
     """
     conn = None
     backup_conn = None
+    deadline = time.monotonic() + _SAFE_COPY_DEADLINE_S
+
+    def _progress(_status, _remaining, _total):
+        # Raised inside conn.backup()'s step loop → bounds total wall time even
+        # when the source is exclusively locked and no page ever copies.
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"safe-copy exceeded {_SAFE_COPY_DEADLINE_S}s (locked by another process?)"
+            )
+
     try:
         # mode=ro + a bounded busy_timeout: never wait forever on the writer's lock.
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30.0)
-        conn.execute("PRAGMA busy_timeout=30000")
-        backup_conn = sqlite3.connect(str(dst), timeout=30.0)
-        # Page-wise copy (1000 pages/step). sqlite3.backup restarts the in-flight
-        # step if the source is written mid-copy; small steps keep each restart
-        # cheap and let it actually converge instead of looping on a giant DB.
-        conn.backup(backup_conn, pages=1000, sleep=0.05)
+        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=15.0)
+        conn.execute("PRAGMA busy_timeout=10000")
+        backup_conn = sqlite3.connect(str(dst), timeout=15.0)
+        # Page-wise copy (1000 pages/step) with a per-step deadline check via
+        # progress=. Small steps keep each restart cheap so the copy converges
+        # on a large live DB; the deadline bounds a truly stuck (exclusive-lock) DB.
+        conn.backup(backup_conn, pages=1000, progress=_progress, sleep=0.05)
         backup_conn.close()
         backup_conn = None
         conn.close()
@@ -212,7 +249,8 @@ def run_backup(args) -> None:
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
+            if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
+            and not d.startswith(_EXCLUDED_DIR_PREFIXES)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -867,7 +905,11 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
             # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _EXCLUDED_DIRS
+                and not d.startswith(_EXCLUDED_DIR_PREFIXES)
+            ]
 
             for fname in filenames:
                 fpath = dp / fname

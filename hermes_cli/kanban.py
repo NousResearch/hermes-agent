@@ -321,6 +321,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "deterministic branch. See `hermes project list`.")
     p_create.add_argument("--tenant", default=None, help="Tenant namespace")
     p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_create.add_argument("--verify", default=None, dest="verify_cmd",
+                          help="Shell command run in the workspace before dispatch; "
+                               "if it exits 0 the card auto-completes without spawning "
+                               "a worker (e.g. 'pytest -q tests/foo.py').")
     p_create.add_argument("--triage", action="store_true",
                           help="Park in triage — a specifier will flesh out the spec and promote to todo")
     p_create.add_argument("--idempotency-key", default=None,
@@ -1347,6 +1351,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            verify_cmd=getattr(args, "verify_cmd", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

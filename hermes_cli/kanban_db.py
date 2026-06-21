@@ -914,6 +914,11 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Optional shell command run in the workspace BEFORE dispatching a worker.
+    # If it exits 0, the dispatcher auto-completes the card (deliverables already
+    # exist / acceptance criteria already pass) instead of spawning a worker with
+    # nothing to do. NULL = no pre-dispatch check (the default).
+    verify_cmd: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -998,6 +1003,7 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            verify_cmd=row["verify_cmd"] if "verify_cmd" in keys else None,
         )
 
 
@@ -1175,7 +1181,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Optional pre-dispatch verify command: if set and it exits 0 in the
+    -- workspace, the dispatcher auto-completes the card instead of spawning.
+    verify_cmd           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1947,6 +1956,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
 
+    if "verify_cmd" not in cols:
+        # Optional pre-dispatch verify command (see Task.verify_cmd). Existing
+        # rows get NULL = no check, preserving prior behaviour.
+        conn.execute("ALTER TABLE tasks ADD COLUMN verify_cmd TEXT")
+
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
         # default) = classic single-shot worker, preserving the behaviour
@@ -2405,6 +2419,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    verify_cmd: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> str:
@@ -2635,8 +2650,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        verify_cmd
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2659,6 +2675,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        verify_cmd,
                     ),
                 )
                 for pid in parents:
@@ -6995,6 +7012,44 @@ def dispatch_once(
         )
 
 
+def _precheck_verify(conn: sqlite3.Connection, task: "Task", workspace: str) -> bool:
+    """Run a card's optional ``verify_cmd`` before dispatching a worker.
+
+    If the command exits 0 in the workspace, the deliverables already exist /
+    the acceptance criteria already pass, so auto-complete the card and tell the
+    caller to skip the spawn. Any non-zero exit, timeout, or error → return
+    False and dispatch normally (verify is advisory, never a failure path).
+    Returns True iff the task was auto-completed.
+    """
+    cmd = (getattr(task, "verify_cmd", None) or "").strip()
+    if not cmd:
+        return False
+    import subprocess
+    try:
+        proc = subprocess.run(
+            cmd, shell=True, cwd=workspace,
+            capture_output=True, text=True, timeout=300,
+        )
+    except Exception as exc:
+        _log.warning("verify_cmd for %s errored (%s); dispatching normally", task.id, exc)
+        return False
+    if proc.returncode != 0:
+        return False
+    tail = (proc.stdout or proc.stderr or "").strip()[-400:]
+    try:
+        complete_task(
+            conn, task.id,
+            result="Pre-dispatch verify_cmd passed (rc=0); auto-completed "
+                   "without spawning a worker.\n" + tail,
+            summary="verify_cmd passed — deliverables already satisfied",
+        )
+    except Exception as exc:
+        _log.warning("verify autocomplete for %s failed (%s); dispatching", task.id, exc)
+        return False
+    _log.info("task %s auto-completed by verify_cmd (no spawn)", task.id)
+    return True
+
+
 def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
@@ -7274,6 +7329,10 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # Pre-dispatch verify: if the card's verify_cmd already passes, the
+        # deliverables exist — auto-complete instead of spawning a worker.
+        if _precheck_verify(conn, claimed, str(workspace)):
+            continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only

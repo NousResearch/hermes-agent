@@ -788,6 +788,36 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
 
 
+def test_precheck_verify_autocompletes_on_pass(kanban_home, tmp_path):
+    """A card's optional verify_cmd is run before dispatch: rc 0 auto-completes
+    it (deliverables already satisfied), rc!=0 / absent dispatches normally. The
+    column round-trips through create_task -> Task.from_row."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        # verify_cmd persists and round-trips.
+        tid_ok = kb.create_task(conn, title="ok", assignee="a", verify_cmd="true")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid_ok,))
+        conn.commit()
+        task_ok = kb.get_task(conn, tid_ok)
+        assert task_ok.verify_cmd == "true"
+
+        # Passing verify (rc 0) → auto-complete, returns True.
+        assert _kb._precheck_verify(conn, task_ok, str(tmp_path)) is True
+        assert kb.get_task(conn, tid_ok).status == "done"
+
+        # Failing verify (rc 1) → returns False, no completion.
+        tid_no = kb.create_task(conn, title="no", assignee="a", verify_cmd="false")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid_no,))
+        conn.commit()
+        assert _kb._precheck_verify(conn, kb.get_task(conn, tid_no), str(tmp_path)) is False
+        assert kb.get_task(conn, tid_no).status != "done"
+
+        # No verify_cmd → no-op, returns False.
+        tid_none = kb.create_task(conn, title="none", assignee="a")
+        assert _kb._precheck_verify(conn, kb.get_task(conn, tid_none), str(tmp_path)) is False
+
+
 def test_detect_crashed_workers_skips_freshly_claimed_tasks(
     kanban_home, monkeypatch,
 ):

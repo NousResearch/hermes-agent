@@ -14,6 +14,8 @@ differences) Windows.
 
 import json
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -37,6 +39,7 @@ from tools.tts_tool import (
     _render_command_tts_template,
     _resolve_command_provider_config,
     _resolve_max_text_length,
+    _run_command_tts,
     _shell_quote_context,
     check_tts_requirements,
     text_to_speech_tool,
@@ -55,6 +58,13 @@ def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
         f'shutil.copyfile(sys.argv[1], sys.argv[2])" '
         f'{{input_path}} {output_placeholder}'
     )
+
+
+def _shell_command(*args: str) -> str:
+    """Return a shell command string for subprocess.Popen(shell=True)."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(list(args))
+    return " ".join(shlex.quote(str(arg)) for arg in args)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +356,53 @@ class TestRenderCommandTtsTemplate:
             placeholders,
         )
         assert '"bob\'s voice"' in rendered
+
+
+# ---------------------------------------------------------------------------
+# _run_command_tts idle/progress timeout behavior
+# ---------------------------------------------------------------------------
+
+class TestRunCommandTts:
+    def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
+        script = tmp_path / "progress_then_exit.py"
+        script.write_text(
+            "\n".join([
+                "import sys, time",
+                "for idx in range(4):",
+                "    print(f'tick {idx}', file=sys.stderr, flush=True)",
+                "    time.sleep(0.15)",
+                "print('done', flush=True)",
+            ]),
+            encoding="utf-8",
+        )
+
+        result = _run_command_tts(
+            _shell_command(sys.executable, "-u", str(script)),
+            timeout=0.25,
+        )
+
+        assert result.returncode == 0
+        assert "tick 3" in result.stderr
+        assert "done" in result.stdout
+
+    def test_silent_after_progress_still_times_out_with_stderr(self, tmp_path):
+        script = tmp_path / "progress_then_hang.py"
+        script.write_text(
+            "\n".join([
+                "import sys, time",
+                "print('starting tier 1', file=sys.stderr, flush=True)",
+                "time.sleep(1.0)",
+            ]),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            _run_command_tts(
+                _shell_command(sys.executable, "-u", str(script)),
+                timeout=0.2,
+            )
+
+        assert "starting tier 1" in (excinfo.value.stderr or "")
 
 
 # ---------------------------------------------------------------------------

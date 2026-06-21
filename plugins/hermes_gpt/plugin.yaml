@@ -1,0 +1,12 @@
+name: hermes-gpt
+version: 0.1.0
+description: "Local-dev MCP sidecar that exposes selected Hermes Agent capabilities to MCP clients."
+author: "asimons81/hermes-gpt contributors; packaged for Hermes Agent"
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_cli:
+  - hermes-gpt
+

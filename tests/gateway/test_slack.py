@@ -65,11 +65,11 @@ def _ensure_slack_mock():
 _ensure_slack_mock()
 
 # Patch SLACK_AVAILABLE before importing the adapter
-import gateway.platforms.slack as _slack_mod
+import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 async def _pending_for_fake_task():
@@ -3638,7 +3638,7 @@ class TestSlashEphemeralAck:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch(
-            "gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
             result = await adapter.send("C_SLASH", "Queued for the next turn.")
 
@@ -3688,7 +3688,7 @@ class TestSlashEphemeralAck:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch(
-            "gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
             result = await adapter.send("C1", "Some response")
 
@@ -3711,7 +3711,7 @@ class TestSlashEphemeralAck:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch(
-            "gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
             result = await adapter.send("C1", "Some response")
 
@@ -3777,7 +3777,7 @@ class TestSlashEphemeralAck:
     async def test_concurrent_users_same_channel_isolates_contexts(self, adapter):
         """Two users slash on the same channel — each gets their own context."""
         import time
-        from gateway.platforms.slack import _slash_user_id
+        from plugins.platforms.slack.adapter import _slash_user_id
 
         # Simulate two users stashing contexts on the same channel.
         adapter._slash_command_contexts[("C_SHARED", "U_ALICE")] = {
@@ -3817,7 +3817,7 @@ class TestSlashEphemeralAck:
     async def test_no_contextvar_does_not_match_any_context(self, adapter):
         """send() without ContextVar (non-slash path) must not steal contexts."""
         import time
-        from gateway.platforms.slack import _slash_user_id
+        from plugins.platforms.slack.adapter import _slash_user_id
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/test",

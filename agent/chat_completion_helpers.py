@@ -1117,6 +1117,36 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     return msg
 
 
+
+def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
+    """Point the cached system prompt's ``Model:``/``Provider:`` lines at
+    the active runtime after a provider switch.
+
+    The system prompt is session-stable and replayed verbatim for prefix-cache
+    warmth, but after a failover the new backend's cache is cold anyway —
+    while a stale identity line makes the agent misreport which model it is
+    when asked.  Rewrite the lines in place WITHOUT persisting to the session
+    DB: the stored row keeps the primary's labels, so when the primary is
+    restored the prompt is byte-identical to the stored copy again and its
+    prefix cache still matches.
+
+    Only the LAST occurrence of each line is touched — the identity lines
+    live in the volatile tail of the prompt, and earlier matches could be
+    user content (memory snapshots, context files).
+    """
+    sp = getattr(agent, "_cached_system_prompt", None)
+    if not isinstance(sp, str) or not sp:
+        return
+    for label, value in (("Model", model), ("Provider", provider)):
+        if not value:
+            continue
+        matches = list(re.finditer(rf"(?m)^{label}: .*$", sp))
+        if matches:
+            last = matches[-1]
+            sp = f"{sp[:last.start()]}{label}: {value}{sp[last.end():]}"
+    agent._cached_system_prompt = sp
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1444,6 +1474,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 provider=agent.provider,
                 api_mode=agent.api_mode,
             )
+
+        # Keep the prompt's self-identity in sync with the model actually
+        # answering, so "what model are you?" doesn't report the primary.
+        rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "

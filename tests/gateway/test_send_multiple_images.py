@@ -116,7 +116,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 class TestTelegramMultiImage:
@@ -287,7 +287,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 class TestSlackMultiImage:
@@ -456,7 +456,7 @@ class TestMattermostMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from gateway.platforms.email import EmailAdapter  # noqa: E402
+from plugins.platforms.email.adapter import EmailAdapter  # noqa: E402
 
 
 class TestEmailMultiImage:

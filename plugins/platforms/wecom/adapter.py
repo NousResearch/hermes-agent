@@ -1671,3 +1671,232 @@ def qr_scan_for_bot_info(
     print()  # newline after dots
     print(f"  QR scan timed out ({timeout_seconds // 60} minutes). Please try again.")
     return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the WeCom adapters (wecom + wecom_callback, sharing the
+# wecom_crypto satellite) moved from gateway/platforms/ into this bundled
+# plugin. register() exposes BOTH platforms via the registry, replacing the
+# Platform.WECOM / Platform.WECOM_CALLBACK elifs in gateway/run.py, the
+# _PLATFORM_CONNECTED_CHECKERS entries in gateway/config.py, the _setup_wecom
+# wizard + _PLATFORMS["wecom"] static dict in hermes_cli/gateway.py, and the
+# _send_wecom dispatch in tools/send_message_tool.py. Env→PlatformConfig
+# seeding stays in core, same as prior migrations.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process WeCom delivery via the adapter's WebSocket send pipeline.
+
+    Implements the standalone_sender_fn contract so deliver=wecom cron jobs
+    succeed when cron runs separately from the gateway. Opens an ephemeral
+    WeComAdapter, connects, sends, and disconnects. Replaces the legacy
+    _send_wecom helper.
+    """
+    if not check_wecom_requirements():
+        return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
+    try:
+        adapter = WeComAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return {"error": f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}"}
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return {"error": f"WeCom send failed: {result.error}"}
+            return {
+                "success": True,
+                "platform": "wecom",
+                "chat_id": chat_id,
+                "message_id": result.message_id,
+            }
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return {"error": f"WeCom send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Interactive setup for WeCom — QR scan or manual credential input.
+
+    Replaces hermes_cli/gateway.py::_setup_wecom and the static
+    _PLATFORMS["wecom"] dict. CLI helpers are lazy-imported.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.setup import prompt_choice
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+        print_error,
+    )
+
+    print_header("WeCom (Enterprise WeChat)")
+    existing_bot_id = get_env_value("WECOM_BOT_ID")
+    existing_secret = get_env_value("WECOM_SECRET")
+    if existing_bot_id and existing_secret:
+        print_success("WeCom is already configured.")
+        if not prompt_yes_no("Reconfigure WeCom?", False):
+            return
+
+    method_idx = prompt_choice(
+        "How would you like to set up WeCom?",
+        [
+            "Scan QR code to obtain Bot ID and Secret automatically (recommended)",
+            "Enter existing Bot ID and Secret manually",
+        ],
+        0,
+    )
+
+    bot_id = None
+    secret = None
+
+    if method_idx == 0:
+        try:
+            credentials = qr_scan_for_bot_info()
+        except KeyboardInterrupt:
+            print_warning("WeCom setup cancelled.")
+            return
+        except Exception as exc:
+            print_warning(f"QR scan failed: {exc}")
+            credentials = None
+        if credentials:
+            bot_id = credentials.get("bot_id", "")
+            secret = credentials.get("secret", "")
+            print_success("✔ QR scan successful! Bot ID and Secret obtained.")
+        if not bot_id or not secret:
+            print_info("QR scan did not complete. Continuing with manual input.")
+            bot_id = None
+            secret = None
+
+    if not bot_id or not secret:
+        print_info("1. Go to WeCom Application → Workspace → Smart Robot -> Create smart robots")
+        print_info("2. Select API Mode")
+        print_info("3. Copy the Bot ID and Secret from the bot's credentials info")
+        print_info("4. The bot connects via WebSocket — no public endpoint needed")
+        bot_id = prompt("Bot ID", password=False)
+        if not bot_id:
+            print_warning("Skipped — WeCom won't work without a Bot ID.")
+            return
+        secret = prompt("Secret", password=True)
+        if not secret:
+            print_warning("Skipped — WeCom won't work without a Secret.")
+            return
+
+    save_env_value("WECOM_BOT_ID", bot_id)
+    save_env_value("WECOM_SECRET", secret)
+
+    print_info("The gateway DENIES all users by default for security.")
+    print_info("Enter user IDs to create an allowlist, or leave empty.")
+    allowed = prompt("Allowed user IDs (comma-separated, or empty)", password=False)
+    if allowed:
+        save_env_value("WECOM_ALLOWED_USERS", allowed.replace(" ", ""))
+        print_success("Saved — only these users can interact with the bot.")
+    else:
+        access_idx = prompt_choice(
+            "How should unauthorized users be handled?",
+            [
+                "Enable open access (anyone can message the bot)",
+                "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+                "Disable direct messages",
+                "Skip for now (bot will deny all users until configured)",
+            ],
+            1,
+        )
+        if access_idx == 0:
+            save_env_value("WECOM_DM_POLICY", "open")
+            save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
+            print_warning("Open access enabled — anyone can use your bot!")
+        elif access_idx == 1:
+            save_env_value("WECOM_DM_POLICY", "pairing")
+            print_success("DM pairing mode — users will receive a code to request access.")
+            print_info("Approve with: hermes pairing approve <platform> <code>")
+        elif access_idx == 2:
+            save_env_value("WECOM_DM_POLICY", "disabled")
+            print_warning("Direct messages disabled.")
+        else:
+            print_info("Skipped — configure later with 'hermes gateway setup'")
+
+    home = prompt("Home chat ID (optional, for cron/notifications)", password=False)
+    if home:
+        save_env_value("WECOM_HOME_CHANNEL", home)
+        print_success(f"Home channel set to {home}")
+
+    print_success("💬 WeCom configured!")
+
+
+def _is_connected(config) -> bool:
+    """WeCom (Smart Robot) is connected when a bot_id is configured. Mirrors the
+    legacy _PLATFORM_CONNECTED_CHECKERS[Platform.WECOM] entry."""
+    extra = getattr(config, "extra", {}) or {}
+    return bool(extra.get("bot_id"))
+
+
+def _callback_is_connected(config) -> bool:
+    """WeCom callback mode is connected when corp_id (or a multi-app `apps`
+    block) is configured. Mirrors the legacy
+    _PLATFORM_CONNECTED_CHECKERS[Platform.WECOM_CALLBACK] entry."""
+    extra = getattr(config, "extra", {}) or {}
+    return bool(extra.get("corp_id") or extra.get("apps"))
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs WeComAdapter from a PlatformConfig."""
+    return WeComAdapter(config)
+
+
+def _build_callback_adapter(config):
+    """Factory wrapper that constructs WecomCallbackAdapter from a PlatformConfig."""
+    from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+    return WecomCallbackAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — registers both WeCom platforms."""
+    ctx.register_platform(
+        name="wecom",
+        label="WeCom (Enterprise WeChat)",
+        adapter_factory=_build_adapter,
+        check_fn=check_wecom_requirements,
+        is_connected=_is_connected,
+        validate_config=_is_connected,
+        required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
+        install_hint="pip install 'hermes-agent[wecom]'",
+        setup_fn=interactive_setup,
+        allowed_users_env="WECOM_ALLOWED_USERS",
+        allow_all_env="WECOM_ALLOW_ALL_USERS",
+        cron_deliver_env_var="WECOM_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=4000,
+        emoji="💼",
+        allow_update_command=True,
+    )
+
+    from plugins.platforms.wecom.callback_adapter import check_wecom_callback_requirements
+    ctx.register_platform(
+        name="wecom_callback",
+        label="WeCom Callback (self-built apps)",
+        adapter_factory=_build_callback_adapter,
+        check_fn=check_wecom_callback_requirements,
+        is_connected=_callback_is_connected,
+        validate_config=_callback_is_connected,
+        required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
+        install_hint="pip install 'hermes-agent[wecom]'",
+        allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS",
+        allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS",
+        emoji="💼",
+        allow_update_command=True,
+    )

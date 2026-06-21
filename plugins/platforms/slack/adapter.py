@@ -35,7 +35,7 @@ except ImportError:
 import sys
 from pathlib import Path as _Path
 
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -3839,3 +3839,299 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Everything below this line was added when the Slack adapter moved from
+# ``gateway/platforms/slack.py`` into this bundled plugin. It mirrors the
+# Discord migration (PR #24356) exactly: a ``register(ctx)`` entry point plus
+# the hook implementations (``_standalone_send``, ``interactive_setup``,
+# ``_apply_yaml_config``, ``_is_connected``, ``_build_adapter``) that replace
+# the per-platform core touchpoints (the ``Platform.SLACK`` elif in
+# ``gateway/run.py``, the ``slack_cfg`` YAML→env block in ``gateway/config.py``,
+# the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict in
+# ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in
+# ``tools/send_message_tool.py``).
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process Slack delivery via the Web API ``chat.postMessage``.
+
+    Implements the ``standalone_sender_fn`` contract so ``deliver=slack`` cron
+    jobs succeed when the cron process is not co-located with the gateway (the
+    in-process adapter weakref is ``None`` in that case). Replaces the legacy
+    ``_send_slack`` helper that used to live in ``tools/send_message_tool.py``.
+
+    mrkdwn formatting is applied exactly as the legacy core path did — via a
+    throwaway ``SlackAdapter`` instance's ``format_message`` — so cron-delivered
+    Slack messages render identically to gateway-delivered ones.
+    """
+    token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
+    if not token:
+        return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
+
+    formatted = message
+    if message:
+        try:
+            _fmt_adapter = SlackAdapter.__new__(SlackAdapter)
+            formatted = _fmt_adapter.format_message(message)
+        except Exception:
+            logger.debug(
+                "Failed to apply Slack mrkdwn formatting in _standalone_send",
+                exc_info=True,
+            )
+
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        url = "https://slack.com/api/chat.postMessage"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
+        ) as session:
+            payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
+            async with session.post(
+                url, headers=headers, json=payload, **_req_kw
+            ) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return {
+                        "success": True,
+                        "platform": "slack",
+                        "chat_id": chat_id,
+                        "message_id": data.get("ts"),
+                    }
+                return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
+    except Exception as e:
+        return {"error": f"Slack send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Guide the user through Slack bot setup.
+
+    Mirrors Discord's ``interactive_setup`` shape: lazy-imports CLI helpers so
+    the plugin's import surface stays small, generates and writes the Slack app
+    manifest, prompts for the bot + app tokens, captures an allowlist, and
+    offers to set a home channel. Replaces ``hermes_cli/setup.py::_setup_slack``.
+    """
+    from pathlib import Path
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+    )
+
+    def _write_slack_manifest_and_instruct() -> None:
+        """Generate the Slack manifest, write it under HERMES_HOME, and print
+        paste-into-Slack instructions. Failures are non-fatal."""
+        try:
+            from hermes_cli.slack_cli import _build_full_manifest
+            from hermes_constants import get_hermes_home
+            import json as _json
+
+            manifest = _build_full_manifest(
+                bot_name="Hermes",
+                bot_description="Your Hermes agent on Slack",
+            )
+            target = Path(get_hermes_home()) / "slack-manifest.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                _json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            print_success(f"Slack app manifest written to: {target}")
+            print_info(
+                "   Paste it into https://api.slack.com/apps → your app → Features "
+                "→ App Manifest → Edit, then Save.  Slack will prompt to "
+                "reinstall if scopes or slash commands changed."
+            )
+            print_info(
+                "   Re-run `hermes slack manifest --write` anytime to refresh after "
+                "Hermes adds new commands."
+            )
+        except Exception as e:
+            print_warning(f"Could not write Slack manifest: {e}")
+
+    print_header("Slack")
+    existing = get_env_value("SLACK_BOT_TOKEN")
+    if existing:
+        print_info("Slack: already configured")
+        if not prompt_yes_no("Reconfigure Slack?", False):
+            # Even without reconfiguring, offer to refresh the manifest so
+            # new commands (e.g. /btw, /stop, ...) get registered in Slack.
+            if prompt_yes_no(
+                "Regenerate the Slack app manifest with the latest command "
+                "list? (recommended after `hermes update`)",
+                True,
+            ):
+                _write_slack_manifest_and_instruct()
+            return
+
+    print_info("Steps to create a Slack app:")
+    print_info("   1. Go to https://api.slack.com/apps → Create New App")
+    print_info("      Pick 'From an app manifest' — we'll generate one for you below.")
+    print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
+    print_info("      • Create an App-Level Token with 'connections:write' scope")
+    print_info("   3. Install to Workspace: Settings → Install App")
+    print_info("   4. After installing, invite the bot to channels: /invite @YourBot")
+    print()
+    print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/")
+    print()
+
+    # Generate and write manifest up-front so the user can paste it into
+    # the "Create from manifest" flow instead of clicking through scopes /
+    # events / slash commands one at a time.
+    _write_slack_manifest_and_instruct()
+
+    print()
+    bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
+    if not bot_token:
+        return
+    save_env_value("SLACK_BOT_TOKEN", bot_token)
+    app_token = prompt("Slack App Token (xapp-...)", password=True)
+    if app_token:
+        save_env_value("SLACK_APP_TOKEN", app_token)
+    print_success("Slack tokens saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID")
+    print()
+    allowed_users = prompt(
+        "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
+    )
+    if allowed_users:
+        save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("Slack allowlist configured")
+    else:
+        print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
+        print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: open the channel in Slack, then right-click")
+    print_info("   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).")
+    print_info("   You can also set this later by typing /set-home in a Slack channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("SLACK_HOME_CHANNEL", home_channel.strip())
+
+
+def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
+    """Translate ``config.yaml`` ``slack:`` keys into ``SLACK_*`` env vars.
+
+    Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the
+    legacy ``slack_cfg`` block that used to live in
+    ``gateway/config.py::load_gateway_config()`` before this migration.
+
+    The SlackAdapter reads its runtime configuration via ``os.getenv()``
+    throughout the connect / handle code paths, so rather than rewrite those
+    call sites to read from ``PlatformConfig.extra``, this hook keeps the
+    existing env-driven model and owns the YAML→env translation here, next to
+    the adapter that consumes it. Env vars take precedence over YAML — every
+    assignment is guarded by ``not os.getenv(...)`` so explicit env vars
+    survive a config.yaml update. Returns ``None`` because no extras are
+    seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+    """
+    if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
+        os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
+    if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
+        os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
+    if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
+        os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
+    frc = slack_cfg.get("free_response_channels")
+    if frc is not None and not os.getenv("SLACK_FREE_RESPONSE_CHANNELS"):
+        if isinstance(frc, list):
+            frc = ",".join(str(v) for v in frc)
+        os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
+    if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
+        os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
+    ac = slack_cfg.get("allowed_channels")
+    if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):
+        if isinstance(ac, list):
+            ac = ",".join(str(v) for v in ac)
+        os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+    return None  # all settings flow through env; nothing to merge into extras
+
+
+def _is_connected(config) -> bool:
+    """Slack is considered connected when SLACK_BOT_TOKEN is set.
+
+    Looks up via ``hermes_cli.gateway.get_env_value`` at call time (not via the
+    plugin's own bound import) so tests that patch ``gateway_mod.get_env_value``
+    can suppress ambient ``SLACK_BOT_TOKEN`` env vars. Matches what the legacy
+    ``Platform.SLACK`` connected-check did before this migration.
+    """
+    import hermes_cli.gateway as gateway_mod
+
+    return bool((gateway_mod.get_env_value("SLACK_BOT_TOKEN") or "").strip())
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs SlackAdapter from a PlatformConfig."""
+    return SlackAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="slack",
+        label="Slack",
+        adapter_factory=_build_adapter,
+        check_fn=check_slack_requirements,
+        is_connected=_is_connected,
+        required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+        install_hint="pip install 'hermes-agent[slack]'",
+        # Interactive setup wizard — replaces hermes_cli/setup.py::_setup_slack
+        # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.
+        setup_fn=interactive_setup,
+        # YAML→env config bridge — owns the translation of config.yaml slack:
+        # keys (require_mention, strict_mention, allow_bots,
+        # free_response_channels, reactions, allowed_channels) into SLACK_*
+        # env vars that the adapter reads via os.getenv(). Replaces the
+        # hardcoded block in gateway/config.py. Hook contract: #24849.
+        apply_yaml_config_fn=_apply_yaml_config,
+        # Auth env vars for _is_user_authorized() integration
+        allowed_users_env="SLACK_ALLOWED_USERS",
+        allow_all_env="SLACK_ALLOW_ALL_USERS",
+        # Cron home-channel delivery
+        cron_deliver_env_var="SLACK_HOME_CHANNEL",
+        # Out-of-process cron delivery via the Slack Web API. Without this hook,
+        # deliver=slack cron jobs fail with "No live adapter" when cron runs
+        # separately from the gateway. Replaces the _send_slack helper.
+        standalone_sender_fn=_standalone_send,
+        # Slack API allows 40,000 chars; leave margin (matches the legacy
+        # SlackAdapter.MAX_MESSAGE_LENGTH).
+        max_message_length=39000,
+        # Display
+        emoji="💼",
+        allow_update_command=True,
+    )

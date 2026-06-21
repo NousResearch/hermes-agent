@@ -98,7 +98,9 @@ model:
 # ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
 # wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
 # unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
-# HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
+# HERMES_API_CALL_STALE_TIMEOUT=90s, native Anthropic 900s). The
+# implicit non-stream stale detector is auto-disabled for local endpoints
+# and can scale upward for very large contexts.
 #
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
@@ -483,6 +485,10 @@ prompt_caching:
 #                           # reasoning controls:
 #                           # extra_body:
 #                           #   enable_thinking: false
+#                           # Some vLLM/Qwen deployments expect this nested:
+#                           # extra_body:
+#                           #   chat_template_kwargs:
+#                           #     enable_thinking: false
 
 # =============================================================================
 # Persistent Memory
@@ -803,7 +809,7 @@ platform_toolsets:
 # =============================================================================
 # Connect to external MCP servers to add tools from the MCP ecosystem.
 # Each server's tools are automatically discovered and registered.
-# See docs/mcp.md for full documentation.
+# See website/docs/user-guide/features/mcp.md for full documentation.
 #
 # Stdio servers (spawn a subprocess):
 #   command: the executable to run

@@ -3407,6 +3407,37 @@ def _resolve_auto(
 # below — never look up auth env vars ad-hoc.
 
 
+class _AsyncCopilotACPClient:
+    """Async-compatible wrapper for CopilotACPClient.
+
+    The ACP client is synchronous (it drives a subprocess over stdio), but
+    async auxiliary callers ``await client.chat.completions.create(...)``.
+    Expose an awaitable ``create()`` that runs the sync call in a thread so it
+    does not block the event loop, mirroring the other async aux wrappers.
+    """
+
+    class _Completions:
+        def __init__(self, sync_client):
+            self._sync_client = sync_client
+
+        async def create(self, **kwargs: Any) -> Any:
+            import asyncio
+
+            return await asyncio.to_thread(
+                self._sync_client.chat.completions.create, **kwargs
+            )
+
+    class _Chat:
+        def __init__(self, sync_client):
+            self.completions = _AsyncCopilotACPClient._Completions(sync_client)
+
+    def __init__(self, sync_client):
+        self._sync_client = sync_client
+        self.chat = self._Chat(sync_client)
+        self.api_key = sync_client.api_key
+        self.base_url = sync_client.base_url
+
+
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
@@ -3431,7 +3462,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
+            return _AsyncCopilotACPClient(sync_client), model
     except ImportError:
         pass
 

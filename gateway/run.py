@@ -3810,17 +3810,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return []
 
     @staticmethod
+    def _load_gateway_context_files() -> str:
+        """Load gateway-only context files as ephemeral system context.
+
+        These files are the gateway analogue of SOUL.md/MEMORY.md: they apply
+        only to messaging gateway sessions and must never be appended to the
+        user's current message. Keeping them on the ephemeral-system rail
+        prevents short gateway turns like "." or "ok" from being semantically
+        dominated by surface-specific operating policy.
+        """
+        blocks: list[str] = []
+        gateway_context_dir = _hermes_home / "gateway"
+        for filename in ("SOUL.gateway.md", "MEMORY.gateway.md"):
+            path = gateway_context_dir / filename
+            try:
+                if not path.exists() or not path.is_file():
+                    continue
+                content = path.read_text(encoding="utf-8").strip()
+            except Exception as exc:
+                logger.warning("Failed to load gateway context file %s: %s", path, exc)
+                continue
+            if content:
+                blocks.append(f"## {filename}\n{content}")
+
+        if not blocks:
+            return ""
+
+        header = (
+            "[Gateway-only context files - system context for messaging gateway "
+            "turns, not the user's current request. Do not acknowledge these "
+            "files unless the user asks about gateway context.]"
+        )
+        return f"{header}\n\n" + "\n\n".join(blocks)
+
+    @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """Load ephemeral system prompt from config or env var.
+        """Load ephemeral system prompt from config/env plus gateway context files.
         
-        Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+        HERMES_EPHEMERAL_SYSTEM_PROMPT still overrides agent.system_prompt from
+        config.yaml, preserving the existing user-configured prompt precedence.
+        Gateway context files are additive and remain on the system/context rail.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
-        if prompt:
-            return prompt
-        cfg = _load_gateway_runtime_config()
-        return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+        if not prompt:
+            cfg = _load_gateway_runtime_config()
+            prompt = str(cfg_get(cfg, "agent", "system_prompt", default="") or "")
+
+        parts = [prompt.strip()] if str(prompt or "").strip() else []
+        gateway_context = GatewayRunner._load_gateway_context_files()
+        if gateway_context:
+            parts.append(gateway_context)
+        return "\n\n".join(parts).strip()
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:

@@ -107,6 +107,19 @@ flowchart TB
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
 
+## Gateway-only context files
+
+Messaging surfaces often need behavior that should not affect local CLI sessions: delivery rules, mobile-friendly formatting, platform-specific artifact policy, or other gateway-only operating guidance. Put that guidance in profile-scoped files under your Hermes home:
+
+```text
+~/.hermes/gateway/SOUL.gateway.md
+~/.hermes/gateway/MEMORY.gateway.md
+```
+
+When the gateway starts, Hermes appends any non-empty files from that directory to the gateway's ephemeral system context. They apply only to gateway turns, are not appended to the user's current message, and are additive to `HERMES_EPHEMERAL_SYSTEM_PROMPT` / `agent.system_prompt`.
+
+Use these files for durable messaging-surface policy. Do not put secrets in them. Restart the gateway after creating or editing them so the running process reloads the context.
+
 ## Intentional Silence Tokens
 
 For group chats, hooks, and automation flows, Hermes supports explicit silence tokens. If the agent's final response is exactly one supported token, the gateway suppresses outbound delivery and sends nothing to the chat.

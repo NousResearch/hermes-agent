@@ -137,9 +137,12 @@ The gateway reads configuration from multiple sources:
 |--------|-----------------|
 | `~/.hermes/.env` | API keys, bot tokens, platform credentials |
 | `~/.hermes/config.yaml` | Model settings, tool configuration, display options |
+| `~/.hermes/gateway/SOUL.gateway.md` and `~/.hermes/gateway/MEMORY.gateway.md` | Gateway-only ephemeral system context for messaging turns |
 | Environment variables | Override any of the above |
 
 Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gateway reads `config.yaml` directly via YAML loader. This means config keys that exist in the CLI's defaults dict but not in the user's config file may behave differently between CLI and gateway.
+
+`GatewayRunner._load_ephemeral_system_prompt()` combines `HERMES_EPHEMERAL_SYSTEM_PROMPT` or `agent.system_prompt` with any non-empty gateway context files. Those files stay on the ephemeral system/context rail; they are not written into the user's message or persisted transcript.
 
 ## Platform Adapters
 

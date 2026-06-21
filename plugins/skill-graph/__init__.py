@@ -1138,6 +1138,30 @@ def _handle_slash_command(args: str) -> str | None:
             return f"Score breakdown failed: {e}"
 
     else:
+        # Unknown command — try proxying to a skill in the graph
+        if subcmd:
+            try:
+                conn = _ensure_graph()
+                _node = conn.execute(
+                    "SELECT file_path FROM skill_nodes WHERE name = ?", (subcmd,)
+                ).fetchone()
+                if _node:
+                    _result = _handle_skill_load({"name": subcmd})
+                    _data = json.loads(_result)
+                    if _data.get("success"):
+                        _content = _data.get("content", "")
+                        return (
+                            f"Loaded skill: {subcmd}\n"
+                            f"  Description: {_data.get('description', '')}\n"
+                            f"  Category:    {_data.get('category', '')}\n"
+                            f"  Content ({len(_content)} chars):\n"
+                            f"{_content[:500]}\n"
+                            f"...\n"
+                            f"(Use /sg info {subcmd} for metadata, "
+                            f"/sg terms {subcmd} for term details)"
+                        )
+            except Exception:
+                pass
         return (
             "/skill-graph — Skill knowledge graph\n\n"
             "Subcommands:\n"

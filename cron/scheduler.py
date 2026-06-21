@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -204,7 +205,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao",
+    "qqbot", "yuanbao", "openclaw",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -226,6 +227,7 @@ _HOME_TARGET_ENV_VARS = {
     "qqbot": "QQBOT_HOME_CHANNEL",
     "whatsapp": "WHATSAPP_HOME_CHANNEL",
     "whatsapp_cloud": "WHATSAPP_CLOUD_HOME_CHANNEL",
+    "openclaw": "OPENCLAW_CRON_RECEIVER_URL",
 }
 
 # Legacy env var names kept for back-compat.  Each entry is the current
@@ -413,8 +415,37 @@ def _resolve_home_env_var(platform_name: str) -> str:
     return _plugin_cron_env_var(name)
 
 
+def _get_home_target_from_gateway_config(platform_name: str) -> str:
+    """Return a config-backed home target for platforms that support it."""
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        platform = Platform(platform_name.lower())
+        pconfig = load_gateway_config().platforms.get(platform)
+    except Exception:
+        logger.debug(
+            "Failed to resolve %s home target from gateway config",
+            platform_name,
+            exc_info=True,
+        )
+        return ""
+
+    if not pconfig or not pconfig.enabled:
+        return ""
+    if pconfig.home_channel and pconfig.home_channel.chat_id:
+        return str(pconfig.home_channel.chat_id).strip()
+    if platform_name.lower() == "openclaw":
+        return str((pconfig.extra or {}).get("url") or "").strip()
+    return ""
+
+
 def _get_home_target_chat_id(platform_name: str) -> str:
     """Return the configured home target chat/room ID for a delivery platform."""
+    if platform_name.lower() == "openclaw":
+        value = _get_home_target_from_gateway_config(platform_name)
+        if value:
+            return value
+
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return ""
@@ -764,6 +795,22 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _openclaw_delivery_metadata(job: dict, content: str) -> dict:
+    """Build stable OpenClaw receiver metadata once per delivery attempt."""
+    job_id = str(job.get("id") or job.get("name") or "unknown").strip() or "unknown"
+    profile = os.getenv("HERMES_PROFILE", "").strip()
+    if not profile:
+        home = get_hermes_home()
+        profile = home.name if home.parent.name == "profiles" else "default"
+    severity = "error" if str(content or "").lstrip().startswith("⚠") else "info"
+    return {
+        "profile": profile,
+        "job": job_id,
+        "run_id": f"{job_id}-{int(time.time() * 1000)}",
+        "severity": severity,
+    }
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -874,6 +921,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        openclaw_metadata = (
+            _openclaw_delivery_metadata(job, cleaned_delivery_content)
+            if platform == Platform.OPENCLAW
+            else None
+        )
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
@@ -913,7 +966,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 media_metadata = {"direct_messages_topic_id": str(thread_id)}
             else:
                 route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"]}
+                route_metadata = openclaw_metadata or {"job_id": job["id"]}
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:
@@ -1102,7 +1155,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                thread_id=thread_id,
+                media_files=media_files,
+                metadata=openclaw_metadata,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -1112,7 +1173,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(
+                            platform,
+                            pconfig,
+                            chat_id,
+                            cleaned_delivery_content,
+                            thread_id=thread_id,
+                            media_files=media_files,
+                            metadata=openclaw_metadata,
+                        ),
+                    )
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

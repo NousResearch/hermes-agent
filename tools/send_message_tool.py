@@ -713,7 +713,16 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    metadata=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -866,6 +875,23 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chat_id,
                 chunk,
                 media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # --- OpenClaw: signed POST to the local cron receiver ---
+    if platform == Platform.OPENCLAW:
+        from gateway.platforms.openclaw import send_openclaw_direct
+
+        last_result = None
+        for chunk in chunks:
+            result = await send_openclaw_direct(
+                pconfig,
+                chat_id,
+                chunk,
+                metadata=metadata,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result

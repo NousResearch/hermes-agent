@@ -300,6 +300,24 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_openclaw_delivery_uses_config_url_home_channel(self, monkeypatch):
+        import gateway.config as gateway_config
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        config = GatewayConfig()
+        config.platforms[Platform.OPENCLAW] = PlatformConfig(
+            enabled=True,
+            extra={"url": "http://127.0.0.1:8789/cron", "secret": "test-secret"},
+        )
+        monkeypatch.delenv("OPENCLAW_CRON_RECEIVER_URL", raising=False)
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: config)
+
+        assert _resolve_delivery_target({"deliver": "openclaw"}) == {
+            "platform": "openclaw",
+            "chat_id": "http://127.0.0.1:8789/cron",
+            "thread_id": None,
+        }
+
     def test_human_friendly_label_resolved_via_channel_directory(self):
         """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
         job = {"deliver": "whatsapp:Alice (dm)"}
@@ -3440,6 +3458,24 @@ class TestCronDeliveryTargets:
         targets = {t["id"]: t for t in cron_delivery_targets()}
 
         assert targets["matrix"]["home_target_set"] is True
+
+    def test_openclaw_config_url_marks_target_ready(self, monkeypatch):
+        import gateway.config as gateway_config
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from cron.scheduler import cron_delivery_targets
+
+        config = GatewayConfig()
+        config.platforms[Platform.OPENCLAW] = PlatformConfig(
+            enabled=True,
+            extra={"url": "http://127.0.0.1:8789/cron", "secret": "test-secret"},
+        )
+        monkeypatch.delenv("OPENCLAW_CRON_RECEIVER_URL", raising=False)
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: config)
+
+        targets = {t["id"]: t for t in cron_delivery_targets()}
+
+        assert targets["openclaw"]["home_target_set"] is True
+        assert targets["openclaw"]["home_env_var"] == "OPENCLAW_CRON_RECEIVER_URL"
 
     def test_unconfigured_platforms_excluded(self, monkeypatch):
         from cron.scheduler import cron_delivery_targets

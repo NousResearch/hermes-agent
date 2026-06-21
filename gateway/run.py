@@ -7246,6 +7246,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.OPENCLAW:
+            from gateway.platforms.openclaw import (
+                OpenClawAdapter,
+                check_openclaw_requirements,
+            )
+            if not check_openclaw_requirements():
+                logger.warning("OpenClaw: receiver adapter requirements unavailable")
+                return None
+            return OpenClawAdapter(config)
+
         return None
 
 

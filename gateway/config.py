@@ -164,6 +164,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    OPENCLAW = "openclaw"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
     @classmethod
     def _missing_(cls, value):
@@ -480,6 +481,10 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     ),
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
+    ),
+    Platform.OPENCLAW: lambda cfg: bool(
+        (cfg.extra.get("url") or (cfg.home_channel and cfg.home_channel.chat_id))
+        and (cfg.extra.get("secret") or os.getenv("OPENCLAW_CRON_SHARED_SECRET"))
     ),
     # Relay dials OUT to a connector; it is "connected" once an endpoint URL is
     # configured (extra["relay_url"] or extra["url"]). The capability descriptor
@@ -909,6 +914,12 @@ def load_gateway_config() -> GatewayConfig:
                         existing = {}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    if str(plat_name).lower() == "openclaw":
+                        for key in ("url", "secret", "allowlist", "timeout_seconds"):
+                            if key in plat_block:
+                                merged_extra[key] = plat_block[key]
+                        if "url" in plat_block:
+                            merged_extra.setdefault("_url_source", "config")
                     if "enabled" in plat_block:
                         merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
@@ -1874,6 +1885,29 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
+
+    # OpenClaw cron receiver. URL is config.yaml-preferred; env remains a
+    # deprecated compatibility fallback. Secret is env-preferred at runtime.
+    openclaw_url_env = os.getenv("OPENCLAW_CRON_RECEIVER_URL", "").strip()
+    openclaw_secret_env = os.getenv("OPENCLAW_CRON_SHARED_SECRET", "").strip()
+    openclaw_config = config.platforms.get(Platform.OPENCLAW)
+    if openclaw_config is not None or openclaw_url_env or openclaw_secret_env:
+        if openclaw_config is None:
+            openclaw_config = _enable_from_env(Platform.OPENCLAW)
+        openclaw_url = str(openclaw_config.extra.get("url") or "").strip()
+        if not openclaw_url and openclaw_url_env:
+            openclaw_url = openclaw_url_env
+            openclaw_config.extra["url"] = openclaw_url
+            openclaw_config.extra["_url_source"] = "env"
+        if openclaw_secret_env:
+            openclaw_config.extra["secret"] = openclaw_secret_env
+        if openclaw_url:
+            openclaw_config.home_channel = HomeChannel(
+                platform=Platform.OPENCLAW,
+                chat_id=openclaw_url,
+                name=os.getenv("OPENCLAW_CRON_RECEIVER_NAME", "OpenClaw Cron Receiver"),
+                thread_id=None,
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

@@ -2408,12 +2408,28 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     if db is None or not hasattr(db, "update_system_prompt"):
         return
 
+    # Re-bind HERMES_HOME to the session's profile so load_soul_md() and
+    # build_skills_system_prompt() resolve to the correct profile.  Without
+    # this, _start_agent_build's finally block has already reset the
+    # override and the rebuilt prompt silently uses the root profile's
+    # SOUL.md and skills.  See issue #50233.
+    profile_home = session.get("profile_home")
+    home_token = (
+        set_hermes_home_override(profile_home) if profile_home else None
+    )
     try:
         prompt = agent._build_system_prompt(None)
         agent._cached_system_prompt = prompt
         db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
     except Exception:
-        logger.debug("failed to persist live session system prompt", exc_info=True)
+        logger.warning(
+            "failed to persist live session system prompt for session %s",
+            session_key,
+            exc_info=True,
+        )
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
 
 
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:

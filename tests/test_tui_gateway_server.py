@@ -8875,3 +8875,88 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_path):
+    """Issue #50233: _persist_live_session_system_prompt must re-bind
+    HERMES_HOME to the session's profile before rebuilding the system
+    prompt.  Without this, a /model switch rebuilds the prompt with the
+    root profile's SOUL.md and skills instead of the session's profile.
+    """
+    profile_home = tmp_path / "profile-work"
+    profile_home.mkdir()
+    (profile_home / "SOUL.md").write_text(
+        "# Work persona\nYou are a work agent.", encoding="utf-8"
+    )
+
+    built_homes = []
+
+    class FakeAgent:
+        model = "test-model"
+        provider = "test"
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message=None):
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            built_homes.append(str(home))
+            soul = (
+                (home / "SOUL.md").read_text(encoding="utf-8")
+                if (home / "SOUL.md").exists()
+                else ""
+            )
+            return f"System prompt from {home}\n{soul}"
+
+    class FakeDB:
+        def update_system_prompt(self, session_id, prompt):
+            pass
+
+    agent = FakeAgent()
+    agent._session_db = FakeDB()
+    session = {
+        "agent": agent,
+        "session_key": "test-key",
+        "profile_home": str(profile_home),
+    }
+
+    server._persist_live_session_system_prompt(session)
+
+    # The system prompt must have been built while the override pointed
+    # to the profile home, not the root ~/.hermes.
+    assert len(built_homes) == 1, f"expected 1 build, got {built_homes}"
+    assert str(profile_home) in built_homes[0], (
+        f"system prompt built with wrong home: {built_homes[0]}"
+    )
+    assert "Work persona" in agent._cached_system_prompt
+
+    # The override must have been reset after the call.
+    from hermes_constants import get_hermes_home_override
+    assert get_hermes_home_override() is None
+
+
+def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch):
+    """Sessions without a profile_home must not set/clear any override —
+    the function should behave identically to before the fix."""
+    class FakeAgent:
+        model = "test"
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message=None):
+            return "plain prompt"
+
+    class FakeDB:
+        def update_system_prompt(self, session_id, prompt):
+            pass
+
+    agent = FakeAgent()
+    agent._session_db = FakeDB()
+    session = {
+        "agent": agent,
+        "session_key": "test-key",
+        "profile_home": None,
+    }
+
+    # Should not raise, should still build and cache.
+    server._persist_live_session_system_prompt(session)
+    assert agent._cached_system_prompt == "plain prompt"

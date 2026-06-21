@@ -70,7 +70,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub = self._make_cli(show_reasoning=False)
         # Simulate /reasoning show
         arg = "show"
-        if arg in ("show", "on"):
+        if arg in {"show", "on"}:
             stub.show_reasoning = True
             stub.agent.reasoning_callback = lambda x: None
         self.assertTrue(stub.show_reasoning)
@@ -79,7 +79,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub = self._make_cli(show_reasoning=True)
         # Simulate /reasoning hide
         arg = "hide"
-        if arg in ("hide", "off"):
+        if arg in {"hide", "off"}:
             stub.show_reasoning = False
             stub.agent.reasoning_callback = None
         self.assertFalse(stub.show_reasoning)
@@ -88,14 +88,14 @@ class TestHandleReasoningCommand(unittest.TestCase):
     def test_on_enables_display(self):
         stub = self._make_cli(show_reasoning=False)
         arg = "on"
-        if arg in ("show", "on"):
+        if arg in {"show", "on"}:
             stub.show_reasoning = True
         self.assertTrue(stub.show_reasoning)
 
     def test_off_disables_display(self):
         stub = self._make_cli(show_reasoning=True)
         arg = "off"
-        if arg in ("hide", "off"):
+        if arg in {"hide", "off"}:
             stub.show_reasoning = False
         self.assertFalse(stub.show_reasoning)
 
@@ -178,6 +178,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning="Let me think...")
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -187,6 +189,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning=None)
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -201,6 +205,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         ]
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -210,6 +216,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning="")
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -584,6 +592,8 @@ class TestEndToEndPipeline(unittest.TestCase):
 
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break

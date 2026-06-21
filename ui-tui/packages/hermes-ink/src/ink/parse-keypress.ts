@@ -267,21 +267,16 @@ export function parseMultipleKeypresses(
     } else if (token.type === 'text') {
       if (inPaste) {
         pasteBuffer += token.value
-      } else if (/^\[<\d+;\d+;\d+[Mm]$/.test(token.value) || /^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
-        // Orphaned SGR/X10 mouse tail (fullscreen only — mouse tracking is off
-        // otherwise). A heavy render blocked the event loop past App's 50ms
-        // flush timer, so the buffered ESC was flushed as a lone Escape and
-        // the continuation `[<btn;col;rowM` arrived as text. Re-synthesize
-        // with the ESC prefix so the scroll event still fires instead of
-        // leaking into the prompt. The spurious Escape is gone; App.tsx's
-        // readableLength check prevents it. The X10 Cb slot is narrowed to
-        // the wheel range [\x60-\x7f] (0x40|modifiers + 32) — a full [\x20-]
-        // range would match typed input like `[MAX]` batched into one read
-        // and silently drop it as a phantom click. Click/drag orphans leak
-        // as visible garbage instead; deletable garbage beats silent loss.
+      } else if (/^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
+        // Orphaned X10 wheel tail (legacy 1000/1002 terminals, fullscreen
+        // only). If the buffered ESC was flushed as a lone Escape and the X10
+        // payload (`[M` + 3 bytes) arrived as the next text token, re-synthesize
+        // with ESC so the scroll event still fires instead of leaking. SGR mouse
+        // reports no longer reach this branch — the tokenizer keeps an
+        // incomplete CSI buffered across a flush and reassembles it (see
+        // termio/tokenize.ts), so the old fragment/burst recovery is gone.
         const resynthesized = '\x1b' + token.value
-        const mouse = parseMouseEvent(resynthesized)
-        keys.push(mouse ?? parseKeypress(resynthesized))
+        keys.push(parseKeypress(resynthesized))
       } else {
         keys.push(parseKeypress(token.value))
       }

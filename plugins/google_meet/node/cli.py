@@ -103,7 +103,7 @@ def node_command(args: argparse.Namespace) -> int:
         print(f"removed {args.name!r}" if ok else f"no such node: {args.name!r}")
         return 0 if ok else 1
 
-    if cmd in ("status", "ping"):
+    if cmd in {"status", "ping"}:
         entry = reg.get(args.name)
         if entry is None:
             print(f"no such node: {args.name!r}", file=sys.stderr)

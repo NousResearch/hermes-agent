@@ -7,11 +7,14 @@ keystrokes can be fed back in.  The only caller today is the
 
 Design constraints:
 
-* **POSIX-only.**  Hermes Agent supports Windows exclusively via WSL, which
-  exposes a native POSIX PTY via ``openpty(3)``.  Native Windows Python
-  has no PTY; :class:`PtyUnavailableError` is raised with a user-readable
-  install/platform message so the dashboard can render a banner instead of
-  crashing.
+* **POSIX-only.**  This module depends on ``fcntl``, ``termios``, and
+  ``ptyprocess``, none of which exist on native Windows Python.  Native
+  Windows ConPTY is a different API (Windows 10 build 17763+) and would
+  need a separate Windows implementation (``pywinpty``) — that's tracked
+  as a future enhancement.  On native Windows, importing this module
+  raises :class:`ImportError` and the dashboard's ``/chat`` tab shows a
+  WSL-recommended banner instead of crashing.  Every other feature in the
+  dashboard (sessions, jobs, metrics, config editor) works natively.
 * **Zero Node dependency on the server side.**  We use :mod:`ptyprocess`,
   which is a pure-Python wrapper around the OS calls.  The browser talks
   to the same ``hermes --tui`` binary it would launch from the CLI, so
@@ -45,6 +48,33 @@ except ImportError:  # pragma: no cover - dev env without ptyprocess
 
 
 __all__ = ["PtyBridge", "PtyUnavailableError"]
+
+
+# ``struct winsize`` packs rows/cols as unsigned short (0..65535).  We clamp
+# well below that ceiling: real terminals never exceed a couple thousand
+# columns, and a value above this is a broken probe (WSL2 reports
+# columns=131072) rather than a genuine ultrawide.  Lower bound is 1 — a
+# zero/negative dimension is the classic "no size yet" signal.
+_MIN_DIMENSION = 1
+_MAX_COLS = 2000
+_MAX_ROWS = 1000
+
+
+def _clamp_dimension(value: int, maximum: int) -> int:
+    """Clamp a reported terminal dimension into ``[_MIN_DIMENSION, maximum]``.
+
+    Non-integer / non-finite values fall back to ``_MIN_DIMENSION`` so a bad
+    probe can never reach ``struct.pack`` and raise ``struct.error``.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return _MIN_DIMENSION
+    if n < _MIN_DIMENSION:
+        return _MIN_DIMENSION
+    if n > maximum:
+        return maximum
+    return n
 
 
 class PtyUnavailableError(RuntimeError):
@@ -108,9 +138,14 @@ class PtyBridge:
                     "(or pip install -e '.[pty]')."
                 )
             raise PtyUnavailableError("Pseudo-terminals are unavailable.")
-        # Let caller-supplied env fully override inheritance; if they pass
-        # None we inherit the server's env (same semantics as subprocess).
-        spawn_env = os.environ.copy() if env is None else env
+        # PTY-hosted programs expect TERM to describe the terminal type.
+        # CI often runs without TERM in the parent process, which makes
+        # simple terminal probes like `tput cols` fail before winsize reads.
+        # Preserve explicit caller overrides, but backfill a sensible default
+        # when TERM is missing or blank.
+        spawn_env = (os.environ.copy() if env is None else env.copy())
+        if not spawn_env.get("TERM"):
+            spawn_env["TERM"] = "xterm-256color"
         proc = ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]
             list(argv),
             cwd=cwd,
@@ -156,7 +191,7 @@ class PtyBridge:
             data = os.read(self._fd, 65536)
         except OSError as exc:
             # EIO on Linux = slave side closed.  EBADF = already closed.
-            if exc.errno in (errno.EIO, errno.EBADF):
+            if exc.errno in {errno.EIO, errno.EBADF}:
                 return None
             raise
         if not data:
@@ -173,7 +208,7 @@ class PtyBridge:
             try:
                 n = os.write(self._fd, view)
             except OSError as exc:
-                if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
+                if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
                     return
                 raise
             if n <= 0:
@@ -181,11 +216,23 @@ class PtyBridge:
             view = view[n:]
 
     def resize(self, cols: int, rows: int) -> None:
-        """Forward a terminal resize to the child via ``TIOCSWINSZ``."""
+        """Forward a terminal resize to the child via ``TIOCSWINSZ``.
+
+        Dimensions are clamped to a sane range first.  Some hosts report
+        garbage window sizes — the motivating case is WSL2, where xterm.js
+        in the dashboard ``/chat`` tab can pick up ``columns=131072,
+        rows=1`` from a broken winsize probe.  ``struct winsize`` packs each
+        field as an unsigned short (max 65535), so an unclamped 131072 would
+        raise ``struct.error`` (not ``OSError``) and break the resize path,
+        leaving the TUI laid out for a one-row / absurdly-wide screen —
+        which is what shows up as blank / disappearing text.
+        """
         if self._closed:
             return
+        cols = _clamp_dimension(cols, _MAX_COLS)
+        rows = _clamp_dimension(rows, _MAX_ROWS)
         # struct winsize: rows, cols, xpixel, ypixel (all unsigned short)
-        winsize = struct.pack("HHHH", max(1, rows), max(1, cols), 0, 0)
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
         try:
             fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
         except OSError:
@@ -203,13 +250,23 @@ class PtyBridge:
             return
         self._closed = True
 
+        try:
+            pgid = os.getpgid(self._proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        except Exception:
+            pgid = None
+
         # SIGHUP is the conventional "your terminal went away" signal.
-        # We escalate if the child ignores it.
-        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):
+        # Send it to the whole foreground process group, not just the PTY
+        # leader: the dashboard TUI starts helper children such as the Python
+        # slash worker, and killing only the leader can strand those helpers.
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
             if not self._proc.isalive():
                 break
             try:
-                self._proc.kill(sig)
+                if pgid is not None:
+                    os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                else:
+                    self._proc.kill(sig)
             except Exception:
                 pass
             deadline = time.monotonic() + 0.5

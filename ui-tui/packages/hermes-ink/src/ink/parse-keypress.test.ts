@@ -96,3 +96,38 @@ describe('mouse wheel modifier decoding', () => {
     expect(key).toMatchObject({ name: 'wheelup', meta: true })
   })
 })
+
+describe('flush-boundary SGR mouse reassembly', () => {
+  it('reassembles a report split by a mid-sequence watchdog flush into one mouse event', () => {
+    // chunk 1: heavy render stalls the loop, only the prefix is read
+    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
+    expect(keys).toEqual([])
+
+    // App's 50ms watchdog flushes (input=null) — must NOT emit the partial
+    ;[keys, state] = parseMultipleKeypresses(state, null)
+    expect(keys).toEqual([])
+
+    // continuation arrives; the whole report reassembles, nothing leaks
+    ;[keys, state] = parseMultipleKeypresses(state, '46M')
+    expect(keys).toEqual([expect.objectContaining({ kind: 'mouse', button: 0, col: 35, row: 46, action: 'press' })])
+  })
+
+  it('drops a truncated mouse prefix after a second flush instead of leaking it', () => {
+    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
+
+    ;[keys, state] = parseMultipleKeypresses(state, null) // first flush keeps it
+    ;[keys, state] = parseMultipleKeypresses(state, null) // second flush drops it
+
+    expect(keys).toEqual([])
+    expect(state.incomplete).toBe('')
+  })
+
+  it('re-synthesizes an orphaned X10 wheel tail (legacy mouse) into a scroll key', () => {
+    // X10 wheel-up = ESC[M + (0x40+32) + col + row. If the ESC was flushed as a
+    // lone Escape and the `[M…` payload arrives as text, resynthesize it.
+    const tail = '[M' + String.fromCharCode(0x60) + '!!'
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, tail)
+
+    expect(key).toMatchObject({ name: 'wheelup' })
+  })
+})

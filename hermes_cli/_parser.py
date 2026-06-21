@@ -41,6 +41,8 @@ _EPILOGUE = """
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
+    hermes --tui                  Launch the modern TUI (or set display.interface: tui)
+    hermes --cli                  Force the classic REPL (overrides display.interface: tui)
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
@@ -70,6 +72,9 @@ Examples:
     hermes logs --since 1h        Lines from the last hour
     hermes debug share             Upload debug report for support
     hermes update                 Update to latest version
+    hermes dashboard              Start web UI dashboard (port 9119)
+    hermes dashboard --stop       Stop running dashboard processes
+    hermes dashboard --status     List running dashboard processes
 
 For more help on a command:
     hermes <command> --help
@@ -126,7 +131,8 @@ def build_top_level_parser():
         default=None,
         help=(
             "Provider override for this invocation (e.g. openrouter, anthropic). "
-            "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_PROVIDER env var."
+            "Applies to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
+            "under model.provider — use `hermes setup` or edit the file to change it."
         ),
     )
     parser.add_argument(
@@ -209,10 +215,24 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--safe-mode",
+        action="store_true",
+        default=False,
+        help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)",
+    )
+    _inherited_flag(
+        parser,
         "--tui",
         action="store_true",
         default=False,
         help="Launch the modern TUI instead of the classic REPL",
+    )
+    _inherited_flag(
+        parser,
+        "--cli",
+        action="store_true",
+        default=False,
+        help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
     )
     _inherited_flag(
         parser,
@@ -265,7 +285,11 @@ def build_top_level_parser():
         help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Verbose output"
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Verbose output",
     )
     chat_parser.add_argument(
         "-Q",
@@ -349,6 +373,13 @@ def build_top_level_parser():
         default=argparse.SUPPRESS,
         help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
     )
+    _inherited_flag(
+        chat_parser,
+        "--safe-mode",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.",
+    )
     chat_parser.add_argument(
         "--source",
         default=None,
@@ -360,6 +391,13 @@ def build_top_level_parser():
         action="store_true",
         default=False,
         help="Launch the modern TUI instead of the classic REPL",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--cli",
+        action="store_true",
+        default=False,
+        help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
     )
     _inherited_flag(
         chat_parser,

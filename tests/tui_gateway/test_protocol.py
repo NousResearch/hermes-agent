@@ -30,11 +30,17 @@ def server():
         import importlib
         mod = importlib.import_module("tui_gateway.server")
         yield mod
+        # Reset module-level session state without re-importing. importlib.reload
+        # would re-register the module's atexit hooks (ThreadPoolExecutor
+        # shutdown, _shutdown_sessions); the duplicates race the stderr
+        # buffer at interpreter shutdown and surface as Fatal Python error:
+        # _enter_buffered_busy. Clearing the per-session dicts gives the
+        # next test a clean slate; _methods is NOT cleared because it's
+        # populated at module import time and re-registration only happens
+        # via reload (which we don't do).
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
-        mod._methods.clear()
-        importlib.reload(mod)
 
 
 @pytest.fixture()
@@ -301,7 +307,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def get_messages_as_conversation(self, _sid, include_ancestors=False):
             return [
                 {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "yo"},
+                {"role": "assistant", "content": "yo", "reasoning": "thoughts"},
                 {"role": "tool", "content": "searched"},
                 {"role": "assistant", "content": "   "},
                 {"role": "assistant", "content": None},
@@ -309,9 +315,9 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
             ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
-    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
     resp = server.handle_request(
         {
@@ -325,9 +331,639 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     assert resp["result"]["message_count"] == 3
     assert resp["result"]["messages"] == [
         {"role": "user", "text": "hello"},
-        {"role": "assistant", "text": "yo"},
+        {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
         {"role": "tool", "name": "tool", "context": ""},
     ]
+
+
+def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
+    """A user message persisted with list-shaped multimodal content used to
+    crash session resume with ``'list' object has no attribute 'strip'``."""
+
+    multimodal_user = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "describe this"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ],
+    }
+    text_only_assistant = {"role": "assistant", "content": "ok"}
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": "20260502_000000_listcontent"}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [multimodal_user, text_only_assistant]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": "20260502_000000_listcontent", "cols": 100},
+        }
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["message_count"] == 2
+    # The image_url part is preserved as a raw data URL inside the text so
+    # the desktop renderer (which extracts embedded images) sees the same
+    # content the optimistic local cache returns. Otherwise the inline
+    # image flashes during initial cache hydration and then vanishes when
+    # the resume payload overwrites it with cleaned text.
+    assert resp["result"]["messages"] == [
+        {
+            "role": "user",
+            "text": "describe this\ndata:image/png;base64,AAAA",
+        },
+        {"role": "assistant", "text": "ok"},
+    ]
+
+
+def test_session_resume_lazy_registers_watch_session_without_agent(server, monkeypatch):
+    """``lazy: true`` (subagent watch windows) must register the live session
+    — keyed for the child mirror, on this transport — WITHOUT building an
+    agent. The eager build is what made opening a subagent window contend
+    with the already-running parent turn."""
+
+    target = "20260612_000000_child99"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "delegated goal"},
+            ]
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("lazy resume must not build an agent")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", _boom)
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["info"]["lazy"] is True
+    assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+    assert result["messages"] == [{"role": "user", "text": "delegated goal"}]
+
+    sid = result["session_id"]
+    session = server._sessions[sid]
+    assert session["agent"] is None
+    # The child mirror finds the watch window by stored key.
+    assert server._find_live_session_by_key(target) == (sid, session)
+    # A later prompt.submit upgrade must continue THIS stored conversation.
+    assert session["resume_session_id"] == target
+    # No build started: the idle reaper must still be able to evict it, and
+    # the live status must not report a never-ending "starting".
+    assert not session["agent_ready"].is_set()
+    assert server._session_live_status(sid, session) != "starting"
+    session["transport"] = server._detached_ws_transport
+    far_future = time.time() + 999999
+    assert server._session_is_evictable(sid, session, far_future)
+
+    # Resuming again (window refresh) reuses the same live session.
+    resp2 = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+    assert "error" not in resp2
+    assert resp2["result"]["session_id"] == sid
+    assert len(server._sessions) == 1
+
+
+def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypatch):
+    """A watch window attaching to a child mid-delegation must learn the run is
+    live from the resume response itself — the child can sit silent inside a
+    long tool call, so waiting for the next stream event leaves the window
+    looking dead."""
+
+    target = "20260612_000000_child42"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [{"role": "user", "content": "delegated goal"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
+    )
+    server._active_child_runs[target] = time.time()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "r1",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100, "lazy": True},
+            }
+        )
+    finally:
+        server._active_child_runs.pop(target, None)
+
+    assert "error" not in resp
+    assert resp["result"]["running"] is True
+    assert resp["result"]["status"] == "streaming"
+
+
+def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monkeypatch):
+    """Race regression: a watch window opens on a freshly-spawned subagent and
+    resumes BEFORE the child's first run_conversation() flushes its DB row.
+
+    The child relays ``subagent.start`` (carrying child_session_id, which opens
+    the window) before ``_ensure_db_session`` writes the row, so
+    ``db.get_session(target)`` is momentarily empty. On slower hosts (WSL2) the
+    window's lazy resume consistently lands in this gap. It used to hard-fail
+    "session not found"; the frontend then 404'd on its REST messages fallback
+    and the watch window spun forever. Since the child is provably live
+    (``_child_run_active``), the lazy resume must instead register the live
+    session with empty history so the mirror can stream the turn.
+    """
+
+    target = "20260616_131212_racey"
+
+    class _DB:
+        def get_session(self, _sid):
+            # Row not flushed yet — the whole point of the race.
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            # No rows for an unwritten session.
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
+    )
+    # Child is live in the relay registry even though its row isn't written.
+    server._active_child_runs[target] = time.time()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "r1",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100, "lazy": True},
+            }
+        )
+    finally:
+        server._active_child_runs.pop(target, None)
+
+    # The resume must succeed (no "session not found") and register a live,
+    # agent-less watch session the mirror can find by stored key.
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["info"]["lazy"] is True
+    assert result["messages"] == []
+    # Live for the mirror; reported running so the window shows a busy state.
+    assert result["running"] is True
+    assert result["status"] == "streaming"
+    sid = result["session_id"]
+    assert server._find_live_session_by_key(target) == (sid, server._sessions[sid])
+    assert server._sessions[sid]["agent"] is None
+
+
+def test_session_resume_missing_row_non_lazy_still_errors(server, monkeypatch):
+    """The missing-row tolerance is scoped to lazy resumes of an ACTIVE child.
+    A normal (non-lazy) resume of a genuinely unknown id must still fail fast
+    with "session not found" rather than silently registering an empty session.
+    """
+
+    target = "20260616_000000_ghost"
+
+    class _DB:
+        def get_session(self, _sid):
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    # Non-lazy resume, no active child → hard error.
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+    assert "error" in resp
+    assert "session not found" in resp["error"]["message"].lower()
+
+    # Lazy resume but the child is NOT live → still an error (no live mirror to
+    # justify an empty session; this would just be a dead, sessionless window).
+    resp2 = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+    assert "error" in resp2
+    assert "session not found" in resp2["error"]["message"].lower()
+
+
+def test_session_resume_reuses_existing_live_session(server, monkeypatch):
+    """Repeated resume must not allocate duplicate live agents."""
+
+    target = "20260409_010101_abc123"
+    created_sids: list[str] = []
+    closed_sids: list[str] = []
+    first_agent_started = threading.Event()
+    agent_can_finish = threading.Event()
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "yo"},
+            ]
+
+    class _Worker:
+        def close(self):
+            pass
+
+    class _Agent:
+        def __init__(self, sid, session_id):
+            self.sid = sid
+            self.model = "test/model"
+            self.session_id = session_id
+
+        def close(self):
+            closed_sids.append(self.sid)
+
+    def make_agent(sid, key, session_id=None, session_db=None):
+        created_sids.append(sid)
+        first_agent_started.set()
+        assert agent_can_finish.wait(timeout=1)
+        return _Agent(sid, session_id or key)
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", lambda _key, _model: _Worker())
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda _sid, _session: threading.Event(),
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    fake_approval = types.SimpleNamespace(
+        load_permanent_allowlist=lambda: None,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        first_holder = {}
+
+        def resume_first():
+            first_holder["resp"] = server.handle_request(
+                {
+                    "id": "first",
+                    "method": "session.resume",
+                    "params": {"session_id": target, "cols": 100},
+                }
+            )
+
+        first_thread = threading.Thread(target=resume_first)
+        first_thread.start()
+        assert first_agent_started.wait(timeout=1)
+
+        second_holder = {}
+
+        def resume_second():
+            second_holder["resp"] = server.handle_request(
+                {
+                    "id": "second",
+                    "method": "session.resume",
+                    "params": {"session_id": target, "cols": 120},
+                }
+            )
+
+        second_thread = threading.Thread(target=resume_second)
+        second_thread.start()
+        agent_can_finish.set()
+
+        first_thread.join(timeout=1)
+        second_thread.join(timeout=1)
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        first = first_holder["resp"]
+        second = second_holder["resp"]
+
+    assert "error" not in first
+    assert "error" not in second
+    # Both resumes resolve to the SAME single live session — the core invariant.
+    assert second["result"]["session_id"] == first["result"]["session_id"]
+    assert len(server._sessions) == 1
+    assert [s.get("session_key") for s in server._sessions.values()].count(target) == 1
+    winner = first["result"]["session_id"]
+    # The agent build happens outside the resume lock, so a racing resume may
+    # build a redundant agent; double-checked locking keeps only one live
+    # session and closes any loser's agent (no worker/poller is wired for it).
+    assert winner in created_sids
+    survivors = [sid for sid in created_sids if sid not in closed_sids]
+    assert survivors == [winner]
+    assert all(sid == winner for sid in server._sessions)
+
+
+def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
+    """Live resume should not reuse a stale ancestor-inclusive snapshot."""
+
+    target = "20260409_010101_child"
+    ancestor_history = [{"role": "user", "content": "ancestor"}]
+    current_history = [
+        {"role": "user", "content": "current"},
+        {"role": "assistant", "content": "current reply"},
+    ]
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            if include_ancestors:
+                return ancestor_history + current_history
+            return list(current_history)
+
+    class _Worker:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_SlashWorker", lambda _key, _model: _Worker())
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda _sid, _session: threading.Event(),
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    fake_approval = types.SimpleNamespace(
+        load_permanent_allowlist=lambda: None,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        first = server.handle_request(
+            {
+                "id": "first",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100},
+            }
+        )
+
+        assert "error" not in first
+        sid = first["result"]["session_id"]
+        assert first["result"]["messages"] == [
+            {"role": "user", "text": "ancestor"},
+            {"role": "user", "text": "current"},
+            {"role": "assistant", "text": "current reply"},
+        ]
+
+        with server._sessions[sid]["history_lock"]:
+            server._sessions[sid]["history"] = current_history + [
+                {"role": "user", "content": "new live turn"},
+                {"role": "assistant", "content": "new live reply"},
+            ]
+
+        second = server.handle_request(
+            {
+                "id": "second",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 120},
+            }
+        )
+
+    assert "error" not in second
+    assert second["result"]["session_id"] == sid
+    assert second["result"]["messages"] == [
+        {"role": "user", "text": "ancestor"},
+        {"role": "user", "text": "current"},
+        {"role": "assistant", "text": "current reply"},
+        {"role": "user", "text": "new live turn"},
+        {"role": "assistant", "text": "new live reply"},
+    ]
+
+
+def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(server, monkeypatch):
+    """Reconnect + activate must reattach a parked live session before orphan reap."""
+
+    class _Transport:
+        def write(self, _obj):
+            return True
+
+    sid = "runtime01"
+    old_transport = server._stdio_transport
+    new_transport = _Transport()
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model"),
+        "created_at": 123.0,
+        "history": [],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": "20260409_010101_abc123",
+        "transport": old_transport,
+    }
+    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    resp = server.handle_request(
+        {"id": "activate", "method": "session.activate", "params": {"session_id": sid}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["session_id"] == sid
+    assert server._sessions[sid]["transport"] is new_transport
+    assert not server._ws_session_is_orphaned(server._sessions[sid])
+
+
+def test_session_branch_persists_branched_from_marker(server, monkeypatch):
+    """TUI /branch must persist a _branched_from marker so the branch stays
+    visible in /resume and /sessions.
+
+    Regression for issue #20856: the TUI branch leaves the parent live (it
+    never ends it with end_reason='branched'), so list_sessions_rich's legacy
+    heuristic never surfaces it — the stable model_config marker is the only
+    thing that keeps a TUI branch visible.
+    """
+    create_calls = []
+
+    class _DB:
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            create_calls.append((new_key, kwargs))
+            return new_key
+
+        def append_message(self, **_kwargs):
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+
+    parent_sid = "parent01"
+    parent_key = "20260101_000000_parent"
+    server._sessions[parent_sid] = {
+        "session_key": parent_key,
+        "history": [{"role": "user", "content": "hello"}],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+    }
+
+    resp = server.handle_request(
+        {"id": "b1", "method": "session.branch", "params": {"session_id": parent_sid}}
+    )
+
+    assert "error" not in resp, resp
+    assert len(create_calls) == 1
+    new_key, kwargs = create_calls[0]
+    assert new_key == "20260101_000001_child0"
+    assert kwargs["parent_session_id"] == parent_key
+    # The marker — without it the branch is invisible in /resume and /sessions.
+    assert kwargs["model_config"] == {"_branched_from": parent_key}
+
+
+def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
+    captured = {}
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.model = kwargs.get("model", "")
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Agent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "test",
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"system_prompt": ["one", "two"]}})
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("test/model", "test"))
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent("sid", "session-key", session_id="session-key")
+
+    assert captured["ephemeral_system_prompt"] == "one\ntwo"
 
 
 # ── Config I/O ───────────────────────────────────────────────────────
@@ -391,21 +1027,139 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
-def test_slash_exec_rejects_pending_input_commands(server, cmd):
-    """slash.exec must reject commands that use _pending_input in the CLI."""
+def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
+    """Plugin slash commands return normal slash.exec output without using the worker."""
     sid = "test-session"
-    server._sessions[sid] = {"session_key": sid, "agent": None}
 
-    resp = server.handle_request({
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-slash",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "plugin:hello"}
+    assert worker.calls == []
+
+
+def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
+    """Plugin discovery failures must not break ordinary slash-worker commands."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        side_effect=RuntimeError("discovery boom"),
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-lookup-failure",
+            "method": "slash.exec",
+            "params": {"command": "help", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "worker:help"}
+    assert worker.calls == ["help"]
+
+
+def test_slash_exec_plugin_handler_error_returns_output(server):
+    """Plugin handler failures return slash output so the TUI does not redispatch."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    def handler(arg):
+        raise RuntimeError(f"handler boom: {arg}")
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: handler if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-handler-error",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "Plugin command error: handler boom: hello"}
+    assert worker.calls == []
+
+
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
+    """slash.exec must route _pending_input commands to command.dispatch
+    internally instead of returning the old 4018 "use command.dispatch"
+    fallback error (#48848). Some TUI clients failed that client-side
+    fallback, dropping the input and surfacing "empty command".
+
+    The contract is that slash.exec produces exactly the response
+    command.dispatch would for the same command — no fragile retry hop.
+    """
+    base, _, arg = cmd.partition(" ")
+
+    def fresh_session():
+        return {"session_key": "test-session", "agent": None}
+
+    sid = "test-session"
+
+    # Response from the (new) internal routing in slash.exec.
+    server._sessions[sid] = fresh_session()
+    routed = server.handle_request({
         "id": "r1",
         "method": "slash.exec",
         "params": {"command": cmd, "session_id": sid},
     })
 
-    assert "error" in resp
-    assert resp["error"]["code"] == 4018
-    assert "pending-input command" in resp["error"]["message"]
+    # Response from calling command.dispatch directly with the parsed parts.
+    server._sessions[sid] = fresh_session()
+    direct = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": base, "arg": arg, "session_id": sid},
+    })
+
+    # slash.exec must no longer emit the old client-fallback rejection.
+    if "error" in routed:
+        assert "pending-input command" not in routed["error"]["message"]
+
+    # Internal routing must yield the same payload as command.dispatch.
+    assert routed.get("result") == direct.get("result")
+    assert routed.get("error") == direct.get("error")
 
 
 def test_command_dispatch_queue_sends_message(server):
@@ -592,6 +1346,24 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["type"] == "skill"
     assert result["message"] == fake_msg
     assert result["name"] == "hermes-agent-dev"
+
+
+def test_command_dispatch_awaits_async_plugin_handler(server):
+    async def _handler(arg):
+        return f"async:{arg}"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: _handler if name == "async-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin",
+            "method": "command.dispatch",
+            "params": {"name": "async-cmd", "arg": "hello"},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"type": "plugin", "output": "async:hello"}
 
 
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────

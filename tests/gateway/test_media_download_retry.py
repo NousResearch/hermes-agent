@@ -532,11 +532,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import gateway.platforms.slack as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
-from gateway.config import Platform, PlatformConfig  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from gateway.config import PlatformConfig  # noqa: E402
 
 
 def _make_slack_adapter():
@@ -829,7 +829,7 @@ class TestSlackDownloadSlackFileBytes:
 
 def _make_mm_adapter():
     """Build a minimal MattermostAdapter with mocked internals."""
-    from gateway.platforms.mattermost import MattermostAdapter
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
     config = PlatformConfig(
         enabled=True, token="mm-token-fake",
         extra={"url": "https://mm.example.com"},

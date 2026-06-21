@@ -18,9 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, ANY
 
 from gateway.platforms.base import SendResult
 
@@ -74,19 +72,19 @@ class TestCheckRequirements(unittest.TestCase):
         "EMAIL_SMTP_HOST": "smtp.b.com",
     }, clear=False)
     def test_requirements_met(self):
-        from gateway.platforms.email import check_email_requirements
+        from plugins.platforms.email.adapter import check_email_requirements
         self.assertTrue(check_email_requirements())
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "a@b.com",
     }, clear=True)
     def test_requirements_not_met(self):
-        from gateway.platforms.email import check_email_requirements
+        from plugins.platforms.email.adapter import check_email_requirements
         self.assertFalse(check_email_requirements())
 
     @patch.dict(os.environ, {}, clear=True)
     def test_requirements_empty_env(self):
-        from gateway.platforms.email import check_email_requirements
+        from plugins.platforms.email.adapter import check_email_requirements
         self.assertFalse(check_email_requirements())
 
 
@@ -94,39 +92,39 @@ class TestHelperFunctions(unittest.TestCase):
     """Test email parsing helper functions."""
 
     def test_decode_header_plain(self):
-        from gateway.platforms.email import _decode_header_value
+        from plugins.platforms.email.adapter import _decode_header_value
         self.assertEqual(_decode_header_value("Hello World"), "Hello World")
 
     def test_decode_header_encoded(self):
-        from gateway.platforms.email import _decode_header_value
+        from plugins.platforms.email.adapter import _decode_header_value
         # RFC 2047 encoded subject
         encoded = "=?utf-8?B?TWVyaGFiYQ==?="  # "Merhaba" in base64
         result = _decode_header_value(encoded)
         self.assertEqual(result, "Merhaba")
 
     def test_extract_email_address_with_name(self):
-        from gateway.platforms.email import _extract_email_address
+        from plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
             _extract_email_address("John Doe <john@example.com>"),
             "john@example.com"
         )
 
     def test_extract_email_address_bare(self):
-        from gateway.platforms.email import _extract_email_address
+        from plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
             _extract_email_address("john@example.com"),
             "john@example.com"
         )
 
     def test_extract_email_address_uppercase(self):
-        from gateway.platforms.email import _extract_email_address
+        from plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
             _extract_email_address("John@Example.COM"),
             "john@example.com"
         )
 
     def test_strip_html_basic(self):
-        from gateway.platforms.email import _strip_html
+        from plugins.platforms.email.adapter import _strip_html
         html = "<p>Hello <b>world</b></p>"
         result = _strip_html(html)
         self.assertIn("Hello", result)
@@ -135,14 +133,14 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertNotIn("<b>", result)
 
     def test_strip_html_br_tags(self):
-        from gateway.platforms.email import _strip_html
+        from plugins.platforms.email.adapter import _strip_html
         html = "Line 1<br>Line 2<br/>Line 3"
         result = _strip_html(html)
         self.assertIn("Line 1", result)
         self.assertIn("Line 2", result)
 
     def test_strip_html_entities(self):
-        from gateway.platforms.email import _strip_html
+        from plugins.platforms.email.adapter import _strip_html
         html = "a &amp; b &lt; c &gt; d"
         result = _strip_html(html)
         self.assertIn("a & b", result)
@@ -152,20 +150,20 @@ class TestExtractTextBody(unittest.TestCase):
     """Test email body extraction from different message formats."""
 
     def test_plain_text_body(self):
-        from gateway.platforms.email import _extract_text_body
+        from plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEText("Hello, this is a test.", "plain", "utf-8")
         result = _extract_text_body(msg)
         self.assertEqual(result, "Hello, this is a test.")
 
     def test_html_body_fallback(self):
-        from gateway.platforms.email import _extract_text_body
+        from plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEText("<p>Hello from HTML</p>", "html", "utf-8")
         result = _extract_text_body(msg)
         self.assertIn("Hello from HTML", result)
         self.assertNotIn("<p>", result)
 
     def test_multipart_prefers_plain(self):
-        from gateway.platforms.email import _extract_text_body
+        from plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText("<p>HTML version</p>", "html", "utf-8"))
         msg.attach(MIMEText("Plain version", "plain", "utf-8"))
@@ -173,14 +171,14 @@ class TestExtractTextBody(unittest.TestCase):
         self.assertEqual(result, "Plain version")
 
     def test_multipart_html_only(self):
-        from gateway.platforms.email import _extract_text_body
+        from plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText("<p>Only HTML</p>", "html", "utf-8"))
         result = _extract_text_body(msg)
         self.assertIn("Only HTML", result)
 
     def test_empty_body(self):
-        from gateway.platforms.email import _extract_text_body
+        from plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEText("", "plain", "utf-8")
         result = _extract_text_body(msg)
         self.assertEqual(result, "")
@@ -190,14 +188,14 @@ class TestExtractAttachments(unittest.TestCase):
     """Test attachment extraction and caching."""
 
     def test_no_attachments(self):
-        from gateway.platforms.email import _extract_attachments
+        from plugins.platforms.email.adapter import _extract_attachments
         msg = MIMEText("No attachments here.", "plain", "utf-8")
         result = _extract_attachments(msg)
         self.assertEqual(result, [])
 
-    @patch("gateway.platforms.email.cache_document_from_bytes")
+    @patch("plugins.platforms.email.adapter.cache_document_from_bytes")
     def test_document_attachment(self, mock_cache):
-        from gateway.platforms.email import _extract_attachments
+        from plugins.platforms.email.adapter import _extract_attachments
         mock_cache.return_value = "/tmp/cached_doc.pdf"
 
         msg = MIMEMultipart()
@@ -215,9 +213,9 @@ class TestExtractAttachments(unittest.TestCase):
         self.assertEqual(result[0]["filename"], "report.pdf")
         mock_cache.assert_called_once()
 
-    @patch("gateway.platforms.email.cache_image_from_bytes")
+    @patch("plugins.platforms.email.adapter.cache_image_from_bytes")
     def test_image_attachment(self, mock_cache):
-        from gateway.platforms.email import _extract_attachments
+        from plugins.platforms.email.adapter import _extract_attachments
         mock_cache.return_value = "/tmp/cached_img.jpg"
 
         msg = MIMEMultipart()
@@ -250,7 +248,7 @@ class TestDispatchMessage(unittest.TestCase):
             "EMAIL_SMTP_PORT": "587",
             "EMAIL_POLL_INTERVAL": "15",
         }):
-            from gateway.platforms.email import EmailAdapter
+            from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -395,6 +393,68 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(captured_events[0].message_type, MessageType.PHOTO)
         self.assertEqual(captured_events[0].media_urls, ["/tmp/img.jpg"])
 
+    def test_document_attachment_sets_document_type(self):
+        """Email with a document attachment must set DOCUMENT so run.py injects file context."""
+        import asyncio
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        msg_data = {
+            "uid": b"6",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Re: report",
+            "message_id": "<msg6@test.com>",
+            "in_reply_to": "",
+            "body": "See attached",
+            "attachments": [{"path": "/tmp/report.pdf", "filename": "report.pdf", "type": "document", "media_type": "application/pdf"}],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        self.assertEqual(captured_events[0].message_type, MessageType.DOCUMENT)
+        self.assertEqual(captured_events[0].media_urls, ["/tmp/report.pdf"])
+
+    def test_mixed_image_and_document_prefers_document(self):
+        """DOCUMENT wins for mixed attachments — image handling keys off per-path
+        mime types, but document injection gates strictly on MessageType.DOCUMENT."""
+        import asyncio
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        msg_data = {
+            "uid": b"7",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Re: both",
+            "message_id": "<msg7@test.com>",
+            "in_reply_to": "",
+            "body": "Photo and PDF",
+            "attachments": [
+                {"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"},
+                {"path": "/tmp/report.pdf", "filename": "report.pdf", "type": "document", "media_type": "application/pdf"},
+            ],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        self.assertEqual(captured_events[0].message_type, MessageType.DOCUMENT)
+        self.assertEqual(len(captured_events[0].media_urls), 2)
+
     def test_source_built_correctly(self):
         """Session source should have correct chat_id and user info."""
         import asyncio
@@ -425,6 +485,91 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
 
+    def test_non_allowlisted_sender_dropped(self):
+        """Senders not in EMAIL_ALLOWED_USERS should be dropped before dispatch."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"99",
+                "sender_addr": "outsider@evil.com",
+                "sender_name": "Spammer",
+                "subject": "Buy now!!!",
+                "message_id": "<spam@evil.com>",
+                "in_reply_to": "",
+                "body": "Cheap meds",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should NOT be called for non-allowlisted sender
+            adapter._message_handler.assert_not_called()
+            # Thread context should NOT be created
+            self.assertNotIn("outsider@evil.com", adapter._thread_context)
+
+    def test_allowlisted_sender_proceeds(self):
+        """Senders in EMAIL_ALLOWED_USERS should proceed to dispatch normally."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            captured_events = []
+
+            async def mock_handler(event):
+                captured_events.append(event)
+                return None
+
+            adapter._message_handler = mock_handler
+
+            msg_data = {
+                "uid": b"100",
+                "sender_addr": "admin@test.com",
+                "sender_name": "Admin",
+                "subject": "Important",
+                "message_id": "<msg@test.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            self.assertEqual(captured_events[0].source.chat_id, "admin@test.com")
+
+    def test_empty_allowlist_allows_all(self):
+        """When EMAIL_ALLOWED_USERS is not set, all senders should proceed."""
+        import asyncio
+        with patch.dict(os.environ, {}, clear=False):
+            # Ensure EMAIL_ALLOWED_USERS is not in the env
+            if "EMAIL_ALLOWED_USERS" in os.environ:
+                del os.environ["EMAIL_ALLOWED_USERS"]
+
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"101",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hey",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should be called when no allowlist is configured
+            adapter._message_handler.assert_called()
+
 
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""
@@ -437,7 +582,7 @@ class TestThreadContext(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from gateway.platforms.email import EmailAdapter
+            from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -534,7 +679,7 @@ class TestSendMethods(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from gateway.platforms.email import EmailAdapter
+            from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -575,7 +720,6 @@ class TestSendMethods(unittest.TestCase):
     def test_send_image_includes_url(self):
         """send_image should include image URL in email body."""
         import asyncio
-        from unittest.mock import AsyncMock
         adapter = self._make_adapter()
 
         adapter.send = AsyncMock(return_value=SendResult(success=True))
@@ -654,7 +798,7 @@ class TestConnectDisconnect(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from gateway.platforms.email import EmailAdapter
+            from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -732,7 +876,7 @@ class TestFetchNewMessages(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from gateway.platforms.email import EmailAdapter
+            from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -826,7 +970,7 @@ class TestPollLoop(unittest.TestCase):
             "EMAIL_SMTP_HOST": "smtp.test.com",
             "EMAIL_POLL_INTERVAL": "1",
         }):
-            from gateway.platforms.email import EmailAdapter
+            from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -877,7 +1021,10 @@ class TestSendEmailStandalone(unittest.TestCase):
         """_send_email should use verified STARTTLS when sending."""
         import asyncio
         import ssl
-        from tools.send_message_tool import _send_email
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from types import SimpleNamespace
+        async def _send_email(extra, chat_id, message):
+            return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
@@ -905,7 +1052,10 @@ class TestSendEmailStandalone(unittest.TestCase):
     def test_send_email_tool_failure(self):
         """SMTP failure should return error dict."""
         import asyncio
-        from tools.send_message_tool import _send_email
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from types import SimpleNamespace
+        async def _send_email(extra, chat_id, message):
+            return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
 
         with patch("smtplib.SMTP", side_effect=Exception("SMTP error")):
             result = asyncio.run(
@@ -919,7 +1069,10 @@ class TestSendEmailStandalone(unittest.TestCase):
     def test_send_email_tool_not_configured(self):
         """Missing config should return error."""
         import asyncio
-        from tools.send_message_tool import _send_email
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from types import SimpleNamespace
+        async def _send_email(extra, chat_id, message):
+            return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
 
         result = asyncio.run(
             _send_email({}, "user@test.com", "Hello")
@@ -941,7 +1094,7 @@ class TestSmtpConnectionCleanup(unittest.TestCase):
     }, clear=False)
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.email import EmailAdapter
+        from plugins.platforms.email.adapter import EmailAdapter
         return EmailAdapter(PlatformConfig(enabled=True))
 
     @patch.dict(os.environ, {
@@ -996,7 +1149,7 @@ class TestImapConnectionCleanup(unittest.TestCase):
     }, clear=False)
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.email import EmailAdapter
+        from plugins.platforms.email.adapter import EmailAdapter
         return EmailAdapter(PlatformConfig(enabled=True))
 
     @patch.dict(os.environ, {
@@ -1044,6 +1197,199 @@ class TestImapConnectionCleanup(unittest.TestCase):
 
         self.assertEqual(results, [])
         mock_imap.logout.assert_called_once()
+
+
+class TestImapIdExtensionForNetEase(unittest.TestCase):
+    """Regression for #22271: 163/NetEase mailbox requires the RFC 2971
+    IMAP ID command after LOGIN, otherwise it returns ``BYE Unsafe Login``
+    on every UID SEARCH.  We send ID best-effort after every login so that
+    163 works while non-supporting servers stay unaffected.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@163.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.163.com",
+            "EMAIL_SMTP_HOST": "smtp.163.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_connect_sends_imap_id_after_login(self):
+        """connect() must call xatom('ID', ...) after LOGIN for 163 support."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.connect())
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+        id_calls = [c for c in mock_imap.xatom.call_args_list if c.args and c.args[0] == "ID"]
+        self.assertTrue(
+            id_calls,
+            "EmailAdapter.connect() must call imap.xatom('ID', ...) after "
+            "LOGIN so 163/NetEase mailbox does not return 'Unsafe Login'.",
+        )
+        payload = id_calls[0].args[1]
+        self.assertIn("hermes-agent", payload)
+
+        names = [c[0] for c in mock_imap.method_calls]
+        self.assertIn("login", names)
+        self.assertLess(names.index("login"), names.index("xatom"))
+
+    def test_fetch_new_messages_sends_imap_id_after_login(self):
+        """_fetch_new_messages must also send ID — it opens its own IMAP session."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        id_calls = [c for c in mock_imap.xatom.call_args_list if c.args and c.args[0] == "ID"]
+        self.assertTrue(
+            id_calls,
+            "_fetch_new_messages() must call imap.xatom('ID', ...) after "
+            "LOGIN — the polling path opens a fresh IMAP connection.",
+        )
+
+    def test_send_imap_id_swallows_errors_for_non_supporting_servers(self):
+        """Servers that reject ID must not break the connection."""
+        from plugins.platforms.email.adapter import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.xatom.side_effect = Exception("BAD command unknown: ID")
+
+        _send_imap_id(mock_imap)
+        mock_imap.xatom.assert_called_once()
+
+
+class TestConnectSmtp(unittest.TestCase):
+    """Test _connect_smtp() helper: protocol selection and IPv6 fallback."""
+
+    def _make_adapter(self, port="587"):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": port,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_port_587_uses_smtp_with_starttls(self):
+        """Port 587 should use smtplib.SMTP + STARTTLS."""
+        adapter = self._make_adapter("587")
+
+        with patch("smtplib.SMTP") as mock_smtp, \
+             patch("smtplib.SMTP_SSL") as mock_smtp_ssl:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = adapter._connect_smtp()
+
+            mock_smtp.assert_called_once()
+            mock_smtp_ssl.assert_not_called()
+            mock_server.starttls.assert_called_once()
+            self.assertIs(result, mock_server)
+
+    def test_port_465_uses_smtp_ssl(self):
+        """Port 465 should use smtplib.SMTP_SSL (implicit TLS)."""
+        adapter = self._make_adapter("465")
+
+        with patch("smtplib.SMTP") as mock_smtp, \
+             patch("smtplib.SMTP_SSL") as mock_smtp_ssl:
+            mock_server = MagicMock()
+            mock_smtp_ssl.return_value = mock_server
+
+            result = adapter._connect_smtp()
+
+            mock_smtp_ssl.assert_called_once()
+            mock_smtp.assert_not_called()
+            self.assertIs(result, mock_server)
+
+    def test_ipv6_timeout_falls_back_to_ipv4(self):
+        """When default connection times out, retry with an IPv4-only SMTP path."""
+        import socket as _socket
+        import plugins.platforms.email.adapter as email_mod
+
+        adapter = self._make_adapter("587")
+
+        with patch("smtplib.SMTP", side_effect=_socket.timeout("timed out")), \
+             patch.object(email_mod, "_IPv4SMTP") as mock_ipv4_smtp:
+            mock_server = MagicMock()
+            mock_ipv4_smtp.return_value = mock_server
+
+            result = adapter._connect_smtp()
+
+            self.assertIs(result, mock_server)
+            mock_ipv4_smtp.assert_called_once_with("smtp.test.com", 587, timeout=30)
+            mock_server.starttls.assert_called_once()
+
+    def test_port_465_ipv6_fallback(self):
+        """Port 465 IPv6 timeout falls back to IPv4 with SMTP_SSL."""
+        import socket as _socket
+        import plugins.platforms.email.adapter as email_mod
+
+        adapter = self._make_adapter("465")
+
+        with patch("smtplib.SMTP_SSL", side_effect=_socket.timeout("timed out")), \
+             patch.object(email_mod, "_IPv4SMTP_SSL") as mock_ipv4_smtp_ssl:
+            mock_server = MagicMock()
+            mock_ipv4_smtp_ssl.return_value = mock_server
+
+            result = adapter._connect_smtp()
+
+            self.assertIs(result, mock_server)
+            mock_ipv4_smtp_ssl.assert_called_once_with(
+                "smtp.test.com", 465, timeout=30, context=ANY,
+            )
+
+    def test_tls_verification_error_does_not_retry_ipv4(self):
+        """Certificate failures are security errors, not IPv6 reachability failures."""
+        import ssl as _ssl
+        import plugins.platforms.email.adapter as email_mod
+
+        adapter = self._make_adapter("465")
+
+        with patch("smtplib.SMTP_SSL", side_effect=_ssl.SSLError("cert verify failed")), \
+             patch.object(email_mod, "_IPv4SMTP_SSL") as mock_ipv4_smtp_ssl:
+            with self.assertRaises(_ssl.SSLError):
+                adapter._connect_smtp()
+
+            mock_ipv4_smtp_ssl.assert_not_called()
+
+    def test_ipv4_connection_does_not_mutate_global_resolver(self):
+        """IPv4 fallback must not monkeypatch process-global socket state."""
+        import socket as _socket
+        from plugins.platforms.email.adapter import _create_ipv4_connection
+
+        original_getaddrinfo = _socket.getaddrinfo
+        fake_sock = MagicMock()
+
+        with patch(
+            "socket.getaddrinfo",
+            return_value=[(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("192.0.2.1", 587))],
+        ) as mock_getaddrinfo, patch("socket.socket", return_value=fake_sock):
+            result = _create_ipv4_connection("smtp.test.com", 587, 30)
+
+        self.assertIs(result, fake_sock)
+        mock_getaddrinfo.assert_called_once_with(
+            "smtp.test.com", 587, _socket.AF_INET, _socket.SOCK_STREAM,
+        )
+        self.assertIs(_socket.getaddrinfo, original_getaddrinfo)
 
 
 if __name__ == "__main__":

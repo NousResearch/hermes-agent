@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, HomeChannel
+from gateway.config import Platform, PlatformConfig
 
 
 # ── Config loading ──────────────────────────────────────────────────
@@ -59,7 +59,7 @@ class TestSmsFormatAndTruncate:
     """Test SmsAdapter.format_message strips markdown."""
 
     def _make_adapter(self):
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -115,7 +115,7 @@ class TestSmsEchoPrevention:
 
     def test_own_number_detection(self):
         """The adapter stores _from_number for echo prevention."""
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -132,21 +132,21 @@ class TestSmsEchoPrevention:
 
 class TestSmsRequirements:
     def test_check_sms_requirements_missing_sid(self):
-        from gateway.platforms.sms import check_sms_requirements
+        from plugins.platforms.sms.adapter import check_sms_requirements
 
         env = {"TWILIO_AUTH_TOKEN": "tok"}
         with patch.dict(os.environ, env, clear=True):
             assert check_sms_requirements() is False
 
     def test_check_sms_requirements_missing_token(self):
-        from gateway.platforms.sms import check_sms_requirements
+        from plugins.platforms.sms.adapter import check_sms_requirements
 
         env = {"TWILIO_ACCOUNT_SID": "ACtest"}
         with patch.dict(os.environ, env, clear=True):
             assert check_sms_requirements() is False
 
     def test_check_sms_requirements_both_set(self):
-        from gateway.platforms.sms import check_sms_requirements
+        from plugins.platforms.sms.adapter import check_sms_requirements
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -169,12 +169,12 @@ class TestSmsRequirements:
 class TestWebhookHostConfig:
     """Verify SMS_WEBHOOK_HOST env var and default."""
 
-    def test_default_host_is_all_interfaces(self):
-        from gateway.platforms.sms import DEFAULT_WEBHOOK_HOST
-        assert DEFAULT_WEBHOOK_HOST == "0.0.0.0"
+    def test_default_host_is_localhost(self):
+        from plugins.platforms.sms.adapter import DEFAULT_WEBHOOK_HOST
+        assert DEFAULT_WEBHOOK_HOST == "127.0.0.1"
 
     def test_host_from_env(self):
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -188,7 +188,7 @@ class TestWebhookHostConfig:
             assert adapter._webhook_host == "127.0.0.1"
 
     def test_webhook_url_from_env(self):
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -202,7 +202,7 @@ class TestWebhookHostConfig:
             assert adapter._webhook_url == "https://example.com/webhooks/twilio"
 
     def test_webhook_url_stripped(self):
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -222,7 +222,7 @@ class TestStartupGuard:
     """Adapter must refuse to start without SMS_WEBHOOK_URL."""
 
     def _make_adapter(self, extra_env=None):
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -241,6 +241,48 @@ class TestStartupGuard:
         adapter = self._make_adapter()
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_missing_webhook_url_is_non_retryable(self):
+        adapter = self._make_adapter()
+        await adapter.connect()
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert "sms_missing_webhook_url" == adapter.fatal_error_code
+
+    @pytest.mark.asyncio
+    async def test_missing_phone_number_is_non_retryable(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "",
+            "SMS_WEBHOOK_URL": "",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+        await adapter.connect()
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter.fatal_error_code == "sms_missing_phone_number"
+
+    @pytest.mark.asyncio
+    async def test_insecure_flag_does_not_set_fatal_error(self):
+        mock_session = AsyncMock()
+        with patch.dict(os.environ, {"SMS_INSECURE_NO_SIGNATURE": "true"}), \
+             patch("aiohttp.web.AppRunner") as mock_runner_cls, \
+             patch("aiohttp.web.TCPSite") as mock_site_cls, \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
+            adapter = self._make_adapter()
+            result = await adapter.connect()
+            assert result is True
+            assert adapter.has_fatal_error is False
+            await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_insecure_flag_allows_start_without_url(self):
@@ -293,7 +335,7 @@ class TestTwilioSignatureValidation:
     """Unit tests for SmsAdapter._validate_twilio_signature."""
 
     def _make_adapter(self, auth_token="test_token_secret"):
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -403,7 +445,7 @@ class TestWebhookSignatureEnforcement:
     """Integration tests for signature validation in _handle_webhook."""
 
     def _make_adapter(self, webhook_url=""):
-        from gateway.platforms.sms import SmsAdapter
+        from plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",

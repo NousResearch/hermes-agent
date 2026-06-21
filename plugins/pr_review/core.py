@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+import hashlib
 import json
 import re
 import subprocess
@@ -36,6 +37,14 @@ DEFAULT_IGNORE_PATTERNS = (
     "**/*.min.js",
     "**/vendor/**",
 )
+
+CONFIG_PATHS = (
+    ".github/hermes-pr-reviewer.json",
+    ".hermes/pr-reviewer.json",
+)
+
+SUMMARY_COMMENT_MARKER = "<!-- hermes-pr-review:summary:v1 -->"
+MAX_FINDINGS = 5
 
 
 @dataclass(frozen=True)
@@ -175,13 +184,69 @@ def fetch_instruction_glob_from_base(ref: PullRequestRef, base_ref: str) -> Dict
     return out
 
 
-def collect_trusted_docs(ref: PullRequestRef, base_ref: str, *, max_chars_per_doc: int = 20_000) -> Dict[str, str]:
+def _is_safe_repo_path(path: str) -> bool:
+    value = (path or "").strip()
+    if not value or value.startswith(("/", "~")) or "\x00" in value:
+        return False
+    return not any(part in ("", ".", "..") for part in Path(value).parts)
+
+
+def _string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    for item in value:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if stripped:
+                out.append(stripped)
+    return out
+
+
+def load_reviewer_config(ref: PullRequestRef, base_ref: str) -> Dict[str, Any]:
+    """Load optional reviewer config from the trusted base branch only.
+
+    Supported JSON keys are intentionally small for the MVP:
+    ``extra_doc_paths``/``extraDocPaths`` adds trusted context docs, and
+    ``ignore_patterns``/``ignorePatterns`` extends generated-file filtering.
+    """
+    for path in CONFIG_PATHS:
+        text = fetch_file_from_base(ref, path, base_ref)
+        if not text:
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return {"config_path": path, "config_error": "invalid_json"}
+        if not isinstance(data, dict):
+            return {"config_path": path, "config_error": "config_must_be_object"}
+        extra_doc_paths = [p for p in _string_list(data.get("extra_doc_paths") or data.get("extraDocPaths")) if _is_safe_repo_path(p)]
+        ignore_patterns = [p for p in _string_list(data.get("ignore_patterns") or data.get("ignorePatterns")) if _is_safe_repo_path(p)]
+        return {
+            "config_path": path,
+            "extra_doc_paths": extra_doc_paths,
+            "ignore_patterns": ignore_patterns,
+            "config_error": None,
+        }
+    return {"config_path": None, "extra_doc_paths": [], "ignore_patterns": [], "config_error": None}
+
+
+def collect_trusted_docs(
+    ref: PullRequestRef,
+    base_ref: str,
+    *,
+    extra_doc_paths: Sequence[str] = (),
+    max_chars_per_doc: int = 20_000,
+) -> Dict[str, str]:
     docs: Dict[str, str] = {}
-    for path in DEFAULT_DOC_PATHS:
+    for path in (*DEFAULT_DOC_PATHS, *extra_doc_paths):
+        if not _is_safe_repo_path(path):
+            continue
         text = fetch_file_from_base(ref, path, base_ref)
         if text:
             docs[path] = text[:max_chars_per_doc]
-    docs.update(fetch_instruction_glob_from_base(ref, base_ref))
+    for path, text in fetch_instruction_glob_from_base(ref, base_ref).items():
+        docs[path] = text[:max_chars_per_doc]
     return docs
 
 
@@ -192,12 +257,16 @@ def is_ignored_path(path: str, patterns: Iterable[str] = DEFAULT_IGNORE_PATTERNS
     return any(fnmatch.fnmatchcase(candidate, pattern) for pattern in patterns for candidate in candidates)
 
 
-def filter_files(files: Iterable[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def filter_files(
+    files: Iterable[Dict[str, Any]],
+    *,
+    patterns: Iterable[str] = DEFAULT_IGNORE_PATTERNS,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     included: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     for item in files:
         filename = str(item.get("filename") or "")
-        if filename and is_ignored_path(filename):
+        if filename and is_ignored_path(filename, patterns):
             skipped.append({**item, "skip_reason": "ignored_path"})
         else:
             included.append(item)
@@ -208,6 +277,27 @@ def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
     return text[:max_chars] + "\n\n[TRUNCATED by Hermes PR Reviewer context budget]\n", True
+
+
+def stable_fingerprint(value: Any, *, length: int = 16) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:length]
+
+
+def finding_fingerprint(finding: Dict[str, Any]) -> str:
+    hint = str(finding.get("fingerprint_hint") or "").strip()
+    basis = hint or json.dumps(
+        {
+            "severity": finding.get("severity"),
+            "path": finding.get("path"),
+            "line": finding.get("line"),
+            "title": finding.get("title"),
+            "evidence": finding.get("evidence"),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
 def artifact_dir(ref: PullRequestRef, head_sha: str) -> Path:
@@ -252,8 +342,19 @@ def build_review_input(
     included_files: List[Dict[str, Any]],
     skipped_files: List[Dict[str, Any]],
     max_diff_chars: int,
+    reviewer_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, Dict[str, Any]]:
     clipped_diff, diff_truncated = truncate_text(diff, max_diff_chars)
+    context_fingerprint = stable_fingerprint(
+        {
+            "metadata": {k: metadata.get(k) for k in ("number", "title", "baseRefName", "headRefName", "headRefOid")},
+            "docs": docs,
+            "reviewer_config": reviewer_config or {},
+            "included_files": [f.get("filename") for f in included_files],
+            "skipped_files": [{"filename": f.get("filename"), "reason": f.get("skip_reason")} for f in skipped_files],
+            "diff": clipped_diff,
+        }
+    )
     manifest = {
         "repo": metadata.get("url", ""),
         "number": metadata.get("number"),
@@ -269,12 +370,17 @@ def build_review_input(
         "skipped_files": [{"filename": f.get("filename"), "reason": f.get("skip_reason")} for f in skipped_files],
         "diff_truncated": diff_truncated,
         "max_diff_chars": max_diff_chars,
+        "reviewer_config": reviewer_config or {},
+        "context_fingerprint": context_fingerprint,
     }
     sections = [
         "# Hermes PR Review Context",
         "",
         "## PR metadata",
         json.dumps({k: metadata.get(k) for k in sorted(metadata)}, indent=2, default=str),
+        "",
+        "## Trusted reviewer config",
+        json.dumps(reviewer_config or {}, indent=2, sort_keys=True),
         "",
         "## Trusted base-branch project docs",
     ]
@@ -299,8 +405,14 @@ def build_review_input(
 
 def render_markdown(review: Dict[str, Any], manifest: Dict[str, Any]) -> str:
     findings = review.get("findings") or []
+    diagnostics = {
+        "head_sha": manifest.get("head_sha"),
+        "context_fingerprint": manifest.get("context_fingerprint"),
+        "review_fingerprint": review.get("review_fingerprint"),
+    }
     lines = [
-        "<!-- hermes-pr-review:summary:v1 -->",
+        SUMMARY_COMMENT_MARKER,
+        f"<!-- hermes-pr-review:diagnostics {json.dumps(diagnostics, sort_keys=True)} -->",
         "## Hermes PR Review",
         "",
         f"**Verdict:** {str(review.get('verdict', 'comment')).upper()}",
@@ -345,8 +457,61 @@ def render_markdown(review: Dict[str, Any], manifest: Dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def normalize_review(raw: Any) -> Dict[str, Any]:
+    review = raw if isinstance(raw, dict) else {}
+    verdict = str(review.get("verdict") or "comment").lower()
+    if verdict not in {"approve", "comment", "request_changes"}:
+        verdict = "comment"
+    risk = str(review.get("risk") or "medium").lower()
+    if risk not in {"low", "medium", "high"}:
+        risk = "medium"
+    raw_findings = review.get("findings")
+    findings_in = raw_findings if isinstance(raw_findings, list) else []
+    findings: List[Dict[str, Any]] = []
+    for item in findings_in[:MAX_FINDINGS]:
+        if not isinstance(item, dict):
+            continue
+        severity = str(item.get("severity") or "warning").lower()
+        if severity not in {"critical", "warning", "suggestion"}:
+            severity = "warning"
+        confidence = str(item.get("confidence") or "medium").lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "medium"
+        line = item.get("line")
+        if not isinstance(line, int):
+            line = None
+        finding = {
+            "severity": severity,
+            "path": str(item.get("path") or "unknown"),
+            "line": line,
+            "title": str(item.get("title") or "Finding"),
+            "evidence": str(item.get("evidence") or ""),
+            "why_it_matters": str(item.get("why_it_matters") or ""),
+            "suggested_fix": str(item.get("suggested_fix") or ""),
+            "confidence": confidence,
+        }
+        if item.get("fingerprint_hint"):
+            finding["fingerprint_hint"] = str(item.get("fingerprint_hint"))
+        finding["fingerprint"] = finding_fingerprint(finding)
+        findings.append(finding)
+    raw_notes = review.get("verification_notes")
+    notes = raw_notes if isinstance(raw_notes, list) else []
+    normalized = {
+        "verdict": verdict,
+        "risk": risk,
+        "summary": str(review.get("summary") or "No summary provided."),
+        "findings": findings,
+        "verification_notes": [str(note) for note in notes],
+    }
+    normalized["review_fingerprint"] = stable_fingerprint(
+        {"verdict": verdict, "risk": risk, "summary": normalized["summary"], "findings": findings}
+    )
+    return normalized
+
+
 def write_artifacts(out_dir: Path, *, context: str, manifest: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    review = normalize_review(review)
     paths = {
         "context": out_dir / "context.md",
         "manifest": out_dir / "context-manifest.json",
@@ -358,6 +523,48 @@ def write_artifacts(out_dir: Path, *, context: str, manifest: Dict[str, Any], re
     paths["findings"].write_text(json.dumps(review, indent=2, sort_keys=True), encoding="utf-8")
     paths["review"].write_text(render_markdown(review, manifest), encoding="utf-8")
     return {name: str(path) for name, path in paths.items()}
+
+
+def post_or_update_summary_comment(ref: PullRequestRef, body: str) -> Dict[str, Any]:
+    """Create or update the persistent PR summary comment identified by marker."""
+    comments = run_gh_json([
+        "api",
+        f"repos/{ref.full_name}/issues/{ref.number}/comments",
+        "--paginate",
+    ])
+    existing: Optional[Dict[str, Any]] = None
+    if isinstance(comments, list):
+        for comment in comments:
+            if isinstance(comment, dict) and SUMMARY_COMMENT_MARKER in str(comment.get("body") or ""):
+                existing = comment
+                break
+    if existing and existing.get("id"):
+        comment_id = str(existing["id"])
+        current_body = str(existing.get("body") or "")
+        if current_body == body:
+            return {"action": "unchanged", "comment_id": comment_id, "url": existing.get("html_url")}
+        updated = run_gh_json([
+            "api",
+            f"repos/{ref.full_name}/issues/comments/{comment_id}",
+            "--method",
+            "PATCH",
+            "-f",
+            f"body={body}",
+        ])
+        return {"action": "updated", "comment_id": comment_id, "url": updated.get("html_url") if isinstance(updated, dict) else None}
+    created = run_gh_json([
+        "api",
+        f"repos/{ref.full_name}/issues/{ref.number}/comments",
+        "--method",
+        "POST",
+        "-f",
+        f"body={body}",
+    ])
+    return {
+        "action": "created",
+        "comment_id": str(created.get("id")) if isinstance(created, dict) and created.get("id") else None,
+        "url": created.get("html_url") if isinstance(created, dict) else None,
+    }
 
 
 def stub_review(manifest: Dict[str, Any]) -> Dict[str, Any]:

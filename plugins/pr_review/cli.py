@@ -61,6 +61,11 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Print machine-readable artifact paths/status instead of a human summary",
     )
+    review.add_argument(
+        "--post-comment",
+        action="store_true",
+        help="Create or update the persistent Hermes summary comment on the PR",
+    )
 
     subs.add_parser("setup", help="Check local prerequisites for PR review")
     subparser.set_defaults(func=pr_review_command)
@@ -102,9 +107,15 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
         metadata = core.fetch_pr_metadata(ref)
         diff = core.fetch_pr_diff(ref)
         files = core.fetch_pr_files(ref)
-        included_files, skipped_files = core.filter_files(files)
         base_ref = str(metadata.get("baseRefName") or "main")
-        docs = core.collect_trusted_docs(ref, base_ref)
+        reviewer_config = core.load_reviewer_config(ref, base_ref)
+        ignore_patterns = (*core.DEFAULT_IGNORE_PATTERNS, *reviewer_config.get("ignore_patterns", []))
+        included_files, skipped_files = core.filter_files(files, patterns=ignore_patterns)
+        docs = core.collect_trusted_docs(
+            ref,
+            base_ref,
+            extra_doc_paths=reviewer_config.get("extra_doc_paths", []),
+        )
         context, manifest = core.build_review_input(
             metadata=metadata,
             diff=diff,
@@ -112,6 +123,7 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
             included_files=included_files,
             skipped_files=skipped_files,
             max_diff_chars=max(1_000, int(args.max_diff_chars)),
+            reviewer_config=reviewer_config,
         )
         out_dir = core.artifact_dir(ref, str(metadata.get("headRefOid") or "unknown"))
         if args.no_llm or args.dry_run:
@@ -130,16 +142,23 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
                 max_tokens=4_000,
                 timeout=180,
             )
-            review = result.parsed
-            if not isinstance(review, dict):
-                review = {
-                    "verdict": "comment",
-                    "risk": "medium",
-                    "summary": "Model did not return parseable structured findings. Raw output preserved in verification notes.",
-                    "findings": [],
-                    "verification_notes": [str(getattr(result, "text", ""))[:2000]],
-                }
+            review = core.normalize_review(core.as_jsonable(result.parsed))
+            if not review.get("findings") and not isinstance(core.as_jsonable(result.parsed), dict):
+                review = core.normalize_review(
+                    {
+                        "verdict": "comment",
+                        "risk": "medium",
+                        "summary": "Model did not return parseable structured findings. Raw output preserved in verification notes.",
+                        "findings": [],
+                        "verification_notes": [str(getattr(result, "text", ""))[:2000]],
+                    }
+                )
+        review = core.normalize_review(review)
         paths = core.write_artifacts(out_dir, context=context, manifest=manifest, review=review)
+        comment_status = None
+        if getattr(args, "post_comment", False):
+            body = core.render_markdown(review, manifest)
+            comment_status = core.post_or_update_summary_comment(ref, body)
     except Exception as exc:
         if getattr(args, "json", False):
             print(json.dumps({"success": False, "error": str(exc)}))
@@ -159,6 +178,9 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
         "docs_loaded": manifest.get("docs_loaded"),
         "skipped_files": manifest.get("skipped_files"),
         "diff_truncated": manifest.get("diff_truncated"),
+        "context_fingerprint": manifest.get("context_fingerprint"),
+        "review_fingerprint": review.get("review_fingerprint"),
+        "comment": comment_status,
     }
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -170,4 +192,6 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
         print(f"  review  : {paths['review']}")
         print(f"  json    : {paths['findings']}")
         print(f"  context : {paths['context']}")
+        if comment_status:
+            print(f"  comment : {comment_status.get('action')} {comment_status.get('url') or comment_status.get('comment_id') or ''}".rstrip())
     return 0

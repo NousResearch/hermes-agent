@@ -1796,7 +1796,10 @@ class GatewaySlashCommandsMixin:
         if not text or text.startswith("/"):
             return None
 
-        mgr, _session_entry = self._get_goal_manager_for_event(event)
+        mgr, _session_entry = self._get_goal_manager_for_event(
+            event,
+            create_session=False,
+        )
         if mgr is None or not mgr.has_pending_draft():
             return None
 

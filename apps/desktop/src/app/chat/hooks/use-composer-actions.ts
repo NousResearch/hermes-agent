@@ -12,6 +12,7 @@ import {
   setComposerTerminalSelection
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 
 import type { ImageDetachResponse } from '../../types'
 
@@ -209,6 +210,38 @@ export function partitionDroppedFiles(candidates: DroppedFile[]): {
   }
 
   return { osDrops, inAppRefs }
+}
+
+/**
+ * Finder/Explorer folder drops still arrive with a native File handle, so the
+ * OS-drop split correctly routes them through the attachment path. Before
+ * treating that handle as a file, ask the local Desktop bridge whether the
+ * resolved path is actually a directory.
+ */
+export async function isDroppedOsDirectory(candidate: DroppedFile): Promise<boolean> {
+  if (candidate.isDirectory) {
+    return true
+  }
+
+  const filePath = candidate.path.trim()
+
+  if (!candidate.file || !filePath) {
+    return false
+  }
+
+  const readDir = window.hermesDesktop?.readDir
+
+  if (!readDir) {
+    return false
+  }
+
+  try {
+    const result = await readDir(filePath)
+
+    return !result.error
+  } catch {
+    return false
+  }
 }
 
 interface ComposerActionsOptions {
@@ -506,6 +539,26 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
         const filePath = knownPath || fallbackPath || ''
+        const isDirectoryDrop = await isDroppedOsDirectory({ file, isDirectory, path: filePath })
+
+        if (isDirectoryDrop) {
+          if ($connection.get()?.mode === 'remote') {
+            lastFailure = `Cannot attach local folder ${filePath || file.name || 'folder'} to a remote gateway. Use a folder path that exists on the remote host.`
+
+            continue
+          }
+
+          if (filePath && attachContextFolderPath(filePath)) {
+            attached = true
+
+            continue
+          }
+
+          lastFailure = `Could not attach folder ${filePath || file.name || ''}`
+
+          continue
+        }
+
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {

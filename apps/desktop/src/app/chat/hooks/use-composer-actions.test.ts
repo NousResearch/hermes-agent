@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { type DroppedFile, partitionDroppedFiles } from './use-composer-actions'
+import { type DroppedFile, isDroppedOsDirectory, partitionDroppedFiles } from './use-composer-actions'
 
 // A Finder/Explorer drop carries a native File handle; an in-app drag (project
 // tree, gutter line ref) is path-only. The split decides whether a drop becomes
@@ -53,5 +53,41 @@ describe('partitionDroppedFiles', () => {
 
   it('returns empty groups for an empty drop', () => {
     expect(partitionDroppedFiles([])).toEqual({ inAppRefs: [], osDrops: [] })
+  })
+})
+
+describe('isDroppedOsDirectory', () => {
+  it('detects Finder/Explorer folder drops before file.attach sees them as files', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readDir: async () => ({ entries: [] }) }
+    })
+
+    await expect(isDroppedOsDirectory(osDrop('/tmp/hermes-folder-drop'))).resolves.toBe(true)
+  })
+
+  it('keeps normal file drops on the file upload path', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readDir: async () => ({ entries: [], error: 'ENOTDIR' }) }
+    })
+
+    await expect(isDroppedOsDirectory(osDrop('/tmp/report.pdf'))).resolves.toBe(false)
+  })
+
+  it('does not probe path-only in-app refs', async () => {
+    let probed = false
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readDir: async () => {
+          probed = true
+          return { entries: [] }
+        }
+      }
+    })
+
+    await expect(isDroppedOsDirectory(inAppRef('src'))).resolves.toBe(false)
+    expect(probed).toBe(false)
   })
 })

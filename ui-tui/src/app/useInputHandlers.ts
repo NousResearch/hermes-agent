@@ -33,6 +33,19 @@ import { getUiState } from './uiStore.js'
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
+/**
+ * Raw Ctrl+C: the plain ctrl bit with NO action modifier (super/meta) held.
+ *
+ * The busy-session interrupt anchors on this instead of a bare ctrl check so it
+ * cannot swallow the VS Code/Cursor/Windsurf forwarded Cmd+C copy shape, which
+ * arrives as `{ctrl:true, super:true}` (see `isCopyShortcut` in platform.ts and
+ * its "accepts the VS Code/Cursor forwarded Cmd+C copy sequence on macOS" test).
+ * Excluding super/meta keeps forwarded Cmd+C on the selection-copy path while a
+ * genuine Ctrl+C still interrupts a running turn in every terminal.
+ */
+export const isRawCtrlC = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string): boolean =>
+  key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === 'c'
+
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 export function handleInputSelectionClipboard(
@@ -497,6 +510,26 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       cActions.setCompIdx(i => (key.upArrow ? (i - 1 + len) % len : (i + 1) % len))
 
       return
+    }
+
+    // Ctrl+C while a turn is running ALWAYS interrupts, before any copy /
+    // selection / clear handling can swallow it. isCopyShortcut() intentionally
+    // also matches the VS Code/Cursor/Windsurf shape where Cmd+C arrives as
+    // super+ctrl; on those terminals a genuine Ctrl+C could otherwise be
+    // captured by the copy branch and consumed by its `if (isMac) return`
+    // early-out, so the running turn never stopped (only Ctrl+X did, because it
+    // sits above that early-out). Anchoring the busy-interrupt here, keyed on
+    // RAW Ctrl+C (isRawCtrlC excludes the super/meta action bits), makes Ctrl+C
+    // behave the same in every terminal WITHOUT stealing forwarded Cmd+C: that
+    // super+ctrl copy shape carries the super bit, so it skips this branch and
+    // reaches the selection-copy path below, preserving copy during a busy turn.
+    if (isRawCtrlC(key, ch) && live.busy && live.sid) {
+      return turnController.interruptTurn({
+        appendMessage: actions.appendMessage,
+        gw: gateway.gw,
+        sid: live.sid,
+        sys: actions.sys
+      })
     }
 
     if (key.wheelUp || key.wheelDown) {

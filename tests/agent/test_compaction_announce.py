@@ -152,6 +152,85 @@ class TestFormatterBuiltin:
         assert "lcm_grep" not in line
 
 
+class TestReasonClause:
+    """Phase 1: trigger_reason + trigger_value render an honest 'why it fired' clause."""
+
+    def test_hygiene_messages_reason(self):
+        line = _format_compaction_announce(
+            **_base(trigger_reason="hygiene_messages", trigger_value=416)
+        )
+        assert line is not None
+        assert "message-count safety limit: 416 messages" in line
+
+    def test_hygiene_tokens_reason(self):
+        line = _format_compaction_announce(
+            **_base(trigger_reason="hygiene_tokens", trigger_value=850_000)
+        )
+        assert line is not None
+        assert "session-hygiene token threshold" in line
+
+    def test_threshold_reason(self):
+        line = _format_compaction_announce(
+            **_base(trigger_reason="threshold", trigger_value=500_000)
+        )
+        assert line is not None
+        assert "compaction threshold" in line
+
+    @pytest.mark.parametrize(
+        "reason,needle",
+        [
+            ("overflow_413", "413"),
+            ("overflow_context", "context length exceeded"),
+            ("tier_reduction", "long-context tier"),
+            ("manual", "/compress"),
+        ],
+    )
+    def test_other_reasons(self, reason, needle):
+        line = _format_compaction_announce(**_base(trigger_reason=reason))
+        assert line is not None
+        assert needle in line
+
+    def test_no_reason_is_backcompat_verbatim(self):
+        """Default (no reason) → today's head, no reason clause."""
+        line = _format_compaction_announce(**_base())
+        assert line is not None
+        assert line.startswith("🗜️ Context compacted:")
+        # the head has no parenthetical reason
+        assert "safety limit" not in line
+        assert "threshold" not in line.split("\n")[0]
+
+    def test_unknown_reason_no_clause_no_crash(self):
+        line = _format_compaction_announce(
+            **_base(trigger_reason="totally_made_up_reason", trigger_value=7)
+        )
+        assert line is not None
+        # unknown reason renders no clause (and does not crash)
+        assert "totally_made_up_reason" not in line
+
+    def test_reason_does_not_defeat_gating(self):
+        """A reason on a silent status is still silent (gating unchanged)."""
+        assert (
+            _format_compaction_announce(
+                **_base(status="noop", trigger_reason="hygiene_messages", trigger_value=416)
+            )
+            is None
+        )
+
+    def test_reason_composes_with_after_fallback(self):
+        line = _format_compaction_announce(
+            **_base(
+                trigger_reason="hygiene_messages",
+                trigger_value=416,
+                after_fallback=True,
+                window_from=1_000_000,
+                window_to=272_000,
+            )
+        )
+        assert line is not None
+        assert "after model fallback" in line
+        assert "message-count safety limit: 416 messages" in line
+
+
 class TestAllowListGating:
     @pytest.mark.parametrize("status", ["compacted", "overflow_recovery", "degraded_fallback_compressed"])
     def test_unconditional_announce_statuses(self, status):

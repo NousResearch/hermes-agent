@@ -157,6 +157,38 @@ def _extract_compaction_summary_snippet(
     return None
 
 
+def _compaction_reason_clause(
+    trigger_reason: "str | None", trigger_value: "int | None"
+) -> str:
+    """Render the parenthetical 'why this fired' clause for the announce head.
+
+    Returns '' for None/unknown reasons (back-compat: no clause). The value is
+    the real number that tripped the trigger (message count / threshold tokens).
+    """
+    if not trigger_reason:
+        return ""
+    if trigger_reason == "hygiene_messages":
+        n = trigger_value if trigger_value else "?"
+        return f" (message-count safety limit: {n} messages)"
+    if trigger_reason == "hygiene_tokens":
+        if trigger_value:
+            return f" (session-hygiene token threshold, ~{trigger_value:,} tokens)"
+        return " (session-hygiene token threshold)"
+    if trigger_reason == "threshold":
+        if trigger_value:
+            return f" (crossed the compaction threshold, ~{trigger_value:,} tokens)"
+        return " (crossed the compaction threshold)"
+    if trigger_reason == "overflow_413":
+        return " (the API rejected an oversize request — 413)"
+    if trigger_reason == "overflow_context":
+        return " (context length exceeded)"
+    if trigger_reason == "tier_reduction":
+        return " (long-context tier window reduction)"
+    if trigger_reason == "manual":
+        return " (you ran /compress)"
+    return ""  # unknown/future reason → no clause (never echo a raw token)
+
+
 def _format_compaction_announce(
     engine_name: "str | None",
     status: "str | None",
@@ -174,6 +206,8 @@ def _format_compaction_announce(
     summary_snippet: "str | None" = None,
     raw_store_count: "int | None" = None,
     after_fallback: bool = False,
+    trigger_reason: "str | None" = None,
+    trigger_value: "int | None" = None,
 ) -> "str | None":
     """Build the engine-aware announce line, or ``None`` if gating says skip.
 
@@ -183,6 +217,10 @@ def _format_compaction_announce(
       everything else (incl. unknown/future) is silent.
     - Built-in (no engine name / no status): announce only when a real rotation
       happened (``old_session_id != new_session_id``).
+
+    ``trigger_reason``/``trigger_value`` (optional) render an honest 'why this
+    fired' clause in the head (message-count valve, token valve, overflow, …);
+    they NEVER affect gating.
     """
     is_lcm = engine_name == "lcm"
 
@@ -201,6 +239,7 @@ def _format_compaction_announce(
 
     degraded = status in _DEGRADED_STATUSES
     head = "🗜️ Context compacted"
+    head += _compaction_reason_clause(trigger_reason, trigger_value)
     if after_fallback:
         head += " after model fallback"
     if degraded:

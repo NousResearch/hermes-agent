@@ -780,7 +780,7 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
-    const exitHandler = () => {
+    const exitHandler = (code: null | number) => {
       turnController.reset()
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
@@ -802,16 +802,30 @@ export function useMainApp(gw: GatewayClient) {
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
-        turnController.pushActivity('gateway exited · recovering session…', 'warn')
-        sys('gateway exited — recovering your session (any in-flight reply was lost)')
+        // 1012 = Service Restart (RFC 6455) — expected during `hermes update`.
+        // 1006 = Abnormal Closure — network drop or unexpected gateway restart.
+        // Surface a user-friendly message so the user knows what happened and
+        // whether they should run `hermes doctor` to verify the installation.
+        if (code === 1012) {
+          turnController.pushActivity('gateway restarted · session recovered', 'info')
+          sys('gateway restarted — session recovered. Run `hermes doctor` to verify your installation.')
+        } else {
+          turnController.pushActivity('gateway exited · recovering session…', 'warn')
+          sys('gateway exited — recovering your session (any in-flight reply was lost)')
+        }
         gw.start()
 
         return
       }
 
       recoverSidRef.current = null
-      turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      if (code === 1012) {
+        turnController.pushActivity('gateway restarted · run `hermes doctor` to verify', 'info')
+        sys('gateway restarted — run `hermes doctor` to verify your installation is intact.')
+      } else {
+        turnController.pushActivity('gateway exited · /logs to inspect', 'error')
+        sys('error: gateway exited')
+      }
     }
 
     gw.on('event', handler)

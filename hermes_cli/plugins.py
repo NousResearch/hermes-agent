@@ -167,6 +167,11 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Outbound request headers. Fired in create_openai_client before the client is built. Plugins
+    # return a dict of header -> value to merge into default_headers. Plugins MUST scope by base_url
+    # so identifiers never leak to third-party providers.
+    #   Kwargs: agent, base_url
+    "customize_request_headers",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

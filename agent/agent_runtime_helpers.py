@@ -1365,6 +1365,19 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    # Plugin seam: let plugins add outbound request headers (e.g. conversation/routing hints for a
+    # local gateway). Inert without a plugin and never breaks client creation. Plugins MUST scope
+    # their headers by base_url so identifiers don't leak to third-party providers.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        for _hdrs in _invoke_hook("customize_request_headers", agent=agent,
+                                  base_url=str(client_kwargs.get("base_url", "") or "")):
+            if isinstance(_hdrs, dict) and _hdrs:
+                _dh = dict(client_kwargs.get("default_headers") or {})
+                _dh.update({str(k): str(v) for k, v in _hdrs.items()})
+                client_kwargs["default_headers"] = _dh
+    except Exception:  # noqa: BLE001 — header customization must never break client creation
+        pass
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):

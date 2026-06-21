@@ -7935,6 +7935,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
 
+        if not command:
+            pending_goal_reply = await self._handle_pending_goal_reply(event)
+            if pending_goal_reply is not None:
+                return pending_goal_reply
+
         # Expand alias quick commands before built-in dispatch so targets like
         # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
         # Preserve built-in precedence; aliases only need early handling when

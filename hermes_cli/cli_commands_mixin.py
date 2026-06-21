@@ -1859,7 +1859,7 @@ class CLICommandsMixin:
             return
 
         if lower in {"clear", "stop", "done"}:
-            had = mgr.has_goal()
+            had = mgr.has_goal() or mgr.has_pending_draft()
             mgr.clear()
             if had:
                 _cprint("  ✓ Goal cleared.")
@@ -1867,25 +1867,45 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
-        # Otherwise treat the arg as the goal text.
+        # Otherwise treat the arg as a draft that needs natural-language approval.
         try:
-            state = mgr.set(arg)
+            from hermes_cli.goals import render_goal_draft_notice
+            draft = mgr.draft(arg)
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
 
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
-        _cprint(
-            f"  {_DIM}After each turn, a judge model will check if the goal is done. "
-            f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
-        )
-        # Kick the loop off immediately so the user doesn't have to send a
-        # separate message after setting the goal.
-        try:
-            self._pending_input.put(state.goal)
-        except Exception:
-            pass
+        _cprint(render_goal_draft_notice(draft))
+
+    def _maybe_handle_goal_draft_reply(self, user_input: str) -> bool:
+        """Consume natural-language replies to a pending Goal Packet.
+
+        Returns True when the input was handled as approve/edit/cancel instead
+        of being sent to the agent as normal chat.
+        """
+        from cli import _cprint, _looks_like_slash_command
+
+        if not isinstance(user_input, str) or _looks_like_slash_command(user_input):
+            return False
+        mgr = self._get_goal_manager()
+        if mgr is None or not mgr.has_pending_draft():
+            return False
+        result = mgr.handle_draft_reply(user_input)
+        action = result.get("action")
+        if action == "none":
+            return False
+        message = result.get("message") or ""
+        if message:
+            _cprint(message)
+        if action == "approve":
+            state = result.get("state")
+            goal_text = getattr(state, "goal", "")
+            if goal_text:
+                try:
+                    self._pending_input.put(goal_text)
+                except Exception:
+                    pass
+        return True
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.

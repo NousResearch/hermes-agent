@@ -2636,6 +2636,18 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Update checks default to the historical moving-branch comparison.
+        # Set check_strategy: stable-tags (or stable_tags: true) to compare
+        # against release tags only, useful for locally customized installs
+        # that intentionally stay pinned to a stable tag and carry overlays.
+        "check_strategy": "branch",
+        "stable_tags": False,
+        "stable_tag_pattern": "v20*",
+        "stable_tag_remote": "origin",
+        # Optional command shown in the banner when stable-tag mode detects a
+        # newer stable release.  Left empty by default because core Hermes does
+        # not know a user's local overlay/update workflow.
+        "stable_update_command": "",
     },
 
     # Language Server Protocol — semantic diagnostics from real

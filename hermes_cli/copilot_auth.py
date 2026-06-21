@@ -758,7 +758,7 @@ def _extract_api_version_from_bundle(bundle: Path) -> str | None:
     """
     import re
     try:
-        text = bundle.read_text(errors="ignore")
+        text = bundle.read_text(encoding="utf-8", errors="ignore")
     except Exception as exc:
         logger.debug("copilot CLI bundle read failed (%s): %s", bundle, exc)
         return None

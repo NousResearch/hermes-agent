@@ -2,6 +2,7 @@
 
 import json
 import pytest
+from unittest.mock import MagicMock
 
 from tools.cronjob_tools import (
     _scan_cron_prompt,
@@ -263,6 +264,48 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_create_inherits_runtime_provider_for_gateway_session(self, monkeypatch):
+        runtime = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.example.com/v1",
+            "api_key": "runtime-key",
+            "api_mode": "chat_completions",
+        }
+        resolve_runtime_provider = MagicMock(return_value=runtime)
+
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "weixin")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "wxid_home")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_NAME", "Home")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            resolve_runtime_provider,
+        )
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                name="Gateway check",
+            )
+        )
+
+        assert created["success"] is True
+        resolve_runtime_provider.assert_called_once_with(
+            requested=None,
+            explicit_base_url=None,
+        )
+
+        from cron.jobs import get_job
+
+        job = get_job(created["job_id"])
+        assert job is not None
+        assert job["provider"] == "openrouter"
+        assert job["provider"] != "openai"
+        assert job["base_url"] == "https://openrouter.example.com/v1"
+        assert job["origin"]["platform"] == "weixin"
+        assert job["origin"]["chat_id"] == "wxid_home"
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

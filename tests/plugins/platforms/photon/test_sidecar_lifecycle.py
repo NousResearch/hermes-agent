@@ -8,6 +8,7 @@ spawning Node or binding ports.
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from typing import Any, Dict, List, Tuple
 
@@ -169,3 +170,107 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+
+
+class _EOFStdout:
+    def readline(self) -> bytes:
+        return b""
+
+
+class _BrokenInboundClient:
+    def stream(self, *a: Any, **k: Any) -> Any:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                raise RuntimeError("All connection attempts failed")
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+        return _Ctx()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_promotes_unexpected_sidecar_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True
+    notified = asyncio.Event()
+
+    async def _fatal_handler(_adapter: PhotonAdapter) -> None:
+        notified.set()
+
+    adapter.set_fatal_error_handler(_fatal_handler)
+
+    class _DeadProc:
+        stdout = _EOFStdout()
+
+        @staticmethod
+        def poll() -> int:
+            return 7
+
+    proc = _DeadProc()
+    adapter._sidecar_proc = proc
+
+    await adapter._supervise_sidecar(proc)
+
+    assert adapter.fatal_error_code == "SIDECAR_EXITED"
+    assert adapter.fatal_error_retryable is True
+    assert "code 7" in (adapter.fatal_error_message or "")
+    assert notified.is_set()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_ignores_expected_shutdown_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = False
+
+    class _StoppedProc:
+        stdout = _EOFStdout()
+
+        @staticmethod
+        def poll() -> int:
+            return 0
+
+    proc = _StoppedProc()
+    adapter._sidecar_proc = proc
+
+    await adapter._supervise_sidecar(proc)
+
+    assert adapter.fatal_error_code is None
+    assert adapter.has_fatal_error is False
+
+
+@pytest.mark.asyncio
+async def test_inbound_loop_promotes_dead_sidecar_without_backoff_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True
+    adapter._http_client = _BrokenInboundClient()
+    notified = asyncio.Event()
+
+    async def _fatal_handler(_adapter: PhotonAdapter) -> None:
+        notified.set()
+
+    adapter.set_fatal_error_handler(_fatal_handler)
+
+    class _DeadProc:
+        @staticmethod
+        def poll() -> int:
+            return 9
+
+    adapter._sidecar_proc = _DeadProc()
+
+    async def _unexpected_sleep(_delay: float) -> None:
+        raise AssertionError("inbound loop should not back off after sidecar exit")
+
+    monkeypatch.setattr(photon_adapter.asyncio, "sleep", _unexpected_sleep)
+
+    await adapter._inbound_loop()
+
+    assert adapter.fatal_error_code == "SIDECAR_EXITED"
+    assert "code 9" in (adapter.fatal_error_message or "")
+    assert notified.is_set()

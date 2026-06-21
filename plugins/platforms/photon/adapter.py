@@ -417,6 +417,8 @@ class PhotonAdapter(BasePlatformAdapter):
             except Exception as e:
                 if not self._inbound_running:
                     break
+                if await self._promote_dead_sidecar_to_fatal(self._sidecar_proc):
+                    break
                 logger.warning(
                     "[photon] inbound stream dropped (%s); reconnecting in %.1fs",
                     e, backoff,
@@ -825,6 +827,28 @@ class PhotonAdapter(BasePlatformAdapter):
             f"Photon sidecar did not become ready within 15s: {last_err}"
         )
 
+    async def _promote_dead_sidecar_to_fatal(
+        self, proc: Optional[subprocess.Popen]
+    ) -> bool:
+        """Escalate an unexpected sidecar exit into a retryable fatal error."""
+        if (
+            proc is None
+            or proc is not self._sidecar_proc
+            or not self._inbound_running
+            or self.has_fatal_error
+        ):
+            return False
+
+        returncode = proc.poll()
+        if returncode is None:
+            return False
+
+        message = f"Photon sidecar exited unexpectedly (code {returncode})."
+        logger.warning("[photon] %s", message)
+        self._set_fatal_error("SIDECAR_EXITED", message, retryable=True)
+        await self._notify_fatal_error()
+        return True
+
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:
         """Pump the sidecar's stdout/stderr into our logger."""
         if proc.stdout is None:  # subprocess was launched without stdout=PIPE
@@ -839,6 +863,8 @@ class PhotonAdapter(BasePlatformAdapter):
                 logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
+        finally:
+            await self._promote_dead_sidecar_to_fatal(proc)
 
     async def _stop_sidecar(self) -> None:
         proc = self._sidecar_proc

@@ -506,6 +506,7 @@ export const ja = defineLocale({
       checkNow: '今すぐ確認',
       checking: '確認中…',
       seeWhatsNew: '新機能を見る',
+      updateNow: '今すぐ更新',
       releaseNotes: 'リリースノート',
       onLatest: '最新バージョンです。',
       installing: '更新をインストール中です。',

@@ -195,6 +195,20 @@ export function openUpdatesWindow(): void {
   openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
 }
 
+/**
+ * Start applying the available update for the active target right away. Opens
+ * the updates overlay first so the user sees apply progress (the overlay
+ * renders ApplyingView once `applying` flips true), then kicks off the install.
+ * Used by the "Update now" affordance on the About panel, which would otherwise
+ * only be able to open the changelog overlay.
+ */
+export function startActiveUpdate(): void {
+  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+  $updateOverlayTarget.set(target)
+  $updateOverlayOpen.set(true)
+  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
+}
+
 /** Re-read the running app's version from the Electron main process and
  *  publish it on `$desktopVersion`. Called when the About panel mounts, the
  *  update flow finishes, and the window regains focus, so the About text

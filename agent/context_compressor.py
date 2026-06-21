@@ -656,9 +656,8 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+        self.threshold_tokens = self._compute_threshold_tokens(
+            context_length, self.threshold_percent
         )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
@@ -689,6 +688,40 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+
+    # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
+    # window, compacting at the percentage (50% → 32K of a 64K window) wastes
+    # half the usable context. Trigger near the top of the window instead so a
+    # minimum-context model uses most of its budget before compacting — same
+    # rationale as the gpt-5.5/Codex 85% autoraise.
+    _MIN_CTX_TRIGGER_RATIO = 0.85
+
+    @staticmethod
+    def _compute_threshold_tokens(context_length: int, threshold_percent: float) -> int:
+        """Compute the compaction trigger threshold in tokens.
+
+        The base value is ``context_length * threshold_percent``, floored at
+        ``MINIMUM_CONTEXT_LENGTH`` so large-context models don't compress
+        prematurely at 50%. BUT that floor degenerates at small windows: for a
+        model whose ``context_length`` is at/below the minimum (e.g. a 64K
+        local model), ``max(0.5*64000, 64000) == 64000`` makes the threshold
+        equal the ENTIRE window — auto-compression can never fire because the
+        provider rejects the request before usage reaches 100% (#14690).
+
+        When the floor would meet or exceed the context window, trigger at
+        ``_MIN_CTX_TRIGGER_RATIO`` (85%) of the window — high enough that a
+        small model uses most of its context before compacting, but below
+        100% so compaction fires before the provider rejects the request.
+        """
+        pct_value = int(context_length * threshold_percent)
+        floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
+        # If flooring pushed the threshold to/over the window it can never be
+        # reached. Trigger at 85% of the window so a minimum-context model
+        # rides most of its budget before compacting instead of wasting half.
+        if context_length > 0 and floored >= context_length:
+            return max(1, min(int(context_length * ContextCompressor._MIN_CTX_TRIGGER_RATIO),
+                              context_length - 1))
+        return floored
 
     def __init__(
         self,
@@ -730,10 +763,11 @@ class ContextCompressor(ContextEngine):
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+        # for models right at the minimum. _compute_threshold_tokens also
+        # guards the degenerate case where the floor would equal/exceed the
+        # window (small models), so auto-compression can still fire (#14690).
+        self.threshold_tokens = self._compute_threshold_tokens(
+            self.context_length, threshold_percent
         )
         self.compression_count = 0
 

@@ -1031,7 +1031,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
     files (review aid only — not a security gate; skills_guard.py verdicts
     are unchanged).
     """
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
+    from tools.skills_hub import HubLockFile, SKILLS_DIR, resolve_installed_skill_path
     from tools.skills_guard import scan_skill, format_scan_report
 
     c = console or _console
@@ -1055,10 +1055,15 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         from tools.skills_ast_audit import ast_scan_path, format_ast_report
 
     for entry in targets:
-        skill_path = SKILLS_DIR / entry["install_path"]
+        skill_path, repaired = resolve_installed_skill_path(entry, SKILLS_DIR, lock)
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
+        if repaired:
+            c.print(
+                f"[dim]Repaired hub path for {entry['name']}: "
+                f"{skill_path.relative_to(SKILLS_DIR)}[/]"
+            )
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
         c.print(format_scan_report(result))

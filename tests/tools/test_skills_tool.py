@@ -393,6 +393,19 @@ class TestSkillView:
         assert result["success"] is True
         assert "Step 1" in result["content"]
 
+    def test_view_skill_by_frontmatter_name_when_directory_is_namespaced(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "gstack-autoplan"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: autoplan\ndescription: Auto plan.\n---\n\n# Autoplan\n\nRun it.\n"
+            )
+            raw = skill_view("autoplan")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "autoplan"
+        assert result["path"] == "gstack-autoplan/SKILL.md"
+
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

@@ -71,6 +71,7 @@ class TestResolveTrustLevel:
     def test_skills_sh_wrapped_trusted_repos(self):
         assert _resolve_trust_level("skills-sh/openai/skills/skill-creator") == "trusted"
         assert _resolve_trust_level("skills-sh/anthropics/skills/frontend-design") == "trusted"
+        assert _resolve_trust_level("skills-sh/obra/superpowers/using-superpowers") == "trusted"
 
     def test_common_skills_sh_prefix_typo_still_maps_to_trusted_repo(self):
         assert _resolve_trust_level("skils-sh/anthropics/skills/frontend-design") == "trusted"
@@ -319,6 +320,27 @@ class TestScanFile:
         root_rm = [fi for fi in findings if fi.pattern_id == "destructive_root_rm"]
         # Same pattern on same line should appear only once
         assert len(root_rm) == 1
+
+    def test_agent_config_reference_is_suppressed_but_write_is_flagged(self, tmp_path):
+        f = tmp_path / "skill.md"
+        f.write_text(
+            "Mention CLAUDE.md as documentation only.\n"
+            "Write CLAUDE.md with persistent instructions.\n"
+        )
+        findings = scan_file(f, "skill.md")
+        agent_config = [fi for fi in findings if fi.pattern_id == "agent_config_mod"]
+        assert len(agent_config) == 1
+        assert agent_config[0].line == 2
+
+    def test_echoed_dns_retry_and_context_saving_false_positive_suppressed(self, tmp_path):
+        f = tmp_path / "skill.sh"
+        f.write_text(
+            'echo "Retry with: $SCRIPT_DIR/start-server.sh --host $BIND_HOST"\n'
+            "* Save tokens (no need to include code in context)\n"
+        )
+        findings = scan_file(f, "skill.sh")
+        assert not any(fi.pattern_id == "dns_exfil" for fi in findings)
+        assert not any(fi.pattern_id == "context_exfil" for fi in findings)
 
 
 # ---------------------------------------------------------------------------

@@ -410,6 +410,10 @@ class GitHubSource(SkillSource):
         # `tools/skills_guard.py::TRUSTED_REPOS`). Sample layout:
         # https://github.com/NVIDIA/skills/tree/main/skills
         {"repo": "NVIDIA/skills", "path": "skills/"},
+        # obra/superpowers: community-curated agent superpowers, added to
+        # TRUSTED_REPOS in tools/skills_guard.py to allow installs with the
+        # caution gate. Maintained at https://github.com/obra/superpowers.
+        {"repo": "obra/superpowers", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
     ]
 
@@ -3213,6 +3217,92 @@ class HubLockFile:
         for name, entry in data["installed"].items():
             result.append({"name": name, **entry})
         return result
+
+    def update_install_path(self, name: str, install_path: str) -> bool:
+        """Update a stored install_path when a categorized skill moved on disk."""
+        data = self.load()
+        entry = data.get("installed", {}).get(name)
+        if not entry:
+            return False
+        if entry.get("install_path") == install_path:
+            return False
+        entry["install_path"] = install_path
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.save(data)
+        return True
+
+
+def _frontmatter_name(skill_md: Path) -> Optional[str]:
+    """Read the YAML frontmatter name from a SKILL.md without importing PyYAML."""
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    for line in text[3:end].splitlines():
+        if line.strip().startswith("name:"):
+            value = line.split(":", 1)[1].strip().strip('"\'')
+            return value or None
+    return None
+
+
+def find_installed_skill_dir_by_name(name: str, skills_dir: Path = SKILLS_DIR) -> Optional[Path]:
+    """Find a local skill directory by frontmatter name or directory name."""
+    if not name:
+        return None
+
+    exact = skills_dir / name / "SKILL.md"
+    if exact.exists():
+        return exact.parent
+
+    candidates: List[Path] = []
+    for skill_md in skills_dir.rglob("SKILL.md"):
+        try:
+            rel_parts = skill_md.relative_to(skills_dir).parts
+        except ValueError:
+            continue
+        if rel_parts and rel_parts[0] == ".hub":
+            continue
+        if skill_md.parent.name == name or _frontmatter_name(skill_md) == name:
+            candidates.append(skill_md.parent)
+
+    if not candidates:
+        return None
+    # Prefer paths whose directory name exactly matches the skill name, then the
+    # shallowest categorized path.  This keeps legacy top-level installs stable
+    # while allowing categorized skills to repair stale hub lock paths.
+    candidates.sort(key=lambda p: (p.name != name, len(p.relative_to(skills_dir).parts), str(p)))
+    return candidates[0]
+
+
+def resolve_installed_skill_path(
+    entry: dict,
+    skills_dir: Path = SKILLS_DIR,
+    lock: Optional[HubLockFile] = None,
+) -> Tuple[Path, bool]:
+    """Resolve a hub lock entry to an existing skill dir, repairing stale paths.
+
+    Returns ``(path, repaired)``.  ``repaired`` is True when the lock entry's
+    stored install_path did not exist but a unique local skill directory was
+    found by frontmatter/directory name and the lock was updated.
+    """
+    raw_install_path = entry.get("install_path") or entry.get("name", "")
+    skill_path = skills_dir / raw_install_path
+    if skill_path.exists():
+        return skill_path, False
+
+    found = find_installed_skill_dir_by_name(entry.get("name", ""), skills_dir)
+    if found is None:
+        return skill_path, False
+
+    if lock is not None:
+        rel = str(found.relative_to(skills_dir))
+        lock.update_install_path(entry.get("name", ""), rel)
+    return found, True
 
 
 # ---------------------------------------------------------------------------

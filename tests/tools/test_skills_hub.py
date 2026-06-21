@@ -29,6 +29,7 @@ from tools.skills_hub import (
     append_audit_log,
     _skill_meta_to_dict,
     quarantine_bundle,
+    resolve_installed_skill_path,
 )
 
 
@@ -1400,6 +1401,29 @@ class TestHubLockFile:
         assert len(installed) == 2
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
+
+    def test_resolve_installed_skill_path_repairs_categorized_skill(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        real_dir = skills_dir / "software-development" / "requesting-code-review"
+        real_dir.mkdir(parents=True)
+        (real_dir / "SKILL.md").write_text(
+            "---\nname: requesting-code-review\ndescription: test\n---\n# Skill\n"
+        )
+        lock = HubLockFile(path=skills_dir / ".hub" / "lock.json")
+        lock.record_install(
+            name="requesting-code-review", source="skills.sh", identifier="skills-sh/obra/superpowers/requesting-code-review",
+            trust_level="community", scan_verdict="safe", skill_hash="h",
+            install_path="requesting-code-review", files=["SKILL.md"],
+        )
+
+        entry = lock.list_installed()[0]
+        resolved, repaired = resolve_installed_skill_path(entry, skills_dir, lock)
+
+        assert repaired is True
+        assert resolved == real_dir
+        repaired_entry = lock.get_installed("requesting-code-review")
+        assert repaired_entry is not None
+        assert repaired_entry["install_path"] == "software-development/requesting-code-review"
 
 
 # ---------------------------------------------------------------------------

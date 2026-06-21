@@ -804,6 +804,45 @@ def _ensure_graph() -> sqlite3.Connection:
 # ── Slash command handler ───────────────────────────────────────────────────
 
 
+def _format_edges(skill_name: str) -> str:
+    """Query edges for a skill and return a formatted string."""
+    try:
+        conn = _ensure_graph()
+        rows = conn.execute(
+            """SELECT source, target, rel_type, properties FROM skill_edges
+               WHERE source = ? OR target = ?
+               ORDER BY rel_type, source""",
+            (skill_name, skill_name),
+        ).fetchall()
+        if not rows:
+            return ""
+        lines = ["", "  Edges:"]
+        seen: set[tuple[str, str, str]] = set()
+        for src, tgt, rel, props in rows:
+            key = (src, tgt, rel)
+            if key in seen:
+                continue
+            seen.add(key)
+            direction = f"{src} ──({rel})──> {tgt}"
+            reason = ""
+            if isinstance(props, str) and props:
+                import json as _j
+                try:
+                    p = _j.loads(props)
+                    reason = p.get("reason", "")
+                except Exception:
+                    reason = props[:40]
+            elif isinstance(props, dict):
+                reason = props.get("reason", "")
+            if reason:
+                lines.append(f"    {direction:50s} {reason[:50]}")
+            else:
+                lines.append(f"    {direction}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _handle_slash_command(args: str) -> str | None:
     parts = args.strip().split(None, 1) if args.strip() else []
     subcmd = parts[0].lower() if parts else "help"
@@ -836,7 +875,7 @@ def _handle_slash_command(args: str) -> str | None:
                 f"  Path:        {data.get('file_path', '')}",
                 f"  Relations:   {len(data.get('relations', []))} defined",
                 f"  Content:     {len(data.get('content', ''))} chars",
-            ])
+            ]) + _format_edges(rest)
         except Exception as e:
             return f"Load failed: {e}"
 

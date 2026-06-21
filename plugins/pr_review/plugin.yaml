@@ -1,0 +1,5 @@
+name: pr-review
+version: 0.1.0
+description: Hermes-first pull request reviewer with local artifacts and structured diagnostics
+provides_cli:
+  - pr-review

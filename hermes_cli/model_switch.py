@@ -1362,14 +1362,19 @@ def list_authenticated_providers(
             )
         )
 
-    def _has_aws_sdk_creds_for_listing(slug: str) -> bool:
-        """Credential check for AWS SDK providers in non-runtime discovery."""
-        slug_norm = str(slug or "").strip().lower()
-        current_norm = str(current_provider or "").strip().lower()
+    def _has_aws_sdk_creds_for_listing(slug: str) -> bool:  # noqa: ARG001
+        """Credential check for AWS SDK providers in non-runtime discovery.
+
+        The fast-signal check covers env-var auth (local dev, CI).  When no
+        env vars are present the caller may still have valid credentials via
+        an EC2/ECS instance role or any other IMDS-backed source — has_aws_credentials()
+        already does a fast env-var pass before touching IMDS, so calling it
+        unconditionally is safe and avoids a false-negative when current_provider
+        is anything other than "bedrock" (e.g. after the user previously switched
+        to Anthropic or OpenRouter and now wants to switch back).
+        """
         if _has_fast_aws_sdk_signal():
             return True
-        if slug_norm != current_norm:
-            return False
         try:
             from agent.bedrock_adapter import has_aws_credentials
             return bool(has_aws_credentials())

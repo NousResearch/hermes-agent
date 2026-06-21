@@ -216,8 +216,9 @@ class TestListAuthenticatedProvidersBedrock:
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is None, "bedrock should NOT appear when AWS credentials are absent"
 
-    def test_non_bedrock_picker_does_not_probe_full_aws_chain(self, monkeypatch):
-        """Non-Bedrock provider discovery must not touch boto3's full credential chain."""
+    def test_bedrock_hidden_when_no_credentials_regardless_of_current_provider(self, monkeypatch):
+        """Bedrock must not appear when has_aws_credentials() returns False,
+        even when current_provider is something unrelated (e.g. openrouter)."""
         from hermes_cli.model_switch import list_authenticated_providers
 
         monkeypatch.delenv("AWS_PROFILE", raising=False)
@@ -228,17 +229,40 @@ class TestListAuthenticatedProvidersBedrock:
         monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", raising=False)
         monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", raising=False)
 
-        calls = {"has_aws_credentials": 0}
-
-        def _has_aws_credentials():
-            calls["has_aws_credentials"] += 1
-            return False
-
-        with patch("agent.bedrock_adapter.has_aws_credentials", side_effect=_has_aws_credentials):
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):
             providers = list_authenticated_providers(current_provider="openrouter", max_models=0)
 
-        assert calls["has_aws_credentials"] == 0
         assert all(p["slug"] != "bedrock" for p in providers)
+
+    def test_bedrock_appears_after_switching_away_iam_role(self, monkeypatch):
+        """Regression: Bedrock must appear in the picker when the user wants to
+        switch back after having previously selected another provider (e.g. Anthropic).
+
+        The session's current_provider is now 'anthropic', not 'bedrock'.  No
+        AWS_* env vars are set (IAM instance role auth).  The old code skipped
+        has_aws_credentials() when slug != current_provider, causing Bedrock to
+        vanish from the picker entirely.  The fix calls has_aws_credentials()
+        unconditionally so IAM role users can always switch back.
+        """
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        # Simulate IAM role: no explicit AWS env vars
+        for var in ("AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                    "AWS_BEARER_TOKEN_BEDROCK", "AWS_WEB_IDENTITY_TOKEN_FILE",
+                    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"):
+            monkeypatch.delenv(var, raising=False)
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.bedrock_adapter.discover_bedrock_models", return_value=_EU_MODELS), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+            # current_provider is 'anthropic' — user switched away earlier
+            providers = list_authenticated_providers(current_provider="anthropic")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None, (
+            "Bedrock should appear in the picker even when current_provider='anthropic' "
+            "and credentials are provided via IAM instance role (no AWS_* env vars)"
+        )
 
     def test_bedrock_falls_back_to_curated_when_discovery_fails(self, monkeypatch):
         """When discover_bedrock_models() raises, fall back to curated list without crashing."""

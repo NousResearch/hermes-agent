@@ -28,7 +28,7 @@ import json
 import logging
 import os
 from typing import Any, Dict, Optional
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
 # code path actually constructs an ``AsyncClient``. Top-level import here
@@ -692,7 +692,7 @@ class TeamsAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
 
-    def __init__(self, config: PlatformConfig):
+    def __init__(self, config: PlatformConfig, *, graph_client: Any | None = None):
         super().__init__(config, Platform("teams"))
         extra = config.extra or {}
         self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
@@ -707,6 +707,29 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        self._graph_client = graph_client
+        self._context_message_limit = max(
+            0,
+            min(
+                50,
+                _coerce_port(
+                    extra.get("context_message_limit")
+                    or os.getenv("TEAMS_CONTEXT_MESSAGE_LIMIT", "10"),
+                    default=10,
+                ),
+            ),
+        )
+        self._context_fetch_limit = max(
+            self._context_message_limit,
+            min(
+                50,
+                _coerce_port(
+                    extra.get("context_fetch_limit")
+                    or os.getenv("TEAMS_CONTEXT_FETCH_LIMIT", "50"),
+                    default=50,
+                ),
+            ),
+        )
 
     async def connect(self) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -966,6 +989,12 @@ class TeamsAdapter(BasePlatformAdapter):
         else:
             msg_type = MessageType.TEXT
 
+        channel_context = await self._build_recent_channel_context(
+            activity,
+            chat_type=chat_type,
+            trigger_message_id=msg_id,
+        )
+
         event = MessageEvent(
             text=text,
             source=source,
@@ -973,8 +1002,125 @@ class TeamsAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             message_id=msg_id,
+            channel_context=channel_context,
         )
         await self.handle_message(event)
+
+    def _get_graph_client(self) -> Any | None:
+        if self._graph_client is not None:
+            return self._graph_client
+        try:
+            from tools.microsoft_graph_client import MicrosoftGraphClient
+
+            self._graph_client = MicrosoftGraphClient.from_env()
+        except Exception as exc:
+            logger.debug("[teams] recent context disabled: Graph client unavailable: %s", exc)
+            self._graph_client = None
+        return self._graph_client
+
+    async def _build_recent_channel_context(
+        self,
+        activity: Any,
+        *,
+        chat_type: str,
+        trigger_message_id: str | None,
+    ) -> str | None:
+        if chat_type not in {"group", "channel"} or self._context_message_limit <= 0:
+            return None
+        graph_client = self._get_graph_client()
+        if graph_client is None:
+            return None
+
+        path = self._graph_history_path(activity, chat_type)
+        if not path:
+            return None
+        try:
+            payload = await graph_client.get_json(
+                path,
+                params={"$top": self._context_fetch_limit},
+            )
+        except Exception as exc:
+            logger.warning("[teams] Failed to fetch recent context from Graph: %s", exc)
+            return None
+
+        raw_messages = payload.get("value") if isinstance(payload, dict) else None
+        if not isinstance(raw_messages, list):
+            return None
+
+        lines: list[str] = []
+        for raw in reversed(raw_messages):
+            if not isinstance(raw, dict):
+                continue
+            if trigger_message_id and str(raw.get("id") or "") == str(trigger_message_id):
+                continue
+            line = self._format_graph_history_message(raw)
+            if line:
+                lines.append(line)
+
+        if not lines:
+            return None
+        selected = lines[-self._context_message_limit :]
+        return (
+            "[Recent Teams context — previous messages from this chat/channel, "
+            "use this to infer references before asking for clarification]\n"
+            + "\n".join(selected)
+        )
+
+    def _graph_history_path(self, activity: Any, chat_type: str) -> str | None:
+        if chat_type == "group":
+            conv_id = getattr(getattr(activity, "conversation", None), "id", "")
+            return f"/chats/{quote_plus(str(conv_id))}/messages" if conv_id else None
+        if chat_type != "channel":
+            return None
+        channel_data = getattr(activity, "channel_data", None) or {}
+        if not isinstance(channel_data, dict):
+            return None
+        team_info = channel_data.get("team")
+        channel_info = channel_data.get("channel")
+        team_id = team_info.get("id") if isinstance(team_info, dict) else None
+        channel_id = channel_info.get("id") if isinstance(channel_info, dict) else None
+        if not team_id or not channel_id:
+            return None
+        return f"/teams/{quote(str(team_id), safe='')}/channels/{quote(str(channel_id), safe='')}/messages"
+
+    def _format_graph_history_message(self, raw: dict[str, Any]) -> str | None:
+        raw_body = raw.get("body")
+        body: dict[str, Any] = raw_body if isinstance(raw_body, dict) else {}
+        content = str(body.get("content") or "")
+        text = self._teams_html_to_text(content)
+        raw_attachments = raw.get("attachments")
+        attachments: list[Any] = raw_attachments if isinstance(raw_attachments, list) else []
+        attachment_names = [
+            str(att.get("name") or att.get("contentUrl") or "").strip()
+            for att in attachments
+            if isinstance(att, dict) and (att.get("name") or att.get("contentUrl"))
+        ]
+        if not text and not attachment_names:
+            return None
+        sender = "Unknown"
+        raw_from = raw.get("from")
+        from_obj: dict[str, Any] = raw_from if isinstance(raw_from, dict) else {}
+        for key in ("user", "application"):
+            value = from_obj.get(key)
+            if isinstance(value, dict) and value.get("displayName"):
+                sender = str(value["displayName"])
+                break
+        parts = [f"{sender}: {text}" if text else f"{sender}: [attachment]"]
+        if attachment_names:
+            parts.append("Attachments: " + ", ".join(attachment_names))
+        return " | ".join(parts)
+
+    def _teams_html_to_text(self, value: str) -> str:
+        if not value:
+            return ""
+        import re
+
+        value = re.sub(r"<at>[^<]*</at>\s*", "", value)
+        value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+        value = re.sub(r"</p>\s*<p[^>]*>", "\n", value, flags=re.IGNORECASE)
+        value = re.sub(r"<[^>]+>", "", value)
+        value = html.unescape(value)
+        return " ".join(value.split())
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

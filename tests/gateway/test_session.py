@@ -1095,6 +1095,15 @@ class TestSessionEntryFromDictTraversalValidation:
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="D:\\path\\to\\file"))
 
+    def test_session_id_non_leading_separator_raises(self):
+        """A path separator anywhere — not just leading — must be rejected,
+        since a non-leading backslash is still a Windows traversal vector."""
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="good\\..\\bad"))
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="agent:main:good/sub"))
+
 
 class TestEnsureLoadedSkipsInvalidEntries:
     """Regression: one bad sessions.json entry must not block valid entries from loading."""

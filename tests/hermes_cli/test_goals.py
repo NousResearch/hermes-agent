@@ -123,6 +123,34 @@ class TestJudgeGoal:
             verdict, _, _ = goals.judge_goal("my goal", "my response")
         assert verdict == "continue"
 
+    def test_no_aux_client_reports_actionable_reason(self):
+        """Goal judge must surface why the aux client is unavailable.
+
+        Regression for the opaque "no auxiliary client configured" status:
+        when Nous auth is broken, users need the auth remediation, not a
+        generic config message.
+        """
+        from hermes_cli import goals
+
+        detailed_reason = (
+            "goal_judge auxiliary client unavailable: Nous Portal runtime "
+            "credentials unavailable: Invalid refresh token. Run `hermes model` "
+            "to re-authenticate."
+        )
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client.describe_auxiliary_client_unavailable",
+            return_value=detailed_reason,
+        ):
+            verdict, reason, parse_failed = goals.judge_goal("my goal", "my response")
+
+        assert verdict == "continue"
+        assert reason == detailed_reason
+        assert parse_failed is False
+        assert reason != "no auxiliary client configured"
+
     def test_api_error_continues(self):
         """Judge exception → fail-open continue (don't wedge progress on judge bugs)."""
         from hermes_cli import goals

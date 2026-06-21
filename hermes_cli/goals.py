@@ -402,7 +402,11 @@ def judge_goal(
         return "continue", "empty response (nothing to evaluate)", False
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import (
+            describe_auxiliary_client_unavailable,
+            get_auxiliary_extra_body,
+            get_text_auxiliary_client,
+        )
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False
@@ -414,7 +418,12 @@ def judge_goal(
         return "continue", "auxiliary client unavailable", False
 
     if client is None or not model:
-        return "continue", "no auxiliary client configured", False
+        try:
+            reason = describe_auxiliary_client_unavailable("goal_judge")
+        except Exception as exc:
+            logger.debug("goal judge: unavailable-reason formatting failed: %s", exc)
+            reason = "goal_judge auxiliary client unavailable: no auxiliary client configured"
+        return "continue", reason, False
 
     # Build the prompt — pick the with-subgoals variant when applicable.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]

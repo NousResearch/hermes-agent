@@ -1300,6 +1300,78 @@ def _nous_base_url() -> str:
     return os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
 
 
+_LAST_NOUS_RUNTIME_FAILURE: Optional[str] = None
+_WARNED_NOUS_RUNTIME_FAILURES: set[str] = set()
+
+
+def _format_nous_runtime_failure(exc: Exception) -> str:
+    """Return an actionable, user-safe description of a Nous auth failure."""
+    try:
+        from hermes_cli.auth import format_auth_error
+
+        message = format_auth_error(exc)
+    except Exception:
+        message = str(exc)
+    code = getattr(exc, "code", None)
+    if code and str(code) not in message:
+        message = f"{message} (code: {code})"
+    return message.strip() or type(exc).__name__
+
+
+def _record_nous_runtime_failure(exc: Exception) -> None:
+    global _LAST_NOUS_RUNTIME_FAILURE
+    _LAST_NOUS_RUNTIME_FAILURE = _format_nous_runtime_failure(exc)
+
+
+def _clear_nous_runtime_failure() -> None:
+    global _LAST_NOUS_RUNTIME_FAILURE
+    _LAST_NOUS_RUNTIME_FAILURE = None
+
+
+def _warn_nous_runtime_failure_once(reason: str) -> None:
+    key = reason[:240]
+    if key in _WARNED_NOUS_RUNTIME_FAILURES:
+        return
+    _WARNED_NOUS_RUNTIME_FAILURES.add(key)
+    logger.warning(
+        "Auxiliary Nous client unavailable: runtime credential resolution failed: %s",
+        reason,
+    )
+
+
+def _describe_nous_unavailable() -> str:
+    """Explain why a Nous auxiliary client could not be created."""
+    if _LAST_NOUS_RUNTIME_FAILURE:
+        return f"Nous Portal runtime credentials unavailable: {_LAST_NOUS_RUNTIME_FAILURE}"
+    if not _read_nous_auth():
+        return "Nous Portal authentication not found (run: hermes auth add nous)"
+    return (
+        "Nous Portal authentication is present but no usable inference JWT was found "
+        "(run: hermes auth add nous)"
+    )
+
+
+def describe_auxiliary_client_unavailable(task: str = "") -> str:
+    """Return an actionable reason for the latest auxiliary-client miss.
+
+    This is used by callers such as the goal judge when
+    ``get_text_auxiliary_client(task)`` returns ``(None, None)``. Keep this
+    read-only: it must not retry auth or create clients, because it runs on an
+    error-reporting path after the resolver has already failed.
+    """
+    try:
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or "")
+        provider = _normalize_aux_provider(provider)
+    except Exception:
+        provider = ""
+    prefix = f"{task} auxiliary client unavailable" if task else "Auxiliary client unavailable"
+    if provider == "nous":
+        return f"{prefix}: {_describe_nous_unavailable()}"
+    if provider:
+        return f"{prefix}: provider '{provider}' is unavailable or not configured"
+    return f"{prefix}: no auxiliary provider configured"
+
+
 def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
     """Return fresh Nous runtime credentials when available.
 
@@ -1316,13 +1388,18 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
             force_refresh=force_refresh,
         )
     except Exception as exc:
+        _record_nous_runtime_failure(exc)
         logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
         return None
 
     api_key = str(creds.get("api_key") or "").strip()
     base_url = str(creds.get("base_url") or "").strip().rstrip("/")
     if not api_key or not base_url:
+        _record_nous_runtime_failure(
+            RuntimeError("resolved credentials were missing api_key or base_url")
+        )
         return None
+    _clear_nous_runtime_failure()
     return api_key, base_url
 
 
@@ -1603,6 +1680,8 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     if runtime is None and nous:
+        reason = _describe_nous_unavailable()
+        _warn_nous_runtime_failure_once(reason)
         logger.debug(
             "Auxiliary Nous: runtime JWT refresh failed; checking stored "
             "auth.json token."
@@ -3616,8 +3695,10 @@ def resolve_provider_client(
         )
         client, default = _try_nous(vision=_is_vision)
         if client is None:
-            logger.warning("resolve_provider_client: nous requested "
-                           "but Nous Portal not configured (run: hermes auth)")
+            logger.warning(
+                "resolve_provider_client: nous requested but %s",
+                _describe_nous_unavailable(),
+            )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

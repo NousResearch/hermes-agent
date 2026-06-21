@@ -855,6 +855,21 @@ class PhotonAdapter(BasePlatformAdapter):
                 logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
+        if self._inbound_running:
+            exit_code = proc.poll()
+            logger.error(
+                "[photon] sidecar exited unexpectedly (code %s) — triggering reconnect",
+                exit_code,
+            )
+            self._set_fatal_error(
+                "SIDECAR_CRASHED",
+                f"Photon sidecar exited unexpectedly (code {exit_code})",
+                retryable=True,
+            )
+            try:
+                await self._notify_fatal_error()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("[photon] fatal-error notification failed: %s", exc)
 
     async def _stop_sidecar(self) -> None:
         proc = self._sidecar_proc

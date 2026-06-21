@@ -9,6 +9,7 @@ import sys
 import subprocess
 import shutil
 from pathlib import Path
+import struct
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -330,7 +331,6 @@ def _pe_subsystem(path: str) -> int | None:
     3 for IMAGE_SUBSYSTEM_WINDOWS_CUI (python.exe),
     or None if the file is not a valid PE executable.
     """
-    import struct
     try:
         with open(path, "rb") as f:
             dos = f.read(64)

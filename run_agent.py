@@ -5232,6 +5232,8 @@ class AIAgent:
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             toolsets=function_args.get("toolsets"),
+            model=function_args.get("model"),
+            reasoning_effort=function_args.get("reasoning_effort"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
             acp_command=function_args.get("acp_command"),

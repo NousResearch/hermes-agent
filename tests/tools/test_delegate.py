@@ -69,6 +69,10 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("reasoning_effort", props)
+        self.assertIn("model", props["tasks"]["items"]["properties"])
+        self.assertIn("reasoning_effort", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -1201,6 +1205,119 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_call_model_override_reaches_child_agent(self, mock_creds, mock_cfg):
+        """A single delegate_task call can override the configured child model."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+        }
+        mock_creds.return_value = {
+            "model": "gpt-5.4-mini",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex/responses",
+            "api_key": "codex-key",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use a cheaper GPT lane",
+                model={"provider": "openai-codex", "model": "gpt-5.4-mini"},
+                parent_agent=parent,
+            )
+
+            mock_creds.assert_called_once()
+            cfg_arg = mock_creds.call_args.args[0]
+            self.assertEqual(cfg_arg["provider"], "openai-codex")
+            self.assertEqual(cfg_arg["model"], "gpt-5.4-mini")
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "gpt-5.4-mini")
+            self.assertEqual(kwargs["provider"], "openai-codex")
+            self.assertEqual(kwargs["api_mode"], "codex_responses")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_call_model_only_override_reuses_delegation_provider(self, mock_creds, mock_cfg):
+        """A model-only per-call override keeps the configured delegation provider."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+        }
+        mock_creds.return_value = {
+            "model": "deepseek-chat",
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "deepseek-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use alternate configured-provider model",
+                model={"model": "deepseek-chat"},
+                parent_agent=parent,
+            )
+
+            cfg_arg = mock_creds.call_args.args[0]
+            self.assertEqual(cfg_arg["provider"], "deepseek")
+            self.assertEqual(cfg_arg["model"], "deepseek-chat")
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "deepseek-chat")
+            self.assertEqual(kwargs["provider"], "deepseek")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_call_model_only_override_can_inherit_parent_provider(self, mock_creds, mock_cfg):
+        """A model-only override can fall back to parent credentials when no delegation provider exists."""
+        mock_cfg.return_value = {"max_iterations": 45, "provider": "", "model": ""}
+        mock_creds.return_value = {
+            "model": "anthropic/claude-sonnet-4-5",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use parent-provider alternate model",
+                model={"model": "anthropic/claude-sonnet-4-5"},
+                parent_agent=parent,
+            )
+
+            cfg_arg = mock_creds.call_args.args[0]
+            self.assertEqual(cfg_arg["model"], "anthropic/claude-sonnet-4-5")
+            self.assertEqual(cfg_arg.get("provider"), "")
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "anthropic/claude-sonnet-4-5")
+            self.assertEqual(kwargs["provider"], parent.provider)
+            self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_cross_provider_delegation(self, mock_creds, mock_cfg):
         """Parent on Nous, subagent on OpenRouter — full credential switch."""
         mock_cfg.return_value = {
@@ -1395,6 +1512,104 @@ class TestDelegationProviderIntegration(unittest.TestCase):
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
                 self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
                 self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_mode_can_mix_per_task_models(self, mock_creds, mock_cfg):
+        """Batch tasks may route different children to different configured models."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+        }
+        mock_creds.side_effect = [
+            {
+                "model": "deepseek-v4-flash",
+                "provider": "deepseek",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key": "ds-key",
+                "api_mode": "chat_completions",
+            },
+            {
+                "model": "gpt-5.4-mini",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex/responses",
+                "api_key": "codex-key",
+                "api_mode": "codex_responses",
+            },
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            tasks = [
+                {
+                    "goal": "cheap reasoning",
+                    "model": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+                    "reasoning_effort": "low",
+                },
+                {
+                    "goal": "cheap GPT worker",
+                    "model": {"provider": "openai-codex", "model": "gpt-5.4-mini"},
+                    "reasoning_effort": "minimal",
+                },
+            ]
+            delegate_task(tasks=tasks, parent_agent=parent)
+
+            self.assertEqual(mock_creds.call_count, 2)
+            self.assertEqual(mock_creds.call_args_list[0].args[0]["provider"], "deepseek")
+            self.assertEqual(mock_creds.call_args_list[0].args[0]["reasoning_effort"], "low")
+            self.assertEqual(mock_creds.call_args_list[1].args[0]["provider"], "openai-codex")
+            self.assertEqual(mock_creds.call_args_list[1].args[0]["model"], "gpt-5.4-mini")
+            self.assertEqual(mock_creds.call_args_list[1].args[0]["reasoning_effort"], "minimal")
+            self.assertEqual(mock_build.call_args_list[0].kwargs.get("model"), "deepseek-v4-flash")
+            self.assertEqual(mock_build.call_args_list[0].kwargs.get("override_reasoning_effort"), "low")
+            self.assertEqual(mock_build.call_args_list[1].kwargs.get("model"), "gpt-5.4-mini")
+            self.assertEqual(mock_build.call_args_list[1].kwargs.get("override_provider"), "openai-codex")
+            self.assertEqual(mock_build.call_args_list[1].kwargs.get("override_reasoning_effort"), "minimal")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_single_task_reasoning_effort_reaches_child_agent(self, mock_creds, mock_cfg):
+        """Top-level reasoning_effort applies to a single delegated task."""
+        mock_cfg.return_value = {"max_iterations": 45, "reasoning_effort": "high"}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                goal="Use cheap reasoning",
+                reasoning_effort="low",
+                parent_agent=parent,
+            )
+
+            cfg_arg = mock_creds.call_args.args[0]
+            self.assertEqual(cfg_arg["reasoning_effort"], "low")
+            self.assertEqual(mock_build.call_args.kwargs.get("override_reasoning_effort"), "low")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -1964,6 +2179,23 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("run_agent.AIAgent")
+    def test_per_call_reasoning_effort_overrides_config(self, MockAgent, mock_cfg):
+        """A per-call override wins over delegation.reasoning_effort config."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "high"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, override_reasoning_effort="minimal",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "minimal"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
     def test_override_reasoning_effort_none_disables(self, MockAgent, mock_cfg):
         """delegation.reasoning_effort: 'none' disables thinking for subagents."""
         mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "none"}
@@ -2035,6 +2267,27 @@ class TestDispatchDelegateTask(unittest.TestCase):
             _, kwargs = mock_build.call_args
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+    def test_agent_dispatch_forwards_model_and_reasoning(self):
+        """The AIAgent dispatch helper forwards the public schema fields."""
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        with patch("tools.delegate_tool.delegate_task") as mock_delegate:
+            mock_delegate.return_value = '{"results": []}'
+            result = agent._dispatch_delegate_task({
+                "goal": "route me",
+                "model": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+                "reasoning_effort": "low",
+            })
+
+        self.assertEqual(result, '{"results": []}')
+        self.assertEqual(
+            mock_delegate.call_args.kwargs["model"],
+            {"provider": "deepseek", "model": "deepseek-v4-flash"},
+        )
+        self.assertEqual(mock_delegate.call_args.kwargs["reasoning_effort"], "low")
+        self.assertIs(mock_delegate.call_args.kwargs["parent_agent"], agent)
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

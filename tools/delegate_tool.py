@@ -986,6 +986,9 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-call reasoning override. When omitted, delegation.reasoning_effort
+    # from config (if any) still applies.
+    override_reasoning_effort: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1024,6 +1027,9 @@ def _build_child_agent(
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
     delegation_cfg = _load_config()
+    if override_reasoning_effort not in (None, ""):
+        delegation_cfg = dict(delegation_cfg)
+        delegation_cfg["reasoning_effort"] = str(override_reasoning_effort).strip()
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -2062,10 +2068,54 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _merge_model_override(
+    cfg: Dict[str, Any],
+    model_override: Any,
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Return a delegation config copy with a per-call model override applied.
+
+    The public tool schema accepts ``model={"provider": ..., "model": ...}``.
+    Keeping this as a config-shaped merge lets the existing runtime provider
+    resolver remain the single credential/transport authority for children.
+    """
+    if model_override in (None, ""):
+        return dict(cfg), None
+
+    if not isinstance(model_override, dict):
+        return None, "model override must be an object with at least a 'model' field."
+
+    merged = dict(cfg)
+    requested_model = str(model_override.get("model") or "").strip()
+    if not requested_model:
+        return None, "model override must include a non-empty 'model' field."
+    merged["model"] = requested_model
+
+    if "provider" in model_override:
+        requested_provider = str(model_override.get("provider") or "").strip()
+        if not requested_provider:
+            return None, "model override 'provider' must be non-empty when provided."
+        merged["provider"] = requested_provider
+
+    return merged, None
+
+
+def _merge_reasoning_effort_override(
+    cfg: Dict[str, Any],
+    reasoning_effort: Optional[str],
+) -> Dict[str, Any]:
+    if reasoning_effort in (None, ""):
+        return cfg
+    merged = dict(cfg)
+    merged["reasoning_effort"] = str(reasoning_effort).strip()
+    return merged
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    model: Optional[Dict[str, Any]] = None,
+    reasoning_effort: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
@@ -2078,8 +2128,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, model, role)
+      - Batch:  provide tasks array [{goal, context, toolsets, model, role}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2143,16 +2193,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2173,7 +2213,14 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+                "role": top_role,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2214,6 +2261,19 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_cfg, cfg_error = _merge_model_override(cfg, t.get("model") or model)
+            if cfg_error:
+                return tool_error(f"Task {i}: {cfg_error}")
+            task_cfg = _merge_reasoning_effort_override(
+                task_cfg,
+                t.get("reasoning_effort") or reasoning_effort,
+            )
+            # Resolve delegation credentials (provider:model pair) per task so
+            # a batch can fan out across multiple configured providers/models.
+            try:
+                creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2235,6 +2295,7 @@ def delegate_task(
                     if task_acp_args is not None
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
+                override_reasoning_effort=task_cfg.get("reasoning_effort"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2926,7 +2987,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent model can be overridden per call with model={provider, model}; otherwise children use delegation.provider/delegation.model or inherit the parent.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3051,6 +3112,26 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string"},
+                    "model": {"type": "string"},
+                },
+                "required": ["model"],
+                "description": (
+                    "Per-call model override. Pass {'provider': 'deepseek', "
+                    "'model': 'deepseek-v4-flash'} or another configured "
+                    "provider/model. If provider is omitted, Hermes reuses "
+                    "delegation.provider when configured; otherwise the child "
+                    "inherits the parent's provider credentials."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
+                "description": "Per-call reasoning effort override for this subagent.",
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3065,6 +3146,20 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "provider": {"type": "string"},
+                                "model": {"type": "string"},
+                            },
+                            "required": ["model"],
+                            "description": "Per-task model override. Overrides the top-level model for this task only.",
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
+                            "description": "Per-task reasoning effort override.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -3165,6 +3260,8 @@ registry.register(
         goal=args.get("goal"),
         context=args.get("context"),
         toolsets=args.get("toolsets"),
+        model=args.get("model"),
+        reasoning_effort=args.get("reasoning_effort"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),

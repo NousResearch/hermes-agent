@@ -247,6 +247,43 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert 'readSelectedBoard() || "default"' not in js
 
 
+def test_dashboard_touch_drag_waits_for_long_press_and_preserves_scroll_intent():
+    """Mobile cards should scroll on swipe and only drag after a deliberate hold.
+
+    Regression for dense mobile columns where every touchable area was also an
+    immediate drag target. The bundle should keep click suppression for swipe
+    gestures and only activate drag after a long-press threshold.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "const TOUCH_DRAG_HOLD_MS = 260;" in js
+    assert "const TOUCH_SCROLL_INTENT_PX = 12;" in js
+    assert "el.dataset.hermesKanbanSuppressClickUntil" in js
+    assert "holdTimer = setTimeout(function () { startDrag(e); }, TOUCH_DRAG_HOLD_MS);" in js
+    assert "if (absY >= TOUCH_SCROLL_INTENT_PX && absY >= absX)" in js
+    assert "if (shouldSuppressTouchClick(cardRef.current))" in js
+
+
+def test_dashboard_mobile_css_surfaces_scroll_affordance_and_pan_y_cards():
+    """Mobile CSS should leave clearer scroll gutters and allow vertical pan.
+
+    The fix should not rely purely on transient overlay scrollbars; cards need
+    `touch-action: pan-y` and columns need extra mobile breathing room.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "scrollbar-width: thin;" in css
+    assert ".hermes-kanban-column-body::-webkit-scrollbar-thumb" in css
+    assert "@media (max-width: 1023px)" in css
+    assert "touch-action: pan-y;" in css
+    assert "padding-bottom: 1rem;" in css
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------

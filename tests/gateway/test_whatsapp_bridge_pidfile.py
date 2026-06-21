@@ -22,7 +22,7 @@ import pytest
 import os
 import socket
 
-from gateway.platforms.whatsapp import (
+from plugins.platforms.whatsapp.adapter import (
     _bridge_pid_is_ours,
     _kill_port_process,
     _kill_stale_bridge_by_pidfile,

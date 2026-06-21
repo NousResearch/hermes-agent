@@ -3623,7 +3623,7 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
-    if not model:
+    if not model and provider != "auto":
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:

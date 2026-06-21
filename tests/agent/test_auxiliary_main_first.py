@@ -118,6 +118,44 @@ class TestResolveAutoMainFirst:
         assert client is chain_client
         assert model == "google/gemini-3-flash-preview"
 
+    def test_public_auto_fallback_uses_chain_model_not_main_model(self, monkeypatch):
+        """resolve_provider_client('auto') must not send main gpt-5.5 to fallback OpenRouter.
+
+        Regression for Codex-auth failures: _resolve_auto correctly returns the
+        fallback chain model (Gemini Flash), but the public wrapper previously
+        re-applied the main model and routed OpenRouter requests as gpt-5.5.
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        chain_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._build_codex_client",
+            return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client._read_codex_access_token",
+            return_value=None,
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="gpt-5.5",
+        ), patch(
+            "agent.auxiliary_client._try_openrouter",
+            return_value=(chain_client, "google/gemini-3-flash-preview"),
+        ):
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "auto",
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "api_mode": "codex_responses",
+                },
+            )
+
+        assert client is chain_client
+        assert model == "google/gemini-3-flash-preview"
+
     def test_main_unavailable_uses_task_fallback_chain_before_builtin_chain(self):
         """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
         task_client = MagicMock()

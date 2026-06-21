@@ -332,7 +332,7 @@ export const ru = defineLocale({
       pasteKey: 'Вставить ключ', pasteLabelKey: label => `Вставить ${label}`,
       optional: 'Необязательно', enterValueFirst: 'Введите значение.',
       couldNotSave: 'Не удалось сохранить.', remove: 'Удалить', or: 'или',
-      escToCancel: 'Esc', getKey: 'Получить', saving: 'Сохранение'
+      escToCancel: 'Esc для отмены', getKey: 'Получить', saving: 'Сохранение'
     },
     envActions: {
       actionsFor: label => `Действия: ${label}`, credentialActions: 'Учётные данные',
@@ -790,7 +790,7 @@ export const ru = defineLocale({
     externalPending: provider => `${provider} через CLI:`,
     signedIn: 'Вошёл', deviceCodeOpened: provider => `${provider}. Код:`,
     reopenVerification: 'Подтверждение', copy: 'Копировать', defaultModel: 'По умолчанию',
-    freeTier: 'Бесплатно', pro: 'Pro', free: 'Бесплатно',
+    freeTier: 'Бесплатно', pro: 'Про', free: 'Бесплатно',
     price: (i, o) => `${i}/${o}`, change: 'Изменить', startChatting: 'Начать',
     docs: provider => `Документация ${provider}`
   },
@@ -799,7 +799,7 @@ export const ru = defineLocale({
     title: 'Сменить модель', current: 'текущая:', unknown: '(?)',
     search: 'Фильтр...', noModels: 'Не найдены.', addProvider: 'Добавить',
     loadFailed: 'Ошибка', noAuthenticatedProviders: 'Нет провайдеров.',
-    pro: 'Pro', proNeedsSubscription: 'Подписка Nous.',
+    pro: 'Про', proNeedsSubscription: 'Подписка Nous.',
     free: 'Бесплатно', freeTier: 'Тариф', priceTitle: 'Цена/млн токенов'
   },
 

@@ -101,6 +101,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+import shlex
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write, env_float
@@ -3504,6 +3505,16 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
 
+        @tree.command(name="tmux_claude", description="Open a Claude tmux worker thread")
+        @discord.app_commands.describe(args="Task plus optional flags, e.g. --xhigh --model opus <task>")
+        async def slash_tmux_claude(interaction: discord.Interaction, args: str):
+            await self._handle_tmux_worker_slash(interaction, "tmux_claude", args)
+
+        @tree.command(name="tmux_codex", description="Open a Codex tmux worker thread")
+        @discord.app_commands.describe(args="Task plus optional flags, e.g. --xhigh --model gpt-5.5 <task>")
+        async def slash_tmux_codex(interaction: discord.Interaction, args: str):
+            await self._handle_tmux_worker_slash(interaction, "tmux_codex", args)
+
         @tree.command(name="steer", description="Inject a message after the next tool call (no interrupt)")
         @discord.app_commands.describe(prompt="Text to inject into the agent's next tool result")
         async def slash_steer(interaction: discord.Interaction, prompt: str):
@@ -3659,7 +3670,7 @@ class DiscordAdapter(BasePlatformAdapter):
             config_overrides = _resolve_config_gates()
 
             for cmd_def in COMMAND_REGISTRY:
-                if not _is_gateway_available(cmd_def, config_overrides):
+                if not _is_gateway_available(cmd_def, config_overrides, platform="discord"):
                     continue
                 # Discord command names: lowercase, hyphens OK, max 32 chars.
                 discord_name = cmd_def.name.lower()[:32]
@@ -4026,6 +4037,111 @@ class DiscordAdapter(BasePlatformAdapter):
             raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
+
+    # ------------------------------------------------------------------
+    # tmux worker Discord slash helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tmux_worker_title_text(args: str) -> str:
+        try:
+            raw_tokens = shlex.split(args or "")
+        except ValueError:
+            raw_tokens = (args or "").split()
+        title_tokens: list[str] = []
+        skip_next = False
+        for token in raw_tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in {"--model", "--effort"}:
+                skip_next = True
+                continue
+            if token.startswith("--model=") or token.startswith("--effort="):
+                continue
+            if token.startswith("--"):
+                continue
+            title_tokens.append(token)
+        return " ".join(title_tokens).strip() or "task"
+
+    @staticmethod
+    def _tmux_worker_thread_name(command: str, args: str) -> str:
+        tool = "claude" if command.endswith("claude") else "codex"
+        title_source = DiscordAdapter._tmux_worker_title_text(args)
+        title = re.sub(r"[^0-9A-Za-z가-힣._-]+", "-", title_source).strip("-._")
+        title = re.sub(r"-+", "-", title)[:42].strip("-._") or "task"
+        return f"{tool} · {title}"
+
+    @staticmethod
+    def _tmux_worker_starter_message(command_text: str, args: str) -> str:
+        """Visible first message for a tmux worker thread.
+
+        The actual worker dispatch is synthetic, so without this Discord shows a
+        thread title but no user-visible task body.
+        """
+        title = DiscordAdapter._tmux_worker_title_text(args)
+        if len(title) > 300:
+            title = f"{title[:300]}…"
+        return (
+            "🧵 tmux worker room ready\n"
+            f"Command: `{command_text}`\n"
+            f"Title: {title}\n\n"
+            "첫 지시는 이 thread에 일반 메시지로 쓰세요."
+        )
+
+    async def _handle_tmux_worker_slash(
+        self,
+        interaction: discord.Interaction,
+        command: str,
+        args: str,
+    ) -> None:
+        """Create/reuse a Discord thread, then dispatch the tmux worker command there."""
+        command_text = f"/{command} {args}".strip()
+        if not await self._check_slash_authorization(interaction, command_text):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        if not (args or "").strip():
+            await interaction.edit_original_response(content=f"Usage: `/{command} <task>`")
+            return
+
+        if isinstance(interaction.channel, discord.DMChannel):
+            await interaction.edit_original_response(
+                content=f"`/{command}`는 Discord 서버 채널/thread에서만 사용할 수 있습니다."
+            )
+            return
+
+        if isinstance(interaction.channel, discord.Thread):
+            event = self._build_slash_event(interaction, command_text)
+            await self.handle_message(event)
+            try:
+                await interaction.delete_original_response()
+            except Exception:
+                pass
+            return
+
+        thread_name = self._tmux_worker_thread_name(command, args)
+        starter_message = self._tmux_worker_starter_message(command_text, args)
+        result = await self._create_thread(
+            interaction,
+            name=thread_name,
+            message=starter_message,
+            auto_archive_duration=1440,
+        )
+        if not result.get("success"):
+            await interaction.edit_original_response(
+                content=f"tmux worker thread 생성 실패: {result.get('error', 'unknown error')}"
+            )
+            return
+
+        thread_id = result.get("thread_id")
+        created_name = result.get("thread_name") or thread_name
+        if thread_id:
+            self._threads.mark(thread_id)
+        link = f"<#{thread_id}>" if thread_id else f"**{created_name}**"
+        await interaction.edit_original_response(content=f"작업방 생성: {link}")
+        if thread_id:
+            await self._dispatch_thread_session(interaction, thread_id, created_name, command_text)
 
     # ------------------------------------------------------------------
     # Thread creation helpers

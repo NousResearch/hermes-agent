@@ -357,6 +357,18 @@ class TestSlackNativeSlashes:
         # carries the "Alias for /…" marker), proving the alias pass ran.
         assert any(d.startswith("Alias for /") for _n, d, _h in slashes)
 
+    def test_discord_only_tmux_worker_commands_do_not_pollute_slack(self):
+        """Discord-only Claude/Codex worker commands must not consume Slack's
+        50 native slash-command slots or push high-value aliases like /btw out.
+        """
+        names = {n for n, _d, _h in slack_native_slashes()}
+        assert {"claude", "codex", "tmux_claude", "tmux_codex"}.isdisjoint(names)
+
+    def test_discord_only_tmux_worker_commands_do_not_pollute_telegram(self):
+        """The MVP is Discord-thread-only; Telegram should not advertise these commands."""
+        names = {n for n, _d in telegram_bot_commands()}
+        assert {"claude", "codex", "tmux_claude", "tmux_codex"}.isdisjoint(names)
+
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
 

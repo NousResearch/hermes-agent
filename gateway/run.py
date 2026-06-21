@@ -127,7 +127,10 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
 )
 
 _GATEWAY_SECRET_PATTERNS = (
+    re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
     re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
@@ -5829,6 +5832,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # idle case where the subagent finishes with no agent turn running.
         asyncio.create_task(self._async_delegation_watcher())
 
+        # Start Discord tmux-worker relay — summarizes stable Claude/Codex tmux
+        # output back into the originating Discord thread while raw logs remain
+        # local-only.
+        task = asyncio.create_task(self._tmux_worker_relay_watcher())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -7397,6 +7407,284 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             (run_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         return "\n".join(lines)
 
+    def _get_tmux_worker_manager(self):
+        """Return the gateway-scoped tmux worker manager."""
+        manager = getattr(self, "_tmux_worker_manager", None)
+        if manager is None:
+            from gateway.tmux_workers import TmuxWorkerManager
+            manager = TmuxWorkerManager()
+            self._tmux_worker_manager = manager
+        return manager
+
+    @staticmethod
+    def _extract_auxiliary_message_content(response: Any) -> str:
+        """Best-effort extraction from OpenAI-compatible auxiliary responses."""
+        try:
+            choice = response.choices[0]
+            message = getattr(choice, "message", None)
+            content = getattr(message, "content", None) if message is not None else None
+            if content is None and isinstance(message, dict):
+                content = message.get("content")
+            if content is None and isinstance(choice, dict):
+                message = choice.get("message") or {}
+                content = message.get("content") if isinstance(message, dict) else None
+            return str(content or "").strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _tmux_worker_log_label(worker: Any) -> str:
+        """Return a user-safe local log label without exposing host paths."""
+        raw_path = str(getattr(worker, "log_path", "") or "")
+        if not raw_path:
+            return "local tmux worker log"
+        try:
+            return Path(raw_path).name or "local tmux worker log"
+        except Exception:
+            return "local tmux worker log"
+
+    def _get_tmux_worker_lock(self, worker_id: str) -> "asyncio.Lock":
+        """Return a per-worker lock for ordered Discord follow-up paste."""
+        locks = getattr(self, "_tmux_worker_locks", None)
+        if locks is None:
+            locks = {}
+            self._tmux_worker_locks = locks
+        key = str(worker_id or "unknown")
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
+
+    @staticmethod
+    def _fallback_tmux_worker_summary(worker: Any, text: str, *, max_chars: int = 900) -> str:
+        """Deterministic fallback when the auxiliary summarizer is unavailable."""
+        cleaned = _redact_gateway_user_facing_secrets(text or "")
+        try:
+            from gateway.tmux_workers import extract_worker_report_block
+
+            report = extract_worker_report_block(cleaned)
+        except Exception:
+            report = ""
+        if report:
+            summary = (
+                f"{str(getattr(worker, 'tool', 'worker')).capitalize()} 작업 보고 · {getattr(worker, 'id', '?')}\n\n"
+                f"{report}"
+            )
+            return summary[:max_chars].rstrip()
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        interesting: list[str] = []
+        patterns = re.compile(
+            r"(완료|결론|실패|error|traceback|blocked|수정|테스트|passed|failed|파일|경로|next|다음)",
+            re.IGNORECASE,
+        )
+        for line in lines:
+            if patterns.search(line):
+                interesting.append(line)
+            if len(interesting) >= 8:
+                break
+        if not interesting:
+            interesting = lines[-8:]
+        body = "\n".join(f"- {line[:220]}" for line in interesting if line)
+        if not body:
+            body = "- 새 출력은 있었지만 요약할 핵심 문장을 찾지 못했습니다. `/tmux_codex tail` 또는 `/tmux_claude tail`로 확인하세요."
+        summary = (
+            f"{str(getattr(worker, 'tool', 'worker')).capitalize()} 작업 업데이트 · {getattr(worker, 'id', '?')}\n\n"
+            f"핵심:\n{body}\n\n"
+            f"Local log: `{GatewayRunner._tmux_worker_log_label(worker)}`"
+        )
+        return summary[:max_chars].rstrip()
+
+    async def _summarize_tmux_worker_update(self, worker: Any, text: str) -> str:
+        """Summarize a stable tmux output delta for Discord relay."""
+        redacted_text = _redact_gateway_user_facing_secrets((text or "")[-12000:])
+        if not redacted_text.strip():
+            return ""
+        try:
+            from gateway.tmux_workers import extract_worker_report_block
+
+            report = extract_worker_report_block(redacted_text)
+        except Exception:
+            report = ""
+        if report:
+            summary = (
+                f"{str(getattr(worker, 'tool', 'worker')).capitalize()} 작업 보고 · {getattr(worker, 'id', '?')}\n\n"
+                f"{report}"
+            )
+            return summary[:1200].rstrip()
+        system = (
+            "You summarize Claude/Codex tmux worker output for a Discord work thread. "
+            "Write Korean. Keep it under 900 Korean characters. Do not include raw ANSI, spinner noise, "
+            "or hidden chain-of-thought. Redact anything that looks like a token, key, password, cookie, or credential. "
+            "If the delta contains only prompt echo, menus, startup banners, progress spinners, or status noise, return an empty string. "
+            "Return only: title line, then sections 결론/근거/다음 if useful. If still running with meaningful progress, say 진행 중."
+        )
+        user = (
+            f"worker_id={getattr(worker, 'id', '')}\n"
+            f"tool={getattr(worker, 'tool', '')}\n"
+            f"model={getattr(worker, 'model', '')}\n"
+            f"effort={getattr(worker, 'effort', '')}\n"
+            f"log_label={self._tmux_worker_log_label(worker)}\n\n"
+            "최근 tmux 출력 delta:\n"
+            "```\n"
+            f"{redacted_text}\n"
+            "```"
+        )
+        try:
+            from agent.auxiliary_client import async_call_llm
+
+            response = await async_call_llm(
+                task="tmux_worker_relay",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.1,
+                max_tokens=500,
+                timeout=60,
+            )
+            content = _redact_gateway_user_facing_secrets(
+                self._extract_auxiliary_message_content(response)
+            )
+            return content[:1200].rstrip() if content else ""
+        except Exception:
+            logger.debug("tmux worker relay auxiliary summary failed", exc_info=True)
+        return self._fallback_tmux_worker_summary(worker, redacted_text)
+
+    async def _run_tmux_worker_relay_once(self, *, idle_seconds: float = 6.0) -> int:
+        """Summarize and send any stable tmux output deltas to Discord."""
+        manager = self._get_tmux_worker_manager()
+        updates = manager.collect_relay_updates(idle_seconds=idle_seconds)
+        if not updates:
+            return 0
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            return 0
+        sent = 0
+        for update in updates:
+            worker = update.worker
+            chat_id = worker.chat_id or worker.thread_id
+            if not chat_id or not worker.thread_id:
+                continue
+            summary = await self._summarize_tmux_worker_update(worker, update.text)
+            if not summary.strip():
+                manager.mark_relay_sent(update)
+                continue
+            await adapter.send(str(chat_id), summary, metadata={"thread_id": str(worker.thread_id)})
+            manager.mark_relay_sent(update)
+            sent += 1
+        return sent
+
+    async def _tmux_worker_relay_watcher(self, interval: float = 3.0, idle_seconds: float = 6.0) -> None:
+        """Background watcher that relays summarized tmux output to Discord."""
+        await asyncio.sleep(2.0)
+        while self._running:
+            try:
+                await self._run_tmux_worker_relay_once(idle_seconds=idle_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("tmux worker relay tick failed", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _maybe_route_tmux_worker_followup(self, event: MessageEvent) -> Optional[str]:
+        """Route plain Discord thread messages to a mapped tmux worker.
+
+        This is intentionally Discord-only for the MVP. Telegram reply/topic
+        routing has more ambiguity and is left out until the Discord workflow
+        is proven.
+        """
+        if event.get_command():
+            return None
+        source = event.source
+        if source.platform != Platform.DISCORD or not source.thread_id:
+            return None
+        text = (event.text or "").strip()
+        if not text:
+            return None
+        manager = self._get_tmux_worker_manager()
+        worker = manager.find_by_thread("discord", source.thread_id)
+        if worker is None:
+            return None
+        from gateway.tmux_workers import build_worker_prompt
+
+        lock = self._get_tmux_worker_lock(getattr(worker, "id", "unknown"))
+        async with lock:
+            loader = getattr(manager, "load", None)
+            if callable(loader):
+                refreshed = loader(getattr(worker, "id", ""))
+                if refreshed is not None:
+                    worker = refreshed
+            kind = "discord_followup" if getattr(worker, "initial_sent", True) else "initial"
+            prompt = build_worker_prompt(text, kind=kind)
+            return await asyncio.to_thread(manager.send_followup, worker, prompt)
+
+    async def _handle_tmux_worker_command(self, event: MessageEvent, command: str) -> str:
+        """Handle /claude, /codex, /tmux_claude, and /tmux_codex."""
+        from gateway.tmux_workers import parse_worker_args, worker_usage
+
+        command = command.lower().strip().lstrip("/")
+        is_persistent = command.startswith("tmux_")
+        tool = "claude" if command.endswith("claude") else "codex"
+        raw_args = (event.get_command_args() or "").strip()
+        if event.source.platform != Platform.DISCORD:
+            return "`/claude`, `/codex`, `/tmux_claude`, `/tmux_codex`는 현재 Discord thread 작업방에서만 지원합니다."
+        manager = self._get_tmux_worker_manager()
+
+        if is_persistent:
+            subcmd = raw_args.split(maxsplit=1)[0].lower() if raw_args else ""
+            if subcmd == "status":
+                return manager.status_text(tool=tool)
+            if subcmd in {"tail", "stop"}:
+                worker = manager.find_by_thread("discord", event.source.thread_id)
+                if worker is None:
+                    return "현재 Discord thread에 연결된 tmux 작업방이 없습니다."
+                if subcmd == "tail":
+                    tail_text = await asyncio.to_thread(manager.tail, worker)
+                    return f"```\n{tail_text}\n```"
+                return await asyncio.to_thread(manager.stop, worker)
+
+            if not event.source.thread_id:
+                return "Discord slash command로 실행하면 Hermes가 thread를 만든 뒤 작업방을 시작합니다."
+            try:
+                spec = parse_worker_args(tool, raw_args)
+            except ValueError as exc:
+                return f"{exc}\n\n{worker_usage(command)}"
+            if not spec.task:
+                return worker_usage(command)
+            try:
+                worker = await asyncio.to_thread(
+                    manager.start_persistent,
+                    tool=tool,
+                    spec=spec,
+                    platform="discord",
+                    thread_id=event.source.thread_id,
+                    chat_id=event.source.chat_id,
+                    chat_name=event.source.chat_name,
+                    user_id=event.source.user_id,
+                    send_initial=False,
+                )
+            except Exception as exc:
+                logger.exception("tmux worker launch failed")
+                return f"tmux 작업방 시작 실패: `{exc}`"
+            return (
+                f"{tool.capitalize()} tmux 작업방 시작\n"
+                f"- id: `{worker.id}`\n"
+                f"- model/effort: `{worker.model}` / `{worker.effort}`\n"
+                f"- tmux: `{worker.tmux_session}:{worker.tmux_window}`\n"
+                f"- local log: `{self._tmux_worker_log_label(worker)}`\n\n"
+                "첫 지시는 이 thread 안에 일반 메시지로 쓰세요. 이후에도 `/send` 없이 그냥 후속 지시를 쓰면 됩니다."
+            )
+
+        try:
+            spec = parse_worker_args(tool, raw_args)
+        except ValueError as exc:
+            return f"{exc}\n\n{worker_usage(command)}"
+        if not spec.task:
+            return worker_usage(command)
+        output = await asyncio.to_thread(manager.run_once, tool=tool, spec=spec)
+        return _redact_gateway_user_facing_secrets(output)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -7668,6 +7956,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the confirm doesn't block normal usage indefinitely.  The user
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
+
+        tmux_worker_reply = await self._maybe_route_tmux_worker_followup(event)
+        if tmux_worker_reply is not None:
+            return tmux_worker_reply
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -8226,6 +8518,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "parallel_review":
             return await self._handle_parallel_review_command(event)
+
+        if canonical in {"claude", "codex", "tmux_claude", "tmux_codex"}:
+            return await self._handle_tmux_worker_command(event, canonical)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)

@@ -292,6 +292,57 @@ async def test_plugin_command_name_conflict_skipped(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_registers_native_tmux_worker_slash_commands(adapter):
+    adapter._handle_tmux_worker_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["tmux_claude"](interaction, args="설계 봐줘")
+    await adapter._client.tree.commands["tmux_codex"](interaction, args="테스트 고쳐")
+
+    assert adapter._handle_tmux_worker_slash.await_args_list[0].args == (
+        interaction, "tmux_claude", "설계 봐줘"
+    )
+    assert adapter._handle_tmux_worker_slash.await_args_list[1].args == (
+        interaction, "tmux_codex", "테스트 고쳐"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tmux_worker_slash_creates_thread_and_dispatches_command(adapter):
+    adapter._create_thread = AsyncMock(
+        return_value={"success": True, "thread_id": "555", "thread_name": "codex · 로그인-테스트"}
+    )
+    adapter._dispatch_thread_session = AsyncMock()
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=100, name="general"),
+        channel_id=100,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+
+    await adapter._handle_tmux_worker_slash(interaction, "tmux_codex", "--xhigh 로그인 테스트 실패 고쳐")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    adapter._create_thread.assert_awaited_once()
+    create_kwargs = adapter._create_thread.await_args.kwargs
+    assert create_kwargs["name"] == "codex · 로그인-테스트-실패-고쳐"
+    assert "🧵 tmux worker room ready" in create_kwargs["message"]
+    assert "Command: `/tmux_codex --xhigh 로그인 테스트 실패 고쳐`" in create_kwargs["message"]
+    assert "Title: 로그인 테스트 실패 고쳐" in create_kwargs["message"]
+    assert "첫 지시는 이 thread에 일반 메시지로 쓰세요" in create_kwargs["message"]
+    adapter._dispatch_thread_session.assert_awaited_once_with(
+        interaction,
+        "555",
+        "codex · 로그인-테스트",
+        "/tmux_codex --xhigh 로그인 테스트 실패 고쳐",
+    )
+    assert "555" in adapter._threads
+
+
 # ------------------------------------------------------------------
 # 100-command cap (Discord error 30032 guard)
 # ------------------------------------------------------------------
@@ -721,6 +772,8 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     """When DISCORD_AUTO_THREAD=true, a new thread is created and the event routes there."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
 
     thread = SimpleNamespace(id=999, name="Hello")
     adapter._auto_create_thread = AsyncMock(return_value=thread)
@@ -749,6 +802,8 @@ async def test_auto_thread_enabled_by_default_slash_commands(adapter, monkeypatc
     """Without DISCORD_AUTO_THREAD env var, auto-threading is enabled (default: true)."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
 
     fake_thread = _FakeThreadChannel(channel_id=999, name="auto-thread")
     adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
@@ -775,6 +830,8 @@ async def test_auto_thread_can_be_disabled(adapter, monkeypatch):
     """Setting DISCORD_AUTO_THREAD=false keeps messages in the channel."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
 
     adapter._auto_create_thread = AsyncMock()
 
@@ -799,6 +856,8 @@ async def test_auto_thread_skips_threads_and_dms(adapter, monkeypatch):
     """Auto-thread should not create threads inside existing threads."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
 
     adapter._auto_create_thread = AsyncMock()
 

@@ -59,6 +59,11 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Preflight compression skipped because another path is already compressing
+    # this session. The caller should not proceed into a provider request with
+    # the unchanged oversized transcript.
+    compression_deferred_by_lock: bool = False
+    compression_deferred_session_id: Optional[str] = None
 
 
 def build_turn_context(
@@ -147,6 +152,9 @@ def build_turn_context(
     turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
+    agent._compression_deferred_by_lock = False
+    agent._compression_deferred_session_id = None
+    agent._compression_deferred_holder = None
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0
@@ -317,6 +325,22 @@ def build_turn_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
+                if getattr(agent, "_compression_deferred_by_lock", False):
+                    return TurnContext(
+                        user_message=user_message,
+                        original_user_message=original_user_message,
+                        messages=messages,
+                        conversation_history=conversation_history,
+                        active_system_prompt=active_system_prompt,
+                        effective_task_id=effective_task_id,
+                        turn_id=turn_id,
+                        current_turn_user_idx=current_turn_user_idx,
+                        should_review_memory=should_review_memory,
+                        compression_deferred_by_lock=True,
+                        compression_deferred_session_id=getattr(
+                            agent, "_compression_deferred_session_id", None
+                        ),
+                    )
                 if len(messages) >= _orig_len:
                     break  # Cannot compress further
                 conversation_history = None

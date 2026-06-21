@@ -34,8 +34,6 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from hermes_state import SessionDB
 
 
@@ -147,11 +145,11 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
 def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     """The loser of the lock race must return its input messages verbatim.
 
-    Callers (preflight compression in ``conversation_loop.py``) detect the
-    no-op via ``len(returned) == len(input)`` and stop the auto-compress
-    retry loop.  If the skipped path returned the compressed view, that
-    detection would break and the caller would mutate the conversation
-    without going through state.db rotation.
+    Callers also need the explicit ``_compression_deferred_by_lock`` flag.
+    A no-op return alone is ambiguous: it can mean lock contention, an aux
+    compression failure, or real no-progress compression.  The lock-loser path
+    must be distinguishable so gateway/browser turns do not continue into a
+    provider request with the unchanged oversized transcript.
     """
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "LOSER_TEST"
@@ -169,6 +167,8 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     # Skipped: messages returned verbatim, no rotation
     assert compressed is messages or compressed == messages
     assert agent.session_id == parent_sid
+    assert agent._compression_deferred_by_lock is True
+    assert agent._compression_deferred_session_id == parent_sid
     # Compressor was never called (the skip happens before .compress())
     agent.context_compressor.compress.assert_not_called()
 

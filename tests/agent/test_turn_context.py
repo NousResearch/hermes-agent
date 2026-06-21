@@ -190,6 +190,38 @@ def test_no_review_when_memory_disabled():
     assert ctx.should_review_memory is False
 
 
+def test_preflight_compression_lock_defer_stops_before_api_context():
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.context_compressor = types.SimpleNamespace(
+        protect_first_n=0,
+        protect_last_n=0,
+        last_prompt_tokens=0,
+        threshold_tokens=1,
+        context_length=100_000,
+        should_defer_preflight_to_real_usage=lambda _tokens: False,
+        should_compress=lambda _tokens: True,
+    )
+
+    def _defer_compression(messages, system_message, **_kwargs):
+        agent._compression_deferred_by_lock = True
+        agent._compression_deferred_session_id = "sess-1"
+        return messages, "SYSTEM"
+
+    agent._compress_context = _defer_compression
+
+    ctx = _build(
+        agent,
+        conversation_history=[{"role": "user", "content": "old"}],
+    )
+
+    assert ctx.compression_deferred_by_lock is True
+    assert ctx.compression_deferred_session_id == "sess-1"
+    assert ctx.messages[-1] == {"role": "user", "content": "hello"}
+    assert ctx.plugin_user_context == ""
+    assert ctx.ext_prefetch_cache == ""
+
+
 # ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────
 #
 # A slow MCP server that connects after the agent's build-time tool snapshot
@@ -258,4 +290,3 @@ def test_between_turns_refresh_no_churn_when_unchanged():
         _build(agent)
 
     assert agent.tools is same  # not replaced → no churn
-

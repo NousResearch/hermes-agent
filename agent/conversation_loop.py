@@ -466,6 +466,36 @@ def _content_policy_blocked_result(
     }
 
 
+def _compression_deferred_result(
+    agent,
+    messages: List[Dict],
+    conversation_history: Optional[List[Dict]],
+    api_call_count: int,
+) -> Dict[str, Any]:
+    """Return a soft stop when another path is compressing this session."""
+    session_id = getattr(agent, "_compression_deferred_session_id", None) or agent.session_id
+    holder = getattr(agent, "_compression_deferred_holder", None)
+    logger.info(
+        "turn deferred while compression lock is held: session=%s holder=%s",
+        session_id or "none",
+        holder,
+    )
+    try:
+        agent._flush_status_buffer()
+    except Exception:
+        pass
+    return {
+        "messages": messages,
+        "completed": False,
+        "api_calls": api_call_count,
+        "error": "Context compression is already running for this session. Retry after it finishes.",
+        "partial": True,
+        "failed": False,
+        "compression_deferred": True,
+        "session_id": agent.session_id,
+    }
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -559,6 +589,14 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
+
+    if _ctx.compression_deferred_by_lock:
+        return _compression_deferred_result(
+            agent,
+            messages,
+            conversation_history,
+            api_call_count=0,
+        )
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -2776,6 +2814,13 @@ def run_conversation(
                             approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
+                        if getattr(agent, "_compression_deferred_by_lock", False):
+                            return _compression_deferred_result(
+                                agent,
+                                messages,
+                                conversation_history,
+                                api_call_count,
+                            )
                         # Compression created a new session — clear history
                         # so _flush_messages_to_session_db writes compressed
                         # messages to the new session, not skipping them.
@@ -2987,6 +3032,13 @@ def run_conversation(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
                     )
+                    if getattr(agent, "_compression_deferred_by_lock", False):
+                        return _compression_deferred_result(
+                            agent,
+                            messages,
+                            conversation_history,
+                            api_call_count,
+                        )
                     # Compression created a new session — clear history
                     # so _flush_messages_to_session_db writes compressed
                     # messages to the new session, not skipping them.
@@ -3143,6 +3195,13 @@ def run_conversation(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
                     )
+                    if getattr(agent, "_compression_deferred_by_lock", False):
+                        return _compression_deferred_result(
+                            agent,
+                            messages,
+                            conversation_history,
+                            api_call_count,
+                        )
                     # Compression created a new session — clear history
                     # so _flush_messages_to_session_db writes compressed
                     # messages to the new session, not skipping them.
@@ -4130,6 +4189,13 @@ def run_conversation(
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
                     )
+                    if getattr(agent, "_compression_deferred_by_lock", False):
+                        return _compression_deferred_result(
+                            agent,
+                            messages,
+                            conversation_history,
+                            api_call_count,
+                        )
                     # Compression created a new session — clear history so
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).

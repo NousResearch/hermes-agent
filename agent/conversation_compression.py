@@ -71,6 +71,38 @@ def _compression_lock_holder(agent: Any) -> str:
     )
 
 
+def _clear_compression_lock_defer(agent: Any) -> None:
+    agent._compression_deferred_by_lock = False
+    agent._compression_deferred_session_id = None
+    agent._compression_deferred_holder = None
+
+
+def _mark_compression_lock_deferred(
+    agent: Any,
+    session_id: str,
+    holder: Optional[str],
+) -> None:
+    agent._compression_deferred_by_lock = True
+    agent._compression_deferred_session_id = session_id
+    agent._compression_deferred_holder = holder
+
+
+def _sync_session_context_after_compression(agent: Any) -> None:
+    """Keep tool routing and log context aligned after compression rotation."""
+    try:
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(agent.session_id)
+    except Exception:
+        os.environ["HERMES_SESSION_ID"] = agent.session_id
+    try:
+        from hermes_logging import set_session_context
+
+        set_session_context(agent.session_id)
+    except Exception:
+        pass
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the auxiliary compression model's context
     window is smaller than the main model's compression threshold.
@@ -306,10 +338,13 @@ def compress_context(
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
-        compression aborts (aux LLM failed to produce a usable summary),
-        returns the original messages unchanged and the existing system
-        prompt — the session is NOT rotated.  Callers should detect the
-        no-op via ``len(returned) == len(input)`` and stop the retry loop.
+        compression aborts (aux LLM failed to produce a usable summary) or
+        another path already owns the compression lock, returns the original
+        messages unchanged and the existing system prompt — the session is
+        NOT rotated.  Lock contention also sets
+        ``agent._compression_deferred_by_lock`` so callers can distinguish a
+        temporary concurrent-compression defer from real no-progress
+        compression.
     """
     # Lazy feasibility check — run the auxiliary-provider probe + context
     # length lookup just-in-time on the first compression attempt instead of
@@ -363,11 +398,12 @@ def compress_context(
     # SessionEntry at the start of their own compression attempt.
     #
     # If we can't acquire the lock, another path is mid-compression on
-    # this session.  Aborting is correct: the messages are unchanged, the
-    # other path's rotation will produce the canonical new session_id,
-    # and our caller's auto-compress loop sees ``len(returned) == len(input)``
-    # and stops retrying for this cycle. The session is NOT corrupted —
-    # we just sit out this round and let the winner finish.
+    # this session.  Aborting is correct, but returning unchanged messages
+    # is not enough signal by itself: unchanged messages also mean "real
+    # compression failure/no progress".  Mark lock contention explicitly so
+    # callers do not continue into a provider request with the same
+    # oversized transcript.
+    _clear_compression_lock_defer(agent)
     _lock_db = getattr(agent, "_session_db", None)
     _lock_sid = agent.session_id or ""
     _lock_holder: Optional[str] = None
@@ -415,7 +451,7 @@ def compress_context(
                 existing = None
             logger.warning(
                 "compression skipped: another path is compressing session=%s "
-                "(holder=%s) — returning messages unchanged to avoid session fork",
+                "(holder=%s) — deferring this compression attempt to avoid session fork",
                 _lock_sid, existing,
             )
             _lock_holder = None  # don't release a lock we don't own
@@ -430,6 +466,7 @@ def compress_context(
                     )
                 except Exception:
                     pass
+            _mark_compression_lock_deferred(agent, _lock_sid, existing)
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
@@ -570,14 +607,8 @@ def compress_context(
                 agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Ordering contract: the agent thread updates the contextvar here;
                 # the gateway propagates to SessionEntry after run_in_executor returns.
-                try:
-                    from gateway.session_context import set_current_session_id
-
-                    set_current_session_id(agent.session_id)
-                except Exception:
-                    os.environ["HERMES_SESSION_ID"] = agent.session_id
                 # The gateway/tools session context (ContextVar + env) and the
-                # logging session context are SEPARATE mechanisms. The call above
+                # logging session context are SEPARATE mechanisms. The helper
                 # moves the former; the ``[session_id]`` tag on log lines comes
                 # from ``hermes_logging._session_context`` (set once per turn in
                 # conversation_loop.py). Without this, post-rotation log lines in
@@ -585,12 +616,7 @@ def compress_context(
                 # state carry the new one — breaking log correlation exactly at the
                 # compaction boundary (see #34089). Guarded separately so a logging
                 # failure can never regress the routing update above.
-                try:
-                    from hermes_logging import set_session_context
-
-                    set_session_context(agent.session_id)
-                except Exception:
-                    pass
+                _sync_session_context_after_compression(agent)
                 agent._session_db_created = False
                 agent._session_db.create_session(
                     session_id=agent.session_id,

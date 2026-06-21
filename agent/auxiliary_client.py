@@ -40,6 +40,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -102,9 +103,42 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
+
+
+# ── Interrupt protection for atomic auxiliary tasks ──────────────────────
+# Some auxiliary tasks must NOT be aborted mid-flight by a gateway interrupt
+# (e.g. an incoming user message while the agent is busy). Context
+# compression is the prime case: if the summary LLM call is interrupted
+# part-way, compression falls back to a static "summary unavailable" marker
+# and the real handoff is lost (#23975). A thread-local flag lets such a
+# task mark its in-flight LLM call as interrupt-protected; the Codex
+# Responses stream's cancellation check honors it. TIMEOUTS still fire
+# (a hung call must die), and all OTHER aux tasks (vision, web_extract,
+# title_generation, …) remain freely interruptible.
+_aux_interrupt_protection = threading.local()
+
+
+def _aux_interrupt_protected() -> bool:
+    return bool(getattr(_aux_interrupt_protection, "active", False))
+
+
+@contextlib.contextmanager
+def aux_interrupt_protection(active: bool = True):
+    """Mark the current thread's auxiliary LLM call as interrupt-protected.
+
+    Used by atomic aux tasks (compression) so a mid-flight gateway interrupt
+    doesn't abort the call and trigger a degraded fallback. Re-entrant-safe:
+    restores the previous value on exit.
+    """
+    prev = getattr(_aux_interrupt_protection, "active", False)
+    _aux_interrupt_protection.active = active
+    try:
+        yield
+    finally:
+        _aux_interrupt_protection.active = prev
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -805,7 +839,11 @@ class _CodexCompletionsAdapter:
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
-                if is_interrupted():
+                # Honor interrupt protection for atomic aux tasks (compression):
+                # a mid-flight gateway interrupt must NOT abort the summary call
+                # and trigger a degraded fallback marker (#23975). Timeouts above
+                # still fire; other aux tasks remain interruptible.
+                if is_interrupted() and not _aux_interrupt_protected():
                     raise InterruptedError("Codex auxiliary Responses stream interrupted")
             except InterruptedError:
                 raise
@@ -1312,7 +1350,7 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
         from hermes_cli.auth import resolve_nous_runtime_credentials
 
         creds = resolve_nous_runtime_credentials(
-            timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+            timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
             force_refresh=force_refresh,
         )
     except Exception as exc:
@@ -2905,7 +2943,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
                 force_refresh=True,
             )
             if not str(creds.get("api_key", "") or "").strip():

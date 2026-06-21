@@ -142,6 +142,11 @@ export const zhHant = defineLocale({
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`,
+    dismiss: '關閉'
+  },
+
   titlebar: {
     hideSidebar: '隱藏側邊欄',
     showSidebar: '顯示側邊欄',
@@ -489,6 +494,7 @@ export const zhHant = defineLocale({
       checkNow: '立即檢查',
       checking: '檢查中…',
       seeWhatsNew: '查看新增內容',
+      updateNow: '立即更新',
       releaseNotes: '發行說明',
       onLatest: '你已是最新版本。',
       installing: '正在安裝更新。',
@@ -677,6 +683,8 @@ export const zhHant = defineLocale({
       removedMessage: provider => `${provider} 已移除。`,
       failedRemove: provider => `無法移除 ${provider}`,
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
+      searchKeys: '搜尋提供方…',
+      noKeysMatch: '沒有符合的提供方。',
       loading: '正在載入提供方...'
     },
     sessions: {
@@ -854,7 +862,8 @@ export const zhHant = defineLocale({
     gatewayRunning: '訊息閘道執行中',
     gatewayStopped: '訊息閘道已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活躍工作階段 ${count}`,
-    restartMessaging: '重新啟動訊息服務',
+    restartGateway: '重新啟動閘道',
+    gatewayRestartFailed: '閘道重新啟動失敗。',
     updateHermes: '更新 Hermes',
     actionRunning: '執行中',
     actionDone: '完成',
@@ -923,9 +932,9 @@ export const zhHant = defineLocale({
     disableAria: name => `停用 ${name}`,
     platformEnabled: name => `${name} 已啟用`,
     platformDisabled: name => `${name} 已停用`,
-    restartToApply: '重新啟動閘道後此變更才會生效。',
+    restartToApply: '此變更將在閘道重新啟動後生效。',
     setupSaved: name => `${name} 設定已儲存`,
-    restartToReconnect: '重新啟動閘道以使用新憑證重新連線。',
+    restartToReconnect: '新憑證將在閘道重新啟動後生效。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 設定已更新。`,
     failedUpdate: name => `更新 ${name} 失敗`,
@@ -1661,6 +1670,7 @@ export const zhHant = defineLocale({
       gatewayChecking: '檢查中',
       gatewayConnecting: '連線中',
       gatewayOffline: '離線',
+      gatewayRestarting: '重新啟動中…',
       gatewayTitle: 'Hermes 推論閘道狀態',
       agents: '代理',
       closeAgents: '關閉代理',

@@ -531,6 +531,16 @@ try:
     if _cfg_path.exists():
         with open(_cfg_path, encoding="utf-8") as _f:
             _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        # Managed scope: overlay administrator-pinned values so a managed
+        # security.redact_secrets / network.force_ipv4 wins here too. This early
+        # bridge reads config.yaml directly (before load_config is usable), so
+        # without the overlay a managed redact_secrets toggle would be ignored.
+        # Fail-open via the shared helper.
+        try:
+            from hermes_cli import managed_scope
+            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
+        except Exception:
+            pass
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -1640,6 +1650,64 @@ def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     return bundled if bundled.is_file() else None
 
 
+def _restore_tui_workspace(tui_dir: Path) -> bool:
+    """Try to restore a missing ``ui-tui/`` from git, returning True on success.
+
+    On Windows an antivirus / NTFS filter driver can leave tracked ``ui-tui/``
+    files deleted in the working tree after ``hermes update`` (HEAD stays
+    intact; the files just vanish — see issue #49145). Those files are tracked,
+    so ``git restore`` puts them back deterministically. Best-effort: returns
+    False (rather than raising) when git is unavailable, this isn't a checkout,
+    or the restore leaves the directory still missing — the caller then prints
+    the manual-recovery message.
+    """
+    git = shutil.which("git")
+    if not git or not (tui_dir.parent / ".git").exists():
+        return False
+    try:
+        subprocess.run(
+            [git, "restore", "--", tui_dir.name],
+            cwd=str(tui_dir.parent),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return tui_dir.is_dir()
+
+
+def _ensure_tui_workspace(tui_dir: Path) -> None:
+    """Ensure ``ui-tui/`` exists before any npm/node subprocess uses it as cwd.
+
+    Without this, a missing workspace falls through to ``subprocess.run(...,
+    cwd=<missing ui-tui>)``, which crashes with ``NotADirectoryError``
+    (``WinError 267`` on Windows) instead of a usable message (#49145). We
+    first try to self-heal via ``git restore``; only if that can't recover the
+    directory do we abort with concrete manual-recovery steps.
+    """
+    if tui_dir.is_dir():
+        return
+
+    if _restore_tui_workspace(tui_dir):
+        if not os.environ.get("HERMES_QUIET"):
+            print(f"Restored missing TUI workspace: {tui_dir}")
+        return
+
+    print(
+        "Error: the TUI workspace is missing from this Hermes checkout.\n"
+        f"Expected directory: {tui_dir}\n"
+        "This usually means `hermes update` left tracked ui-tui files deleted.\n"
+        "Recovery:\n"
+        "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
+        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  3. Retry `hermes --tui`\n"
+        "If the checkout is still inconsistent, run `hermes update --force`.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -1672,6 +1740,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if not ext_dir:
+        _ensure_tui_workspace(tui_dir)
 
     # 1. Prebuilt bundle (nix / packaged release): just run it.
     if not tui_dev:
@@ -2353,6 +2424,7 @@ def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
+    from hermes_constants import find_node_executable, with_hermes_node_path
 
     print()
     print("⚕ WhatsApp Setup")
@@ -2455,8 +2527,8 @@ def cmd_whatsapp(args):
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
-    project_root = Path(__file__).resolve().parents[1]
-    bridge_dir = project_root / "scripts" / "whatsapp-bridge"
+    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
 
     if not bridge_script.exists():
@@ -2467,7 +2539,7 @@ def cmd_whatsapp(args):
         print(
             "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
         )
-        npm = shutil.which("npm")
+        npm = find_node_executable("npm")
         if not npm:
             print("  ✗ npm not found on PATH — install Node.js first")
             return
@@ -2480,6 +2552,7 @@ def cmd_whatsapp(args):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=with_hermes_node_path(),
             )
         except KeyboardInterrupt:
             print("\n  ✗ Install cancelled")
@@ -2536,8 +2609,15 @@ def cmd_whatsapp(args):
 
     try:
         subprocess.run(
-            ["node", str(bridge_script), "--pair-only", "--session", str(session_dir)],
+            [
+                find_node_executable("node") or "node",
+                str(bridge_script),
+                "--pair-only",
+                "--session",
+                str(session_dir),
+            ],
             cwd=str(bridge_dir),
+            env=with_hermes_node_path(),
         )
     except KeyboardInterrupt:
         pass
@@ -4525,6 +4605,7 @@ def _run_with_idle_timeout(
     *,
     idle_timeout_seconds: int = 180,
     indent: str = "    ",
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess that streams output, with an idle-output timeout.
 
@@ -4559,6 +4640,7 @@ def _run_with_idle_timeout(
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=env,
         )
     except OSError as exc:
         # E.g. npm not on PATH between the which() check and now.
@@ -4750,12 +4832,15 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
-    npm = shutil.which("npm")
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    npm = find_node_executable("npm")
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
             _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
+    build_env = with_hermes_node_path()
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:
@@ -4787,6 +4872,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         npm,
         npm_cwd,
         extra_args=(*npm_workspace_args, "--silent"),
+        env=build_env,
     )
     if r1.returncode != 0:
         _say(
@@ -4802,13 +4888,13 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # users react by rebooting, which leaves the editable install in a
     # half-state. Streaming + idle-kill makes failures observable AND
     # recoverable (the stale-dist fallback below handles the kill path).
-    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
     if r2.returncode != 0:
         # Retry once after a short delay — covers boot-time races on Windows
         # (antivirus scanning Node.js binaries, npm cache not ready, transient
         # I/O when launched via Scheduled Task at logon). See issue #23817.
         _time.sleep(3)
-        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
+        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers
@@ -5187,7 +5273,9 @@ def _redownload_electron_dist(
     installer = electron_dir / "install.js"
     if not installer.is_file():
         return False
-    node = shutil.which("node")
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    node = find_node_executable("node")
     if not node:
         return False
 
@@ -5198,7 +5286,7 @@ def _redownload_electron_dist(
     except OSError:
         pass
 
-    dl_env = dict(env)
+    dl_env = with_hermes_node_path(env)
     if mirror:
         dl_env["ELECTRON_MIRROR"] = mirror
     try:
@@ -5378,7 +5466,10 @@ def cmd_gui(args: argparse.Namespace):
     except Exception:
         pass
 
-    env = os.environ.copy()
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    # with_hermes_node_path() copies os.environ when called with no arg.
+    env = with_hermes_node_path()
     if getattr(args, "fake_boot", False):
         env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
     if getattr(args, "ignore_existing", False):
@@ -5395,7 +5486,7 @@ def cmd_gui(args: argparse.Namespace):
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
-        npm = shutil.which("npm")
+        npm = find_node_executable("npm")
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
             print("Install Node.js, then run:  hermes gui")
@@ -5908,6 +5999,43 @@ def _kill_stale_dashboard_processes(
 _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
+def _atomic_replace_dir(src: str, dst: str) -> None:
+    """Replace directory *dst* with *src* without leaving *dst* half-deleted.
+
+    The naive ``rmtree(dst); copytree(src, dst)`` has a destructive window: if
+    the copy fails partway (common on the Windows ZIP-update path, which only
+    runs because file I/O is already flaky on that machine), the old directory
+    is already gone and nothing replaced it — the install is left with a
+    deleted tree (issue #49145, where ``ui-tui/`` vanished and broke the TUI).
+
+    Instead, stage the new copy into a sibling temp dir first; only once that
+    fully succeeds do we swap it in. A failure during staging raises with the
+    original *dst* still intact.
+    """
+    staging = f"{dst}.hermes-update-staging"
+    backup = f"{dst}.hermes-update-old"
+    # Clear any leftovers from a previously-interrupted update.
+    for leftover in (staging, backup):
+        if os.path.exists(leftover):
+            shutil.rmtree(leftover, ignore_errors=True)
+
+    # 1. Stage the new copy. If this fails, dst is untouched.
+    shutil.copytree(src, staging)
+    # 2. Swap: move the live dir aside, move staging into place. Both moves are
+    #    same-filesystem renames; if the second fails we restore the backup.
+    if os.path.exists(dst):
+        os.rename(dst, backup)
+    try:
+        os.rename(staging, dst)
+    except OSError:
+        if os.path.exists(backup) and not os.path.exists(dst):
+            os.rename(backup, dst)  # roll back to the original
+        raise
+    # 3. New dir is in place; drop the old one (best-effort — never fatal).
+    if os.path.exists(backup):
+        shutil.rmtree(backup, ignore_errors=True)
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -5993,9 +6121,9 @@ def _update_via_zip(args):
             src = os.path.join(extracted, item)
             dst = os.path.join(str(PROJECT_ROOT), item)
             if os.path.isdir(src):
-                if os.path.exists(dst):
-                    shutil.rmtree(dst)
-                shutil.copytree(src, dst)
+                # Atomic-ish replace: never leave dst half-deleted if the copy
+                # fails partway (the failure mode behind #49145 on Windows).
+                _atomic_replace_dir(src, dst)
             else:
                 shutil.copy2(src, dst)
             update_count += 1
@@ -7627,7 +7755,9 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
 
 def _update_node_dependencies() -> None:
-    npm = shutil.which("npm")
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    npm = find_node_executable("npm")
     if not npm:
         return
 
@@ -7644,7 +7774,7 @@ def _update_node_dependencies() -> None:
     print("→ Updating Node.js dependencies...")
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
 
-    nixos_env = _nixos_build_env()
+    nixos_env = with_hermes_node_path(_nixos_build_env())
 
     # Step 1: root install (no workspace recursion).
     root_args = [*extra_args, "--workspaces=false"]
@@ -8261,6 +8391,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     try:
         from gateway.status import terminate_pid
         from hermes_cli.gateway import (
+            _capture_gateway_argv,
             _get_restart_drain_timeout,
             find_gateway_pids,
             find_profile_gateway_processes,
@@ -8306,6 +8437,21 @@ def _pause_windows_gateways_for_update() -> dict | None:
     )
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
 
+    # Snapshot each unmapped gateway's command line *before* we force-kill it,
+    # so ``_resume_windows_gateways_after_update`` can respawn it by replaying
+    # its own argv. Unmapped gateways are ones with no profile→PID-file mapping
+    # — e.g. a Windows Scheduled Task running ``pythonw.exe -m hermes_cli.main
+    # gateway run``. Without this snapshot they were force-killed and never
+    # restarted (the "Restart manually after update" dead-end from #50090).
+    unmapped: list[dict] = []
+    for pid in unmapped_pids:
+        argv = None
+        try:
+            argv = _capture_gateway_argv(int(pid))
+        except Exception as exc:
+            logger.debug("Could not capture argv for unmapped gateway %s: %s", pid, exc)
+        unmapped.append({"pid": int(pid), "argv": argv})
+
     force_killed = []
     for pid in sorted(set(survivors).union(unmapped_pids)):
         try:
@@ -8320,15 +8466,20 @@ def _pause_windows_gateways_for_update() -> dict | None:
         print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
 
     if unmapped_pids:
+        respawnable = sum(1 for u in unmapped if u.get("argv"))
         print(
             f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping"
         )
-        print("    Restart manually after update: hermes gateway run")
+        if respawnable < len(unmapped_pids):
+            # Some had no recoverable command line (psutil missing, access
+            # denied, already gone): those still need a manual restart.
+            print("    Restart manually after update: hermes gateway run")
 
     return {
         "resume_needed": True,
         "profiles": profiles,
         "unmapped_pids": unmapped_pids,
+        "unmapped": unmapped,
     }
 
 
@@ -8341,11 +8492,15 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
         return
 
     profiles = token.get("profiles") or {}
-    if not profiles:
+    unmapped = token.get("unmapped") or []
+    if not profiles and not any(u.get("argv") for u in unmapped):
         return
 
     try:
-        from hermes_cli.gateway import launch_detached_profile_gateway_restart
+        from hermes_cli.gateway import (
+            launch_detached_gateway_restart_by_cmdline,
+            launch_detached_profile_gateway_restart,
+        )
     except Exception as exc:
         logger.debug("Could not load Windows gateway restart helper: %s", exc)
         return
@@ -8362,9 +8517,33 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
                 exc,
             )
 
+    # Respawn unmapped gateways (no profile→PID-file mapping, e.g. a Scheduled
+    # Task) by replaying the argv we snapshotted before force-killing them.
+    unmapped_relaunched = 0
+    for entry in unmapped:
+        argv = entry.get("argv")
+        old_pid = entry.get("pid")
+        if not argv or not old_pid:
+            continue
+        try:
+            if launch_detached_gateway_restart_by_cmdline(int(old_pid), list(argv)):
+                unmapped_relaunched += 1
+        except Exception as exc:
+            logger.debug(
+                "Could not restart unmapped Windows gateway (pid %s) after update: %s",
+                old_pid,
+                exc,
+            )
+
     if relaunched:
         print()
         print(f"  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
+    if unmapped_relaunched:
+        if not relaunched:
+            print()
+        print(
+            f"  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)"
+        )
 
 
 def _discard_lockfile_churn(git_cmd, repo_root):
@@ -9012,7 +9191,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
+        from hermes_constants import find_node_executable
+
+        if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise

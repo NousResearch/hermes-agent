@@ -50,7 +50,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -265,7 +265,8 @@ def init_agent(
             output_config.format instead of a trailing-assistant prefill.
         platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
             Used to inject platform-specific formatting hints into the system prompt.
-        skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
+        skip_context_files (bool): If True, skip auto-injection of project context files
+            (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
             into the system prompt. Use this for batch processing and data generation to avoid
             polluting trajectories with user-specific persona or project instructions.
         load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
@@ -531,7 +532,14 @@ def init_agent(
     agent._last_activity_desc: str = "initializing"
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
-
+    # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
+    # Set on internal forks (e.g. background_review) that must keep ``tools[]``
+    # byte-identical to a parent for provider cache parity.
+    agent._skip_mcp_refresh = False
+    # Registry generation the current tool snapshot was derived from. Lets a
+    # late/concurrent refresh reject a stale (older-generation) rebuild instead
+    # of clobbering a newer one. Set adjacent to the tool snapshot below.
+    agent._tool_snapshot_generation = 0
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None
@@ -801,6 +809,8 @@ def init_agent(
                 # _default_headers instead.
                 _routed_headers = getattr(_routed_client, "_custom_headers", None)
                 if not _routed_headers:
+                    _routed_headers = getattr(_routed_client, "default_headers", None)
+                if not _routed_headers:
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
@@ -853,6 +863,8 @@ def init_agent(
                             if _provider_timeout is not None:
                                 client_kwargs["timeout"] = _provider_timeout
                             _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                            if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "default_headers", None)
                             if not _fb_headers:
                                 _fb_headers = getattr(_fb_client, "_default_headers", None)
                             if _fb_headers:
@@ -953,7 +965,14 @@ def init_agent(
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
-    # Get available tools with filtering
+    # Get available tools with filtering. Capture the registry generation this
+    # snapshot is derived from FIRST, so a later concurrent refresh can tell
+    # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
+    try:
+        from tools.registry import registry as _snapshot_registry
+        agent._tool_snapshot_generation = _snapshot_registry._generation
+    except Exception:
+        agent._tool_snapshot_generation = 0
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
@@ -1081,6 +1100,12 @@ def init_agent(
     agent._parent_session_id = parent_session_id
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
+    # Most agents own their session row and should finalize it on close().
+    # Some temporary helper agents (manual compression / session-hygiene /
+    # background-review forks) rotate or share the session forward to a
+    # continuation row that must remain open after the helper is torn down;
+    # those callers explicitly set this flag to False.
+    agent._end_session_on_close = True
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -1325,6 +1350,14 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # In-place compaction: when True, compress_context() rewrites the message
+    # list + rebuilds the system prompt WITHOUT rotating the session id (no
+    # parent_session_id chain, no `name #N` renumber). See #38763 and
+    # agent/conversation_compression.py. Consumed by compress_context(), not the
+    # compressor, so it rides on the agent.
+    compression_in_place = is_truthy_value(
+        _compression_cfg.get("in_place"), default=False
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1544,6 +1577,7 @@ def init_agent(
             abort_on_summary_failure=compression_abort_on_summary_failure,
         )
     agent.compression_enabled = compression_enabled
+    agent.compression_in_place = compression_in_place
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

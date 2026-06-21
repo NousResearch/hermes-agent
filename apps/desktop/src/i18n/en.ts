@@ -146,6 +146,12 @@ export const en: Translations = {
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason =>
+      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`,
+    dismiss: 'Dismiss'
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -378,6 +384,7 @@ export const en: Translations = {
       checkNow: 'Check now',
       checking: 'Checking…',
       seeWhatsNew: "See what's new",
+      updateNow: 'Update now',
       releaseNotes: 'Release notes',
       onLatest: "You're on the latest version.",
       installing: 'An update is currently installing.',
@@ -581,6 +588,8 @@ export const en: Translations = {
       removedMessage: provider => `${provider} was removed.`,
       failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
+      searchKeys: 'Search providers…',
+      noKeysMatch: 'No providers match your search.',
       loading: 'Loading providers...'
     },
     sessions: {
@@ -761,7 +770,8 @@ export const en: Translations = {
     gatewayRunning: 'Messaging gateway running',
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,
-    restartMessaging: 'Restart messaging',
+    restartGateway: 'Restart gateway',
+    gatewayRestartFailed: 'Gateway restart failed.',
     updateHermes: 'Update Hermes',
     actionRunning: 'running',
     actionDone: 'done',
@@ -830,9 +840,9 @@ export const en: Translations = {
     disableAria: name => `Disable ${name}`,
     platformEnabled: name => `${name} enabled`,
     platformDisabled: name => `${name} disabled`,
-    restartToApply: 'Restart the gateway for this change to take effect.',
+    restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
-    restartToReconnect: 'Restart the gateway to reconnect with the new credentials.',
+    restartToReconnect: 'New credentials take effect after a gateway restart.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,
@@ -1587,6 +1597,7 @@ export const en: Translations = {
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
+      gatewayRestarting: 'restarting…',
       gatewayTitle: 'Hermes inference gateway status',
       agents: 'Agents',
       closeAgents: 'Close agents',

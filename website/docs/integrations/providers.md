@@ -792,6 +792,8 @@ hermes model
 
 Supported parsers: `hermes` (Qwen 2.5, Hermes 2/3), `llama3_json` (Llama 3.x), `mistral`, `deepseek_v3`, `deepseek_v31`, `xlam`, `pythonic`. Without these flags, tool calls won't work — the model will output tool calls as text.
 
+**Qwen reasoning parsers:** Hermes preserves structured reasoning metadata such as `reasoning`, `reasoning_content`, and streamed reasoning deltas when OpenAI-compatible servers return them. That metadata is treated as reasoning/thinking trace data, not as a replacement for the assistant's visible answer. For Qwen reasoning models served by vLLM, make sure the final user-visible response still appears in `content`. If `--reasoning-parser qwen3` leaves `content` empty in your deployment, either disable that parser or pass a server-supported request option such as `chat_template_kwargs.enable_thinking: false` through `extra_body`.
+
 :::tip
 vLLM supports human-readable sizes: `--max-model-len 64k` (lowercase k = 1000, uppercase K = 1024).
 :::
@@ -1270,6 +1272,14 @@ Use the shape your server documents. For example, vLLM Gemma deployments and som
 extra_body:
   chat_template_kwargs:
     enable_thinking: true
+```
+
+For Qwen reasoning models served by vLLM, this same shape can be used to disable thinking when a reasoning parser separates all generated text into reasoning fields and leaves the assistant `content` empty:
+
+```yaml
+extra_body:
+  chat_template_kwargs:
+    enable_thinking: false
 ```
 
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.

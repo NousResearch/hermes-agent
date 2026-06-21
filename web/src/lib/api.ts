@@ -344,9 +344,17 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
-  getSessions: (limit = 20, offset = 0, profile = getManagementProfile()) =>
+  getSessions: (
+    limit = 20,
+    offset = 0,
+    profile = getManagementProfile(),
+    order: "created" | "recent" = "created",
+  ) =>
     fetchJSON<PaginatedSessions>(
-      appendProfileParam(`/api/sessions?limit=${limit}&offset=${offset}`, profile),
+      appendProfileParam(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
+        profile,
+      ),
     ),
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(

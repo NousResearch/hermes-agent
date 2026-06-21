@@ -148,14 +148,14 @@ class TestEditMessageFinalizeSignature:
     @pytest.mark.parametrize(
         "module_path,class_name",
         [
-            ("gateway.platforms.telegram", "TelegramAdapter"),
+            ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
             ("plugins.platforms.discord.adapter", "DiscordAdapter"),
-            ("gateway.platforms.slack", "SlackAdapter"),
-            ("gateway.platforms.matrix", "MatrixAdapter"),
+            ("plugins.platforms.slack.adapter", "SlackAdapter"),
+            ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
             ("plugins.platforms.mattermost.adapter", "MattermostAdapter"),
-            ("gateway.platforms.feishu", "FeishuAdapter"),
-            ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
-            ("gateway.platforms.dingtalk", "DingTalkAdapter"),
+            ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
+            ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+            ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
         ],
     )
     def test_edit_message_accepts_finalize(self, module_path, class_name):
@@ -359,6 +359,67 @@ class TestStreamRunMediaStripping:
             assert "MEDIA:" not in sent_text, f"MEDIA: leaked into display: {sent_text!r}"
 
         assert consumer.already_sent
+
+
+class TestBeforeFinalizeHook:
+    """Verify the optional pre-finalize hook fires at the right time."""
+
+    @pytest.mark.asyncio
+    async def test_hook_runs_before_finalize_edit(self):
+        """Adapters that require finalize should pause typing before the edit."""
+        events = []
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(
+            side_effect=lambda **_kw: (
+                events.append("send"),
+                SimpleNamespace(success=True, message_id="msg_1"),
+            )[1]
+        )
+        adapter.edit_message = AsyncMock(
+            side_effect=lambda **_kw: (
+                events.append("edit"),
+                SimpleNamespace(success=True, message_id="msg_1"),
+            )[1]
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+            on_before_finalize=lambda: events.append("pause"),
+        )
+        consumer.on_delta("Hello")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert events == ["send", "pause", "edit"]
+
+    @pytest.mark.asyncio
+    async def test_hook_runs_once_when_final_text_already_visible(self):
+        """The hook still fires once even when no final edit is required."""
+        events = []
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+            on_before_finalize=lambda: events.append("pause"),
+        )
+        consumer.on_delta("Hello")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert events == ["pause"]
+        adapter.edit_message.assert_not_called()
 
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────

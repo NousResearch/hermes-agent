@@ -959,7 +959,15 @@ class TestPinnedGuard:
         assert result["success"] is True
 
 
-# ---------------------------------------------------------------------------
+
+def test_skill_manage_schema_includes_evolution_summary_and_reason_guidance():
+    from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
+
+    props = SKILL_MANAGE_SCHEMA["parameters"]["properties"]
+    assert props["summary"]["type"] == "string"
+    assert "hermes evolution" in props["summary"]["description"]
+    assert props["reason"]["type"] == "string"
+    assert "hermes evolution" in props["reason"]["description"]
 # _delete_skill — recursive-delete safety (port of Kilo Code #11240)
 # ---------------------------------------------------------------------------
 

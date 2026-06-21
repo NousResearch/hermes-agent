@@ -9042,25 +9042,34 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # an existing packaged executable or desktop dist); people who have
         # never run ``hermes desktop`` shouldn't be forced into a full
         # Electron build by ``hermes update``.
+        desktop_build_failed = False
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         from hermes_constants import find_node_executable
 
-        if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
-            print("→ Checking if desktop app needs rebuilding...")
-            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-            # Stream the build output live (long Electron builds otherwise
-            # look hung). On the rare nonzero exit, retry once after waiting
-            # again for the venv — this covers a still-settling rebuild window
-            # the first wait didn't fully catch.
-            build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0:
+        if has_desktop_app:
+            if not find_node_executable("npm"):
+                print("  ⚠ Desktop rebuild skipped: npm not available (binary is stale; run `hermes desktop` to retry)")
+                desktop_build_failed = True
+            elif (desktop_dir / "package.json").exists():
+                print("→ Checking if desktop app needs rebuilding...")
+                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+                # Stream the build output live (long Electron builds otherwise
+                # look hung). On the rare nonzero exit, retry once after waiting
+                # again for the venv — this covers a still-settling rebuild window
+                # the first wait didn't fully catch.
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0:
-                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                if build_result.returncode != 0:
+                    build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+                if build_result.returncode != 0:
+                    print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                    desktop_build_failed = True
 
         print()
-        print("✓ Code updated!")
+        if desktop_build_failed:
+            print("✓ Code updated! (desktop rebuild FAILED)")
+        else:
+            print("✓ Code updated!")
 
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at
@@ -9323,7 +9332,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
         print()
-        print("✓ Update complete!")
+        if desktop_build_failed:
+            print("⚠ Update complete — with warnings: desktop rebuild FAILED (binary is stale; run `hermes desktop`)")
+        else:
+            print("✓ Update complete!")
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -9386,7 +9398,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if gateway_mode:
             _exit_code_path = get_hermes_home() / ".update_exit_code"
             try:
-                _exit_code_path.write_text("0")
+                _exit_code_path.write_text("1" if desktop_build_failed else "0")
             except OSError:
                 pass
 

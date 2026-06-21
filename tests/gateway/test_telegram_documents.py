@@ -648,7 +648,9 @@ class TestSendDocument:
         assert result.success is True
         connected_adapter._bot.send_document.assert_called_once()
         sent_caption = connected_adapter._bot.send_document.call_args[1]["caption"]
-        # Codepoint slice would leave 1024 codepoints == 2048 UTF-16 units.
+        # A naive caption[:1024] codepoint slice leaves all 700 emoji intact
+        # (700 < 1024), i.e. 1400 UTF-16 units — still over the 1024 cap. A
+        # correct UTF-16-aware truncation must bring this back to <=1024.
         assert utf16_len(sent_caption) <= 1024
         # The truncated caption must remain a valid prefix (no half surrogate).
         assert long_caption.startswith(sent_caption)

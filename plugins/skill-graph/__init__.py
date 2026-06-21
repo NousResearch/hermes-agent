@@ -95,6 +95,9 @@ CREATE TABLE IF NOT EXISTS skill_term_stats (
     term         TEXT NOT NULL,
     search_count INTEGER DEFAULT 1,
     load_count   INTEGER DEFAULT 0,
+    success_count INTEGER DEFAULT 0,
+    last_searched TEXT,
+    last_loaded   TEXT,
     PRIMARY KEY (skill_name, term)
 );
 """
@@ -699,8 +702,7 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
             }
 
     # Phase 5: Term-based scoring boost + search stats
-    # Apply per-(skill, term) load-ratio boost from skill_term_stats.
-    # A skill that gets loaded more often for a given term ranks higher.
+    # Uses per-(skill, term) stats with confidence-weighted S-curve.
     for sname, r in results.items():
         matched_terms = [t for t in terms if t.lower() in (r.get("name", "") + r.get("description", "") + str(r.get("tags", ""))).lower()]
         if matched_terms:
@@ -714,17 +716,23 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
                     )
                 except Exception:
                     pass
-            # Compute average load ratio for matched terms
             try:
                 rows = conn.execute(
-                    """SELECT term, load_count, search_count FROM skill_term_stats
+                    """SELECT term, load_count, search_count, success_count FROM skill_term_stats
                        WHERE skill_name = ? AND term IN ({})"""
                     .format(",".join("?" for _ in matched_terms)),
                     (sname,) + tuple(mt.lower() for mt in matched_terms),
                 ).fetchall()
                 if rows:
-                    avg_ratio = sum(r["load_count"] / max(r["search_count"], 1) for r in rows) / len(rows)
-                    r["score"] *= (1.0 + 0.15 * avg_ratio)
+                    import math as _m
+                    _avg_eff = sum(
+                        (r["success_count"] * 2 + r["load_count"]) / max(r["search_count"] * 3, 1)
+                        for r in rows
+                    ) / len(rows)
+                    _confidence = 1 - _m.pow(0.5, sum(r["search_count"] for r in rows) / max(len(rows), 1) / 5)
+                    _adj = (_avg_eff - 0.5) * 2
+                    _tanh = _adj / (1 + abs(_adj) * 0.5)  # tanh approximation
+                    r["score"] *= (1.0 + 0.1 * _tanh * _confidence)
             except Exception:
                 pass
     conn.commit()
@@ -1319,9 +1327,34 @@ def register(ctx):
 
     ctx.register_hook("on_session_start", _on_session_start)
 
-    # ── Hook: post_tool_call — incremental update on skill_manage ──
+    # ── Hook: post_tool_call — skill_manage sync + load success tracking ──
+    _last_loaded_skill: str | None = None
+
     def _on_post_tool_call(**kw):
+        nonlocal _last_loaded_skill
         tool_name = kw.get("tool_name", "")
+
+        # Track skill_load → when quality-gate loads, mark the previous skill as successful
+        if tool_name == "skill_load":
+            skill_name = (kw.get("args", {}) or {}).get("name", "") or ""
+            if not skill_name:
+                return
+            if skill_name == "quality-gate" and _last_loaded_skill:
+                try:
+                    conn = _get_conn()
+                    conn.execute(
+                        "UPDATE skill_term_stats SET success_count = success_count + 1 WHERE skill_name = ?",
+                        (_last_loaded_skill,),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+                _last_loaded_skill = None
+            else:
+                _last_loaded_skill = skill_name
+            return
+
+        # Handle skill_manage → update graph
         if tool_name != "skill_manage":
             return
         args = kw.get("args", {})

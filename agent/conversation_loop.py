@@ -4213,16 +4213,16 @@ def run_conversation(
                         or getattr(assistant_message, "reasoning_details", None)
                         or _has_inline_thinking
                     )
-                    if _has_structured and agent._thinking_prefill_retries < 2:
+                    if _has_structured and agent._thinking_prefill_retries < 3:
                         agent._thinking_prefill_retries += 1
                         logger.info(
                             "Thinking-only response (no visible content) — "
-                            "prefilling to continue (%d/2)",
+                            "prefilling to continue (%d/3)",
                             agent._thinking_prefill_retries,
                         )
                         agent._buffer_status(
                             f"↻ Thinking-only response — prefilling to continue "
-                            f"({agent._thinking_prefill_retries}/2)"
+                            f"({agent._thinking_prefill_retries}/3)"
                         )
                         interim_msg = agent._build_assistant_message(
                             assistant_message, "incomplete"
@@ -4301,13 +4301,24 @@ def run_conversation(
                     reasoning_text = agent._extract_reasoning(assistant_message)
                     agent._drop_trailing_empty_response_scaffolding(messages)
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                    assistant_msg["content"] = "(empty)"
-                    # This is a user-facing failure sentinel for the gateway,
-                    # not real assistant content. Persisting it makes later
-                    # "continue" turns replay assistant("(empty)") as if it
-                    # were a meaningful model response, which can keep long
-                    # tool-heavy sessions stuck in empty-response loops.
-                    assistant_msg["_empty_terminal_sentinel"] = True
+                    # When the model produces reasoning (thinking) but no
+                    # visible text, surface the reasoning as the response
+                    # rather than returning "(empty)".  DeepSeek V4 Flash
+                    # (opencode-go) and similar reasoning models routinely
+                    # return reasoning_content with empty content — the
+                    # old behaviour of discarding it after all retries left
+                    # the user with no visible output at all.
+                    if reasoning_text:
+                        assistant_msg["content"] = reasoning_text
+                        # No sentinel — the reasoning becomes the response.
+                    else:
+                        assistant_msg["content"] = "(empty)"
+                        # This is a user-facing failure sentinel for the gateway,
+                        # not real assistant content. Persisting it makes later
+                        # "continue" turns replay assistant("(empty)") as if it
+                        # were a meaningful model response, which can keep long
+                        # tool-heavy sessions stuck in empty-response loops.
+                        assistant_msg["_empty_terminal_sentinel"] = True
                     messages.append(assistant_msg)
 
                     if reasoning_text:

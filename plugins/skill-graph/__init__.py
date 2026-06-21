@@ -805,40 +805,67 @@ def _ensure_graph() -> sqlite3.Connection:
 
 
 def _format_edges(skill_name: str) -> str:
-    """Query edges for a skill and return a formatted string."""
+    """Query edges and term associations for a node and return formatted string."""
     try:
         conn = _ensure_graph()
+        parts = []
+
+        # 1. Graph edges (skill-to-skill relationships)
         rows = conn.execute(
             """SELECT source, target, rel_type, properties FROM skill_edges
                WHERE source = ? OR target = ?
                ORDER BY rel_type, source""",
             (skill_name, skill_name),
         ).fetchall()
-        if not rows:
-            return ""
-        lines = ["", "  Edges:"]
-        seen: set[tuple[str, str, str]] = set()
-        for src, tgt, rel, props in rows:
-            key = (src, tgt, rel)
-            if key in seen:
-                continue
-            seen.add(key)
-            direction = f"{src} ──({rel})──> {tgt}"
-            reason = ""
-            if isinstance(props, str) and props:
-                import json as _j
-                try:
-                    p = _j.loads(props)
-                    reason = p.get("reason", "")
-                except Exception:
-                    reason = props[:40]
-            elif isinstance(props, dict):
-                reason = props.get("reason", "")
-            if reason:
-                lines.append(f"    {direction:50s} {reason[:50]}")
-            else:
-                lines.append(f"    {direction}")
-        return "\n".join(lines)
+        if rows:
+            seen: set[tuple[str, str, str]] = set()
+            edge_lines = ["", "  Graph edges:"]
+            for src, tgt, rel, props in rows:
+                key = (src, tgt, rel)
+                if key in seen:
+                    continue
+                seen.add(key)
+                direction = f"    {src} ──({rel})──> {tgt}"
+                reason = ""
+                if isinstance(props, str) and props:
+                    import json as _j
+                    try:
+                        p = _j.loads(props)
+                        reason = p.get("reason", "")
+                    except Exception:
+                        reason = props[:40]
+                elif isinstance(props, dict):
+                    reason = props.get("reason", "")
+                if reason:
+                    edge_lines.append(f"{direction:55s} {reason[:50]}")
+                else:
+                    edge_lines.append(direction)
+            parts.append("\n".join(edge_lines))
+
+        # 2. Term associations (term → skill or skill → terms)
+        # Skill's own terms
+        terms = conn.execute(
+            "SELECT term, strength, source FROM skill_terms WHERE skill_name = ? ORDER BY strength DESC, source",
+            (skill_name,),
+        ).fetchall()
+        if terms:
+            term_lines = ["", "  Terms (skill → term):"]
+            for t, s, src in terms:
+                term_lines.append(f"    {skill_name} ──(has_term)──> {t}  [{src}, strength={s}]")
+            parts.append("\n".join(term_lines))
+
+        # Skills that have this term (reverse lookup)
+        skills_with_term = conn.execute(
+            "SELECT skill_name, strength, source FROM skill_terms WHERE term = ? ORDER BY strength DESC",
+            (skill_name,),
+        ).fetchall()
+        if skills_with_term:
+            rev_lines = ["", "  Skills with this term:"]
+            for sn, s, src in skills_with_term:
+                rev_lines.append(f"    {sn:40s} ──(has_term)──> {skill_name}  [{src}, strength={s}]")
+            parts.append("\n".join(rev_lines))
+
+        return "\n".join(parts) if parts else ""
     except Exception:
         return ""
 

@@ -72,6 +72,8 @@ def test_main_without_credentials_writes_failure_report(tmp_path) -> None:
         [
             "--channel-id",
             "1501008202630696981",
+            "--mode",
+            "live",
             "--output-dir",
             str(tmp_path),
         ]
@@ -87,6 +89,30 @@ def test_main_without_credentials_writes_failure_report(tmp_path) -> None:
         "Missing --token or HERMES_CONTEXT_VALIDATION_DISCORD_TOKEN."
         in report["errors"]
     )
+
+
+def test_auto_mode_runs_internal_validation_without_discord_credentials(
+    tmp_path,
+) -> None:
+    rc = smoke.main(
+        [
+            "--channel-id",
+            "1501008202630696981",
+            "--mode",
+            "auto",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    report = json.loads(
+        (tmp_path / "discord_context_smoke_report.json").read_text(encoding="utf-8")
+    )
+    assert rc == 0
+    assert report["ok"] is True
+    assert report["checks"]["internal_context_validation"] is True
+    assert report["checks"]["live_discord_skipped"] is True
+    assert "Missing live Discord credentials" in report["warnings"][0]
 
 
 def test_first_context_dump_attachment_picks_message_txt() -> None:

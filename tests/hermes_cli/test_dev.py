@@ -135,7 +135,26 @@ def test_smoke_plan_uses_odin_venv_python() -> None:
     plan = dev.build_plans(args)[0]
 
     assert dev.ODIN_PYTHON in plan.render()
+    assert "--mode auto" in plan.render()
     assert "&& python -m gateway.validation.discord_context_smoke" not in plan.render()
+
+
+def test_smoke_plan_can_request_live_mode() -> None:
+    args = _parse_dev_args(["smoke", "--odin", "--dry-run", "--mode", "live"])
+
+    plan = dev.build_plans(args)[0]
+
+    assert "--mode live" in plan.render()
+
+
+def test_odin_plan_runs_locally_when_already_on_odin(monkeypatch) -> None:
+    monkeypatch.setattr(dev, "_running_on_odin", lambda: True)
+    args = _parse_dev_args(["smoke", "--odin", "--dry-run"])
+
+    plan = dev.build_plans(args)[0]
+
+    assert plan.argv[0] == "bash"
+    assert "ssh odin" not in plan.render()
 
 
 def test_dev_parser_registers_expected_subcommands() -> None:

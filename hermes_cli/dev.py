@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -177,6 +178,7 @@ def build_parser(
     )
     smoke.add_argument("--channel-id", default=None)
     smoke.add_argument("--timeout-seconds", type=int, default=60)
+    smoke.add_argument("--mode", choices=("auto", "internal", "live"), default="auto")
 
     dump_parse = dev_sub.add_parser(
         "dump-parse", help="Parse a Hermes .message.txt context dump"
@@ -272,11 +274,13 @@ def build_plans(args: argparse.Namespace) -> list[CommandPlan]:
             DEFAULT_VALIDATION_CHANNEL_ID,
         )
         timeout = int(getattr(args, "timeout_seconds", 60))
+        mode = getattr(args, "mode", "auto")
         smoke_cmd = (
             f"cd {ODIN_WORKTREE} && "
             f"{ODIN_PYTHON} -m gateway.validation.discord_context_smoke "
             f"--channel-id {channel_id} "
-            f"--timeout-seconds {timeout}"
+            f"--timeout-seconds {timeout} "
+            f"--mode {mode}"
         )
         return [_ssh_plan("discord smoke", smoke_cmd)]
     if command == "verify":
@@ -294,7 +298,7 @@ def build_plans(args: argparse.Namespace) -> list[CommandPlan]:
                 _ssh_plan(
                     "discord smoke",
                     "cd {worktree} && {python} -m gateway.validation.discord_context_smoke "
-                    "--channel-id {channel_id} --timeout-seconds 60".format(
+                    "--channel-id {channel_id} --timeout-seconds 60 --mode auto".format(
                         worktree=ODIN_WORKTREE,
                         python=ODIN_PYTHON,
                         channel_id=os.getenv(
@@ -487,6 +491,8 @@ def _rsync_plan(*, dry_run: bool) -> CommandPlan:
 
 
 def _ssh_plan(label: str, remote_command: str) -> CommandPlan:
+    if _running_on_odin():
+        return CommandPlan(label, ("bash", "-lc", remote_command))
     return CommandPlan(
         label,
         (
@@ -495,6 +501,14 @@ def _ssh_plan(label: str, remote_command: str) -> CommandPlan:
             f"sudo -n -u {ODIN_USER} bash -lc {json.dumps(remote_command)}",
         ),
     )
+
+
+def _running_on_odin() -> bool:
+    try:
+        hostname = socket.gethostname().split(".", 1)[0]
+    except Exception:
+        hostname = ""
+    return hostname == ODIN_HOST
 
 
 def _extract_json_section(

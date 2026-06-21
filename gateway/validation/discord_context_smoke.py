@@ -27,6 +27,7 @@ class SmokeReport:
     ok: bool
     channel_id: str
     bot_user_id: str
+    mode: str = "live"
     sent_message_id: str | None = None
     response_message_id: str | None = None
     context_dump_message_id: str | None = None
@@ -34,6 +35,7 @@ class SmokeReport:
     context_dump_path: str | None = None
     checks: dict[str, bool] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +169,114 @@ def run_smoke(
     return report
 
 
+def run_internal_validation(*, channel_id: str, output_dir: Path) -> SmokeReport:
+    """Validate Hermes context composition without Discord transport."""
+
+    from gateway.context_dump import write_context_dump_text
+    from gateway.context_layers import ContextLayer
+    from gateway.route_banner import (
+        BASE_CONTEXT_VERSION,
+        format_context_window_token_line,
+    )
+    from gateway.startup_context import render_reply_chain_payload
+    from gateway.tool_policy import (
+        select_gateway_toolsets,
+        should_use_lightweight_discord_context,
+    )
+
+    report = SmokeReport(
+        ok=False,
+        channel_id=channel_id,
+        bot_user_id="internal",
+        mode="internal",
+    )
+    configured_toolsets = {
+        "terminal",
+        "file",
+        "browser",
+        "skills",
+        "memory",
+        "session_search",
+        "clarify",
+        "chat",
+        "channel-notes",
+        "budget",
+    }
+    selected = select_gateway_toolsets(
+        platform="discord",
+        configured_toolsets=configured_toolsets,
+        user_text="what is the 6th highest mountain?",
+    )
+    route_line = format_context_window_token_line(
+        approx_tokens=8106,
+        context_length=128000,
+        threshold_tokens=102400,
+        loaded_skill_names=[],
+    )
+    reply_chain = render_reply_chain_payload(
+        {
+            "reply_chain": [
+                {
+                    "timestamp": "2026-06-21T00:00:00Z",
+                    "author": "root",
+                    "id": "1",
+                    "content": "root message",
+                },
+                {
+                    "timestamp": "2026-06-21T00:00:01Z",
+                    "author": "parent",
+                    "id": "2",
+                    "content": "parent message",
+                },
+            ]
+        }
+    )
+    payload = {
+        "schema": "hermes.context_dump.v2",
+        "capture_mode": "internal_context_validation",
+        "base_context_version": BASE_CONTEXT_VERSION,
+        "loaded_skill_names": [],
+        "session_key": "discord:internal",
+        "session_id": "internal",
+        "estimated_total_tokens": 8106,
+        "source": {"platform": "discord", "chat_id": channel_id},
+        "context_layers": [
+            ContextLayer.from_text("soul", source="SOUL.md", text="SOUL").to_payload(),
+            ContextLayer.from_text(
+                "startup_discord_context",
+                source="gateway.startup_context",
+                text=reply_chain,
+            ).to_payload(),
+        ],
+        "api_messages": [{"role": "system", "content": "SOUL"}],
+        "tools": [{"type": "function", "function": {"name": "skills_list"}}],
+    }
+    dump_path = write_context_dump_text(output_dir, "discord:internal", payload)
+    dump_text = dump_path.read_text(encoding="utf-8", errors="replace")
+
+    report.context_dump_path = str(dump_path)
+    report.checks = {
+        "internal_context_validation": True,
+        "lightweight_discord_context": should_use_lightweight_discord_context(
+            platform="discord",
+            user_text="what is the 6th highest mountain?",
+        ),
+        "lightweight_tools_minimal": "terminal" not in selected
+        and "skills" in selected,
+        "route_banner_has_base_context_version": BASE_CONTEXT_VERSION in route_line,
+        "route_banner_has_loaded_skill_names": "skills:" in route_line.lower(),
+        "dump_has_soul": "SOUL" in dump_text,
+        "dump_has_layers": "## Context Layers" in dump_text,
+        "dump_has_raw_api_messages": "## Raw API Messages" in dump_text,
+        "dump_has_tool_schemas": "## Tool Schemas" in dump_text,
+        "dump_has_estimated_tokens": "Estimated total tokens:" in dump_text,
+        "reply_chain_root_to_leaf": reply_chain.find("root message")
+        < reply_chain.find("parent message"),
+    }
+    report.ok = all(report.checks.values())
+    return report
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run live Discord validation against Hermes."
@@ -194,20 +304,51 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("bot", "bearer"),
         default=os.getenv("HERMES_CONTEXT_VALIDATION_TOKEN_KIND", "bot"),
     )
+    parser.add_argument(
+        "--mode",
+        choices=("auto", "internal", "live"),
+        default=os.getenv("HERMES_CONTEXT_VALIDATION_MODE", "auto"),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    mode = str(args.mode)
+    if mode == "internal":
+        report = run_internal_validation(
+            channel_id=str(args.channel_id),
+            output_dir=args.output_dir,
+        )
+        report.write(args.output_dir / "discord_context_smoke_report.json")
+        print(json.dumps(asdict(report), indent=2, sort_keys=True))
+        return 0 if report.ok else 1
+
     errors = []
     if not args.bot_user_id:
         errors.append("Missing --bot-user-id or HERMES_BOT_USER_ID.")
     if not args.token:
         errors.append("Missing --token or HERMES_CONTEXT_VALIDATION_DISCORD_TOKEN.")
     report = SmokeReport(
-        ok=False, channel_id=str(args.channel_id), bot_user_id=str(args.bot_user_id)
+        ok=False,
+        channel_id=str(args.channel_id),
+        bot_user_id=str(args.bot_user_id),
+        mode=mode,
     )
     if errors:
+        if mode == "auto":
+            report = run_internal_validation(
+                channel_id=str(args.channel_id),
+                output_dir=args.output_dir,
+            )
+            report.mode = "auto"
+            report.checks["live_discord_skipped"] = True
+            report.warnings.append(
+                "Missing live Discord credentials; ran internal Hermes validation only."
+            )
+            report.write(args.output_dir / "discord_context_smoke_report.json")
+            print(json.dumps(asdict(report), indent=2, sort_keys=True))
+            return 0 if report.ok else 1
         report.errors.extend(errors)
         report.write(args.output_dir / "discord_context_smoke_report.json")
         print(json.dumps(asdict(report), indent=2, sort_keys=True))
@@ -221,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout_seconds=int(args.timeout_seconds),
         output_dir=args.output_dir,
     )
+    report.mode = mode
     report.write(args.output_dir / "discord_context_smoke_report.json")
     print(json.dumps(asdict(report), indent=2, sort_keys=True))
     return 0 if report.ok else 1

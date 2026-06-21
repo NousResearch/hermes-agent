@@ -3,11 +3,12 @@
 import json
 import logging
 import os
+from pathlib import PurePosixPath, PureWindowsPath
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _format_bash_script_path
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -68,6 +69,24 @@ class TestResolveOrigin:
         """
         job = {"origin": non_dict_origin}
         assert _resolve_origin(job) is None
+
+
+class TestFormatBashScriptPath:
+    def test_uses_forward_slashes_on_windows(self):
+        with patch("cron.scheduler.os.name", "nt"):
+            formatted = _format_bash_script_path(
+                PureWindowsPath(r"C:\Users\denis\.hermes\scripts\hermes-backup.sh")
+            )
+
+        assert formatted == "C:/Users/denis/.hermes/scripts/hermes-backup.sh"
+
+    def test_keeps_posix_paths_unchanged(self):
+        path = PurePosixPath("/home/denis/.hermes/scripts/hermes-backup.sh")
+
+        with patch("cron.scheduler.os.name", "posix"):
+            formatted = _format_bash_script_path(path)
+
+        assert formatted == str(path)
 
 
 class TestResolveDeliveryTarget:

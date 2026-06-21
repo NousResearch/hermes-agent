@@ -15,6 +15,11 @@ The benchmark script [pty_benchmark.py](file:///c:/Users/Nitro/hermes-agent/pty_
 
 Worst-case latency is measured deterministically by triggering data availability at the exact millisecond the loop enters a capped sleep.
 
+### Use of Mocked/Simulated PTY Bridge & WebSockets
+The benchmark script uses a simulated `MockBridge` rather than spawning a real POSIX `PtyBridge` for two primary reasons:
+1. **Windows Platform Compatibility**: The actual `PtyBridge` is a POSIX-only module that depends on Unix-specific modules (`fcntl`, `termios`, `ptyprocess`), none of which exist on native Windows Python. Spawning a real `PtyBridge` on Windows raises `PtyUnavailableError`. Using mocks allows the benchmark to run natively on Windows development environments.
+2. **Deterministic Latency Measurement (Jitter Reduction)**: Spawning a real subprocess and calling OS-level read/write introduces thread contention, execution delay, and kernel CPU scheduling jitter. Using a mocked timeline allows us to inject data precisely at the microsecond the reader task enters its sleep state. This yields mathematical, repeatable, and noise-free worst-case latency figures across runs.
+
 ---
 
 ## Test Results

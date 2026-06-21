@@ -1,3 +1,18 @@
+"""PTY Bridge to WebSocket Loop Benchmark.
+
+This script benchmarks the CPU utilization (via loop iterations) and worst-case
+data detection latency of various sleep policies (fixed sleep vs exponential backoff).
+
+Why we use a Mock/Simulated PTY Bridge & WebSockets here:
+1. Windows Platform Compatibility: Spawning a real POSIX PtyBridge requires Unix-only
+   APIs (fcntl, termios, ptyprocess) and raises PtyUnavailableError on native Windows.
+   Mocking the bridge allows the benchmark to run natively on Windows dev environments.
+2. Deterministic Latency Measurement: Testing against a real active subprocess introduces
+   thread scheduling jitter and CPU contention. Mocking the timing timeline allows us to
+   trigger data availability at the exact microsecond the reader task goes to sleep,
+   yielding repeatable and mathematically precise worst-case latency figures.
+"""
+
 import asyncio
 import time
 import concurrent.futures

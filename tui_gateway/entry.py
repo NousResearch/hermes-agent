@@ -50,13 +50,12 @@ def _install_sidecar_publisher() -> None:
 
 # How long to wait for orderly shutdown (atexit + finalisers) before
 # falling back to ``os._exit(0)`` so a wedged worker mid-flush can't
-# strand the process.  1s covers the gateway's own shutdown work
-# (thread-pool drain + session finalize) on every machine we've
-# tested; override via ``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S`` if a
-# slower environment needs more headroom (e.g. encrypted disks
-# flushing checkpoints) and accept that a longer grace also means a
-# longer wait when shutdown actually deadlocks.
-_DEFAULT_SHUTDOWN_GRACE_S = 1.0
+# strand the process.  MCP stdio children such as lark-mcp and NotebookLM
+# can need a few seconds to receive EOF/SIGTERM and exit cleanly, so keep
+# the default long enough for normal sidecar shutdown before the hard-exit
+# safety net fires. Override via ``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S`` if
+# a slower environment needs more headroom.
+_DEFAULT_SHUTDOWN_GRACE_S = 25.0
 
 
 def _shutdown_grace_seconds() -> float:
@@ -129,6 +128,11 @@ def _log_signal(signum: int, frame) -> None:
     timer = _threading.Timer(_shutdown_grace_seconds(), _hard_exit)
     timer.daemon = True
     timer.start()
+
+    try:
+        server._shutdown_for_exit()
+    except Exception:
+        pass
 
     try:
         sys.exit(0)

@@ -16,6 +16,8 @@ const MAX_BUFFERED_EVENTS = 2000
 const MAX_LOG_PREVIEW = 240
 const STARTUP_TIMEOUT_MS = Math.max(5000, parseInt(process.env.HERMES_TUI_STARTUP_TIMEOUT_MS ?? '15000', 10) || 15000)
 const REQUEST_TIMEOUT_MS = Math.max(30000, parseInt(process.env.HERMES_TUI_RPC_TIMEOUT_MS ?? '120000', 10) || 120000)
+const SHUTDOWN_GRACE_MS = Math.max(1000, parseInt(process.env.HERMES_TUI_SHUTDOWN_GRACE_MS ?? '8000', 10) || 8000)
+const SHUTDOWN_KILL_GRACE_MS = Math.max(1000, parseInt(process.env.HERMES_TUI_SHUTDOWN_KILL_GRACE_MS ?? '30000', 10) || 30000)
 const WS_CONNECTING = 0
 const WS_OPEN = 1
 const WS_CLOSING = 2
@@ -510,6 +512,48 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  private stopProcess(reason = 'requested') {
+    const proc = this.proc
+
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
+      this.pushLog(`[lifecycle] stopProcess reason=${reason} ${describeChild(proc)} stopResult=none`)
+      return false
+    }
+
+    this.pushLog(`[lifecycle] stopProcess reason=${reason} ${describeChild(proc)} stopResult=stdin-close`)
+
+    try {
+      proc.stdin?.end()
+    } catch (e) {
+      this.pushLog(`[lifecycle] stdin close failed during ${reason}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
+    const termTimer = setTimeout(() => {
+      if (proc.exitCode === null && proc.signalCode === null) {
+        this.pushLog(`[lifecycle] stopProcess reason=${reason} ${describeChild(proc)} stopResult=SIGTERM`)
+        proc.kill('SIGTERM')
+      }
+    }, SHUTDOWN_GRACE_MS)
+
+    termTimer.unref?.()
+
+    const killTimer = setTimeout(() => {
+      if (proc.exitCode === null && proc.signalCode === null) {
+        this.pushLog(`[lifecycle] stopProcess reason=${reason} ${describeChild(proc)} stopResult=SIGKILL`)
+        proc.kill('SIGKILL')
+      }
+    }, SHUTDOWN_GRACE_MS + SHUTDOWN_KILL_GRACE_MS)
+
+    killTimer.unref?.()
+
+    proc.once('exit', () => {
+      clearTimeout(termTimer)
+      clearTimeout(killTimer)
+    })
+
+    return true
+  }
+
   start() {
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
     const attachUrl = resolveGatewayAttachUrl()
@@ -519,9 +563,9 @@ export class GatewayClient extends EventEmitter {
     this.sidecarUrl = sidecarUrl
     this.resetStartupState()
 
-    if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
+    if (this.proc && this.proc.exitCode === null && this.proc.signalCode === null) {
       this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
-      this.proc.kill()
+      this.stopProcess('replace')
     }
 
     this.proc = null
@@ -736,9 +780,9 @@ export class GatewayClient extends EventEmitter {
 
   kill(reason = 'requested') {
     const proc = this.proc
-    const killed = proc?.kill()
+    const stopped = this.stopProcess(reason)
 
-    this.lifecycle(`[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} killResult=${killed ?? 'none'}`)
+    this.pushLog(`[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} stopResult=${stopped ? 'requested' : 'none'}`)
     this.closeGatewaySocket()
     this.closeSidecarSocket()
     this.clearReadyTimer()

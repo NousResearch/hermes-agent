@@ -127,6 +127,8 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+_sessions_shutdown_done = False
+_mcp_shutdown_done = False
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -575,10 +577,32 @@ def _close_sessions_for_transport(
 
 
 def _shutdown_sessions() -> None:
+    global _sessions_shutdown_done
+    if _sessions_shutdown_done:
+        return
+    _sessions_shutdown_done = True
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:
         _close_session_by_id(sid, end_reason="tui_shutdown")
+
+
+def _shutdown_mcp_servers() -> None:
+    global _mcp_shutdown_done
+    if _mcp_shutdown_done:
+        return
+    _mcp_shutdown_done = True
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+
+        shutdown_mcp_servers()
+    except Exception:
+        logger.debug("MCP shutdown failed during TUI gateway exit", exc_info=True)
+
+
+def _shutdown_for_exit() -> None:
+    _shutdown_sessions()
+    _shutdown_mcp_servers()
 
 
 # Last-resort net for any disconnect path that slips past the WS finally. TTL is
@@ -637,6 +661,7 @@ def _start_idle_reaper() -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
+atexit.register(_shutdown_mcp_servers)
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
 

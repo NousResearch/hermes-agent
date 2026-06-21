@@ -59,6 +59,12 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+:::tip Org deployments
+An administrator can pin specific config and secret values that a standard user
+cannot override, via a system-level managed directory. See
+[Managed Scope](/user-guide/managed-scope).
+:::
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:
@@ -83,7 +89,7 @@ You can set `providers.<id>.request_timeout_seconds` for a provider-wide request
 
 You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming stale-call detector, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var.
 
-Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
 ## Update Behavior
 
@@ -109,6 +115,7 @@ terminal:
   backend: local    # local | docker | ssh | modal | daytona | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
+  home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
@@ -135,6 +142,54 @@ The default. Commands run directly on your machine with no isolation. No special
 ```yaml
 terminal:
   backend: local
+```
+
+By default, local tool subprocesses keep your real OS-user `HOME`. This lets
+external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex
+find the credentials and config they already use in your normal shell. Hermes
+state is still profile-scoped through `HERMES_HOME`; `HOME` is not how profiles
+select config, memory, sessions, or skills.
+
+Hermes does **not** change your system-wide `HOME`, your shell startup files, or
+the operating system account home. This setting only controls the environment
+passed to subprocesses that Hermes launches through tools such as `terminal`,
+background terminal processes, `execute_code`, and ACP helper processes.
+
+#### `terminal.home_mode`
+
+| Mode | Host installs | Containers | Tradeoff |
+|---|---|---|---|
+| `auto` | Keep the real OS-user `HOME` | Use `{HERMES_HOME}/home` | Recommended default. Host CLIs keep working; container state persists. |
+| `real` | Force the real OS-user `HOME` | Force the real OS-user `HOME` if visible | Useful if a parent process accidentally started with `HOME` pointed at a profile home. |
+| `profile` | Use `{HERMES_HOME}/home` when it exists | Use `{HERMES_HOME}/home` when it exists | Strict per-profile CLI config isolation, but normal `~/.ssh`, `~/.gitconfig`, `~/.azure`, `~/.config/gh`, Claude/Codex auth, npm state, etc. will not be visible unless you initialize or link them inside the profile home. |
+
+The downside of the default is that host profiles share the same normal
+user-level CLI credentials/config under `~`. If you need a profile with a
+separate git identity, SSH keys, GitHub CLI login, npm config, or cloud CLI
+login, use `home_mode: profile` and initialize those tools inside that profile
+home deliberately.
+
+If you intentionally want strict per-profile tool-config isolation, set:
+
+```yaml
+terminal:
+  home_mode: profile
+```
+
+In that mode tool subprocesses use `{HERMES_HOME}/home` as `HOME`. Hermes also
+sets `HERMES_REAL_HOME` so scripts can still locate the actual user home when
+they need it. Container backends keep using `{HERMES_HOME}/home` in `auto` mode
+because that directory lives on the persistent Hermes data volume.
+
+Scripts that need to distinguish profile state from the real user home should
+prefer `HERMES_HOME` for Hermes data and `HERMES_REAL_HOME` for the account home:
+
+```python
+from pathlib import Path
+import os
+
+hermes_home = Path(os.environ["HERMES_HOME"])
+real_home = Path(os.environ.get("HERMES_REAL_HOME", os.environ["HOME"]))
 ```
 
 :::warning
@@ -533,6 +588,17 @@ skills:
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
 
+### Write approval for skill writes
+
+Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+
+```yaml
+skills:
+  write_approval: false   # false = write freely (default) | true = stage every write for review
+```
+
+When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+
 ## Memory Configuration
 
 ```yaml
@@ -541,6 +607,23 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+  write_approval: false     # true = require approval before any memory write
+```
+
+With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+## Context File Truncation
+
+Controls how much content Hermes loads from each automatic context file before applying head/tail truncation. This applies to files injected into the system prompt such as `SOUL.md`, `.hermes.md`, `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`. It does **not** affect the `read_file` tool.
+
+```yaml
+context_file_max_chars: 20000  # default
+```
+
+Raise it when you intentionally keep larger identity or project-context files and run models with enough context window to carry them:
+
+```yaml
+context_file_max_chars: 25000
 ```
 
 ## File Read Safety
@@ -623,6 +706,13 @@ worktree: true    # Always create a worktree (same as hermes -w)
 
 When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery.
 
+By default the new worktree branches from the **freshly-fetched remote tip** (the current branch's upstream, otherwise the remote's default branch) so it starts current with the project rather than from the local clone's possibly-stale `HEAD`. This keeps a PR's diff scoped to the actual change instead of inheriting whatever the local clone was behind by. Set `worktree_sync: false` to branch from local `HEAD` instead — useful offline, or when you deliberately want the clone's exact current state as the base. If the remote can't be reached, it falls back to local `HEAD` automatically.
+
+```yaml
+worktree_sync: true    # Default — branch from the fetched remote tip
+# worktree_sync: false # Branch from local HEAD (offline / pinned base)
+```
+
 You can also list gitignored files to copy into worktrees via `.worktreeinclude` in your repo root:
 
 ```
@@ -647,7 +737,7 @@ compression:
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
-  hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
+  hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -661,7 +751,7 @@ auxiliary:
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.
 :::
 
-`hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. Runaway sessions with thousands of messages can hit model context limits before the normal percent-of-context threshold fires; when message count crosses this ceiling, Hermes forces compression regardless of token usage. Default `400` — raise it for platforms where very long sessions are normal, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+`hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 
@@ -835,6 +925,7 @@ $ hermes model
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
+[ ] tts_audio_tags       currently: auto / main model
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -911,9 +1002,34 @@ auxiliary:
     api_key: ""
     timeout: 30                # seconds
 
+  # Gemini 3.1 TTS hidden audio-tag insertion
+  tts_audio_tags:
+    provider: "auto"
+    model: ""                  # empty = main chat model
+    base_url: ""
+    api_key: ""
+    timeout: 30
+
   # Context compression timeout (separate from compression.* config)
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
+    # fallback_chain:           # Optional — providers to try on rate-limit / connectivity failure
+    #   - provider: nous
+    #     model: deepseek/deepseek-chat
+    #   - provider: openrouter
+    #     model: google/gemini-2.5-flash
+    #     base_url: ""
+    #     api_key: ""
+
+  # Auto-generated session titles. Empty language follows the conversation;
+  # set e.g. "English" or "Japanese" to pin titles to one language.
+  title_generation:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+    language: ""
 
   # Skills hub — skill matching and search
   skills_hub:
@@ -951,6 +1067,34 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::info
 Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
+
+### Per-task fallback chain for auxiliary tasks
+
+Each auxiliary task can optionally define a `fallback_chain` — a list of provider/model entries that Hermes tries when the primary auxiliary provider fails due to rate limits, connectivity issues, or payment restrictions:
+
+```yaml
+auxiliary:
+  compression:
+    provider: openrouter
+    model: openai/gpt-4o-mini
+    fallback_chain:
+      - provider: nous
+        model: deepseek/deepseek-chat
+      - provider: openrouter
+        model: google/gemini-2.5-flash
+```
+
+When the primary auxiliary provider (`openrouter` / `openai/gpt-4o-mini`) returns a rate-limit, connection timeout, or payment-required error, Hermes walks the `fallback_chain` in order. It skips entries whose provider matches the already-failed provider, and tries each remaining entry until one succeeds or the chain is exhausted. If all fallbacks fail, Hermes falls back to the main agent model as a final safety net.
+
+Each entry supports the same three knobs as any auxiliary task config:
+
+| Key | Description |
+|-----|-------------|
+| `provider` | Provider name (`nous`, `openrouter`, `anthropic`, `gemini`, `main`, etc.) |
+| `model` | Model name for that provider |
+| `base_url` | (Optional) Custom OpenAI-compatible endpoint |
+
+`fallback_chain` is available on any auxiliary task — `compression`, `vision`, `web_extract`, `approval`, `skills_hub`, `mcp`, etc.
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 
@@ -1115,6 +1259,17 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+:::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
+These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
+field — OpenRouter ignores it for them. Hermes transparently routes your
+`reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
+Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
+knob keeps working — no extra configuration needed. `none` (or unset) leaves the
+model on its own adaptive default. (`max` is accepted on the wire but is not a
+selectable `reasoning_effort` value; `xhigh` is the configurable ceiling.) The
+native Anthropic provider already controls effort directly and is unaffected.
+:::
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
@@ -1186,8 +1341,10 @@ tts:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
-    model: "gemini-2.5-flash-preview-tts"   # or gemini-2.5-pro-preview-tts
+    model: "gemini-2.5-flash-preview-tts"   # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, etc.
+    audio_tags: false           # Hidden Gemini 3.1 TTS audio-tag insertion
+    persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
     voice_id: "eve"             # xAI TTS voice
     language: "en"              # ISO 639-1
@@ -1228,6 +1385,7 @@ display:
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
+  credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 
@@ -1400,7 +1558,7 @@ streaming:
   edit_interval: 0.3      # Seconds between message edits
   buffer_threshold: 40    # Characters before forcing an edit flush
   cursor: " ▉"            # Cursor shown during streaming
-  fresh_final_after_seconds: 60   # Send fresh final (Telegram) when preview is this old; 0 = always edit in place
+  fresh_final_after_seconds: 0    # Opt in to fresh final (Telegram) when preview is this old
 ```
 
 When enabled, the bot sends a message on the first token, then progressively edits it as more tokens arrive. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
@@ -1409,13 +1567,32 @@ For separate natural mid-turn assistant updates without progressive token editin
 
 **Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
 
-**Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. When `fresh_final_after_seconds > 0` (default `60`), the completed reply is delivered as a brand-new message (with the stale preview best-effort deleted) so Telegram's visible timestamp reflects completion time. Short previews still finalize in place. Set to `0` to always edit in place.
+**Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. Set `fresh_final_after_seconds > 0` to opt in to delivering old previews as brand-new final messages with best-effort preview deletion. The default is `0`, which always finalizes streamed replies in place and avoids the brief duplicate-message/delete sequence on clients that show both operations.
 
 :::note Per-platform streaming defaults
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
 ## Group Chat Session Isolation
+
+Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
+and messaging gateway:
+
+```yaml
+max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
+```
+
+When the cap is reached, Hermes returns a direct limit message for new sessions.
+Existing active sessions keep their normal behavior.
+
+The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
+`gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
+both are set.
+
+The cap is enforced with a local runtime lease file and is best-effort: Hermes
+fails open if the registry cannot be read or locked so users are not stranded.
+It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
+mounted across multiple machines.
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
@@ -1691,7 +1868,7 @@ delegation:
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
   # api_mode: ""                            # Wire protocol for base_url: "chat_completions", "codex_responses", or "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix → anthropic_messages). Set explicitly for non-standard endpoints the heuristic can't detect.
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
-  max_spawn_depth: 1                        # Delegation tree depth (floor 1, no ceiling). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3+ = deeper trees.
+  max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
 ```
 
@@ -1705,7 +1882,7 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
-**Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (floor of 1, no upper ceiling). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees, and higher for deeper ones. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
+**Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (clamped to 1-3). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
 
 ## Clarify
 
@@ -1734,7 +1911,7 @@ Hermes uses two different context scopes:
 - **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
-- All loaded context files are capped at 20,000 characters with smart truncation.
+- All loaded context files are capped at `context_file_max_chars` characters (default 20,000) with smart truncation.
 
 See also:
 - [Personality & SOUL.md](/user-guide/features/personality)

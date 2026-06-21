@@ -573,10 +573,15 @@ def _copy_dist_payload(
         if entry.is_dir():
             if dest.exists():
                 shutil.rmtree(dest)
+            staged_resolved = staged.resolve()
             shutil.copytree(
                 entry,
                 dest,
-                ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
+                ignore=lambda d, names: (
+                    [n for n in names if n in USER_OWNED_EXCLUDE]
+                    if Path(d).resolve() == staged_resolved
+                    else []
+                ),
             )
         else:
             shutil.copy2(entry, dest)

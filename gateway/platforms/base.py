@@ -33,6 +33,7 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 
 
 def _platform_name(platform) -> str:
@@ -74,6 +75,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
     return metadata
+
+
+def _mark_notify_metadata(metadata: dict | None) -> dict:
+    """Clone metadata and mark a user-visible reply as notify-worthy."""
+    notify_metadata = dict(metadata) if metadata else {}
+    notify_metadata["notify"] = True
+    return notify_metadata
 
 
 def _reply_anchor_for_event(event) -> str | None:
@@ -559,6 +567,96 @@ async def _ssrf_redirect_guard(response):
 # Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 
+# ---------------------------------------------------------------------------
+# Inbound media size cap (#13145)
+#
+# Inbound image / audio / video payloads are buffered fully into process
+# memory before being written to the cache directory. With no cap, a single
+# large upload (Discord Nitro allows 500 MB) — or a remote URL in an inbound
+# message payload pointing at an arbitrarily large file — can spike RAM and
+# OOM-kill the gateway. The ``cache_*_from_bytes`` helpers (the shared funnel
+# every platform reaches eventually) and the ``cache_*_from_url`` downloaders
+# enforce this cap, so the protection holds regardless of which platform
+# adapter or code path produced the bytes.
+#
+# Configurable via ``gateway.max_inbound_media_bytes`` in config.yaml.
+# ``0`` disables the cap. Default 128 MiB — generous enough for ordinary
+# photos/voice notes/short clips while still bounding a hostile upload.
+# ---------------------------------------------------------------------------
+DEFAULT_INBOUND_MEDIA_MAX_BYTES = 128 * 1024 * 1024
+
+
+def get_inbound_media_max_bytes() -> int:
+    """Return the max inbound image/audio/video bytes allowed in memory.
+
+    Reads ``gateway.max_inbound_media_bytes`` from config.yaml. ``0`` (or a
+    negative / unparseable value) disables the cap. Non-fatal if config is
+    unreadable — falls back to the default.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_config
+        cfg = _load_config()
+    except Exception:
+        return DEFAULT_INBOUND_MEDIA_MAX_BYTES
+    gw = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(gw, dict) or "max_inbound_media_bytes" not in gw:
+        return DEFAULT_INBOUND_MEDIA_MAX_BYTES
+    try:
+        return int(gw["max_inbound_media_bytes"])
+    except (TypeError, ValueError):
+        return DEFAULT_INBOUND_MEDIA_MAX_BYTES
+
+
+def validate_inbound_media_size(
+    size: int,
+    *,
+    media_type: str = "media",
+    max_bytes: Optional[int] = None,
+) -> None:
+    """Raise ``ValueError`` if an inbound media payload exceeds the cap.
+
+    A ``max_bytes`` of ``0`` (or the configured cap resolving to ``0``)
+    disables the check entirely. Passing ``max_bytes`` lets callers resolve
+    the limit once and reuse it across an incremental read.
+    """
+    limit = get_inbound_media_max_bytes() if max_bytes is None else max_bytes
+    if limit and size > limit:
+        raise ValueError(
+            f"Inbound {media_type} payload is too large "
+            f"({size} bytes > {limit} bytes)"
+        )
+
+
+async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
+    """Read an httpx streaming response body without exceeding the media cap.
+
+    Rejects early on an oversized ``Content-Length`` header, then re-checks
+    the running total as chunks arrive so a lying/absent header can't smuggle
+    an unbounded body past the cap.
+    """
+    max_bytes = get_inbound_media_max_bytes()
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError:
+            logger.debug(
+                "Ignoring invalid Content-Length for inbound %s: %r",
+                media_type, content_length,
+            )
+        else:
+            validate_inbound_media_size(
+                declared_size, media_type=media_type, max_bytes=max_bytes,
+            )
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        validate_inbound_media_size(total, media_type=media_type, max_bytes=max_bytes)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 def get_image_cache_dir() -> Path:
     """Return the image cache directory, creating it if it doesn't exist."""
@@ -598,6 +696,7 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
         ValueError: If *data* does not look like a valid image (e.g. an HTML
             error page returned by the upstream server).
     """
+    validate_inbound_media_size(len(data), media_type="image")
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(
@@ -643,15 +742,19 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     ) as client:
         for attempt in range(retries + 1):
             try:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
                         "Accept": "image/*,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
-                return cache_image_from_bytes(response.content, ext)
+                ) as response:
+                    response.raise_for_status()
+                    content = await _read_httpx_body_with_limit(
+                        response, media_type="image",
+                    )
+                return cache_image_from_bytes(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -718,6 +821,7 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     Returns:
         Absolute path to the cached audio file as a string.
     """
+    validate_inbound_media_size(len(data), media_type="audio")
     cache_dir = get_audio_cache_dir()
     filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename
@@ -757,15 +861,19 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     ) as client:
         for attempt in range(retries + 1):
             try:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
                         "Accept": "audio/*,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
-                return cache_audio_from_bytes(response.content, ext)
+                ) as response:
+                    response.raise_for_status()
+                    content = await _read_httpx_body_with_limit(
+                        response, media_type="audio",
+                    )
+                return cache_audio_from_bytes(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -810,6 +918,7 @@ def get_video_cache_dir() -> Path:
 
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     """Save raw video bytes to the cache and return the absolute file path."""
+    validate_inbound_media_size(len(data), media_type="video")
     cache_dir = get_video_cache_dir()
     filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename
@@ -1127,8 +1236,11 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ini": "text/plain",
     ".cfg": "text/plain",
     ".zip": "application/zip",
+    ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".ts": "text/plain",
     ".py": "text/plain",
@@ -1443,6 +1555,9 @@ class MessageEvent:
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    reply_to_author_id: Optional[str] = None
+    reply_to_author_name: Optional[str] = None
+    reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
@@ -1544,6 +1659,13 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+    # Adapter-specific metadata.  Cross-layer contracts that affect delivery
+    # semantics must be documented at the producer and consumer sites.  Current
+    # known contract: Telegram edit overflow partials set
+    # raw_response["partial_overflow"] with delivered_chunks, total_chunks,
+    # last_message_id, delivered_prefix, and continuation_message_ids so the
+    # stream consumer can send the missing tail instead of marking a clipped
+    # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
@@ -1552,6 +1674,105 @@ class SendResult:
     # made up the full payload, in send order.  Empty tuple for the common
     # single-message case.
     continuation_message_ids: tuple = ()
+    # Machine-readable failure category (set only when ``success`` is False).
+    # ``error`` stays the human-readable detail string; ``error_kind`` lets
+    # consumers branch deterministically instead of substring-matching the raw
+    # provider message.  One of the values in :data:`SEND_ERROR_KINDS` or
+    # ``None`` (unset / not classified).  Producers should set this via
+    # :func:`classify_send_error`.
+    error_kind: Optional[str] = None
+
+
+# Machine-readable send-failure categories.  Kept platform-neutral so every
+# adapter can populate ``SendResult.error_kind`` from the same vocabulary and
+# the gateway can decide — once, in one place — whether a failure is worth
+# surfacing to the user.
+#
+#   too_long      content exceeded the platform's per-message size cap; the
+#                 adapter typically recovers via continuation/split, so this is
+#                 informational rather than a hard failure.
+#   bad_format    the platform rejected the message markup/entities (parse
+#                 error); a plain-text retry is the actionable fix.
+#   forbidden     the bot is blocked, kicked, or lacks permission to post to the
+#                 target — the bot CANNOT reach the user, so there is nowhere to
+#                 surface a notice.
+#   not_found     the target chat/thread/message no longer exists.
+#   rate_limited  the platform throttled the send (flood control).
+#   transient     a connection-level failure that is safe to retry.
+#   unknown       classification did not match any known shape.
+SEND_ERROR_KINDS = frozenset(
+    {
+        "too_long",
+        "bad_format",
+        "forbidden",
+        "not_found",
+        "rate_limited",
+        "transient",
+        "unknown",
+    }
+)
+
+
+def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> str:
+    """Map a send exception / error string to a :data:`SEND_ERROR_KINDS` value.
+
+    Platform-neutral: matches on the lowercased text of ``exc`` (and/or the
+    explicit ``error_text``) against the substrings the major messaging APIs
+    use.  Conservative — anything unrecognized returns ``"unknown"`` so callers
+    never mistake an unclassified failure for a benign one.
+    """
+    parts = []
+    if error_text:
+        parts.append(error_text)
+    if exc is not None:
+        parts.append(str(exc))
+        parts.append(exc.__class__.__name__)
+    blob = " ".join(parts).lower()
+    if not blob.strip():
+        return "unknown"
+    if "message_too_long" in blob or "too long" in blob or "message is too long" in blob:
+        return "too_long"
+    if (
+        "can't parse entities" in blob
+        or "cant parse entities" in blob
+        or "can't find end" in blob
+        or "unsupported start tag" in blob
+        or ("entity" in blob and "parse" in blob)
+        or ("bad request" in blob and "entit" in blob)
+    ):
+        return "bad_format"
+    if (
+        "forbidden" in blob
+        or "bot was blocked" in blob
+        or "blocked by the user" in blob
+        or "user is deactivated" in blob
+        or "not enough rights" in blob
+        or "have no rights" in blob
+        or "not a member" in blob
+    ):
+        return "forbidden"
+    if (
+        "chat not found" in blob
+        or "message to edit not found" in blob
+        or "message to reply not found" in blob
+        or "thread not found" in blob
+        or "topic_deleted" in blob
+        or "message_id_invalid" in blob
+    ):
+        return "not_found"
+    if (
+        "flood" in blob
+        or "too many requests" in blob
+        or "retry after" in blob
+        or "rate limit" in blob
+    ):
+        return "rate_limited"
+    for pat in _RETRYABLE_ERROR_PATTERNS:
+        if pat in blob:
+            return "transient"
+    if "connecttimeout" in blob:
+        return "transient"
+    return "unknown"
 
 
 class EphemeralReply(str):
@@ -1792,7 +2013,45 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
-    
+
+    # Whether this platform renders triple-backtick fenced code blocks (i.e.
+    # ``format_message`` translates/preserves markdown fences into a real code
+    # block).  Capability flag for markdown-aware presentation choices.
+    # Default False (plain-text platforms); markdown-rendering adapters set True.
+    # Tool-progress uses this to render a terminal command as a bare fenced code
+    # block (no language tag — Slack mrkdwn would print the tag as a literal
+    # first code line).  Plain-text platforms fall back to the short truncated
+    # preview (see gateway/run.py progress_callback).
+    supports_code_blocks: bool = False
+
+    # Whether this adapter can deliver an ASYNC notification back to the agent
+    # AFTER a turn ends — i.e. wake a fresh turn to surface a background
+    # process completion (terminal notify_on_complete / watch_patterns) or a
+    # detached subagent result (delegate_task background=True).
+    #
+    # True for adapters that hold a persistent outbound channel (Telegram,
+    # Discord, Slack, ... — they have a real ``send()`` and the gateway runs
+    # the watcher/drain loops). False for stateless request/response adapters
+    # (the API server): every route closes its channel when the turn ends, so
+    # there is nowhere to push a later completion. The gateway propagates this
+    # into the ``HERMES_SESSION_ASYNC_DELIVERY`` contextvar at session-bind
+    # time; tools read it via ``async_delivery_supported()`` and refuse to make
+    # a delivery promise they can't keep. A new stateless adapter only needs to
+    # set this to False to stay correct-by-default.
+    supports_async_delivery: bool = True
+
+    # The command prefix users can always TYPE on this platform to reach
+    # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
+    # as plain message text).  Platforms where typing a leading "/" is
+    # intercepted or restricted by the client (Slack blocks native slash
+    # commands inside threads; Matrix clients reserve "/" for client-local
+    # commands) ship a "!" alias rewrite in their adapter and set this to
+    # "!" so user-facing instruction text ("Reply `!approve` ...") tells
+    # users the form that actually works everywhere.  Capability flag —
+    # shared prompt builders read it via getattr(adapter,
+    # "typed_command_prefix", "/"); no per-platform branching at call sites.
+    typed_command_prefix: str = "/"
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -1883,16 +2142,21 @@ class BasePlatformAdapter(ABC):
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.
 
-        The gateway's env-based allowlist check runs *after* the adapter, so for
-        these platforms a message arriving at ``_is_user_authorized`` has, by
-        definition, already been authorized by the adapter. Without this flag the
-        gateway would then deny it again (no env allowlist → default deny),
-        silently breaking ``dm_policy: open`` and config-only allowlists.
+        The gateway's env-based allowlist check runs *after* the adapter. When
+        no env allowlist is configured, the gateway consults this flag so it can
+        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` (which the
+        adapter already enforced) instead of double-denying it. Crucially, the
+        flag alone is NOT "already authorized": these adapters default
+        ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
+        sender, so the gateway trusts the adapter only when its effective policy
+        for the chat type is an actual ``"allowlist"`` restriction — never for
+        ``"open"`` (that would be the network-exposed fail-open SECURITY.md §2.6
+        forbids). Open access still requires an explicit
+        ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
 
         Adapters that own their access policy override this to return ``True``.
-        The gateway treats that as "already authorized at intake" and skips the
-        env-allowlist default-deny. Adapters that delegate access control to the
-        gateway leave it ``False`` (the default).
+        Adapters that delegate access control to the gateway leave it ``False``
+        (the default).
         """
         return False
 
@@ -1914,6 +2178,46 @@ class BasePlatformAdapter(ABC):
         False or when ``send_draft`` raises.
         """
         return False
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Whether the stream consumer should finalize a streamed reply by
+        sending a *fresh* final message (and deleting the preview) instead of
+        final-editing the preview.
+
+        Some adapters can send richer final messages than their current edit
+        implementation supports. Telegram is the motivating case: Hermes sends
+        final replies through ``sendRichMessage`` but still finalizes streamed
+        previews through its existing MarkdownV2 edit path until Bot API 10.1's
+        ``rich_message`` edit parameter is wired directly. Such adapters
+        override this to ask the consumer to re-deliver the completed answer as
+        a new rich message and best-effort delete the stale preview, so the
+        final rendering matches the rich send path.
+
+        Default implementation returns False — legacy platforms keep the
+        edit-in-place finalization path.
+        """
+        return False
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """Max single-message length (in this adapter's ``message_len_fn``
+        units) the stream consumer may accumulate before it splits, when the
+        adapter can deliver a larger message than its legacy per-message limit.
+
+        Telegram Bot API 10.1 Rich Messages accept up to 32,768 chars in a
+        single ``sendRichMessage`` / ``sendRichMessageDraft``, far above the
+        4,096 MarkdownV2 limit.  Adapters with such a richer send/draft path
+        override this so the consumer doesn't fragment a reply that fits one
+        rich message; the live edit preview is still bound by the platform's
+        edit limit, but the finalized reply (and DM draft preview) is delivered
+        whole.
+
+        Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
+        """
+        return None
 
     async def send_draft(
         self,
@@ -3133,6 +3437,38 @@ class BasePlatformAdapter(ABC):
                     pass
             self._typing_paused.discard(chat_id)
 
+    async def _stop_typing_refresh(
+        self,
+        chat_id: str,
+        typing_task: asyncio.Task | None = None,
+        *,
+        timeout: float = 0.5,
+        stop_attempts: int = 2,
+    ) -> None:
+        """Stop the refresh task and platform typing state as one operation."""
+        self._typing_paused.add(chat_id)
+        try:
+            if typing_task is not None and not typing_task.done():
+                typing_task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(typing_task), timeout=timeout)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    # The task is cancelled; don't let a slow adapter-specific
+                    # cleanup block response delivery or shutdown.
+                    pass
+            if not hasattr(self, "stop_typing"):
+                return
+            attempts = max(1, stop_attempts)
+            for attempt in range(attempts):
+                try:
+                    await self.stop_typing(chat_id)
+                except Exception:
+                    pass
+                if attempt < attempts - 1:
+                    await asyncio.sleep(0)
+        finally:
+            self._typing_paused.discard(chat_id)
+
     def pause_typing_for_chat(self, chat_id: str) -> None:
         """Pause typing indicator for a chat (e.g. during approval waits).
 
@@ -3779,7 +4115,7 @@ class BasePlatformAdapter(ABC):
                     chat_id=event.source.chat_id,
                     content=_text,
                     reply_to=_reply_anchor_for_event(event),
-                    metadata=thread_meta,
+                    metadata=_mark_notify_metadata(thread_meta),
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
                     self._schedule_ephemeral_delete(
@@ -3885,7 +4221,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             content=_text,
                             reply_to=_reply_anchor_for_event(event),
-                            metadata=_thread_meta,
+                            metadata=_mark_notify_metadata(_thread_meta),
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
                             self._schedule_ephemeral_delete(
@@ -3935,7 +4271,7 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 content=_text,
                                 reply_to=_reply_anchor_for_event(event),
-                                metadata=_thread_meta,
+                                metadata=_mark_notify_metadata(_thread_meta),
                             )
                             if _eph_ttl > 0 and _r.success and _r.message_id:
                                 self._schedule_ephemeral_delete(
@@ -4062,14 +4398,10 @@ class BasePlatformAdapter(ABC):
         )
 
         async def _stop_typing_task() -> None:
-            typing_task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                # Cancellation cleanup must not block adapter shutdown.  The
-                # typing task is already cancelled; if the parent task is also
-                # cancelling, let this message-processing task unwind now.
-                pass
+            await self._stop_typing_refresh(
+                event.source.chat_id,
+                typing_task,
+            )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -4162,6 +4494,12 @@ class BasePlatformAdapter(ABC):
                         )
                         text_content = _recovered
 
+                # Final user-visible content (text, TTS, media, files) gets
+                # the existing notify=True marker. Clone once so typing/status
+                # metadata stays unmarked and progress bubbles remain
+                # thread-strict.
+                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -4201,7 +4539,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                         )
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
@@ -4216,23 +4554,11 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
-                    # Mark final response messages for notification delivery.
-                    # Platform adapters that support per-message notification
-                    # control (e.g. Telegram's disable_notification) use this
-                    # flag to override silent-mode and ensure the final
-                    # response triggers a push notification.
-                    # Clone to avoid mutating the metadata shared with the
-                    # typing-indicator task (which must remain unmarked).
-                    if _thread_metadata is not None:
-                        _thread_metadata = dict(_thread_metadata)
-                        _thread_metadata["notify"] = True
-                    else:
-                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,
-                        metadata=_thread_metadata,
+                        metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
 
@@ -4261,7 +4587,7 @@ class BasePlatformAdapter(ABC):
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
@@ -4303,7 +4629,7 @@ class BasePlatformAdapter(ABC):
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
@@ -4318,19 +4644,19 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
 
                         if not media_result.success:
@@ -4348,13 +4674,13 @@ class BasePlatformAdapter(ABC):
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         else:
                             await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
@@ -4452,6 +4778,10 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Stop typing before any deferred callback work.  Post-delivery
+            # callbacks may perform platform I/O; a stuck callback must not
+            # leave the typing refresh task running indefinitely.
+            await _stop_typing_task()
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -4479,18 +4809,20 @@ class BasePlatformAdapter(ABC):
                 try:
                     _post_result = _post_cb()
                     if inspect.isawaitable(_post_result):
-                        await _post_result
-                except Exception:
+                        await asyncio.wait_for(
+                            _post_result,
+                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                        )
+                except (asyncio.TimeoutError, Exception):
                     pass
-            # Stop typing indicator
-            await _stop_typing_task()
-            # Also cancel any platform-level persistent typing tasks (e.g. Discord)
-            # that may have been recreated by _keep_typing after the last stop_typing()
-            try:
-                if hasattr(self, "stop_typing"):
-                    await self.stop_typing(event.source.chat_id)
-            except Exception:
-                pass
+            # Some adapters keep platform-level typing tasks.  If callback
+            # work or a late refresh recreated one, make one final bounded stop
+            # before releasing the session guard.
+            await self._stop_typing_refresh(
+                event.source.chat_id,
+                None,
+                stop_attempts=1,
+            )
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
             await self._flush_text_debounce_now(session_key)
@@ -4641,6 +4973,7 @@ class BasePlatformAdapter(ABC):
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        role_authorized: bool = False,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -4661,6 +4994,7 @@ class BasePlatformAdapter(ABC):
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
+            role_authorized=role_authorized,
         )
     
     @abstractmethod

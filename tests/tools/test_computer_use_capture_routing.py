@@ -33,10 +33,10 @@ import pytest
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
-# 1×1 PNG (transparent) — minimal bytes that decode cleanly.
+# 8×8 PNG (transparent) — minimal provider-acceptable bytes that decode cleanly.
 _PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
-    "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADUlEQVR4nG"
+    "NgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
 )
 
 # 1×1 JPEG — used to verify mime detection works for either stream type.

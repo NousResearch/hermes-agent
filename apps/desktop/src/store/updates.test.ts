@@ -1,16 +1,24 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
 
 const storage = new Map<string, string>()
 
 vi.mock('@/lib/storage', () => ({
+  persistBoolean: (key: string, value: boolean) => {
+    storage.set(key, String(value))
+  },
   persistString: (key: string, value: null | string) => {
     if (value === null) {
       storage.delete(key)
     } else {
       storage.set(key, value)
     }
+  },
+  storedBoolean: (key: string, fallback: boolean) => {
+    const value = storage.get(key)
+
+    return value === undefined ? fallback : value === 'true'
   },
   storedString: (key: string) => storage.get(key) ?? null
 }))
@@ -23,7 +31,18 @@ vi.mock('@/store/notifications', () => ({
   dismissNotification: (...args: unknown[]) => dismissSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable } = await import('./updates')
+const checkHermesUpdateSpy = vi.fn()
+const updateHermesSpy = vi.fn()
+const getActionStatusSpy = vi.fn()
+
+vi.mock('@/hermes', () => ({
+  checkHermesUpdate: (...args: unknown[]) => checkHermesUpdateSpy(...args),
+  updateHermes: (...args: unknown[]) => updateHermesSpy(...args),
+  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
+}))
+
+const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply, reportBackendContract } = await import('./updates')
+const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
   supported: true,
@@ -75,3 +94,169 @@ describe('maybeNotifyUpdateAvailable', () => {
     expect(notifySpy).not.toHaveBeenCalled()
   })
 })
+
+describe('reportBackendContract', () => {
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    vi.useRealTimers()
+  })
+
+  it('dismisses the toast when the backend meets the contract', () => {
+    reportBackendContract(2)
+    expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('warns when the backend is behind (or reports no contract)', () => {
+    reportBackendContract(undefined)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    reportBackendContract(1)
+    expect(notifySpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('stays quiet on later session opens once the user closed it', () => {
+    reportBackendContract(1)
+    lastToast().onDismiss() // user closes it → cooldown starts
+    notifySpy.mockClear()
+
+    // Opening another pre-existing session re-runs the check within cooldown.
+    reportBackendContract(1)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('reminds again after the cooldown elapses', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    reportBackendContract(1)
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    vi.setSystemTime(25 * 60 * 60 * 1000) // > 24h cooldown
+    reportBackendContract(1)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the snooze once the backend catches up, so a regression warns again', () => {
+    reportBackendContract(1)
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    reportBackendContract(2) // backend updated → satisfied, snooze cleared
+    reportBackendContract(1) // a later regression must warn immediately
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('checkBackendUpdates', () => {
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    checkHermesUpdateSpy.mockReset()
+    $backendUpdateStatus.set(null)
+    vi.useRealTimers()
+  })
+
+  const setRemote = (on: boolean) =>
+    setConnection({
+      baseUrl: 'http://box:9119',
+      isFullscreen: false,
+      mode: on ? 'remote' : 'local',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://box:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+  it('maps the backend /update/check onto the backend status, including commits', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 2,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null,
+      commits: [{ sha: 'abc1234', summary: 'feat: x', author: 'a', at: 1 }]
+    })
+
+    const result = await checkBackendUpdates()
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+    expect(result?.behind).toBe(2)
+    expect(result?.commits?.[0]?.sha).toBe('abc1234')
+    expect(result?.supported).toBe(true)
+    expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+  })
+
+  it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'docker',
+      current_version: '0.16.0',
+      behind: null,
+      update_available: false,
+      can_apply: false,
+      update_command: 'docker pull ...',
+      message: 'Docker images are immutable.'
+    })
+
+    const result = await checkBackendUpdates()
+
+    expect(result?.supported).toBe(false)
+    expect(result?.message).toBe('Docker images are immutable.')
+  })
+
+  it('is a no-op in local mode (backend check only runs when remote)', async () => {
+    setRemote(false)
+    await checkBackendUpdates()
+    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('applyBackendUpdate recovery', () => {
+  beforeEach(() => {
+    storage.clear()
+    checkHermesUpdateSpy.mockReset()
+    updateHermesSpy.mockReset()
+    getActionStatusSpy.mockReset()
+    $backendUpdateApply.set({ applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] })
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('waits for the backend to return after the restart drops the connection, then clears the overlay', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+    checkHermesUpdateSpy.mockResolvedValue({ install_method: 'git', current_version: '0.16.0', behind: 0, update_available: false, can_apply: true, update_command: 'hermes update', message: null })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('surfaces an error when the backend never comes back after the restart', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+    checkHermesUpdateSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(70000)
+    const result = await promise
+
+    expect(result.ok).toBe(false)
+    expect($backendUpdateApply.get().stage).toBe('error')
+  })
+})
+

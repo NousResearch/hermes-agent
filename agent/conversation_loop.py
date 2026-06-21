@@ -153,6 +153,37 @@ def _ra():
     return run_agent
 
 
+def _should_attempt_eager_error_fallback(
+    reason: FailoverReason,
+    *,
+    retry_count: int,
+    credential_pool: Any,
+    provider: str | None,
+    base_url: str | None,
+) -> bool:
+    """Return whether the error handler should try the fallback chain now.
+
+    Rate-limit failures are special because credential-pool rotation may still
+    recover the primary provider without failover.  Transport failures use the
+    same fallback chain after one retry, but credential-pool state is irrelevant
+    to a timeout/unavailable/overloaded endpoint and must not suppress fallback.
+    """
+    if reason in {FailoverReason.timeout, FailoverReason.overloaded}:
+        return retry_count >= 2
+
+    if reason == FailoverReason.billing:
+        return True
+
+    if reason != FailoverReason.rate_limit:
+        return False
+
+    return not _ra()._pool_may_recover_from_rate_limit(
+        credential_pool,
+        provider=provider,
+        base_url=base_url,
+    )
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -2805,38 +2836,31 @@ def run_conversation(
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
                 }
-                _should_fallback = (
-                    is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                _should_fallback = _should_attempt_eager_error_fallback(
+                    classified.reason,
+                    retry_count=retry_count,
+                    credential_pool=agent._credential_pool,
+                    provider=agent.provider,
+                    base_url=getattr(agent, "base_url", None),
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
-                    # Don't eagerly fallback if credential pool rotation may
-                    # still recover.  See _pool_may_recover_from_rate_limit
-                    # for the single-credential-pool and CloudCode-quota
-                    # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
-                        agent._credential_pool,
-                        provider=agent.provider,
-                        base_url=getattr(agent, "base_url", None),
-                    )
-                    if not pool_may_recover:
-                        if classified.reason == FailoverReason.billing:
-                            agent._buffer_status(
-                                "⚠️ Billing or credits exhausted — switching to fallback provider..."
-                            )
-                        elif _is_transport_failure:
-                            agent._buffer_status(
-                                "⚠️ Provider unreachable — switching to fallback provider..."
-                            )
-                        else:
-                            agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
-                        if agent._try_activate_fallback(reason=classified.reason):
-                            active_system_prompt = _sync_failover_system_message(
-                                agent, api_messages, active_system_prompt)
-                            retry_count = 0
-                            compression_attempts = 0
-                            _retry.primary_recovery_attempted = False
-                            continue
+                    if classified.reason == FailoverReason.billing:
+                        agent._buffer_status(
+                            "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                        )
+                    elif _is_transport_failure:
+                        agent._buffer_status(
+                            "⚠️ Provider unreachable — switching to fallback provider..."
+                        )
+                    else:
+                        agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
 
                 # ── Auth-failure provider failover ───────────────────────
                 # A 401/403 that survives the per-provider credential-refresh

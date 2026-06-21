@@ -17,6 +17,7 @@ import time -> no import cycle. The lazy import preserves the exact logger name
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
@@ -26,6 +27,8 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _auth_env_value(name: str) -> str:
@@ -46,7 +49,10 @@ def _auth_env_value(name: str) -> str:
         return os.getenv(name, "").strip()
     try:
         from hermes_cli.config import get_env_value
+    except ImportError:
+        return ""
     except Exception:
+        logger.warning("Failed to load Hermes .env fallback for %s", name, exc_info=True)
         return ""
     return (get_env_value(name) or "").strip()
 

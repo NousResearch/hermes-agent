@@ -219,6 +219,7 @@ def test_plugin_allowlist_reads_hermes_env_file_when_process_env_missing(monkeyp
     from hermes_cli.config import save_env_value
 
     save_env_value("TEST_PLUGIN_ALLOWED_USERS", "+155****4567")
+    monkeypatch.delenv("TEST_PLUGIN_ALLOWED_USERS", raising=False)
     platform_registry.register(PlatformEntry(
         name="testplugdotenv",
         label="Test Plugin Dotenv",
@@ -287,6 +288,7 @@ def test_plugin_allow_all_reads_hermes_env_file_when_process_env_missing(monkeyp
     from hermes_cli.config import save_env_value
 
     save_env_value("TEST_PLUGIN2_ALLOW_ALL_USERS", "true")
+    monkeypatch.delenv("TEST_PLUGIN2_ALLOW_ALL_USERS", raising=False)
     platform_registry.register(PlatformEntry(
         name="testplugdotenv2",
         label="Test Plugin Dotenv 2",
@@ -322,6 +324,7 @@ def test_plugin_dotenv_allowlist_makes_unauthorized_dm_ignored(monkeypatch, tmp_
     from hermes_cli.config import save_env_value
 
     save_env_value("TEST_PLUGIN3_ALLOWED_USERS", "+155****4567")
+    monkeypatch.delenv("TEST_PLUGIN3_ALLOWED_USERS", raising=False)
     platform_registry.register(PlatformEntry(
         name="testplugdotenv3",
         label="Test Plugin Dotenv 3",

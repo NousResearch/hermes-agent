@@ -1674,6 +1674,105 @@ class SendResult:
     # made up the full payload, in send order.  Empty tuple for the common
     # single-message case.
     continuation_message_ids: tuple = ()
+    # Machine-readable failure category (set only when ``success`` is False).
+    # ``error`` stays the human-readable detail string; ``error_kind`` lets
+    # consumers branch deterministically instead of substring-matching the raw
+    # provider message.  One of the values in :data:`SEND_ERROR_KINDS` or
+    # ``None`` (unset / not classified).  Producers should set this via
+    # :func:`classify_send_error`.
+    error_kind: Optional[str] = None
+
+
+# Machine-readable send-failure categories.  Kept platform-neutral so every
+# adapter can populate ``SendResult.error_kind`` from the same vocabulary and
+# the gateway can decide — once, in one place — whether a failure is worth
+# surfacing to the user.
+#
+#   too_long      content exceeded the platform's per-message size cap; the
+#                 adapter typically recovers via continuation/split, so this is
+#                 informational rather than a hard failure.
+#   bad_format    the platform rejected the message markup/entities (parse
+#                 error); a plain-text retry is the actionable fix.
+#   forbidden     the bot is blocked, kicked, or lacks permission to post to the
+#                 target — the bot CANNOT reach the user, so there is nowhere to
+#                 surface a notice.
+#   not_found     the target chat/thread/message no longer exists.
+#   rate_limited  the platform throttled the send (flood control).
+#   transient     a connection-level failure that is safe to retry.
+#   unknown       classification did not match any known shape.
+SEND_ERROR_KINDS = frozenset(
+    {
+        "too_long",
+        "bad_format",
+        "forbidden",
+        "not_found",
+        "rate_limited",
+        "transient",
+        "unknown",
+    }
+)
+
+
+def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> str:
+    """Map a send exception / error string to a :data:`SEND_ERROR_KINDS` value.
+
+    Platform-neutral: matches on the lowercased text of ``exc`` (and/or the
+    explicit ``error_text``) against the substrings the major messaging APIs
+    use.  Conservative — anything unrecognized returns ``"unknown"`` so callers
+    never mistake an unclassified failure for a benign one.
+    """
+    parts = []
+    if error_text:
+        parts.append(error_text)
+    if exc is not None:
+        parts.append(str(exc))
+        parts.append(exc.__class__.__name__)
+    blob = " ".join(parts).lower()
+    if not blob.strip():
+        return "unknown"
+    if "message_too_long" in blob or "too long" in blob or "message is too long" in blob:
+        return "too_long"
+    if (
+        "can't parse entities" in blob
+        or "cant parse entities" in blob
+        or "can't find end" in blob
+        or "unsupported start tag" in blob
+        or ("entity" in blob and "parse" in blob)
+        or ("bad request" in blob and "entit" in blob)
+    ):
+        return "bad_format"
+    if (
+        "forbidden" in blob
+        or "bot was blocked" in blob
+        or "blocked by the user" in blob
+        or "user is deactivated" in blob
+        or "not enough rights" in blob
+        or "have no rights" in blob
+        or "not a member" in blob
+    ):
+        return "forbidden"
+    if (
+        "chat not found" in blob
+        or "message to edit not found" in blob
+        or "message to reply not found" in blob
+        or "thread not found" in blob
+        or "topic_deleted" in blob
+        or "message_id_invalid" in blob
+    ):
+        return "not_found"
+    if (
+        "flood" in blob
+        or "too many requests" in blob
+        or "retry after" in blob
+        or "rate limit" in blob
+    ):
+        return "rate_limited"
+    for pat in _RETRYABLE_ERROR_PATTERNS:
+        if pat in blob:
+            return "transient"
+    if "connecttimeout" in blob:
+        return "transient"
+    return "unknown"
 
 
 class EphemeralReply(str):

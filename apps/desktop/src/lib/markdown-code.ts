@@ -163,6 +163,15 @@ export function isLikelyProseFence(info: string, body: string): boolean {
 
   if (
     hasInfoTail &&
+    NON_CODE_FENCE_LANGUAGES.has(language) &&
+    signals.codeSignals <= 2 &&
+    (signals.proseLines >= 1 || signals.bulletLines >= 1 || signals.urlLines >= 1)
+  ) {
+    return true
+  }
+
+  if (
+    hasInfoTail &&
     signals.codeSignals <= 2 &&
     (signals.proseLines >= 2 || signals.bulletLines >= 1 || signals.urlLines >= 1)
   ) {

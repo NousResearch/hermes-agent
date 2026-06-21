@@ -157,12 +157,37 @@ function extend(out: string[], lines: string[]) {
   }
 }
 
+function proseFenceLabel(info: string): string {
+  const trimmed = info.trim()
+  const token = trimmed.split(/\s+/, 1)[0] || ''
+  const language = sanitizeLanguageTag(token)
+
+  // Prose fences often use an info string such as ```text 【詳細ページ用】.
+  // Once we've decided the fence is prose, the language token is renderer
+  // metadata, not user-facing content. Keep the human title tail only.
+  return language ? trimmed.slice(token.length).trim() : trimmed
+}
+
+function proseFenceHardBreakLines(lines: string[]): string[] {
+  return lines.map((line, index) => {
+    if (!line.trim()) {
+      return line
+    }
+
+    const next = lines[index + 1]
+
+    return next && next.trim() ? `${line}\\` : line
+  })
+}
+
 function pushProseFence(out: string[], indent: string, info: string, lines: string[]) {
-  if (info) {
-    out.push(`${indent}${info}`.trimEnd())
+  const label = proseFenceLabel(info)
+
+  if (label) {
+    out.push(`${indent}${label}`.trimEnd())
   }
 
-  extend(out, lines)
+  extend(out, proseFenceHardBreakLines(lines))
 }
 
 function findClosingFence(lines: string[], start: number, marker: string): number {

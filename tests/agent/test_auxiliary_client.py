@@ -211,6 +211,47 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_maps_dashscope_alibaba_aliases(self):
+        # Regression for #49464 — auxiliary.vision.provider: dashscope
+        # silently failed because "dashscope" was not in _PROVIDER_ALIASES.
+        assert _normalize_aux_provider("dashscope") == "alibaba"
+        assert _normalize_aux_provider("aliyun") == "alibaba"
+        assert _normalize_aux_provider("qwen") == "alibaba"
+        assert _normalize_aux_provider("alibaba-cloud") == "alibaba"
+
+    def test_maps_bedrock_aliases(self):
+        assert _normalize_aux_provider("aws") == "bedrock"
+        assert _normalize_aux_provider("aws-bedrock") == "bedrock"
+        assert _normalize_aux_provider("amazon") == "bedrock"
+        assert _normalize_aux_provider("amazon-bedrock") == "bedrock"
+
+    def test_maps_nvidia_aliases(self):
+        assert _normalize_aux_provider("nim") == "nvidia"
+        assert _normalize_aux_provider("nvidia-nim") == "nvidia"
+        assert _normalize_aux_provider("build-nvidia") == "nvidia"
+
+    def test_maps_huggingface_aliases(self):
+        assert _normalize_aux_provider("hf") == "huggingface"
+        assert _normalize_aux_provider("hugging-face") == "huggingface"
+        assert _normalize_aux_provider("huggingface-hub") == "huggingface"
+
+    def test_maps_deepseek_alias(self):
+        assert _normalize_aux_provider("deep-seek") == "deepseek"
+
+    def test_maps_xiaomi_aliases(self):
+        assert _normalize_aux_provider("mimo") == "xiaomi"
+        assert _normalize_aux_provider("xiaomi-mimo") == "xiaomi"
+
+    def test_maps_opencode_aliases(self):
+        assert _normalize_aux_provider("opencode") == "opencode-zen"
+        assert _normalize_aux_provider("zen") == "opencode-zen"
+        assert _normalize_aux_provider("go") == "opencode-go"
+
+    def test_maps_lmstudio_aliases(self):
+        assert _normalize_aux_provider("lmstudio") == "lmstudio"
+        assert _normalize_aux_provider("lm-studio") == "lmstudio"
+        assert _normalize_aux_provider("lm_studio") == "lmstudio"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

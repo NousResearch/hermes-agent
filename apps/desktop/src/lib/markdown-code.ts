@@ -112,7 +112,11 @@ function proseLineCount(body: string): number {
   return body.split('\n').filter(line => {
     const trimmed = line.trim()
 
-    return Boolean(trimmed) && /^[A-Za-z0-9"'`*-]/.test(trimmed)
+    // Count non-ASCII prose too. Plaintext fences are often used for
+    // customer-facing Japanese/Chinese/Korean workflows and diagrams; if we
+    // only count Latin starters, those get rendered as code cards with a
+    // confusing "Code · text" header.
+    return Boolean(trimmed) && /^(?:[\p{L}\p{N}"'`*-]|[^\x00-\x7F])/u.test(trimmed)
   }).length
 }
 

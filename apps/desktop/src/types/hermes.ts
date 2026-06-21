@@ -271,6 +271,29 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+
+  // Hermes Native (hermes-local) extra fields for "Suggested Model" experience
+  local?: boolean
+  system_resources?: {
+    ram_total_gb?: number
+    ram_available_gb?: number
+    vram_gb?: number
+    gpu_name?: string
+    has_cuda?: boolean
+    has_npu?: boolean
+  }
+  suggestions?: Array<{
+    key: string
+    display: string
+    quant: string
+    estimated_gb: number
+    quality: number
+    speed: number
+    full_gpu_possible: boolean
+    reason: string
+    score?: number
+  }>
+  downloaded_count?: number
 }
 
 export interface ModelCapabilities {

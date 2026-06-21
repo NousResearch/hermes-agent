@@ -1044,6 +1044,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (Curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (Open models subscription)"),
+    ProviderEntry("hermes-local",   "Hermes Native (Local)",    "Hermes Native (Built-in llama.cpp engine — zero-config local serving, auto GPU/NPU offload, Suggested Models)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
@@ -1251,6 +1252,10 @@ _PROVIDER_ALIASES = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
+    "hermes-local": "hermes-local",
+    "hermes_local": "hermes-local",
+    "native": "hermes-local",
+    "local-native": "hermes-local",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }

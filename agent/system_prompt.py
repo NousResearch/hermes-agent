@@ -30,6 +30,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    HERMES_NATIVE_LOCAL_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -254,6 +255,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+
+    # Hermes Native local models (llama.cpp powered) — always inject the concise
+    # local-first guidance when using the native provider, independent of tool
+    # enforcement. This matches the spirit of the provided lightweight system prompt
+    # for efficient local inference.
+    provider = (getattr(agent, "provider", "") or "").lower()
+    if provider in {"hermes-local", "hermes_local", "native"}:
+        stable_parts.append(HERMES_NATIVE_LOCAL_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:

@@ -1486,6 +1486,7 @@ def init_agent(
     agent._config_context_length = _config_context_length
 
     agent._ensure_lmstudio_runtime_loaded(_config_context_length)
+    agent._ensure_hermes_local_runtime_loaded(_config_context_length)
 
 
 

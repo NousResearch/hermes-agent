@@ -192,8 +192,53 @@ function ModelResults({
   // "Add provider" footer button, which opens the full onboarding selector.
   const configured = providers.filter(p => (p.models ?? []).length > 0)
 
+  // Special "Suggested Model" experience for the built-in native engine.
+  // This is what makes Hermes Local dramatically easier than Ollama/LM Studio.
+  const nativeProv = providers.find((p: any) => p.slug === 'hermes-local' || p.slug === 'native')
+  const nativeSuggestions: any[] = (nativeProv as any)?.suggestions || []
+  const showSuggested = nativeSuggestions.length > 0 && !q
+
   return (
     <>
+      {/* === Suggested Model Tab / Section (Hermes Native) === */}
+      {showSuggested && nativeProv && (
+        <CommandGroup heading="★ Suggested for your machine (best speed + quality)">
+          <div className="px-3 py-1 text-[11px] text-muted-foreground">
+            RAM { (nativeProv as any).system_resources?.ram_available_gb } GB avail · VRAM { (nativeProv as any).system_resources?.vram_gb } GB · { (nativeProv as any).system_resources?.gpu_name }
+            <span className="ml-2 opacity-60">— drop any .gguf here for instant use</span>
+          </div>
+          {nativeSuggestions.map((sug: any, idx: number) => {
+            const label = `${sug.display} (${sug.quant})`
+            const isCurr = nativeProv && currentModel.includes(sug.key || '')
+            return (
+              <CommandItem
+                key={`sug-${idx}`}
+                onSelect={() => {
+                  // Selecting a suggestion tells the backend to use hermes-local + that model key.
+                  // The runtime will download + start the server on demand.
+                  const modelWithQuant = sug.quant ? `${sug.key}:${sug.quant}` : (sug.key || sug.display)
+                  onSelectModel(nativeProv as any, modelWithQuant)
+                }}
+                className={cn(isCurr && 'bg-accent text-accent-foreground')}
+              >
+                <div className="flex w-full items-center justify-between gap-3 text-sm">
+                  <div>
+                    <span className="font-medium">{label}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">~{sug.estimated_gb} GB · {sug.reason}</span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    q:{sug.quality} s:{sug.speed} {sug.full_gpu_possible ? 'GPU✓' : ''}
+                  </div>
+                </div>
+              </CommandItem>
+            )
+          })}
+          <CommandItem onSelect={() => onSelectModel(nativeProv as any, 'gemma4-12b')}>
+            Browse all local models →
+          </CommandItem>
+        </CommandGroup>
+      )}
+
       {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
         const models = (provider.models ?? []).filter(m => matches(provider, m))

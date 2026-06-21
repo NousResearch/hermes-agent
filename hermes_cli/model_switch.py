@@ -2089,6 +2089,20 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # --- Native built-in LLM (always available, no key required) ---
+    # This surfaces the "hermes-local" provider with smart RAM/VRAM-based
+    # suggestions and downloadable GGUF models. It is intentionally always
+    # included so users get a first-class "Suggested Model" experience.
+    try:
+        if "hermes-local" not in seen_slugs:
+            from hermes_cli.native_llm import get_native_provider_row
+            native_row = get_native_provider_row(current_provider, current_model)
+            results.append(native_row)
+            seen_slugs.add("hermes-local")
+    except Exception:
+        # Never break the entire picker because of local LLM issues
+        logging.getLogger(__name__).debug("Failed to add hermes-local provider row", exc_info=True)
+
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 

@@ -300,6 +300,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.local import build_local_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -11640,6 +11641,11 @@ def main():
     # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
+
+    # =========================================================================
+    # local command — Hermes Native (built-in llama.cpp) management
+    # =========================================================================
+    build_local_parser(subparsers)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain

@@ -2873,11 +2873,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 return rich_result
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
-        # without round-tripping a doomed edit.
+        # without round-tripping a doomed edit.  During streaming
+        # (finalize=False) we truncate instead of splitting — splitting creates
+        # continuation messages whose IDs become the new edit target, and on
+        # the next token chunk the full accumulated text is re-edited into the
+        # continuation, triggering another split → infinite duplication loop
+        # (#48648).  The full content is delivered when finalize=True.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
-            return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize, metadata=metadata,
-            )
+            if finalize:
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                )
+            content = self._truncate_stream_overflow_preview(content)
 
         try:
             if not finalize:
@@ -2926,9 +2933,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] edit_message overflow (%d UTF-16 > %d), splitting",
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
-                return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                if finalize:
+                    return await self._edit_overflow_split(
+                        chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                    )
+                # Mid-stream: truncate and retry instead of splitting (#48648).
+                truncated = self._truncate_stream_overflow_preview(content)
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=truncated,
                 )
+                return SendResult(success=True, message_id=message_id)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
@@ -2990,6 +3006,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    def _truncate_stream_overflow_preview(self, content: str) -> str:
+        """Return a one-message preview for oversized streaming edits.
+
+        Streaming edits must keep targeting the original message. Splitting a
+        mid-stream preview creates continuation messages and moves the active
+        message id, so the next accumulated-token edit repeats the overflow
+        cycle (#48648). Final edits still use ``_edit_overflow_split`` to
+        deliver the complete response.
+        """
+        return self.truncate_message(
+            content,
+            self.MAX_MESSAGE_LENGTH,
+            len_fn=utf16_len,
+        )[0]
 
     async def _edit_overflow_split(
         self,

@@ -52,7 +52,15 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/tasks.readonly",
 ]
+
+_SCOPE_IMPLICATIONS = {
+    "https://www.googleapis.com/auth/tasks": {
+        "https://www.googleapis.com/auth/tasks.readonly",
+    },
+}
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
@@ -76,12 +84,46 @@ def _load_token_payload(path: Path = TOKEN_PATH) -> dict:
         return {}
 
 
+def _scope_list(raw) -> list[str]:
+    if not raw:
+        return []
+    values = raw.split() if isinstance(raw, str) else raw
+    return [s.strip() for s in values if isinstance(s, str) and s.strip()]
+
+
+def _expand_granted_scopes(scopes: list[str]) -> set[str]:
+    expanded = set(scopes)
+    for scope in list(expanded):
+        expanded.update(_SCOPE_IMPLICATIONS.get(scope, set()))
+    return expanded
+
+
 def _missing_scopes_from_payload(payload: dict) -> list[str]:
     raw = payload.get("scopes") or payload.get("scope")
     if not raw:
         return []
-    granted = {s.strip() for s in (raw.split() if isinstance(raw, str) else raw) if s.strip()}
+    granted = _expand_granted_scopes(_scope_list(raw))
     return sorted(scope for scope in SCOPES if scope not in granted)
+
+
+def _normalized_scope_payload_for_save(creds, *, existing_payload: dict | None = None, fallback_scopes=None) -> dict:
+    token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
+    actually_granted = []
+    if hasattr(creds, "granted_scopes") and creds.granted_scopes:
+        actually_granted = _scope_list(list(creds.granted_scopes))
+    if actually_granted:
+        token_payload["scopes"] = actually_granted
+        return token_payload
+
+    existing_scopes = _scope_list((existing_payload or {}).get("scopes") or (existing_payload or {}).get("scope"))
+    if existing_scopes:
+        token_payload["scopes"] = existing_scopes
+        return token_payload
+
+    fallback = _scope_list(fallback_scopes)
+    if fallback:
+        token_payload["scopes"] = fallback
+    return token_payload
 
 
 def _format_missing_scopes(missing_scopes: list[str]) -> str:
@@ -218,7 +260,7 @@ def check_auth(quiet: bool = False):
             creds.refresh(Request())
             TOKEN_PATH.write_text(
                 json.dumps(
-                    _normalize_authorized_user_payload(json.loads(creds.to_json())),
+                    _normalized_scope_payload_for_save(creds, existing_payload=payload),
                     indent=2,
                 )
             )
@@ -393,17 +435,10 @@ def exchange_auth_code(code: str):
         sys.exit(1)
 
     creds = flow.credentials
-    token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
-
-    # Store only the scopes actually granted by the user, not what was requested.
-    # creds.to_json() writes the requested scopes, which causes refresh to fail
-    # with invalid_scope if the user only authorized a subset.
-    actually_granted = list(creds.granted_scopes or []) if hasattr(creds, "granted_scopes") and creds.granted_scopes else []
-    if actually_granted:
-        token_payload["scopes"] = actually_granted
-    elif granted_scopes != SCOPES:
-        # granted_scopes was extracted from the callback URL
-        token_payload["scopes"] = granted_scopes
+    token_payload = _normalized_scope_payload_for_save(
+        creds,
+        fallback_scopes=granted_scopes if granted_scopes != SCOPES else None,
+    )
 
     missing_scopes = _missing_scopes_from_payload(token_payload)
     if missing_scopes:

@@ -258,6 +258,81 @@ class TestExchangeAuthCode:
         assert not setup_module.PENDING_AUTH_PATH.exists()
 
 
+class TestScopeHandling:
+    def test_missing_scopes_treats_tasks_scope_as_covering_tasks_readonly(self, setup_module):
+        granted = [
+            scope
+            for scope in setup_module.SCOPES
+            if scope != "https://www.googleapis.com/auth/tasks.readonly"
+        ]
+
+        missing = setup_module._missing_scopes_from_payload({"scopes": granted})
+
+        assert missing == []
+
+    def test_check_auth_refresh_preserves_existing_scope_list(self, setup_module, monkeypatch):
+        tasks_scope = "https://www.googleapis.com/auth/tasks"
+        setup_module.TOKEN_PATH.write_text(
+            json.dumps(
+                {
+                    "token": "old-token",
+                    "refresh_token": "refresh-token",
+                    "client_id": "client-id",
+                    "client_secret": "client-secret",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "scopes": [tasks_scope],
+                }
+            )
+        )
+
+        class FakeCredentials:
+            valid = False
+            expired = True
+            refresh_token = "refresh-token"
+            granted_scopes = None
+
+            def refresh(self, request):
+                self.valid = True
+                self.expired = False
+
+            def to_json(self):
+                return json.dumps(
+                    {
+                        "token": "refreshed-token",
+                        "refresh_token": "refresh-token",
+                        "client_id": "client-id",
+                        "client_secret": "client-secret",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                    }
+                )
+
+        class FakeCredentialsModule:
+            @staticmethod
+            def from_authorized_user_file(filename):
+                assert filename == str(setup_module.TOKEN_PATH)
+                return FakeCredentials()
+
+        google_module = types.ModuleType("google")
+        oauth2_module = types.ModuleType("google.oauth2")
+        credentials_module = types.ModuleType("google.oauth2.credentials")
+        credentials_module.Credentials = FakeCredentialsModule
+        transport_module = types.ModuleType("google.auth.transport")
+        requests_module = types.ModuleType("google.auth.transport.requests")
+        requests_module.Request = lambda: object()
+
+        monkeypatch.setitem(sys.modules, "google", google_module)
+        monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_module)
+        monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+        monkeypatch.setitem(sys.modules, "google.auth.transport", transport_module)
+        monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
+
+        assert setup_module.check_auth(quiet=True) is True
+
+        saved = json.loads(setup_module.TOKEN_PATH.read_text())
+        assert saved["token"] == "refreshed-token"
+        assert saved["scopes"] == [tasks_scope]
+
+
 class TestHermesConstantsFallback:
     """Tests for _hermes_home.py fallback when hermes_constants is unavailable."""
 

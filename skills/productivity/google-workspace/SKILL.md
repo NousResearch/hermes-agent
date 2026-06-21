@@ -286,6 +286,42 @@ $GAPI docs create --title "Draft" --body "First paragraph..."
 $GAPI docs append DOC_ID --text "Additional content to append"
 ```
 
+### Tasks
+
+```bash
+# List task lists
+$GAPI tasks tasklists list
+
+# Create / rename / delete a task list
+$GAPI tasks tasklists create --title "Work"
+$GAPI tasks tasklists update TASKLIST_ID --title "Work Projects"
+$GAPI tasks tasklists delete TASKLIST_ID
+
+# List tasks in a task list
+$GAPI tasks tasks list TASKLIST_ID --max 50
+$GAPI tasks tasks list TASKLIST_ID --show-completed --due-min 2026-06-01T00:00:00Z
+
+# Create a task or subtask
+$GAPI tasks tasks create TASKLIST_ID --title "Buy milk" --notes "2%"
+$GAPI tasks tasks create TASKLIST_ID --title "Draft slides" --parent PARENT_TASK_ID
+
+# Update / move / delete / clear completed tasks
+$GAPI tasks tasks update TASKLIST_ID TASK_ID --status completed --completed 2026-06-10T18:05:00Z
+$GAPI tasks tasks move TASKLIST_ID TASK_ID --previous OTHER_TASK_ID
+$GAPI tasks tasks delete TASKLIST_ID TASK_ID
+$GAPI tasks tasks clear TASKLIST_ID
+```
+
+### How this relates to Hermes task management
+
+Hermes already has its own built-in task systems:
+
+- `todo` — session-local planning for the current conversation
+- `cronjob` — scheduled reminders and recurring jobs
+- `kanban` — durable multi-agent work queues
+
+Google Tasks is separate: this skill lets Hermes read and modify your actual Google Tasks lists through the Google Tasks API. It does **not** automatically sync the built-in `todo` tool with Google Tasks.
+
 ## Output Format
 
 All commands return JSON. Parse with `jq` or read directly. Key fields:
@@ -307,14 +343,18 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
 - **Docs create**: `{status: "created", documentId, title, url}`
 - **Docs append**: `{status: "appended", documentId, inserted_at, characters}`
+- **Tasks tasklists list**: `[{id, title, updated, selfLink}]`
+- **Tasks tasks list**: `[{id, title, status, notes, due, completed, updated, deleted, hidden, position, parent, selfLink}]`
+- **Tasks writes**: `{status, tasklist? | task?}`
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+1. **Never send email, create/delete calendar events, delete Drive files, share files, modify Docs/Sheets, or change Google Tasks without confirming with the user first.** Show what will be done (recipients, file IDs, task IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
-5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+5. **Tasks due/completed timestamps should also use ISO 8601** — preferably UTC (`Z`) or an explicit offset.
+6. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
 
 ## Troubleshooting
 
@@ -323,7 +363,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
 | `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
-| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
+| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit, Google Tasks) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |

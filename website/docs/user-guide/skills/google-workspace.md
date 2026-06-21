@@ -159,6 +159,39 @@ $GAPI docs get DOC_ID
 
 Returns the document title and full text content.
 
+## Tasks
+
+```bash
+# List task lists
+$GAPI tasks tasklists list
+
+# Create / rename / delete a task list
+$GAPI tasks tasklists create --title "Work"
+$GAPI tasks tasklists update TASKLIST_ID --title "Work Projects"
+$GAPI tasks tasklists delete TASKLIST_ID
+
+# List tasks in a task list
+$GAPI tasks tasks list TASKLIST_ID --max 50
+$GAPI tasks tasks list TASKLIST_ID --show-completed --due-min 2026-06-01T00:00:00Z
+
+# Create / update / move / delete tasks
+$GAPI tasks tasks create TASKLIST_ID --title "Buy milk" --notes "2%"
+$GAPI tasks tasks update TASKLIST_ID TASK_ID --status completed --completed 2026-06-10T18:05:00Z
+$GAPI tasks tasks move TASKLIST_ID TASK_ID --previous OTHER_TASK_ID
+$GAPI tasks tasks delete TASKLIST_ID TASK_ID
+$GAPI tasks tasks clear TASKLIST_ID
+```
+
+## How this relates to Hermes task management
+
+Hermes also has built-in task systems:
+
+- `todo` — session-local planning
+- `cronjob` — scheduled reminders and recurring jobs
+- `kanban` — durable multi-agent work queues
+
+Google Tasks is separate. This skill manages your actual Google Tasks lists via the Google Tasks API, but it does **not** automatically sync the built-in `todo` tool to Google Tasks.
+
 ## Contacts
 
 ```bash
@@ -179,6 +212,8 @@ All commands return JSON. Key fields per service:
 | `drive search` | `id`, `name`, `mimeType`, `modifiedTime`, `webViewLink` |
 | `contacts list` | `name`, `emails`, `phones` |
 | `sheets get` | 2D array of cell values |
+| `tasks tasklists list` | `id`, `title`, `updated`, `selfLink` |
+| `tasks tasks list` | `id`, `title`, `status`, `notes`, `due`, `completed`, `updated`, `deleted`, `hidden`, `position`, `parent`, `selfLink` |
 
 ## Troubleshooting
 
@@ -187,5 +222,6 @@ All commands return JSON. Key fields per service:
 | `NOT_AUTHENTICATED` | Run setup (ask Hermes to set up Google Workspace) |
 | `REFRESH_FAILED` | Token revoked — re-run authorization steps |
 | `HttpError 403: Insufficient Permission` | Missing scope — revoke and re-authorize with the right services |
+| `AUTHENTICATED (partial)` or `Token missing scopes` | New write capabilities (Drive write/delete, Docs create/edit, Google Tasks) require re-authorization |
 | `HttpError 403: Access Not Configured` | API not enabled in Google Cloud Console |
 | `ModuleNotFoundError` | Run setup script with `--install-deps` |

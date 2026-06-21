@@ -976,14 +976,14 @@ def _handle_slash_command(args: str) -> str | None:
         except Exception as e:
             return f"Info failed: {e}"
 
-    elif subcmd in ("relations", "rels"):
-        """Show graph edges."""
+    elif subcmd == "terms":
+        """Show term associations with stats."""
         if not rest:
-            return "Usage: /skill-graph relations <skill-name>"
+            return "Usage: /skill-graph terms <skill-name>"
         try:
-            return _format_edges(rest)
+            return _format_terms(rest)
         except Exception as e:
-            return f"Relations failed: {e}"
+            return f"Terms failed: {e}"
 
     elif subcmd in ("status", "stats"):
         try:
@@ -1125,7 +1125,7 @@ def _handle_slash_command(args: str) -> str | None:
             "  /skill-graph search <query>   Search skills by intent\n"
             "  /skill-graph load <name>      Load skill content (for agent use)\n"
             "  /skill-graph info <name>      Show skill metadata\n"
-            "  /skill-graph relations|rels <name> Show graph edges\n"
+            "  /skill-graph terms <name>     Show term associations with stats\n"
             "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
             "  /skill-graph list             List all skills in graph\n"
             "  /skill-graph config           Show configuration (paths, DB)\n"

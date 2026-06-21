@@ -67,6 +67,16 @@
       "note": "Official new creative skill; no fork-local counterpart exists."
     },
     {
+      "pattern": "skills/devops/kanban-worker/SKILL.md",
+      "action": "upstream",
+      "note": "Official new devops skill; no fork-local counterpart exists."
+    },
+    {
+      "pattern": "skills/email/himalaya/SKILL.md",
+      "action": "upstream",
+      "note": "Official new email skill; no fork-local counterpart exists."
+    },
+    {
       "pattern": ".github/workflows/*",
       "action": "upstream",
       "note": "Keep official CI and security workflow changes."

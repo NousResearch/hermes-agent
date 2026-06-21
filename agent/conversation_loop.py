@@ -2642,9 +2642,14 @@ def run_conversation(
                 # Buffered like the rest of the retry trace — surfaced only
                 # if every retry+fallback exhausts.  Avoids spamming users
                 # who recover automatically via fallback.
+                # Two known error patterns:
+                #   - "support tool use" — explicit tool-calling unsupported
+                #   - "No allowed providers" — free-tier models (:free) where
+                #     no provider accepts tool-calling requests (HTTP 404)
                 if (
                     agent._is_openrouter_url()
-                    and "support tool use" in error_msg
+                    and ("support tool use" in error_msg
+                         or "No allowed providers" in error_msg)
                 ):
                     agent._buffer_vprint(
                         f"   💡 No OpenRouter providers for {_model} support tool calling with your current settings."

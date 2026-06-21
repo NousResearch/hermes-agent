@@ -5,9 +5,9 @@
 # claims WITHOUT trusting the agent's self-attestation. No write side-effects.
 #
 # Verifies:
-#   1. diff-coverage: 137 src files changed v0.16.0..overlay == covered by 37 feature PRs, 0 orphans
+#   1. diff-coverage: 137 src files changed v0.16.0..overlay == covered by 40 feature PRs, 0 orphans
 #   2. clean-checkout reproduction (committed state, not working tree)
-#   3. all 37 feature PRs cherry-pick onto v0.17.0 (per-PR conflict count)
+#   3. all 40 feature PRs cherry-pick onto v0.17.0 (per-PR conflict count)
 #   4. the full set stacks onto v0.17.0 with conflicts resolved to 0
 #
 # Usage: bash REPRODUCE.sh <path-to-hermes-checkout>
@@ -21,7 +21,7 @@ MAIN_REF=origin/main                                 # PR base
 cd "$SRC" || { echo "checkout not found: $SRC"; exit 1; }
 GH="env -u GITHUB_TOKEN -u GH_TOKEN gh"
 
-echo "============ 1. DIFF-COVERAGE (overlay vs v0.16.0 ∩ 37 feature PRs) ============"
+echo "============ 1. DIFF-COVERAGE (overlay vs v0.16.0 ∩ 40 feature PRs) ============"
 { git diff --name-only "$V016" HEAD; git diff --name-only "$V016"; } | sort -u \
   | grep -vE '(\.bak$|\.bak\.|^\.project-intel/)' > /tmp/rep_src.txt
 : > /tmp/rep_prunion.txt

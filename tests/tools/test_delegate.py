@@ -581,6 +581,74 @@ class TestDelegateObservability(unittest.TestCase):
             trace = result["results"][0]["tool_trace"]
             self.assertEqual(trace[0]["status"], "error")
 
+    def test_tool_trace_accepts_structured_content_list(self):
+        """OpenAI-style structured tool content lists must not crash tracing."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-5.5"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "read_file", "arguments": '{"path": "x"}'}}
+                    ]},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc_1",
+                        "content": [
+                            {"type": "text", "text": "file contents"},
+                            {"type": "metadata", "lines": 3},
+                        ],
+                    },
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test structured trace", parent_agent=parent))
+            entry = result["results"][0]
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["summary"], "done")
+            self.assertEqual(entry["tool_trace"][0]["tool"], "read_file")
+            self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+            self.assertGreater(entry["tool_trace"][0]["result_bytes"], 0)
+
+    def test_tool_trace_treats_error_null_json_as_ok(self):
+        """Successful tool JSON often contains an error:null field."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-5.5"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"command": "printf OK"}'}}
+                    ]},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc_1",
+                        "content": '{"output":"OK","exit_code":0,"error":null}',
+                    },
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test error null trace", parent_agent=parent))
+            self.assertEqual(result["results"][0]["tool_trace"][0]["status"], "ok")
+
     def test_parallel_tool_calls_paired_correctly(self):
         """Parallel tool calls should each get their own result via tool_call_id matching."""
         parent = _make_mock_parent(depth=0)

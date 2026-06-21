@@ -259,9 +259,7 @@ def _extract_output_tail(
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = msg.get("content") or ""
-        if not isinstance(content, str):
-            content = str(content)
+        content = _tool_content_to_text(msg.get("content"))
         is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
         # Preserve line structure so the overlay's wrapped scroll region can
@@ -272,6 +270,24 @@ def _extract_output_tail(
 
     tail.reverse()  # restore chronological order for display
     return tail
+
+
+def _tool_content_to_text(content: Any) -> str:
+    """Return a safe text representation of a tool message payload.
+
+    Most providers store tool results as strings, but OpenAI-compatible
+    transports may preserve structured message content as a list/dict. The
+    delegation observability path only needs previews/error heuristics, so it
+    must never assume ``content`` has string methods like ``.lower()``.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, default=str)
+    except Exception:
+        return str(content)
 
 
 def _looks_like_error_output(content: str) -> bool:
@@ -1653,7 +1669,7 @@ def _run_single_child(
                         if tc_id:
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
+                    content = _tool_content_to_text(msg.get("content"))
                     is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),

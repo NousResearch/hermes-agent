@@ -9,6 +9,7 @@ import {
   ArrowUp,
   Download,
   FileIcon,
+  FilePen,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -58,6 +59,35 @@ function formatBytes(size: number | null): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+const TEXT_MIME_PREFIXES = ["text/", "application/json", "application/javascript", "application/xml", "application/x-yaml", "application/x-sh", "application/typescript", "application/x-python"];
+
+const TEXT_EXTENSIONS = new Set([
+  "txt", "md", "json", "xml", "yaml", "yml", "toml", "py", "js", "ts", "tsx", "jsx",
+  "sh", "bash", "zsh", "css", "scss", "less", "html", "htm", "svg", "conf", "cfg",
+  "ini", "env", "lock", "log", "csv", "tsv", "sql", "rb", "go", "rs", "java", "c",
+  "cpp", "h", "hpp", "r", "php", "pl", "lua", "vim", "lisp", "clj", "cljs", "edn",
+  "gradle", "properties", "patch", "diff", "nix", "makefile", "cmake", "dockerfile",
+]);
+
+function isTextFile(mimeType: string | null, name: string): boolean {
+  if (mimeType) {
+    for (const prefix of TEXT_MIME_PREFIXES) {
+      if (mimeType.startsWith(prefix)) return true;
+    }
+  }
+  const ext = name.split(".").pop()?.toLowerCase();
+  return ext ? TEXT_EXTENSIONS.has(ext) : false;
+}
+
+function dataUrlToText(dataUrl: string): string {
+  try {
+    const base64 = dataUrl.split(",")[1];
+    return atob(base64);
+  } catch {
+    return "";
+  }
+}
+
 function downloadDataUrl(dataUrl: string, name: string) {
   const link = document.createElement("a");
   link.href = dataUrl;
@@ -92,6 +122,10 @@ export default function FilesPage() {
   const [folderName, setFolderName] = useState("");
   const [pendingDelete, setPendingDelete] = useState<ManagedFileEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingEntry, setEditingEntry] = useState<ManagedFileEntry | null>(null);
+  const [editorContent, setEditorContent] = useState("");
+  const [editorLoading, setEditorLoading] = useState(false);
+  const [editorSaving, setEditorSaving] = useState(false);
 
   const activePath = listing?.path ?? currentPath ?? "";
   const canChangePath = listing?.can_change_path ?? false;
@@ -260,6 +294,42 @@ export default function FilesPage() {
     }
   };
 
+  const openEditor = async (entry: ManagedFileEntry) => {
+    setEditingEntry(entry);
+    setEditorLoading(true);
+    setEditorContent("");
+    try {
+      const file = await api.readFile(entry.path);
+      setEditorContent(dataUrlToText(file.data_url));
+    } catch (e) {
+      showToast(`Read failed: ${e}`, "error");
+      setEditingEntry(null);
+    } finally {
+      setEditorLoading(false);
+    }
+  };
+
+  const saveEditor = async () => {
+    if (!editingEntry) return;
+    setEditorSaving(true);
+    try {
+      const file = new File(
+        [editorContent],
+        editingEntry.name,
+        { type: editingEntry.mime_type || "text/plain" },
+      );
+      await api.uploadFile(editingEntry.path, file, true);
+      showToast("Saved", "success");
+      setEditingEntry(null);
+      setEditorContent("");
+      await load();
+    } catch (e) {
+      showToast(`Save failed: ${e}`, "error");
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
       <Toast toast={toast} />
@@ -364,7 +434,7 @@ export default function FilesPage() {
             </div>
           )}
 
-          <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
+          <div className="grid min-w-[48rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_8rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
             <span>Name</span>
             <span>Size</span>
             <span>Modified</span>
@@ -375,7 +445,7 @@ export default function FilesPage() {
             <button
               type="button"
               onClick={() => setCurrentPath(listing.parent ?? undefined)}
-              className="grid w-full min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-left text-sm transition hover:bg-background/40"
+              className="grid w-full min-w-[48rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_8rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-left text-sm transition hover:bg-background/40"
             >
               <span className="flex min-w-0 items-center gap-2 font-mono text-text-secondary">
                 <ArrowUp className="h-4 w-4 shrink-0 text-text-tertiary" />
@@ -398,7 +468,7 @@ export default function FilesPage() {
             listing?.entries.map((entry) => (
               <div
                 key={entry.path}
-                className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-sm last:border-b-0 hover:bg-background/35"
+                className="grid min-w-[48rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_8rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-sm last:border-b-0 hover:bg-background/35"
               >
                 <button
                   type="button"
@@ -438,6 +508,17 @@ export default function FilesPage() {
                       <Download />
                     </Button>
                   )}
+                  {!entry.is_directory && isTextFile(entry.mime_type, entry.name) && (
+                    <Button
+                      ghost
+                      size="icon"
+                      type="button"
+                      onClick={() => void openEditor(entry)}
+                      aria-label={`Edit ${entry.name}`}
+                    >
+                      <FilePen />
+                    </Button>
+                  )}
                   <Button
                     ghost
                     size="icon"
@@ -456,6 +537,65 @@ export default function FilesPage() {
       </Card>
 
       <PluginSlot name="files:bottom" />
+
+      <Dialog
+        open={Boolean(editingEntry)}
+        onOpenChange={(open) => {
+          if (editorSaving || editorLoading) return;
+          if (!open) {
+            setEditingEntry(null);
+            setEditorContent("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>
+              Edit: {editingEntry?.name || ""}
+            </DialogTitle>
+            <DialogDescription>
+              {editingEntry?.path || ""}
+            </DialogDescription>
+          </DialogHeader>
+          {editorLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Spinner className="text-xl text-primary" />
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              <textarea
+                autoFocus
+                spellCheck={false}
+                className="min-h-[320px] max-h-[65vh] w-full resize-y border border-border bg-background/40 px-3 py-2 font-mono text-xs leading-relaxed shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
+                value={editorContent}
+                onChange={(e) => setEditorContent(e.target.value)}
+              />
+              <DialogFooter>
+                <Button
+                  ghost
+                  size="sm"
+                  onClick={() => {
+                    setEditingEntry(null);
+                    setEditorContent("");
+                  }}
+                  disabled={editorSaving}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="uppercase"
+                  onClick={() => void saveEditor()}
+                  disabled={editorSaving}
+                  prefix={editorSaving ? <Spinner /> : undefined}
+                >
+                  {editorSaving ? "Saving…" : "Save"}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={createDialogOpen}

@@ -11,10 +11,23 @@ exactly as before.
 
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+
+@contextmanager
+def _temporary_session_db():
+    from hermes_state import SessionDB
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = SessionDB(db_path=Path(tmp) / "t.db")
+        try:
+            yield db, tmp
+        finally:
+            db.close()
 
 
 def _make_agent(session_db, session_id, *, in_place):
@@ -61,11 +74,9 @@ def _seed(db, sid, title, n=8):
 class TestInPlaceCompaction:
     def test_in_place_keeps_same_session_id(self):
         """In-place mode: id unchanged, no child row, no rename, history kept."""
-        from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             sid = "20260619_120000_aaaaaa"
             _seed(db, sid, "my-research")
             agent = _make_agent(db, sid, in_place=True)
@@ -126,11 +137,9 @@ class TestInPlaceCompaction:
 
     def test_in_place_alternation_preserved(self):
         """The compacted list must not introduce consecutive same-role messages."""
-        from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             sid = "20260619_120500_cccccc"
             _seed(db, sid, "alt")
             agent = _make_agent(db, sid, in_place=True)
@@ -146,11 +155,9 @@ class TestInPlaceCompaction:
         rewrites the whole row, so a flush would INSERT rows it immediately
         deletes (wasted writes). The current-turn tail survives via the
         compressor's `compressed` output, not the flush."""
-        from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             _seed(db, "ip_flush", "f")
             agent = _make_agent(db, "ip_flush", in_place=True)
             calls = {"n": 0}
@@ -166,11 +173,9 @@ class TestInPlaceCompaction:
     def test_rotation_still_preflushes(self):
         """Rotation MUST pre-flush so current-turn messages survive in the
         preserved old (parent) session before it is ended (#47202)."""
-        from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             _seed(db, "rot_flush", "f")
             agent = _make_agent(db, "rot_flush", in_place=False)
             calls = {"n": 0}
@@ -187,11 +192,9 @@ class TestInPlaceCompaction:
 class TestRotationStillDefault:
     def test_rotation_when_flag_off(self):
         """Regression guard: flag off => legacy rotation is unchanged."""
-        from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             sid = "20260619_130000_bbbbbb"
             _seed(db, sid, "my-research")
             agent = _make_agent(db, sid, in_place=False)
@@ -222,11 +225,9 @@ class TestInPlaceSignalForGateway:
     read (instead of an id-change diff) to re-baseline transcript handling."""
 
     def test_signal_set_on_in_place_unset_on_rotation(self):
-        from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             # in-place → flag True
             _seed(db, "s_ip", "ip")
             a_ip = _make_agent(db, "s_ip", in_place=True)
@@ -261,10 +262,7 @@ class TestCompactedTurnsStaySearchable:
     the active flag but are distinguished by the compacted flag."""
 
     def test_compacted_turns_found_by_default_search(self):
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             sid = "20260619_search"
             db.create_session(sid, "cli", model="test/model")
             for r, c in [
@@ -298,10 +296,7 @@ class TestCompactedTurnsStaySearchable:
     def test_rewound_turns_stay_hidden(self):
         """Rewind/undo (active=0, compacted=0) must NOT leak into default
         search — the distinction the compacted flag preserves."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with _temporary_session_db() as (db, tmp):
             sid = "20260619_undo"
             db.create_session(sid, "cli", model="test/model")
             db.append_message(session_id=sid, role="user", content="ZEBRAWORD remember this")

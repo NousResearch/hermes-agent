@@ -1735,22 +1735,53 @@ class TestBuildApiKwargs:
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
-    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
-        """xhigh effort should normalize to high for Copilot GitHub Models."""
+    def test_reasoning_xhigh_honored_for_copilot_gpt5(self, agent):
+        """xhigh effort is HONORED for Copilot gpt-5.x — the live catalog lists
+        it as supported (gpt-5.5/gpt-5.4). It must NOT be silently downgraded to
+        high (that was a stale free-tier guard)."""
+        from unittest.mock import patch as _patch
         from agent.transports import get_transport
         from providers import get_provider_profile
 
         transport = get_transport("chat_completions")
         profile = get_provider_profile("copilot")
         msgs = [{"role": "user", "content": "hi"}]
-        kwargs = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=msgs,
-            tools=None,
-            supports_reasoning=True,
-            reasoning_config={"enabled": True, "effort": "xhigh"},
-            provider_profile=profile,
-        )
+        with _patch(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            return_value=["low", "medium", "high", "xhigh"],
+        ):
+            kwargs = transport.build_kwargs(
+                model="gpt-5.4",
+                messages=msgs,
+                tools=None,
+                supports_reasoning=True,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+                provider_profile=profile,
+            )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "xhigh"}
+
+    def test_reasoning_xhigh_downgraded_when_catalog_lacks_it(self, agent):
+        """When the catalog does NOT list xhigh, downgrade to the nearest
+        supported level (high) rather than forwarding an unsupported value."""
+        from unittest.mock import patch as _patch
+        from agent.transports import get_transport
+        from providers import get_provider_profile
+
+        transport = get_transport("chat_completions")
+        profile = get_provider_profile("copilot")
+        msgs = [{"role": "user", "content": "hi"}]
+        with _patch(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            return_value=["low", "medium", "high"],
+        ):
+            kwargs = transport.build_kwargs(
+                model="gpt-5.4",
+                messages=msgs,
+                tools=None,
+                supports_reasoning=True,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+                provider_profile=profile,
+            )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
@@ -3736,6 +3767,47 @@ class TestRunConversation:
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
         assert result["api_calls"] == 4  # 1 original + 3 retries
+
+    def test_anthropic_refusal_surfaces_without_retrying(self, agent):
+        """stop_reason=refusal is terminal: surface it clearly, do NOT retry 3x.
+
+        A refusal is deterministic — retrying the identical request yields the
+        same refusal — so the loop must short-circuit (try fallback once, then
+        surface) instead of burning the retry budget and emitting the cryptic
+        "Invalid API response after 3 retries" error.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "copilot"
+        agent.base_url = "https://api.githubcopilot.com"
+        agent._fallback_chain = []
+        agent._fallback_index = 0
+
+        calls = {"n": 0}
+        refusal = SimpleNamespace(
+            content=[], stop_reason="refusal", model="claude-opus-4.8",
+            id="msg_test_refusal", usage=None,
+        )
+
+        def _fake_api_call(api_kwargs, **_kw):
+            calls["n"] += 1
+            return refusal
+
+        agent._interruptible_api_call = _fake_api_call
+        agent._interruptible_streaming_api_call = _fake_api_call
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("read all macos skills and access requirements")
+
+        assert result.get("refused") is True
+        assert "refus" in result["error"].lower()
+        assert "declined" in result["final_response"].lower()
+        # Deterministic refusal must NOT burn the 3-retry budget.
+        assert calls["n"] == 1
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""

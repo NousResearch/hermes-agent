@@ -3475,7 +3475,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, f"/model {name}".strip())
 
         @tree.command(name="reasoning", description="Show or change reasoning effort")
-        @discord.app_commands.describe(effort="Reasoning effort: none, minimal, low, medium, high, or xhigh.")
+        @discord.app_commands.describe(effort="Reasoning effort: none, minimal, low, medium, high, xhigh, or max.")
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
             await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
 

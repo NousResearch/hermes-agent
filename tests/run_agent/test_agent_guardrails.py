@@ -162,7 +162,15 @@ class TestCapDelegateTaskCalls:
         w1 = make_tc("web_search", '{"q":"x"}')
         tcs = [delegates[0], t1, delegates[1], w1] + delegates[2:]
         out = AIAgent._cap_delegate_task_calls(tcs)
-        expected = [delegates[0], t1, delegates[1], w1] + delegates[2:MAX_CONCURRENT_CHILDREN]
+        expected = []
+        kept_delegates = 0
+        for tc in tcs:
+            if tc.function.name == "delegate_task":
+                if kept_delegates < MAX_CONCURRENT_CHILDREN:
+                    expected.append(tc)
+                    kept_delegates += 1
+            else:
+                expected.append(tc)
         assert len(out) == len(expected)
         for i, (actual, exp) in enumerate(zip(out, expected)):
             assert actual is exp, f"mismatch at index {i}"

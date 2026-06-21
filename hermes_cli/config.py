@@ -1549,6 +1549,16 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # When the TUI notification poller may auto-START an agent turn to react
+        # to a completed background process (subagent, terminal background task,
+        # watch match). The completion is ALWAYS shown to the TUI; this only
+        # controls the autonomous turn:
+        #   "autopilot" — (default) auto-react only when the session is in
+        #                 autopilot; otherwise just show the notification. Stops
+        #                 a plain chat from "responding by itself".
+        #   "always"    — legacy behavior: auto-react in every idle session.
+        #   "never"     — never auto-react; only ever show the notification.
+        "notify_autodispatch": "autopilot",  # autopilot | always | never
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)

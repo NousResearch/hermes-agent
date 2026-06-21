@@ -338,6 +338,44 @@ def _load_busy_input_mode() -> str:
     return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
 
 
+def _load_notify_autodispatch() -> str:
+    """When the notification poller may auto-START an agent turn for a completed
+    background process.
+
+    The poller always EMITS the completion to the TUI (status.update) so the user
+    sees that a background job finished. This flag controls only whether it also
+    injects an autonomous agent turn (rid ``__notif__``) to react to it:
+
+      - ``always``    legacy behavior: auto-react in every idle session.
+      - ``autopilot`` (default) only auto-react when the session is in autopilot;
+                      otherwise just show the notification. This stops a plain
+                      chat from "responding by itself" when a backgrounded job
+                      (subagent, terminal background task, watch match) completes.
+      - ``never``     never auto-react; only ever show the notification.
+    """
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        display = {}
+    raw = str(display.get("notify_autodispatch", "") or "").strip().lower()
+    return raw if raw in {"always", "autopilot", "never"} else "autopilot"
+
+
+def _notify_should_autodispatch(session: dict) -> bool:
+    """Whether the notification poller may auto-start an agent turn for this
+    session, per ``display.notify_autodispatch`` (see _load_notify_autodispatch).
+    """
+    mode = _load_notify_autodispatch()
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    # "autopilot": only when this session has autopilot engaged.
+    if session.get("autopilot"):
+        return True
+    agent = session.get("agent")
+    return bool(getattr(agent, "autopilot_mode", False))
+
+
 def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     try:
@@ -6280,6 +6318,13 @@ def _notification_poller_loop(
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
+        # The notification has been shown to the TUI above. Only auto-START an
+        # agent turn to react to it when policy allows (default: autopilot only).
+        # Otherwise a plain idle chat would "respond by itself" whenever a
+        # backgrounded job completes. See _load_notify_autodispatch().
+        if not _notify_should_autodispatch(session):
+            continue
+
         with session["history_lock"]:
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
@@ -6322,6 +6367,11 @@ def _notification_poller_loop(
         if _dedup_key not in _emitted:
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
+
+        # Notification shown above; only auto-start a turn when policy allows
+        # (default: autopilot only). See _load_notify_autodispatch().
+        if not _notify_should_autodispatch(session):
+            continue
 
         with session["history_lock"]:
             if session.get("running"):

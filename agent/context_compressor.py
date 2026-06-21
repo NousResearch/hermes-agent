@@ -762,6 +762,14 @@ class ContextCompressor(ContextEngine):
         # this flag to know "compression was attempted but aborted, freeze
         # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
+        # Set True when the summary call failed with an authentication /
+        # permission error (HTTP 401/403). Auth failures are non-recoverable
+        # at the request level — the credential or endpoint is broken — so
+        # compress() must ABORT (preserve the session unchanged) rather than
+        # rotate into a degraded child session with a placeholder summary.
+        # This is independent of the abort_on_summary_failure config flag:
+        # rotating on a broken credential is never the right behavior.
+        self._last_summary_auth_failure: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
@@ -1573,6 +1581,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
             self._last_summary_error = None
+            self._last_summary_auth_failure = False
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
@@ -1620,6 +1629,26 @@ This compaction should PRIORITISE preserving all information related to the focu
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
+            # Authentication / permission failures (401/403) are NOT transient
+            # and NOT fixable by retrying the same request: the credential is
+            # invalid/blocked/expired or the endpoint is wrong (e.g. a prod
+            # token sent to a staging inference URL). Flag them so compress()
+            # aborts and preserves the session instead of rotating into a
+            # degraded child with a placeholder summary. We still allow the
+            # one-shot fallback to the MAIN model below when the failure came
+            # from a distinct auxiliary summary_model (its dedicated creds may
+            # be the only broken thing); only a failure on the main model — or
+            # a fallback that also auth-fails — makes the abort stick.
+            _is_auth_error = (
+                _status in {401, 403}
+                or "invalid api key" in _err_str
+                or "invalid x-api-key" in _err_str
+                or ("api key" in _err_str and ("invalid" in _err_str or "blocked" in _err_str))
+                or "unauthorized" in _err_str
+                or "authentication" in _err_str
+            )
+            if _is_auth_error:
+                self._last_summary_auth_failure = True
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
                     "Context compression failed: auxiliary LLM returned a "
@@ -2227,6 +2256,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_summary_auth_failure = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2345,15 +2375,26 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # If every compaction path failed, preserve the original messages.
         # Dropping middle history without a real summary/native artifact is a
-        # correctness bug. When configured, mark the compression as aborted so
-        # callers can warn and stop retry loops; either way, keep context intact.
+        # correctness bug. Mark the compression as aborted so callers can warn
+        # and stop retry loops; either way, keep context intact. Preserve
+        # upstream's auth-specific warning because 401/403 failures are usually
+        # credential/endpoint problems that must not rotate the session.
         if not summary:
-            if self.abort_on_summary_failure:
-                n_skipped = compress_end - compress_start
-                self._last_summary_dropped_count = 0  # nothing actually dropped
-                self._last_summary_fallback_used = False
-                self._last_compress_aborted = True
-                if not self.quiet_mode:
+            n_skipped = compress_end - compress_start
+            self._last_summary_dropped_count = 0  # nothing actually dropped
+            self._last_summary_fallback_used = False
+            self._last_compress_aborted = True
+            if not self.quiet_mode:
+                if self._last_summary_auth_failure:
+                    logger.warning(
+                        "Summary generation failed with an authentication "
+                        "error — aborting compression. %d message(s) preserved "
+                        "unchanged; the session was NOT rotated. Check your "
+                        "provider credential / inference endpoint, then retry "
+                        "with /compress or start fresh with /new.",
+                        n_skipped,
+                    )
+                elif self.abort_on_summary_failure:
                     logger.warning(
                         "Summary generation failed — aborting compression "
                         "(compression.abort_on_summary_failure=true). "
@@ -2361,8 +2402,11 @@ This compaction should PRIORITISE preserving all information related to the focu
                         "frozen until the next /compress or /new.",
                         n_skipped,
                     )
-            elif not self.quiet_mode:
-                logger.warning("Summary generation failed — preserving original context without compression")
+                else:
+                    logger.warning(
+                        "Summary generation failed — preserving original "
+                        "context without compression"
+                    )
             return messages
 
         # Phase 4: Assemble compressed message list

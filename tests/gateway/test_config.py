@@ -688,7 +688,7 @@ class TestLoadGatewayConfig:
 
         telegram = config.platforms[Platform.TELEGRAM]
         assert telegram.extra.get("allow_from") == ["777888999"], (
-            "allow_from configured under gateway.platforms.telegram must be "
+            "allow_from configured under plugins.platforms.telegram.adapter must be "
             "bridged into PlatformConfig.extra by the shared-key loop"
         )
         assert telegram.extra.get("require_mention") is False

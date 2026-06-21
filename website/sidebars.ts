@@ -60,6 +60,7 @@ const sidebars: SidebarsConfig = {
           label: 'Core',
           items: [
             'user-guide/features/tools',
+            'user-guide/features/tool-search',
             'user-guide/features/skills',
             'user-guide/features/lsp',
             'user-guide/features/curator',
@@ -151,7 +152,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-kanban-codex-lane',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
                   ],
                 },

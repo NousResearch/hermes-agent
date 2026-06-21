@@ -8090,7 +8090,12 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         # HERMES_HOME override (see mcp_tool._wrap_with_home_override), so
         # OAuth token stores resolve against the selected profile as well.
         with _profile_scope(profile):
-            return _probe_single_server(name, servers[name])
+            # Keep the short probe cap on the dashboard. The interactive OAuth
+            # window is for CLI logins (mcp add/login/test/configure) where the
+            # callback paste is read from the server's stdin. A remote dashboard
+            # browser can't reach that flow, so the long window would just hang
+            # up to _OAUTH_LOGIN_TIMEOUT before failing — fail fast instead.
+            return _probe_single_server(name, servers[name], connect_timeout=30)
 
     try:
         # Probe blocks on a dedicated MCP event loop — run in a thread so the

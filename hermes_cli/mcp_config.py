@@ -213,17 +213,56 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _interpolate_env_vars(config)
 
 
+# Interactive OAuth logins (`hermes mcp login` / `mcp add --auth oauth`) need a
+# long window: the user opens a browser, authorizes, and on a headless or SSH
+# host pastes the callback URL back. The default 30s connection-probe timeout
+# (40s with the +10 below) cancels _wait_for_callback (which itself allows 300s)
+# long before a human can finish. Use a generous, env-tunable window for these
+# interactive auth paths only; the agent runtime keeps the short default.
+#
+# Must stay strictly greater than the SDK's hard-coded 300s _wait_for_callback
+# budget (tools/mcp_oauth.py): the outer asyncio.wait_for in _probe_single_server
+# starts before browser launch / client registration / port bind and keeps
+# running through token exchange, so it has to outlast the inner 300s human
+# window *plus* that setup/exchange overhead. 330 = 300s paste window + ~30s
+# headroom; raise HERMES_MCP_OAUTH_TIMEOUT on very slow links.
+_OAUTH_LOGIN_TIMEOUT = float(os.getenv("HERMES_MCP_OAUTH_TIMEOUT", "330"))
+
+
+def _effective_probe_timeout(
+    config: dict, connect_timeout: Optional[float]
+) -> float:
+    """Pick the connection-probe timeout for one server.
+
+    An explicit caller value always wins. Otherwise ``auth: oauth`` servers get
+    the long interactive-login window (they drive a browser + callback paste
+    whose inner wait allows 300s), while everything else keeps the short 30s
+    default. Centralised here so every :func:`_probe_single_server` caller —
+    ``mcp add``, ``mcp login``, ``mcp test``, ``mcp configure``, catalog
+    install, and the dashboard test route — gets identical behaviour.
+    """
+    if connect_timeout is not None:
+        return connect_timeout
+    return _OAUTH_LOGIN_TIMEOUT if config.get("auth") == "oauth" else 30.0
+
+
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30
+    name: str, config: dict, connect_timeout: Optional[float] = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
     Returns list of ``(tool_name, description)`` tuples.
     Raises on connection failure.
+
+    ``connect_timeout`` defaults to 30s for ordinary servers and the longer
+    ``_OAUTH_LOGIN_TIMEOUT`` for ``auth: oauth`` servers (interactive browser
+    login); pass an explicit value to override either default.
     """
     issues = validate_mcp_server_entry(name, config)
     if issues:
         raise ValueError("; ".join(issues))
+
+    connect_timeout = _effective_probe_timeout(config, connect_timeout)
 
     from tools.mcp_tool import (
         _ensure_mcp_loop,
@@ -421,6 +460,8 @@ def cmd_mcp_add(args):
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
 
     try:
+        # _probe_single_server auto-selects the long OAuth login window for
+        # auth: oauth servers and the short default otherwise.
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
         _error(f"Failed to connect: {exc}")
@@ -710,6 +751,8 @@ def cmd_mcp_login(args):
     _info(f"Starting OAuth flow for '{name}'...")
 
     # Probe triggers the OAuth flow (browser redirect + callback capture).
+    # auth: oauth is verified above, so the probe auto-selects the long
+    # interactive-login window.
     try:
         tools = _probe_single_server(name, server_config)
         # A clean probe is NOT proof of authentication. Some MCP servers

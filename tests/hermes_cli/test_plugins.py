@@ -1867,3 +1867,43 @@ class TestPluginDebugLogging:
             plugins_mod._PLUGINS_DEBUG = original_debug
             plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
+
+
+class TestGetPluginToolsetsDiscovery:
+    """get_plugin_toolsets() must trigger plugin discovery like its siblings."""
+
+    def test_get_plugin_toolsets_triggers_discovery(self, monkeypatch):
+        """Regression: reading plugin toolsets must run discovery first.
+
+        ``get_plugin_toolsets()`` reads ``manager._plugin_tool_names`` to build
+        the ``hermes tools`` picker. The other ``get_plugin_*`` accessors route
+        through ``_ensure_plugins_discovered()`` so they work before any
+        explicit ``discover_plugins()`` call; this one used the bare
+        ``get_plugin_manager()`` and silently returned ``[]`` when invoked
+        before discovery had run, hiding every plugin toolset.
+        """
+        from hermes_cli import plugins as plugins_mod
+
+        fresh = PluginManager()
+        fresh._discovered = False
+
+        discover_calls = []
+
+        def _spy_discover(*args, **kwargs):
+            discover_calls.append((args, kwargs))
+            fresh._discovered = True
+
+        monkeypatch.setattr(fresh, "discover_and_load", _spy_discover)
+        monkeypatch.setattr(plugins_mod, "_PLUGIN_MANAGER", fresh, raising=False)
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: fresh)
+
+        result = plugins_mod.get_plugin_toolsets()
+
+        # Discovery must have been triggered before the registry was read.
+        assert discover_calls, (
+            "get_plugin_toolsets() must trigger plugin discovery before "
+            "reading the tool registry"
+        )
+        # No plugin tools registered on the fresh manager → empty list, but the
+        # important part is that discovery ran rather than short-circuiting.
+        assert result == []

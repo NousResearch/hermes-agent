@@ -2006,8 +2006,14 @@ def get_plugin_toolsets() -> List[tuple]:
 
     Used by the ``hermes tools`` TUI so plugin-provided toolsets appear
     alongside the built-in ones and can be toggled on/off per platform.
+
+    Triggers idempotent plugin discovery so callers can read the registry
+    before any explicit ``discover_plugins()`` call — matching the other
+    ``get_plugin_*`` accessors. Without it, calling this before discovery
+    has run reads an empty ``_plugin_tool_names`` and silently returns ``[]``,
+    hiding every plugin toolset from the picker.
     """
-    manager = get_plugin_manager()
+    manager = _ensure_plugins_discovered()
     if not manager._plugin_tool_names:
         return []
 

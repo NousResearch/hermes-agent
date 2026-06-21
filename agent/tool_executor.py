@@ -19,7 +19,10 @@ import os
 import random
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from run_agent import AIAgent
 
 from agent.display import (
     KawaiiSpinner,
@@ -132,7 +135,7 @@ def _emit_cancelled_terminal_post_tool_call(
     return result
 
 
-def _tool_search_scoped_names(agent) -> frozenset:
+def _tool_search_scoped_names(agent: AIAgent) -> frozenset:
     """Return the deferrable tool names the session may invoke via tool_call.
 
     The Tool Search unwrap dispatches the underlying tool directly, bypassing
@@ -240,7 +243,7 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
-def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+def execute_tool_calls_concurrent(agent: AIAgent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
     Results are collected in the original tool-call order and appended to
@@ -767,7 +770,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 
 
-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+def execute_tool_calls_sequential(agent: AIAgent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.

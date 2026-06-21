@@ -37,7 +37,10 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from run_agent import AIAgent
 
 from utils import is_truthy_value
 
@@ -719,7 +722,7 @@ def _credits_state_from_account(info) -> Optional[CreditsState]:
         return None
 
 
-def _hydrate_seed_state(agent, state) -> None:
+def _hydrate_seed_state(agent: AIAgent, state) -> None:
     """Install a seed CreditsState on the agent and fire the notice policy once.
 
     Sets _credits_state, latches session-start remaining, and primes the crossing
@@ -738,7 +741,7 @@ def _hydrate_seed_state(agent, state) -> None:
         emit()
 
 
-def seed_credits_at_session_start(agent) -> bool:
+def seed_credits_at_session_start(agent: AIAgent) -> bool:
     """Hydrate agent._credits_state from /api/oauth/account (or a dev fixture) and
     fire the notice policy, so depletion / usage-band warnings show at session OPEN.
 

@@ -23,7 +23,10 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from run_agent import AIAgent
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
@@ -103,7 +106,7 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
     return _chars(api_payload) // 4
 
 
-def _is_openai_codex_backend(agent) -> bool:
+def _is_openai_codex_backend(agent: AIAgent) -> bool:
     base_url_lower = str(getattr(agent, "_base_url_lower", "") or "")
     base_url_hostname = str(getattr(agent, "_base_url_hostname", "") or "")
     return (
@@ -122,7 +125,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def interruptible_api_call(agent, api_kwargs: dict):
+def interruptible_api_call(agent: AIAgent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
     can detect interrupts without waiting for the full HTTP round-trip.
@@ -552,7 +555,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
-def build_api_kwargs(agent, api_messages: list) -> dict:
+def build_api_kwargs(agent: AIAgent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
@@ -812,7 +815,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
 
 
-def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
+def build_assistant_message(agent: AIAgent, assistant_message, finish_reason: str) -> dict:
     """Build a normalized assistant message dict from an API response message.
 
     Handles reasoning extraction, reasoning_details, and optional tool_calls
@@ -1042,7 +1045,8 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
-def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
+
+def rewrite_prompt_model_identity(agent: AIAgent, model: str, provider: str) -> None:
     """Point the cached system prompt's ``Model:``/``Provider:`` lines at
     the active runtime after a provider switch.
 
@@ -1071,7 +1075,7 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def try_activate_fallback(agent: AIAgent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
     Called when the current model is failing after retries.  Swaps the
@@ -1335,7 +1339,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+def handle_max_iterations(agent: AIAgent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
@@ -1565,7 +1569,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
 
 
-def cleanup_task_resources(agent, task_id: str) -> None:
+def cleanup_task_resources(agent: AIAgent, task_id: str) -> None:
     """Clean up VM and browser resources for a given task.
 
     Skips ``cleanup_vm`` when the active terminal environment is marked
@@ -1597,7 +1601,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 
-def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
+def interruptible_streaming_api_call(agent: AIAgent, api_kwargs: dict, *, on_first_delta=None):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
     Handles all three api_modes:

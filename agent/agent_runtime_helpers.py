@@ -29,7 +29,10 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from run_agent import AIAgent
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
@@ -53,7 +56,7 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
 )
 
 
-def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
+def agent_runtime_owns_post_tool_hook(agent: AIAgent, function_name: str) -> bool:
     """Return True when an agent-level tool path emits its own post hook."""
     if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
         return True
@@ -63,7 +66,7 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     return bool(memory_manager and memory_manager.has_tool(function_name))
 
 
-def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
+def convert_to_trajectory_format(agent: AIAgent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
     """
     Convert internal message format to trajectory format for saving.
     
@@ -344,7 +347,7 @@ def sanitize_tool_call_arguments(
 
 
 
-def repair_message_sequence(agent, messages: List[Dict]) -> int:
+def repair_message_sequence(agent: AIAgent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history.
 
     Providers (OpenAI, OpenRouter, Anthropic) expect strict alternation:
@@ -445,7 +448,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     return repairs
 
 
-def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
+def repair_message_sequence_with_cursor(agent: AIAgent, messages: List[Dict]) -> int:
     """Run :func:`repair_message_sequence` and keep the SessionDB flush
     cursor consistent with the compacted list (#44837).
 
@@ -485,7 +488,7 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
-def strip_think_blocks(agent, content: str) -> str:
+def strip_think_blocks(agent: AIAgent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
@@ -973,7 +976,7 @@ def drop_thinking_only_and_merge_users(
 
 
 
-def restore_primary_runtime(agent) -> bool:
+def restore_primary_runtime(agent: AIAgent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
     In long-lived CLI sessions a single AIAgent instance spans multiple
@@ -1074,7 +1077,7 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
 
 
 
-def extract_reasoning(agent, assistant_message) -> Optional[str]:
+def extract_reasoning(agent: AIAgent, assistant_message) -> Optional[str]:
     """
     Extract reasoning/thinking content from an assistant message.
     
@@ -1354,7 +1357,7 @@ def anthropic_prompt_cache_policy(
 
 
 
-def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+def create_openai_client(agent: AIAgent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
     # copies of it) in; any in-place mutation leaks back into the stored dict and is
@@ -1448,7 +1451,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(agent: AIAgent, new_model, new_provider, api_key='', base_url='', api_mode=''):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -1715,7 +1718,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
 
 
-def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
+def invoke_tool(agent: AIAgent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
@@ -1941,7 +1944,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
 
 
-def repair_tool_call(agent, tool_name: str) -> str | None:
+def repair_tool_call(agent: AIAgent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
 
     Models sometimes emit variants of a tool name that differ only
@@ -2182,7 +2185,7 @@ def looks_like_codex_intermediate_ack(
 
 
 
-def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
+def copy_reasoning_content_for_api(agent: AIAgent, source_msg: dict, api_msg: dict) -> None:
     """Copy provider-facing reasoning fields onto an API replay message."""
     if source_msg.get("role") != "assistant":
         return
@@ -2253,7 +2256,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     api_msg.pop("reasoning_content", None)
 
 
-def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
+def reapply_reasoning_echo_for_provider(agent: AIAgent, api_messages: list) -> int:
     """Re-pad assistant turns with reasoning_content for the active provider.
 
     ``api_messages`` is built once, before the retry loop, while the *primary*
@@ -2355,7 +2358,7 @@ def _iter_pool_sockets(client: Any):
             yield sock
 
 
-def cleanup_dead_connections(agent) -> bool:
+def cleanup_dead_connections(agent: AIAgent) -> bool:
     """Detect and clean up dead TCP connections on the primary client.
 
     Inspects the httpx connection pool for sockets in unhealthy states
@@ -2479,7 +2482,7 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 
-def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+def apply_pending_steer_to_tool_results(agent: AIAgent, messages: list, num_tool_msgs: int) -> None:
     """Append any pending /steer text to the last tool result in this turn.
 
     Called at the end of a tool-call batch, before the next API call.

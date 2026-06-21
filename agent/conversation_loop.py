@@ -25,7 +25,10 @@ import ssl
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from run_agent import AIAgent
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
@@ -170,7 +173,7 @@ def _nous_entitlement_message(capability: str) -> str:
         return ""
 
 
-def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
+def _print_nous_entitlement_guidance(agent: AIAgent, capability: str) -> bool:
     message = _nous_entitlement_message(capability)
     if not message:
         return False
@@ -236,7 +239,7 @@ def _print_billing_or_entitlement_guidance(
     return True
 
 
-def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
+def _try_refresh_nous_paid_entitlement_credentials(agent: AIAgent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
@@ -251,7 +254,7 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
-def _restore_or_build_system_prompt(agent, system_message, conversation_history):
+def _restore_or_build_system_prompt(agent: AIAgent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
     Mutates ``agent._cached_system_prompt`` and persists a freshly-built
@@ -375,7 +378,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
 
-def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
+def _stored_prompt_matches_runtime(agent: AIAgent, prompt: str) -> bool:
     """Return False when the persisted Model/Provider lines are stale."""
 
     def line_value(label: str) -> str:

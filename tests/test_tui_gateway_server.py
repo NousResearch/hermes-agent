@@ -4968,7 +4968,8 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
 def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     """Regression guard: /compress side effect must not hold history_lock
     when calling _compress_session_history (the helper snapshots under
-    the same non-reentrant lock internally)."""
+    the same non-reentrant lock internally). It also returns a before/after
+    summary string (#46686)."""
     import types
 
     seen = {"compress": False, "sync": False}
@@ -4977,7 +4978,9 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     def _fake_compress(session, focus_topic=None, **_kw):
         seen["compress"] = True
         assert not session["history_lock"].locked()
-        return (0, {"total": 0})
+        # Simulate a real compaction shrinking the transcript.
+        session["history"] = [{"role": "user", "content": "summary"}]
+        return (1, {"total": 0})
 
     def _fake_sync(_sid, _session):
         seen["sync"] = True
@@ -4988,14 +4991,20 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
 
     session = _session(running=False)
-    session["agent"] = types.SimpleNamespace(model="x")
+    session["history"] = [
+        {"role": "user", "content": f"m{i}"} for i in range(6)
+    ]
+    session["agent"] = types.SimpleNamespace(model="x", _cached_system_prompt="", tools=None)
 
     warning = server._mirror_slash_side_effects("sid", session, "/compress")
 
-    assert warning == ""
+    # Now returns a before/after summary (was "" before #46686).
     assert seen["compress"]
     assert seen["sync"]
     assert ("session.info", "sid", {"model": "x"}) in emitted
+    assert "Compressed:" in warning
+    assert "6 → 1 messages" in warning
+    assert "tokens" in warning
 
 
 # ---------------------------------------------------------------------------

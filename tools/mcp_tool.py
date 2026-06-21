@@ -3087,6 +3087,49 @@ def _load_mcp_config() -> Dict[str, dict]:
 # Server connection helper
 # ---------------------------------------------------------------------------
 
+def _try_reconnect_disconnected_server(server_name: str):
+    """Best-effort recovery for stale generated MCP wrappers.
+
+    A Hermes process can still have registered ``mcp_<server>_*`` tool schemas
+    after the long-lived client session for that server has disappeared or been
+    left half-closed.  Server-side watchdogs may prove the remote endpoint is
+    healthy, but these generated wrappers would previously return
+    ``MCP server '<name>' is not connected`` until the whole gateway/session was
+    reloaded.  When a wrapper is invoked in that state, attempt one in-process
+    rediscovery before surfacing the error.
+    """
+    with _lock:
+        existing = _servers.get(server_name)
+        if existing is not None and existing.session is not None:
+            return existing
+        if server_name in _server_connecting:
+            return None
+
+        configured = _load_mcp_config()
+        cfg = configured.get(server_name) if isinstance(configured, dict) else None
+        if not isinstance(cfg, dict):
+            return None
+        if not _parse_boolish(cfg.get("enabled", True), default=True):
+            return None
+
+        # Remove stale placeholders so register_mcp_servers()/discover_mcp_tools()
+        # treats this as a fresh connection attempt.  Registered tool wrappers stay
+        # in the registry; this only clears the dead client session state.
+        _servers.pop(server_name, None)
+        _server_connect_errors.pop(server_name, None)
+        _server_error_counts.pop(server_name, None)
+        _server_breaker_opened_at.pop(server_name, None)
+
+    logger.info("MCP server '%s' is disconnected; attempting in-process rediscovery", server_name)
+    try:
+        discover_mcp_tools()
+    except Exception as exc:
+        logger.warning("MCP rediscovery for '%s' failed: %s", server_name, exc)
+
+    with _lock:
+        recovered = _servers.get(server_name)
+        return recovered if recovered is not None and recovered.session is not None else None
+
 async def _connect_server(name: str, config: dict) -> MCPServerTask:
     """Create an MCPServerTask, start it, and return when ready.
 
@@ -3144,10 +3187,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            _bump_server_error(server_name)
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            server = _try_reconnect_disconnected_server(server_name)
+            if not server or not server.session:
+                _bump_server_error(server_name)
+                return json.dumps({
+                    "error": f"MCP server '{server_name}' is not connected"
+                }, ensure_ascii=False)
 
         async def _call():
             async with server._rpc_lock:

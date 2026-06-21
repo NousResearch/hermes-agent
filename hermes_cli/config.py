@@ -4535,6 +4535,24 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
+    # ── model section sub-key completeness (when custom_providers present) ──
+    if cp and isinstance(model_cfg, dict):
+        if not model_cfg.get("provider"):
+            issues.append(ConfigIssue(
+                "warning",
+                "model section is missing 'provider' — Hermes will fall through to auto-detection",
+                "Add: model:\n"
+                "  provider: custom\n"
+                "  (or the name of your custom_providers entry)",
+            ))
+        if not model_cfg.get("default") and not model_cfg.get("model"):
+            issues.append(ConfigIssue(
+                "warning",
+                "model section is missing 'default' — Hermes won't know which model to use",
+                "Add: model:\n"
+                "  default: your-model-name",
+            ))
+
     # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:
         if key.startswith("_"):

@@ -15361,8 +15361,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for queued in pending:
                     _deliver_bg_review_message(queued)
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
+            # Background review delivery is internal operational chatter by
+            # default. Owner-facing gateways should show the real assistant
+            # response only, unless an operator explicitly opts in to review
+            # summaries like "Self-improvement review: Skill ...".
+            try:
+                _deliver_bg_review_notices = bool(
+                    (_load_gateway_config().get("gateway", {}) or {}).get(
+                        "deliver_background_review_notices", False
+                    )
+                )
+            except Exception:
+                _deliver_bg_review_notices = False
+
             def _bg_review_send(message: str) -> None:
+                if not _deliver_bg_review_notices:
+                    return
                 if not _status_adapter or not _run_still_current():
                     return
                 if not _bg_review_release.is_set():
@@ -15372,7 +15386,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return
                 _deliver_bg_review_message(message)
 
-            agent.background_review_callback = _bg_review_send
+            agent.background_review_callback = (
+                _bg_review_send if _deliver_bg_review_notices else None
+            )
             # Register the release hook on the adapter so base.py's finally
             # block can fire it after delivering the main response.
             if _status_adapter and session_key:

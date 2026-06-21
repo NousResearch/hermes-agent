@@ -2511,6 +2511,10 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Background self-improvement review summaries are internal operational
+        # notices. Keep owner-facing gateways quiet by default; operators who
+        # want the old "Self-improvement review: ..." messages can opt in.
+        "deliver_background_review_notices": False,
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

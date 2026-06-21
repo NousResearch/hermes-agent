@@ -155,6 +155,12 @@ def build_gateway_parser(
     )
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
     gateway_install.add_argument(
+        "--service-type",
+        choices=["scheduled-task", "service"],
+        default=None,
+        help="Windows only: install as Scheduled Task (default) or Windows Service (requires admin)",
+    )
+    gateway_install.add_argument(
         "--system",
         action="store_true",
         help="Install as a Linux system-level service (starts at boot)",

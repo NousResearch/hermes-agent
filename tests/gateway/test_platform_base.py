@@ -10,11 +10,66 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    cache_audio_from_bytes,
+    cache_image_from_bytes,
+    cache_video_from_bytes,
     safe_url_for_log,
     utf16_len,
+    validate_inbound_media_size,
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+
+
+class TestInboundMediaSizeCap:
+    """gateway.max_inbound_media_bytes caps inbound media buffered into RAM (#13145)."""
+
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+
+    def test_default_cap_is_128_mib(self, monkeypatch):
+        # No config override -> default. Patch loader to return empty config.
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: base.DEFAULT_INBOUND_MEDIA_MAX_BYTES)
+        assert base.DEFAULT_INBOUND_MEDIA_MAX_BYTES == 128 * 1024 * 1024
+
+    def test_image_bytes_rejected_when_oversized(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
+        with pytest.raises(ValueError, match="Inbound image payload is too large"):
+            cache_image_from_bytes(self._PNG, ext=".png")
+
+    def test_audio_bytes_rejected_when_oversized(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 4)
+        with pytest.raises(ValueError, match="Inbound audio payload is too large"):
+            cache_audio_from_bytes(b"x" * 8, ext=".ogg")
+
+    def test_video_bytes_rejected_when_oversized(self, monkeypatch):
+        # Video was the gap in the original report — verify it's covered.
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 4)
+        with pytest.raises(ValueError, match="Inbound video payload is too large"):
+            cache_video_from_bytes(b"x" * 8, ext=".mp4")
+
+    def test_legit_image_accepted_under_cap(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 128 * 1024 * 1024)
+        path = cache_image_from_bytes(self._PNG, ext=".png")
+        assert os.path.exists(path)
+        assert os.path.getsize(path) == len(self._PNG)
+
+    def test_cap_of_zero_disables_check(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 0)
+        # A would-be-oversized video passes through when the cap is disabled.
+        path = cache_video_from_bytes(b"x" * 5000, ext=".mp4")
+        assert os.path.exists(path)
+
+    def test_validate_helper_respects_explicit_max_bytes(self):
+        # max_bytes arg overrides the configured cap.
+        validate_inbound_media_size(100, media_type="image", max_bytes=200)  # ok
+        with pytest.raises(ValueError, match="too large"):
+            validate_inbound_media_size(300, media_type="image", max_bytes=200)
 
 
 class TestSecretCaptureGuidance:

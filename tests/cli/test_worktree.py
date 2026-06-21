@@ -799,39 +799,94 @@ class TestEdgeCases:
 
 
 class TestCLIFlagLogic:
-    """Test the flag/config OR logic from main()."""
+    """Test the flag/config OR logic from main().
+
+    Worktree isolation is ON by default (config default = True).  Opt out
+    with --no-worktree or ``worktree: false`` in config.
+    """
 
     def test_worktree_flag_triggers(self):
         """--worktree flag should trigger worktree creation."""
         worktree = True
         w = False
+        no_worktree = False
         config_worktree = False
-        use_worktree = worktree or w or config_worktree
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
         assert use_worktree
 
     def test_w_flag_triggers(self):
         """-w flag should trigger worktree creation."""
         worktree = False
         w = True
+        no_worktree = False
         config_worktree = False
-        use_worktree = worktree or w or config_worktree
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
         assert use_worktree
 
     def test_config_triggers(self):
         """worktree: true in config should trigger worktree creation."""
         worktree = False
         w = False
+        no_worktree = False
         config_worktree = True
-        use_worktree = worktree or w or config_worktree
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
         assert use_worktree
 
-    def test_none_set_no_trigger(self):
-        """No flags and no config should not trigger."""
+    def test_default_on_when_no_flags(self):
+        """With no flags and no explicit config, worktree should be ON.
+
+        The config default is True, so the absence of the key still means on.
+        """
         worktree = False
         w = False
-        config_worktree = False
-        use_worktree = worktree or w or config_worktree
+        no_worktree = False
+        config_worktree = True  # CLI_CONFIG.get("worktree", True) → True
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
+        assert use_worktree
+
+    def test_no_worktree_flag_opts_out(self):
+        """--no-worktree should disable worktree even when default is on."""
+        worktree = False
+        w = False
+        no_worktree = True
+        config_worktree = True  # default-on
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
         assert not use_worktree
+
+    def test_no_worktree_flag_overrides_explicit_worktree(self):
+        """--no-worktree should win even if --worktree is also passed."""
+        worktree = True
+        w = False
+        no_worktree = True
+        config_worktree = True
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
+        assert not use_worktree
+
+    def test_config_false_opts_out(self):
+        """worktree: false in config should disable worktree by default."""
+        worktree = False
+        w = False
+        no_worktree = False
+        config_worktree = False  # explicit opt-out in config
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
+        assert not use_worktree
+
+    def test_worktree_flag_overrides_config_false(self):
+        """--worktree flag should override worktree: false in config."""
+        worktree = True
+        w = False
+        no_worktree = False
+        config_worktree = False  # opt-out in config
+        explicit = worktree or w
+        use_worktree = (explicit or config_worktree) and not no_worktree
+        assert use_worktree
 
 
 class TestTerminalCWDIntegration:
@@ -1011,3 +1066,40 @@ class TestSystemPromptInjection:
         assert info["repo_root"] in wt_note
         assert "isolated git worktree" in wt_note
         assert "commit and push" in wt_note
+
+
+class TestConfigDefault:
+    """Verify the config-level default for worktree isolation is True.
+
+    This is an E2E test against the real config loader, not a logic replay.
+    """
+
+    def test_config_defaults_to_true(self):
+        """CLI_CONFIG should have worktree=True by default (no user config).
+
+        The test conftest redirects HERMES_HOME to a temp dir with no
+        config.yaml, so load_cli_config() falls back to built-in defaults.
+        """
+        from cli import CLI_CONFIG
+
+        assert CLI_CONFIG.get("worktree") is True
+
+    def test_config_false_overrides_default(self, tmp_path, monkeypatch):
+        """worktree: false in config.yaml should override the default."""
+        import importlib
+
+        # Create a minimal HERMES_HOME with a config that opts out
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("worktree: false\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "0")
+
+        # Reload cli to pick up the new config
+        import cli
+        importlib.reload(cli)
+        assert cli.CLI_CONFIG.get("worktree") is False
+
+        # Restore the module so other tests aren't affected
+        importlib.reload(cli)

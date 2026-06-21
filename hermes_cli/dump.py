@@ -242,8 +242,16 @@ def _config_overrides(config: dict) -> dict[str, str]:
             overrides["security.allow_private_urls"] = (
                 "true (SSRF private-IP blocking DISABLED)"
             )
-    except Exception:
+    except ImportError:
+        # url_safety unavailable (e.g. trimmed install) — nothing to report.
         pass
+    except Exception as exc:
+        # The resolver itself failed. Don't silently hide it: a swallowed error
+        # here would defeat the purpose of surfacing the SSRF posture during
+        # support/security triage, so report it explicitly.
+        overrides["security.allow_private_urls"] = (
+            f"unknown ({type(exc).__name__}: error resolving effective policy)"
+        )
 
     # Toolsets (if different from default)
     default_toolsets = DEFAULT_CONFIG.get("toolsets", [])

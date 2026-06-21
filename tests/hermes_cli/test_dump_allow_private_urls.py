@@ -41,7 +41,9 @@ def test_dump_surfaces_security_config_key(monkeypatch, capsys, tmp_path):
 
     out = _run(monkeypatch, capsys, tmp_path)
 
-    assert "allow_private_urls" in out
+    # Must report under the effective/preferred key, never the legacy one.
+    assert "security.allow_private_urls" in out
+    assert "browser.allow_private_urls" not in out
     assert "DISABLED" in out
 
 
@@ -53,7 +55,10 @@ def test_dump_surfaces_env_var(monkeypatch, capsys, tmp_path):
 
     out = _run(monkeypatch, capsys, tmp_path)
 
-    assert "allow_private_urls" in out
+    # Even when the env var drives the effective policy, the dump must report it
+    # under the preferred key, not the legacy one.
+    assert "security.allow_private_urls" in out
+    assert "browser.allow_private_urls" not in out
     assert "DISABLED" in out
 
 
@@ -66,3 +71,29 @@ def test_dump_silent_when_locked_down(monkeypatch, capsys, tmp_path):
     out = _run(monkeypatch, capsys, tmp_path)
 
     assert "allow_private_urls" not in out
+
+
+def test_dump_reports_unknown_when_resolver_errors(monkeypatch, capsys, tmp_path):
+    """A resolver failure must surface as an explicit unknown/error value.
+
+    Previously the resolver call was wrapped in ``except Exception: pass``, so a
+    runtime failure resolving the effective SSRF policy was silently hidden —
+    defeating the purpose of surfacing this posture during support/security
+    triage. The dump must now report an explicit ``unknown (...)`` value.
+    """
+    from hermes_cli.config import get_hermes_home
+    from tools import url_safety
+
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    _seed(get_hermes_home())
+
+    def _boom() -> bool:
+        raise RuntimeError("simulated resolver failure")
+
+    monkeypatch.setattr(url_safety, "_global_allow_private_urls", _boom)
+
+    out = _run(monkeypatch, capsys, tmp_path)
+
+    assert "security.allow_private_urls" in out
+    assert "unknown" in out
+    assert "RuntimeError" in out

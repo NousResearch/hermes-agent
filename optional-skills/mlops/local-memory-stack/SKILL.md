@@ -102,19 +102,19 @@ for entry in results:
 ### REST API
 
 ```bash
-# Start the server
+# Start the server (default port 8901, avoids conflict with Hermes ChromaDB on 8900)
 python -m local_memory_stack.server
 
 # Write
-curl -X POST http://localhost:8900/write \
+curl -X POST http://localhost:8901/write \
   -H "Content-Type: application/json" \
   -d '{"text": "User prefers dark theme", "source": "conversation"}'
 
 # Search
-curl "http://localhost:8900/search?query=theme+preference&top_k=3"
+curl "http://localhost:8901/search?query=theme+preference&top_k=3"
 
 # Health check
-curl http://localhost:8900/health
+curl http://localhost:8901/health
 ```
 
 ## Architecture
@@ -179,11 +179,11 @@ BGE-M3 (2.2GB) and GLiNER (1.1GB) download automatically on first run. Ensure st
 
 On Apple Silicon, BGE-M3 uses ~2GB GPU memory. On CUDA, ensure sufficient VRAM. Falls back to CPU if GPU unavailable.
 
-### ⚠️ Port 8900 Conflict
+### ⚠️ Port Conflict with Hermes ChromaDB
 
-Default REST API port is 8900. Change with:
+Hermes Agent's built-in memory uses port **8900** (ChromaDB). This skill defaults to **8901** to avoid conflicts. Change with:
 ```bash
-python -m local_memory_stack.server --port 8901
+python -m local_memory_stack.server --port 9000
 ```
 
 ### ⚠️ Quality Gate Filters Aggressively
@@ -201,19 +201,19 @@ Disable with `quality_gate=False` if needed.
 
 ```bash
 # 1. Check health
-curl http://localhost:8900/health
+curl http://localhost:8901/health
 # Expected: {"status": "ok"}
 
 # 2. Write and search
-curl -X POST http://localhost:8900/write \
+curl -X POST http://localhost:8901/write \
   -H "Content-Type: application/json" \
   -d '{"text": "Test memory entry", "source": "test"}'
 
-curl "http://localhost:8900/search?query=test&top_k=1"
+curl "http://localhost:8901/search?query=test&top_k=1"
 # Expected: Results with "Test memory entry"
 
 # 3. Check stats
-curl http://localhost:8900/stats
+curl http://localhost:8901/stats
 # Expected: {"total_memories": N, ...}
 ```
 

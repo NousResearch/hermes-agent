@@ -1,0 +1,7 @@
+name: skill-graph
+version: 1.0.0
+description: "Knowledge graph for skills discovery — skill_graph_search + skill_load tools, configurable source_dirs, per-profile DB."
+author: "Hauzer S. Lee"
+hooks:
+  - on_session_start
+  - post_tool_call

@@ -1,6 +1,6 @@
 """CLI commands for Honcho integration management.
 
-Handles: hermes honcho setup | status | sessions | map | peer
+Handles: hermes honcho setup | status | sessions | resolve-session | map | peer
 """
 
 from __future__ import annotations
@@ -1167,6 +1167,40 @@ def cmd_sessions(args) -> None:
     print()
 
 
+def cmd_resolve_session(args) -> None:
+    """Resolve the active Honcho session key and compatibility candidates."""
+    try:
+        from plugins.memory.honcho.client import HonchoClientConfig
+        hcfg = HonchoClientConfig.from_global_config(host=_host_key())
+    except Exception as e:
+        print(f"  Config error: {e}\n")
+        return
+
+    cwd = getattr(args, "cwd", None) or os.getcwd()
+    resolve_kwargs = {
+        "cwd": cwd,
+        "session_title": getattr(args, "session_title", None),
+        "session_id": getattr(args, "session_id", None),
+        "gateway_session_key": getattr(args, "gateway_session_key", None),
+    }
+    primary = hcfg.resolve_session_name(**resolve_kwargs)
+    candidates = hcfg.resolve_session_name_candidates(**resolve_kwargs)
+
+    print("\nHoncho session resolution\n" + "─" * 40)
+    print(f"  CWD:            {cwd}")
+    print(f"  Strategy:       {hcfg.session_strategy}")
+    print(f"  Primary:        {primary or '(none)'}")
+    print("\n  Candidates:")
+    if not candidates:
+        print("    (none)")
+    else:
+        for source, key in candidates:
+            marker = "*" if key == primary else " "
+            print(f"  {marker} {source:<19} {key}")
+        print("\n  * active key under current precedence; other rows are plausible legacy/readback keys")
+    print()
+
+
 def cmd_map(args) -> None:
     """Map current directory to a Honcho session name."""
     if not args.session_name:
@@ -1685,6 +1719,8 @@ def honcho_command(args) -> None:
         cmd_peers(args)
     elif sub == "sessions":
         cmd_sessions(args)
+    elif sub == "resolve-session":
+        cmd_resolve_session(args)
     elif sub == "map":
         cmd_map(args)
     elif sub == "peer":
@@ -1707,7 +1743,7 @@ def honcho_command(args) -> None:
         cmd_sync(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
+        print("  Available: status, sessions, resolve-session, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
 
 
 def register_cli(subparser) -> None:
@@ -1737,6 +1773,27 @@ def register_cli(subparser) -> None:
 
     subs.add_parser("peers", help="Show peer identities across all profiles")
     subs.add_parser("sessions", help="List known Honcho session mappings")
+
+    resolve_parser = subs.add_parser(
+        "resolve-session",
+        help="Resolve the Honcho session key and plausible legacy/readback keys",
+    )
+    resolve_parser.add_argument(
+        "--cwd", metavar="PATH",
+        help="Working directory to resolve from (default: current directory)",
+    )
+    resolve_parser.add_argument(
+        "--session-title", metavar="TITLE",
+        help="Hermes display title to include as a legacy/non-gateway candidate",
+    )
+    resolve_parser.add_argument(
+        "--session-id", metavar="ID",
+        help="Raw Hermes session id to include as a per-session candidate",
+    )
+    resolve_parser.add_argument(
+        "--gateway-session-key", metavar="KEY",
+        help="Gateway/WebUI session key to resolve as the canonical gateway candidate",
+    )
 
     map_parser = subs.add_parser(
         "map", help="Map current directory to a Honcho session name (no arg = list mappings)",

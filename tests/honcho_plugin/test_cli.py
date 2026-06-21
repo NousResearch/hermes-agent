@@ -179,6 +179,49 @@ class TestCmdSetupLocalJwt:
         assert not host_block.get("apiKey")
 
 
+class TestCmdResolveSession:
+    def test_reports_primary_and_compatibility_candidates(self, monkeypatch, capsys):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        class FakeConfig:
+            session_strategy = "per-session"
+
+            def resolve_session_name(self, cwd=None, session_title=None, session_id=None, gateway_session_key=None):
+                assert cwd == "/some/dir"
+                assert session_title == "pretty title"
+                assert session_id == "20260309_175514_9797dd"
+                assert gateway_session_key == "webui:session:abc123"
+                return "webui-session-abc123"
+
+            def resolve_session_name_candidates(self, cwd=None, session_title=None, session_id=None, gateway_session_key=None):
+                return [
+                    ("gateway_session_key", "webui-session-abc123"),
+                    ("session_title", "pretty-title"),
+                    ("session_id", "20260309_175514_9797dd"),
+                    ("directory", "dir"),
+                ]
+
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: FakeConfig(),
+        )
+
+        honcho_cli.cmd_resolve_session(SimpleNamespace(
+            cwd="/some/dir",
+            session_title="pretty title",
+            session_id="20260309_175514_9797dd",
+            gateway_session_key="webui:session:abc123",
+        ))
+
+        out = capsys.readouterr().out
+        assert "Primary:        webui-session-abc123" in out
+        assert "gateway_session_key" in out
+        assert "session_title" in out
+        assert "pretty-title" in out
+        assert "20260309_175514_9797dd" in out
+
+
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
         import plugins.memory.honcho.cli as honcho_cli

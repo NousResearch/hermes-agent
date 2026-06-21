@@ -14,6 +14,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
+from plugins.memory.honcho import HonchoMemoryProvider
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -155,10 +156,82 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_id=None)
         assert result == "dir"
 
-    def test_title_beats_session_id(self):
+    def test_title_still_beats_session_id_without_gateway_key(self):
         cfg = HonchoClientConfig(session_strategy="per-session")
         result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
         assert result == "my-title"
+
+    def test_gateway_key_beats_title_for_gateway_sessions(self):
+        cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="pretty title",
+            session_id="20260309_175514_9797dd",
+            gateway_session_key="webui:session:abc123",
+        )
+        assert result == "webui-session-abc123"
+
+    def test_gateway_key_with_peer_prefix(self):
+        cfg = HonchoClientConfig(
+            session_strategy="per-session",
+            peer_name="eri",
+            session_peer_prefix=True,
+        )
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="pretty title",
+            session_id="20260309_175514_9797dd",
+            gateway_session_key="webui:session:abc123",
+        )
+        assert result == "eri-webui-session-abc123"
+
+    def test_manual_override_still_beats_gateway_key_and_title(self):
+        cfg = HonchoClientConfig(
+            session_strategy="per-session",
+            sessions={"/some/dir": "manual-name"},
+        )
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="pretty title",
+            session_id="20260309_175514_9797dd",
+            gateway_session_key="webui:session:abc123",
+        )
+        assert result == "manual-name"
+
+    def test_invalid_gateway_key_falls_back_to_title(self):
+        cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="pretty title",
+            session_id="20260309_175514_9797dd",
+            gateway_session_key="!!! ###",
+        )
+        assert result == "pretty-title"
+
+    def test_overlong_gateway_key_with_peer_prefix_is_limited(self):
+        cfg = HonchoClientConfig(
+            session_strategy="per-session",
+            peer_name="eri",
+            session_peer_prefix=True,
+        )
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            gateway_session_key="webui:" + "x" * 180,
+        )
+        assert result.startswith("eri-webui-")
+        assert len(result) <= cfg._HONCHO_SESSION_ID_MAX_LEN
+
+    def test_session_name_candidates_include_gateway_primary_and_legacy_title(self):
+        cfg = HonchoClientConfig(session_strategy="per-session")
+        candidates = cfg.resolve_session_name_candidates(
+            "/some/dir",
+            session_title="pretty title",
+            session_id="20260309_175514_9797dd",
+            gateway_session_key="webui:session:abc123",
+        )
+        assert candidates[0] == ("gateway_session_key", "webui-session-abc123")
+        assert ("session_title", "pretty-title") in candidates
+        assert ("session_id", "20260309_175514_9797dd") in candidates
 
     def test_manual_beats_session_id(self):
         cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
@@ -226,6 +299,77 @@ class TestSaveRouting:
             assert mock_flush.call_count == 0
             mgr.save(sess)  # turn 5
             assert mock_flush.call_count == 1
+
+
+class _CaptureSyncManager:
+    def __init__(self):
+        self.requested_session_keys = []
+        self.flushed_session_keys = []
+        self.sessions = {}
+
+    def get_or_create(self, session_key: str):
+        self.requested_session_keys.append(session_key)
+        if session_key not in self.sessions:
+            self.sessions[session_key] = _make_session(
+                key=session_key,
+                honcho_session_id=session_key,
+            )
+        return self.sessions[session_key]
+
+    def _flush_session(self, session):
+        self.flushed_session_keys.append(session.key)
+        return True
+
+
+class TestHonchoProviderSessionSwitch:
+    def _make_ready_provider(self) -> tuple[HonchoMemoryProvider, _CaptureSyncManager]:
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(
+            session_strategy="per-session",
+            write_frequency="turn",
+            enabled=True,
+            api_key="test-key",
+        )
+        manager = _CaptureSyncManager()
+        provider._manager = manager
+        provider._session_initialized = True
+        provider._session_key = provider._resolve_session_key(provider._config, "old-session")
+        return provider, manager
+
+    def test_session_switch_updates_cached_key_for_later_sync_turns(self):
+        provider, manager = self._make_ready_provider()
+
+        provider.sync_turn("before", "old response")
+        provider._sync_thread.join(timeout=2)
+
+        provider.on_session_switch(
+            "new-session",
+            parent_session_id="old-session",
+            reset=False,
+        )
+        provider.sync_turn("after", "new response")
+        provider._sync_thread.join(timeout=2)
+
+        assert manager.requested_session_keys == ["old-session", "new-session"]
+        assert manager.flushed_session_keys == ["old-session", "new-session"]
+        assert provider._session_key == "new-session"
+
+    def test_session_switch_prefers_gateway_key_over_title(self):
+        provider, manager = self._make_ready_provider()
+
+        provider.on_session_switch(
+            "new-session",
+            parent_session_id="old-session",
+            session_title="pretty title",
+            gateway_session_key="webui:session:abc123",
+            reset=False,
+        )
+        provider.sync_turn("after", "new response")
+        provider._sync_thread.join(timeout=2)
+
+        assert manager.requested_session_keys == ["webui-session-abc123"]
+        assert manager.flushed_session_keys == ["webui-session-abc123"]
+        assert provider._session_key == "webui-session-abc123"
 
 
 # ---------------------------------------------------------------------------

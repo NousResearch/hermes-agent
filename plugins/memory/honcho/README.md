@@ -199,16 +199,18 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 | Priority | Source | Example session name |
 |----------|--------|---------------------|
 | 1 | Manual map (`sessions` config) | `"myproject-main"` |
-| 2 | `/title` command (mid-session rename) | `"refactor-auth"` |
-| 3 | Gateway session key (Telegram, Discord, etc.) | `"agent-main-telegram-dm-8439114563"` |
+| 2 | Gateway session key (WebUI, Telegram, Discord, etc.) | `"agent-main-telegram-dm-8439114563"` |
+| 3 | `/title` command (display label / legacy non-gateway remap) | `"refactor-auth"` |
 | 4 | `per-session` strategy | Hermes session ID (`20260415_a3f2b1`) |
 | 5 | `per-repo` strategy | Git root directory name (`hermes-agent`) |
 | 6 | `per-directory` strategy | Current directory basename (`src`) |
 | 7 | `global` strategy | Workspace name (`hermes`) |
 
-Gateway platforms always resolve via priority 3 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting only affects CLI sessions.
+Gateway/WebUI turns always resolve via priority 2 (per-chat isolation) when a `gateway_session_key` is present, regardless of `sessionStrategy` or display title. The strategy setting only affects non-gateway sessions and gateway fallbacks when no valid gateway key is provided.
 
-If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agent`.
+If `sessionPeerPrefix` is `true`, the peer name is prepended to whichever source wins: `alice-agent-main-telegram-dm-8439114563`.
+
+For diagnostics after a precedence change, run `hermes honcho resolve-session --gateway-session-key <key> --session-title <title> --session-id <id>` to print the active key plus plausible legacy/readback keys (title-derived, raw session-id, directory, etc.) without migrating or deleting data.
 
 #### What each strategy produces
 

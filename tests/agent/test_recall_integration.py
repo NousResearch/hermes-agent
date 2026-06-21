@@ -312,8 +312,14 @@ def test_finalize_turn_skips_recall_on_interrupt():
 
 def test_default_config_has_semantic_recall_disabled():
     from hermes_cli.config import DEFAULT_CONFIG
+    # Recall is opt-in: enabled stays False by default so users
+    # don't pay the embedding cost unless they flip the flag.
     assert DEFAULT_CONFIG["memory"]["semantic_recall"]["enabled"] is False
-    assert DEFAULT_CONFIG["memory"]["semantic_recall"]["backend"] == "noop"
+    # Backend defaults to fastembed (no torch dep, ~25 MB model
+    # download on first use) rather than noop — this means users
+    # who flip `enabled=true` get a working recall immediately
+    # without manually picking a backend.
+    assert DEFAULT_CONFIG["memory"]["semantic_recall"]["backend"] == "fastembed"
 
 
 def test_recall_off_by_default_does_not_break_agent_init(monkeypatch):

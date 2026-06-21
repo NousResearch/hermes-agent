@@ -34,11 +34,11 @@ Then start a new session. The first turn will trigger a one-time download of the
 
 | Backend | Cost | Notes |
 |---|---|---|
-| `noop` | Free | Default. Disables embedding. Top-K is always empty. No-op fallback when other backends fail to load. |
-| `numpy` | ~90 MB model download, ~500 MB disk for torch | Uses `sentence-transformers` + `all-MiniLM-L6-v2`. First-call latency is ~1–3s (model load); subsequent turns are ~5–50 ms per embed. Lazy import — torch only loads when recall is actually used. |
-| `sqlite-vec` | Requires sqlite-vec | Optional. Currently a no-op alias for `numpy`; reserved for future HNSW-backed retrieval once corpus size grows past ~10k turns. |
+| `noop` | Free | Default if explicitly chosen. Disables embedding. Top-K is always empty. No-op fallback when other backends fail to load. |
+| `fastembed` | ~25 MB model download on first use, no torch | **Recommended default.** Uses `fastembed` + `BAAI/bge-small-en-v1.5` (384-dim). CPU-fast (~5–20 ms per text). Fully offline after first download. Pure ONNX runtime — no torch dependency. |
+| `numpy` | ~500 MB total via torch | Uses `sentence-transformers` + `all-MiniLM-L6-v2`. Cosine sim over real vectors. Heavy install — only use if you already have torch. |
 
-If `numpy` is configured but `sentence-transformers` / `torch` isn't installed, recall silently degrades to noop — no error, no injection. Run `hermes doctor` to see the current state.
+If the configured backend is unavailable (e.g. `fastembed` not installed, network down on first use), recall silently degrades to noop — no error, no injection. Run `hermes doctor` to see the current state.
 
 ## Configuration
 
@@ -48,8 +48,8 @@ All knobs live under `memory.semantic_recall.*` in `~/.hermes/config.yaml`:
 memory:
   semantic_recall:
     enabled: false           # turn the feature on
-    backend: "noop"          # "noop" | "numpy"
-    model: "all-MiniLM-L6-v2"
+    backend: "fastembed"     # "noop" | "fastembed" | "numpy"
+    model: "BAAI/bge-small-en-v1.5"
     top_k: 5                 # max turns recalled per turn
     max_turns: 200           # sliding-window size of the on-disk store
     max_tokens: 1500         # hard cap on the recall block size

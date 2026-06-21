@@ -1915,19 +1915,21 @@ DEFAULT_CONFIG = {
         # memory_enabled / USER.md — this is a per-session turn-recall
         # surface, not durable cross-session memory.
         #   enabled  (default false) — turn on automatic recall injection.
-        #   backend  (default "noop") — "noop" disables embedding (cheapest),
+        #   backend  (default "fastembed") — "noop" disables embedding,
+        #                              "fastembed" downloads a 25 MB ONNX
+        #                              model on first use (no torch dep),
         #                              "numpy" uses sentence-transformers
-        #                              (downloads ~90 MB model on first use).
+        #                              (~500 MB total via torch).
         #   top_k    (default 5)      — number of recalled turns per turn.
         #   max_turns (default 200)   — sliding-window size of the on-disk store.
         #   max_tokens (default 1500) — hard cap on the recall block size.
-        # When backend is "numpy" but sentence-transformers is not installed
-        # (or its torch dependency fails to load), recall silently degrades to
-        # noop — no error, no injection.
+        # When the configured backend is unavailable (e.g. fastembed
+        # not installed, network down on first use), recall silently
+        # degrades to noop — no error, no injection.
         "semantic_recall": {
             "enabled": False,
-            "backend": "noop",
-            "model": "all-MiniLM-L6-v2",
+            "backend": "fastembed",
+            "model": "BAAI/bge-small-en-v1.5",
             "top_k": 5,
             "max_turns": 200,
             "max_tokens": 1500,

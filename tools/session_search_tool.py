@@ -31,6 +31,8 @@ support.
 
 import json
 import logging
+import os
+from importlib import import_module
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -38,6 +40,94 @@ from typing import Any, Dict, List, Optional, Union
 # delegate subagent runs are tagged "subagent" — neither belongs in the
 # user's session history.
 _HIDDEN_SESSION_SOURCES = ("subagent", "tool")
+
+
+class _SessionSearchEmbedder:
+    """Small OpenAI-compatible embedding client for opt-in semantic search."""
+
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        base_url: str,
+        api_key: str,
+        timeout: int = 30,
+        batch_size: int = 32,
+    ):
+        self.provider = provider or "openai"
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.timeout = timeout
+        self.batch_size = max(1, min(int(batch_size or 32), 128))
+
+    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        OpenAI = import_module("openai").OpenAI
+
+        client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url or None,
+            timeout=self.timeout,
+            max_retries=0,
+        )
+        vectors: List[List[float]] = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i:i + self.batch_size]
+            resp = client.embeddings.create(model=self.model, input=batch)
+            data = sorted(resp.data, key=lambda item: item.index)
+            vectors.extend([list(item.embedding) for item in data])
+        return vectors
+
+
+def _load_semantic_embedder():
+    """Resolve the semantic embedding profile, returning (embedder, reason)."""
+    cfg: Dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config
+        loaded = load_config() or {}
+        cfg = ((loaded.get("session_search") or {}).get("semantic") or {})
+    except Exception as exc:
+        logging.debug("session_search semantic config load failed: %s", exc, exc_info=True)
+
+    enabled = bool(cfg.get("enabled")) or os.getenv("HERMES_SESSION_SEARCH_SEMANTIC") == "1"
+    if not enabled:
+        return None, "semantic search is disabled; set session_search.semantic.enabled=true"
+
+    model = (cfg.get("model") or os.getenv("HERMES_SESSION_SEARCH_EMBEDDING_MODEL") or "").strip()
+    if not model:
+        return None, "session_search.semantic.model is not configured"
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return None, "no embedding API key configured (set OPENAI_API_KEY)"
+
+    return _SessionSearchEmbedder(
+        provider=(cfg.get("provider") or "openai"),
+        model=model,
+        base_url=(cfg.get("base_url") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"),
+        api_key=api_key,
+        timeout=int(cfg.get("timeout") or 30),
+        batch_size=int(cfg.get("batch_size") or 32),
+    ), None
+
+
+def _semantic_config_defaults() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+        cfg = (((load_config() or {}).get("session_search") or {}).get("semantic") or {})
+        return {
+            "backfill_limit": _clamp_semantic_backfill_limit(cfg.get("backfill_limit"), default=200),
+            "min_score": float(cfg.get("min_score") or 0.0),
+        }
+    except Exception:
+        return {"backfill_limit": 200, "min_score": 0.0}
+
+
+def _clamp_semantic_backfill_limit(value: Any, default: int = 200) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0, min(parsed, 1000))
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -224,7 +314,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: Optional[str] = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
@@ -270,9 +360,9 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
 def _scroll(
     db,
     session_id: str,
-    around_message_id: int,
-    window: int = 5,
-    current_session_id: str = None,
+    around_message_id: Union[int, str],
+    window: Union[int, str] = 5,
+    current_session_id: Optional[str] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -391,39 +481,32 @@ def _scroll(
     return json.dumps(response, ensure_ascii=False)
 
 
-def _discover(
+def _shape_discovery_response(
     db,
     query: str,
-    role_filter: Optional[List[str]],
+    raw_results: List[Dict[str, Any]],
     limit: int,
-    sort: Optional[str],
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
+    search_mode: str = "keyword",
+    warning: Optional[str] = None,
+    semantic_index: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
-    role_list = role_filter if role_filter else ["user", "assistant"]
-
-    try:
-        raw_results = db.search_messages(
-            query=query,
-            role_filter=role_list,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # widen so dedup-by-lineage can find distinct sessions
-            offset=0,
-            sort=sort,
-        )
-    except Exception as e:
-        logging.error("FTS5 search failed: %s", e, exc_info=True)
-        return tool_error(f"Search failed: {e}", success=False)
-
     if not raw_results:
-        return json.dumps({
+        payload: Dict[str, Any] = {
             "success": True,
             "mode": "discover",
             "query": query,
             "results": [],
             "count": 0,
             "message": "No matching sessions found.",
-        }, ensure_ascii=False)
+        }
+        if search_mode != "keyword":
+            payload["search_mode"] = search_mode
+        if warning:
+            payload["warning"] = warning
+        if semantic_index:
+            payload["semantic_index"] = semantic_index
+        return json.dumps(payload, ensure_ascii=False)
 
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
 
@@ -478,34 +561,239 @@ def _discover(
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }
+        if "semantic_score" in match_info:
+            entry["semantic_score"] = round(float(match_info["semantic_score"]), 6)
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    payload: Dict[str, Any] = {
         "success": True,
         "mode": "discover",
         "query": query,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
-    }, ensure_ascii=False)
+    }
+    if search_mode != "keyword":
+        payload["search_mode"] = search_mode
+    if warning:
+        payload["warning"] = warning
+    if semantic_index:
+        payload["semantic_index"] = semantic_index
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _discover_keyword(
+    db,
+    query: str,
+    role_filter: Optional[List[str]],
+    limit: int,
+    sort: Optional[str],
+    current_session_id: Optional[str] = None,
+    warning: Optional[str] = None,
+    search_mode: str = "keyword",
+) -> str:
+    """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
+    role_list = role_filter if role_filter else ["user", "assistant"]
+
+    try:
+        raw_results = db.search_messages(
+            query=query,
+            role_filter=role_list,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            limit=50,  # widen so dedup-by-lineage can find distinct sessions
+            offset=0,
+            sort=sort,
+        )
+    except Exception as e:
+        logging.error("FTS5 search failed: %s", e, exc_info=True)
+        return tool_error(f"Search failed: {e}", success=False)
+
+    return _shape_discovery_response(
+        db=db,
+        query=query,
+        raw_results=raw_results,
+        limit=limit,
+        current_session_id=current_session_id,
+        search_mode=search_mode,
+        warning=warning,
+    )
+
+
+def _backfill_semantic_index(
+    db,
+    embedder,
+    role_list: List[str],
+    limit: int,
+) -> Dict[str, Any]:
+    rows = db.messages_needing_semantic_index(
+        provider=embedder.provider,
+        model=embedder.model,
+        role_filter=role_list,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+        limit=limit,
+    )
+    if not rows:
+        stats = db.semantic_index_stats(
+            provider=embedder.provider,
+            model=embedder.model,
+            role_filter=role_list,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+        )
+        return {"backfilled": 0, **stats}
+
+    vectors = embedder.embed_texts([r["text"] for r in rows])
+    stored = 0
+    for row, vector in zip(rows, vectors):
+        db.upsert_message_embedding(
+            message_id=row["id"],
+            provider=embedder.provider,
+            model=embedder.model,
+            content_hash=row["content_hash"],
+            vector=vector,
+        )
+        stored += 1
+
+    stats = db.semantic_index_stats(
+        provider=embedder.provider,
+        model=embedder.model,
+        role_filter=role_list,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+    )
+    return {"backfilled": stored, **stats}
+
+
+def _discover_semantic(
+    db,
+    query: str,
+    role_filter: Optional[List[str]],
+    limit: int,
+    sort: Optional[str],
+    current_session_id: Optional[str] = None,
+    search_mode: str = "semantic",
+    backfill_semantic_index: bool = False,
+    semantic_backfill_limit: Optional[Union[int, str]] = None,
+    embedder=None,
+) -> str:
+    role_list = role_filter if role_filter else ["user", "assistant"]
+    defaults = _semantic_config_defaults()
+    if embedder is None:
+        embedder, unavailable = _load_semantic_embedder()
+    else:
+        unavailable = None
+    if embedder is None:
+        return _discover_keyword(
+            db=db,
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            sort=sort,
+            current_session_id=current_session_id,
+            warning=f"semantic search unavailable: {unavailable}; used keyword FTS instead",
+            search_mode="keyword_fallback",
+        )
+
+    semantic_index = None
+    if backfill_semantic_index:
+        try:
+            semantic_index = _backfill_semantic_index(
+                db=db,
+                embedder=embedder,
+                role_list=role_list,
+                limit=_clamp_semantic_backfill_limit(
+                    semantic_backfill_limit,
+                    default=int(defaults["backfill_limit"]),
+                ),
+            )
+        except Exception as exc:
+            logging.warning("semantic index backfill failed: %s", exc, exc_info=True)
+            return _discover_keyword(
+                db=db,
+                query=query,
+                role_filter=role_filter,
+                limit=limit,
+                sort=sort,
+                current_session_id=current_session_id,
+                warning=f"semantic backfill failed: {exc}; used keyword FTS instead",
+                search_mode="keyword_fallback",
+            )
+
+    try:
+        query_vector = embedder.embed_texts([query])[0]
+        raw_results = db.search_message_embeddings(
+            query_vector=query_vector,
+            provider=embedder.provider,
+            model=embedder.model,
+            role_filter=role_list,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            limit=50,
+            offset=0,
+            sort=sort,
+            min_score=float(defaults["min_score"]),
+        )
+    except Exception as exc:
+        logging.warning("semantic search failed: %s", exc, exc_info=True)
+        return _discover_keyword(
+            db=db,
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            sort=sort,
+            current_session_id=current_session_id,
+            warning=f"semantic search failed: {exc}; used keyword FTS instead",
+            search_mode="keyword_fallback",
+        )
+
+    if search_mode == "hybrid":
+        try:
+            keyword_results = db.search_messages(
+                query=query,
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                limit=50,
+                offset=0,
+                sort=sort,
+            )
+        except Exception:
+            keyword_results = []
+        seen_ids = {r.get("id") for r in raw_results}
+        raw_results.extend([r for r in keyword_results if r.get("id") not in seen_ids])
+
+    warning = None
+    if not raw_results and not backfill_semantic_index:
+        warning = "semantic index has no matching rows; pass backfill_semantic_index=true to index stored sessions"
+
+    return _shape_discovery_response(
+        db=db,
+        query=query,
+        raw_results=raw_results,
+        limit=limit,
+        current_session_id=current_session_id,
+        search_mode=search_mode,
+        warning=warning,
+        semantic_index=semantic_index,
+    )
 
 
 def session_search(
     query: str = "",
-    role_filter: str = None,
-    limit: int = 3,
+    role_filter: Optional[str] = None,
+    limit: Union[int, str] = 3,
     db=None,
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
     # Scroll shape
-    session_id: str = None,
-    around_message_id: int = None,
-    window: int = 5,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[Union[int, str]] = None,
+    window: Union[int, str] = 5,
     # Discovery shape
-    sort: str = None,
+    sort: Optional[str] = None,
+    search_mode: str = "keyword",
+    backfill_semantic_index: bool = False,
+    semantic_backfill_limit: Optional[Union[int, str]] = None,
+    embedder=None,
     # Cross-profile (any shape)
-    profile: str = None,
+    profile: Optional[str] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -606,7 +894,27 @@ def session_search(
         if candidate in ("newest", "oldest"):
             sort_norm = candidate
 
-    return _discover(
+    mode_norm = "keyword"
+    if isinstance(search_mode, str):
+        candidate = search_mode.strip().lower()
+        if candidate in ("keyword", "semantic", "hybrid"):
+            mode_norm = candidate
+
+    if mode_norm in ("semantic", "hybrid"):
+        return _discover_semantic(
+            db=db,
+            query=query.strip(),
+            role_filter=role_list,
+            limit=limit,
+            sort=sort_norm,
+            current_session_id=current_session_id,
+            search_mode=mode_norm,
+            backfill_semantic_index=bool(backfill_semantic_index),
+            semantic_backfill_limit=semantic_backfill_limit,
+            embedder=embedder,
+        )
+
+    return _discover_keyword(
         db=db,
         query=query.strip(),
         role_filter=role_list,
@@ -625,16 +933,18 @@ def check_session_search_requirements() -> bool:
         return False
 
 
-SESSION_SEARCH_SCHEMA = {
+SESSION_SEARCH_SCHEMA: Dict[str, Any] = {
     "name": "session_search",
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
-        "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
+        "Keyword retrieval is FTS5-backed over the SQLite message store. Semantic "
+        "and hybrid retrieval are opt-in and use the user's configured embedding "
+        "provider only when available; otherwise they fall back to keyword FTS. "
+        "No LLM summarization calls — every shape returns actual messages from the DB.\n\n"
         "FOUR CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"
-        "     Runs FTS5, dedupes hits by session lineage, returns the top N sessions. "
+        "     Runs keyword FTS by default, dedupes hits by session lineage, returns the top N sessions. "
         "Each result carries:\n"
         "       - session_id, title, when, source\n"
         "       - snippet: FTS5-highlighted match excerpt\n"
@@ -672,6 +982,12 @@ SESSION_SEARCH_SCHEMA = {
         "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "
         "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
         "(`deploy*`).\n\n"
+        "SEMANTIC SEARCH\n\n"
+        "  Pass search_mode='semantic' for vector-only retrieval, or 'hybrid' to put "
+        "semantic hits first and append exact keyword hits. Set "
+        "backfill_semantic_index=true when the user asks to index/backfill their "
+        "stored sessions. If embeddings are disabled or credentials are missing, "
+        "the tool returns keyword results with a warning instead of failing.\n\n"
         "WHEN TO USE\n\n"
         "  Reach for this on any \"what did we do about X\" / \"where did we leave Y\" / "
         "\"find the session where Z\" question — before gh, web search, or filesystem "
@@ -710,6 +1026,38 @@ SESSION_SEARCH_SCHEMA = {
                     "origin-shaped questions (\"how did X start\"). Ignored in scroll "
                     "and browse shapes."
                 ),
+            },
+            "search_mode": {
+                "type": "string",
+                "enum": ["keyword", "semantic", "hybrid"],
+                "description": (
+                    "Discovery shape only. 'keyword' (default) preserves existing "
+                    "FTS5 behavior. 'semantic' searches the optional local embedding "
+                    "index. 'hybrid' ranks semantic hits first and appends keyword "
+                    "hits. Semantic/hybrid gracefully fall back to keyword when the "
+                    "embedding provider or index is unavailable."
+                ),
+                "default": "keyword",
+            },
+            "backfill_semantic_index": {
+                "type": "boolean",
+                "description": (
+                    "Discovery shape only. When true with search_mode semantic/hybrid, "
+                    "embed a bounded batch of unindexed session messages before "
+                    "searching. Use for explicit user requests to enable/backfill "
+                    "semantic recall. Requires session_search.semantic config or "
+                    "HERMES_SESSION_SEARCH_SEMANTIC=1 plus OPENAI_API_KEY."
+                ),
+                "default": False,
+            },
+            "semantic_backfill_limit": {
+                "type": "integer",
+                "description": (
+                    "Optional cap for one semantic backfill call. Defaults to "
+                    "session_search.semantic.backfill_limit (200). Keep bounded to "
+                    "avoid surprise embedding cost."
+                ),
+                "default": 200,
             },
             "session_id": {
                 "type": "string",
@@ -775,6 +1123,9 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        search_mode=args.get("search_mode", "keyword"),
+        backfill_semantic_index=args.get("backfill_semantic_index", False),
+        semantic_backfill_limit=args.get("semantic_backfill_limit"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),

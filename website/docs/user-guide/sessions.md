@@ -370,7 +370,7 @@ For deeper analytics — token usage, cost estimates, tool breakdown, and activi
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
+The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. Optional semantic search adds a local embedding index over the same message rows. No LLM summarization, no truncation. Every shape returns actual messages from the DB.
 
 ### Three calling shapes
 
@@ -382,7 +382,7 @@ The tool infers what you want from which arguments you set. There's no `mode` pa
 session_search(query="auth refactor", limit=3)
 ```
 
-Runs FTS5, dedupes hits by session lineage, returns the top N sessions. Each result carries:
+Runs FTS5 by default, dedupes hits by session lineage, returns the top N sessions. Each result carries:
 
 - `session_id`, `title`, `when`, `source`
 - `snippet` — FTS5-highlighted match excerpt
@@ -429,6 +429,40 @@ The keyword mode supports standard FTS5 query syntax:
 
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
+- `search_mode` — `keyword` (default), `semantic`, or `hybrid`. Keyword preserves existing FTS5 behavior. Semantic uses the optional embedding index. Hybrid puts semantic hits first and appends exact keyword hits.
+- `backfill_semantic_index` — when true with semantic or hybrid mode, embeds a bounded batch of unindexed stored messages before searching.
+- `semantic_backfill_limit` — overrides the per-call backfill cap. Keep this bounded to avoid surprise embedding cost.
+
+### Semantic Search
+
+Semantic search is opt-in because it calls an embedding provider and stores vectors in `state.db`. Keyword search remains the default and needs no configuration.
+
+Enable an OpenAI-compatible embedding profile in `~/.hermes/config.yaml`:
+
+```yaml
+session_search:
+  semantic:
+    enabled: true
+    provider: openai
+    base_url: https://api.openai.com/v1
+    model: text-embedding-3-small
+    backfill_limit: 200
+```
+
+Set the embedding API key in your environment or `~/.hermes/.env` as `OPENAI_API_KEY`; do not put API keys in `config.yaml`.
+
+Then ask Hermes to use semantic recall, or call the tool directly:
+
+```python
+session_search(
+    query="where did we talk about expired login credentials",
+    search_mode="hybrid",
+    backfill_semantic_index=True,
+    semantic_backfill_limit=200,
+)
+```
+
+Backfill is incremental. Existing `state.db` files do not need a blocking migration: the `message_embeddings` table is created automatically on startup, and vectors are added only when `backfill_semantic_index=true` or future tool calls index more rows. If the embedding provider, API key, or semantic index is unavailable, semantic and hybrid calls return keyword FTS results with a warning instead of failing.
 
 ### When It's Used
 
@@ -508,6 +542,7 @@ Key tables in `state.db`:
 - **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Titles have a unique index (NULL titles allowed, only non-NULL must be unique).
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
+- **message_embeddings** — optional semantic-search vectors keyed by message, provider, and model. Safe to rebuild by running bounded semantic backfills.
 
 ## Session Expiry and Cleanup
 

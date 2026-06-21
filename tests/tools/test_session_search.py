@@ -9,6 +9,7 @@ All run zero LLM calls.
 """
 import json
 import time
+from typing import Any
 
 import pytest
 
@@ -69,6 +70,9 @@ class TestSchema:
         assert "query" in params
         assert "limit" in params
         assert "sort" in params
+        assert "search_mode" in params
+        assert "backfill_semantic_index" in params
+        assert "semantic_backfill_limit" in params
         # Scroll shape
         assert "session_id" in params
         assert "around_message_id" in params
@@ -84,6 +88,10 @@ class TestSchema:
     def test_sort_enum(self):
         params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
         assert params["sort"]["enum"] == ["newest", "oldest"]
+
+    def test_search_mode_enum(self):
+        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
+        assert params["search_mode"]["enum"] == ["keyword", "semantic", "hybrid"]
 
     def test_schema_description_teaches_scroll(self):
         desc = SESSION_SEARCH_SCHEMA["description"]
@@ -180,6 +188,7 @@ class TestDiscoveryShape:
         assert result["success"] is True
         assert result["results"] == []
         assert result["count"] == 0
+        assert "search_mode" not in result
 
     def test_limit_clamped_to_max_10(self, db):
         _seed_modpack_sessions(db)
@@ -224,6 +233,121 @@ class TestDiscoverySort:
         # Should not error
         result = json.loads(session_search(query="modpack", sort="bogus", db=db))
         assert result["success"] is True
+
+
+class _FakeEmbedder:
+    provider = "fake"
+    model = "fake-embed-v1"
+
+    def embed_texts(self, texts):
+        return [self._embed(t) for t in texts]
+
+    @staticmethod
+    def _embed(text):
+        text = (text or "").lower()
+        if any(term in text for term in ("oauth", "token", "credential", "auth", "login")):
+            return [1.0, 0.0, 0.0]
+        if any(term in text for term in ("modpack", "minecraft", "neoforge")):
+            return [0.0, 1.0, 0.0]
+        return [0.0, 0.0, 1.0]
+
+
+class TestSemanticDiscovery:
+    def test_semantic_mode_backfills_and_finds_related_session_without_keyword_overlap(self, db):
+        db.create_session("s_auth", source="cli")
+        db.append_message("s_auth", role="user", content="OAuth token refresh keeps failing in the mobile login flow")
+        db.append_message("s_auth", role="assistant", content="Rotate the client secret and retry the refresh grant.")
+
+        db.create_session("s_modpack", source="cli")
+        db.append_message("s_modpack", role="user", content="Tune the Minecraft modpack spawn weights")
+
+        # Keyword FTS has no literal "credentials" hit.
+        keyword = json.loads(session_search(query="credentials", db=db))
+        assert keyword["count"] == 0
+
+        semantic = json.loads(session_search(
+            query="credentials",
+            search_mode="semantic",
+            backfill_semantic_index=True,
+            db=db,
+            embedder=_FakeEmbedder(),
+        ))
+        assert semantic["success"] is True
+        assert semantic["search_mode"] == "semantic"
+        assert semantic["count"] >= 1
+        assert semantic["results"][0]["session_id"] == "s_auth"
+        assert semantic["results"][0]["semantic_score"] > 0.9
+        assert semantic["semantic_index"]["backfilled"] >= 2
+
+    def test_hybrid_appends_keyword_hits(self, db):
+        db.create_session("s_auth", source="cli")
+        db.append_message("s_auth", role="user", content="OAuth token refresh keeps failing")
+        db.create_session("s_literal", source="cli")
+        db.append_message("s_literal", role="user", content="credentials inventory cleanup")
+
+        result = json.loads(session_search(
+            query="credentials",
+            search_mode="hybrid",
+            backfill_semantic_index=True,
+            limit=5,
+            db=db,
+            embedder=_FakeEmbedder(),
+        ))
+        assert result["success"] is True
+        assert result["search_mode"] == "hybrid"
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_auth" in sids
+        assert "s_literal" in sids
+
+    def test_semantic_unavailable_falls_back_to_keyword(self, db, monkeypatch):
+        _seed_modpack_sessions(db)
+        monkeypatch.setattr(
+            "tools.session_search_tool._load_semantic_embedder",
+            lambda: (None, "test provider unavailable"),
+        )
+        result = json.loads(session_search(
+            query="modpack",
+            search_mode="semantic",
+            db=db,
+        ))
+        assert result["success"] is True
+        assert result["search_mode"] == "keyword_fallback"
+        assert result["count"] >= 1
+        assert "test provider unavailable" in result["warning"]
+
+    def test_semantic_backfill_limit_is_bounded(self, db):
+        db.create_session("s_auth", source="cli")
+        db.append_message("s_auth", role="user", content="OAuth token refresh keeps failing")
+
+        result = json.loads(session_search(
+            query="credentials",
+            search_mode="semantic",
+            backfill_semantic_index=True,
+            semantic_backfill_limit=-1,
+            db=db,
+            embedder=_FakeEmbedder(),
+        ))
+        assert result["success"] is True
+        assert result["semantic_index"]["backfilled"] == 0
+
+    def test_semantic_backfill_refreshes_changed_message_content(self, db):
+        db.create_session("s_auth", source="cli")
+        message_id = db.append_message("s_auth", role="user", content="OAuth token refresh keeps failing")
+        assert db.messages_needing_semantic_index("fake", "fake-embed-v1", limit=10)
+        db.upsert_message_embedding(
+            message_id=message_id,
+            provider="fake",
+            model="fake-embed-v1",
+            content_hash=db._embedding_content_hash("OAuth token refresh keeps failing"),
+            vector=[1.0, 0.0, 0.0],
+        )
+        assert db.messages_needing_semantic_index("fake", "fake-embed-v1", limit=10) == []
+
+        db._conn.execute("UPDATE messages SET content = ? WHERE id = ?", ("Minecraft spawn tuning", message_id))
+        db._conn.commit()
+
+        stale = db.messages_needing_semantic_index("fake", "fake-embed-v1", limit=10)
+        assert [row["id"] for row in stale] == [message_id]
 
 
 class TestRoleFilter:
@@ -456,6 +580,7 @@ class TestCrossProfileRead:
         other_home.mkdir()
         other = SessionDB(other_home / "state.db")
         other.create_session("s_other", source="cli")
+        assert other._conn is not None
         other._conn.execute(
             "UPDATE sessions SET title = ? WHERE id = ?", ("Other Profile Chat", "s_other")
         )
@@ -478,6 +603,7 @@ class TestCrossProfileRead:
         other = SessionDB(other_home / "state.db")
         other.create_session("s_far", source="cli")
         other.append_message("s_far", role="user", content="hi")
+        assert other._conn is not None
         other._conn.commit()
 
         from collections import namedtuple
@@ -506,16 +632,18 @@ class TestCrossProfileRead:
         other = SessionDB(other_home / "state.db")
         other.create_session("s_other", source="cli")
         other.append_message("s_other", role="user", content="hi")
+        assert other._conn is not None
         other._conn.commit()
 
         self._patch_profiles(monkeypatch, other_home)
 
         # Every permutation the model might send must resolve to (asdf, s_other).
-        for kwargs in (
+        cases: tuple[dict[str, Any], ...] = (
             {"session_id": "asdf/s_other"},                    # full value, no profile
             {"session_id": "asdf/s_other", "profile": "asdf"},  # full value AND profile
             {"session_id": "s_other", "profile": "asdf"},       # bare id + profile
-        ):
+        )
+        for kwargs in cases:
             result = json.loads(session_search(db=db, **kwargs))
             assert result["success"] is True, kwargs
             assert result["mode"] == "read"

@@ -88,6 +88,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns)", "Session",
                args_hint="[here [N] | focus topic]"),
+    CommandDef("recompile", "Rebuild the system prompt in place — reload SOUL/MEMORY/USER from disk, keep history", "Session",
+               cli_only=True),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",

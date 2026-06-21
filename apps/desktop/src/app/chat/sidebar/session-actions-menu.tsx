@@ -19,9 +19,54 @@ import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
+import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { setSessions } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+
+import type { SessionTitleResponse } from '../../types'
+
+// Rename a session, preferring the gateway's session.title RPC over REST.
+//
+// A freshly *branched* session (and any brand-new chat) lives only in the
+// gateway's in-memory _sessions map keyed by its RUNTIME id — no row is
+// persisted to state.db until the first turn. REST PATCH /api/sessions/{id}
+// resolves against the stored sessions table, so it 404s ("Session not found")
+// on these runtime-only sessions. The session.title RPC resolves the live
+// runtime session AND persists the row on demand, so it succeeds where REST
+// cannot. This mirrors the /title slash command's fix (use-prompt-actions.ts).
+//
+// We only take the RPC path for the ACTIVE/selected session: its runtime id is
+// known ($activeSessionId) and it lives on the active gateway, so there is no
+// profile-routing ambiguity. Every other row (already persisted, possibly on a
+// background profile) keeps the REST path, which handles profile scoping and a
+// non-empty title is required by the RPC (it rejects clears), so clears stay on
+// REST too.
+export async function renameSessionPreferringRpc(
+  storedSessionId: string,
+  title: string,
+  profile?: string
+): Promise<{ title?: string }> {
+  const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
+  const runtimeId = isActiveRow ? $activeSessionId.get() : null
+  const gateway = activeGateway()
+
+  if (title && runtimeId && gateway) {
+    try {
+      const result = await gateway.request<SessionTitleResponse>('session.title', {
+        session_id: runtimeId,
+        title
+      })
+
+      return { title: result?.title ?? title }
+    } catch {
+      // Fall through to REST — e.g. the socket is mid-reconnect. REST still
+      // works for any session that already has a persisted row.
+    }
+  }
+
+  return renameSession(storedSessionId, title, profile)
+}
 
 interface SessionActions {
   sessionId: string
@@ -235,7 +280,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
-      const result = await renameSession(sessionId, next, profile)
+      const result = await renameSessionPreferringRpc(sessionId, next, profile)
       const finalTitle = result.title || next || ''
       setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })

@@ -664,15 +664,26 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
     # skill_terms table (auto-extracted from name, tags, description).
     # This catches Chinese terms and split-name parts that FTS5 misses.
     for term in terms:
-        cursor = conn.execute(
-            """SELECT t.skill_name, t.strength, t.source, n.category, n.description
-               FROM skill_terms t
-               JOIN skill_nodes n ON t.skill_name = n.name
-               WHERE t.term = ? AND t.skill_name NOT IN ({})
-               ORDER BY t.strength DESC
-               LIMIT 5""".format(",".join("?" for _ in seen)) if seen else "NULL",
-            (term.lower(),) + (tuple(seen) if seen else ()),
-        )
+        if seen:
+            cursor = conn.execute(
+                """SELECT t.skill_name, t.strength, t.source, n.category, n.description
+                   FROM skill_terms t
+                   JOIN skill_nodes n ON t.skill_name = n.name
+                   WHERE t.term = ? AND t.skill_name NOT IN ({})
+                   ORDER BY t.strength DESC
+                   LIMIT 5""".format(",".join("?" for _ in seen)),
+                (term.lower(),) + tuple(seen),
+            )
+        else:
+            cursor = conn.execute(
+                """SELECT t.skill_name, t.strength, t.source, n.category, n.description
+                   FROM skill_terms t
+                   JOIN skill_nodes n ON t.skill_name = n.name
+                   WHERE t.term = ?
+                   ORDER BY t.strength DESC
+                   LIMIT 5""",
+                (term.lower(),),
+            )
         for row in cursor:
             sname = row["skill_name"]
             seen.add(sname)

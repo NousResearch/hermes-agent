@@ -5560,6 +5560,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         error_message=None,
                     )
                     logger.info("✓ %s connected", platform.value)
+                    await self.hooks.emit("platform:connected", {
+                        "platform": platform.value,
+                    })
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
                     # Defensive cleanup: a failed connect() may have
@@ -6973,6 +6976,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     profile_map[platform] = adapter
                     connected += 1
                     logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
+                    await self.hooks.emit("platform:connected", {
+                        "platform": platform.value,
+                        "profile": profile_name,
+                    })
                 else:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
                     await self._safe_adapter_disconnect(adapter, platform)

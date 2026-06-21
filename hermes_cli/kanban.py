@@ -2153,6 +2153,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "crashed": res.crashed,
             "timed_out": res.timed_out,
             "stale": res.stale,
+            "old_done_scanned": res.old_done_scanned,
+            "old_done_archived": res.old_done_archived,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
             "spawned": [
@@ -2178,6 +2180,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Stale:        {len(res.stale)}")
     if res.stale:
         print(f"  {', '.join(res.stale)}")
+    print(f"Old done:     scanned={res.old_done_scanned} archived={len(res.old_done_archived)}")
+    if res.old_done_archived:
+        print(f"  {', '.join(res.old_done_archived)}")
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
@@ -2302,7 +2307,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return
         did_work = (
             res.reclaimed or res.crashed or res.timed_out or res.promoted
-            or res.spawned or res.auto_blocked or res.stale
+            or res.spawned or res.auto_blocked or res.stale or res.old_done_archived
         )
         if did_work:
             print(
@@ -2310,7 +2315,9 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
                 f"timed_out={len(res.timed_out)} stale={len(res.stale)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
-                f"auto_blocked={len(res.auto_blocked)}",
+                f"auto_blocked={len(res.auto_blocked)} "
+                f"old_done_scanned={res.old_done_scanned} "
+                f"old_done_archived={len(res.old_done_archived)}",
                 flush=True,
             )
 

@@ -111,6 +111,12 @@ _IS_WINDOWS = sys.platform == "win32"
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
+# Completed tasks are useful as recent handoff context for a few days, then
+# they mostly become board noise. The dispatcher archives old done tasks on its
+# normal tick using epoch seconds (UTC-neutral) so every entry point shares the
+# same timezone semantics as the rest of the Kanban DB.
+DEFAULT_DONE_ARCHIVE_AFTER_SECONDS = 5 * 24 * 60 * 60
+
 # If a worker's PID is still alive but its ``last_heartbeat_at`` is
 # older than this when ``release_stale_claims`` runs, treat the worker
 # as wedged and reclaim regardless of PID liveness (#29747 gap 3).
@@ -4623,6 +4629,81 @@ def decompose_triage_task(
     return child_ids
 
 
+@dataclass(frozen=True)
+class OldDoneArchiveResult:
+    """Metrics from one old-done archival maintenance pass."""
+
+    scanned: int
+    archived: list[str]
+    cutoff_ts: int
+
+
+def archive_old_done_tasks(
+    conn: sqlite3.Connection,
+    *,
+    now_ts: Optional[int] = None,
+    older_than_seconds: int = DEFAULT_DONE_ARCHIVE_AFTER_SECONDS,
+) -> OldDoneArchiveResult:
+    """Archive done tasks whose ``completed_at`` is at least N seconds old.
+
+    This is the automatic maintenance path used by the dispatcher/gateway. It
+    is deliberately idempotent: only ``status='done'`` rows with a non-null
+    ``completed_at`` at or before the cutoff are mutated. Already-archived,
+    active, blocked, and recently-completed tasks are ignored. All matching
+    rows are updated and evented in one write transaction; a failure rolls the
+    whole archival pass back rather than leaving a half-evented board.
+    """
+    now = int(time.time()) if now_ts is None else int(now_ts)
+    retention = max(0, int(older_than_seconds))
+    cutoff = now - retention
+
+    rows = conn.execute(
+        "SELECT id FROM tasks "
+        "WHERE status = 'done' AND completed_at IS NOT NULL "
+        "ORDER BY completed_at ASC, created_at ASC, id ASC"
+    ).fetchall()
+    scanned = len(rows)
+    # Filter in SQL too for correctness/performance on large boards; the full
+    # scan count above is kept as a metric so operators can see how much done
+    # history was considered even when nothing crossed the cutoff.
+    qualifying_rows = conn.execute(
+        "SELECT id FROM tasks "
+        "WHERE status = 'done' AND completed_at IS NOT NULL AND completed_at <= ? "
+        "ORDER BY completed_at ASC, created_at ASC, id ASC",
+        (cutoff,),
+    ).fetchall()
+    qualifying = [str(row["id"]) for row in qualifying_rows]
+    if not qualifying:
+        return OldDoneArchiveResult(scanned=scanned, archived=[], cutoff_ts=cutoff)
+
+    archived: list[str] = []
+    with write_txn(conn):
+        for task_id in qualifying:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'archived', "
+                "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'done' AND completed_at IS NOT NULL "
+                "  AND completed_at <= ?",
+                (task_id, cutoff),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn,
+                task_id,
+                "archived",
+                {
+                    "source": "old_done_maintenance",
+                    "cutoff_ts": cutoff,
+                    "older_than_seconds": retention,
+                },
+            )
+            archived.append(task_id)
+    if archived:
+        recompute_ready(conn)
+    return OldDoneArchiveResult(scanned=scanned, archived=archived, cutoff_ts=cutoff)
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
@@ -4878,6 +4959,55 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+_REVIEW_REQUIRED_PREFIX = "review-required:"
+_REVIEW_ROUTER_AUTHOR = "kanban-review-router"
+
+_DEFAULT_REVIEW_POLICY: dict[str, dict[str, Any]] = {
+    "fast_code": {
+        "first_response_seconds": 1800,
+        "escalate_seconds": 7200,
+        "hard_escalate_seconds": 14400,
+        "primary": "warden",
+        "fallback": ["forge", "adam"],
+    },
+    "ops": {
+        "first_response_seconds": 3600,
+        "escalate_seconds": 14400,
+        "hard_escalate_seconds": 28800,
+        "primary": "infra",
+        "fallback": ["warden", "adam"],
+    },
+    "security_privacy": {
+        "first_response_seconds": 1800,
+        "escalate_seconds": 7200,
+        "hard_escalate_seconds": 28800,
+        "primary": "warden",
+        "fallback": ["adam"],
+    },
+    "business_finance_publication": {
+        "first_response_seconds": 14400,
+        "escalate_seconds": 86400,
+        "hard_escalate_seconds": 172800,
+        "primary": "adam",
+        "fallback": ["adam"],
+    },
+    "research_docs": {
+        "first_response_seconds": 86400,
+        "escalate_seconds": 86400,
+        "hard_escalate_seconds": 172800,
+        "primary": "atlas",
+        "fallback": ["adam"],
+    },
+}
+
+_REVIEW_ROUTE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ops", ("deploy", "deployment", "restart", "systemctl", "dns", "network", "storage", "proxmox", "truenas", "docker", "compose", "service", "runtime", "sudo")),
+    ("security_privacy", ("credential", "secret", "token", "auth", "password", "privacy", "pii", "camera", "surveillance", "security", "permission")),
+    ("business_finance_publication", ("finance", "budget", "debt", "payment", "pricing", "margin", "cogs", "publish", "publication", "email", "message", "social", "customer", "shopify", "family communication")),
+    ("research_docs", ("research", "audit", "plan", "planning", "policy", "documentation", "docs", "brief", "sources")),
+)
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
@@ -4930,6 +5060,20 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    review_routed: list[tuple[str, str, str]] = field(default_factory=list)
+    """Legacy ``review-required:`` blocked tasks routed this tick, as
+    ``(source_task_id, review_task_id, reviewer)`` triples."""
+    review_overdue: list[str] = field(default_factory=list)
+    """Legacy review-required blocked task ids whose review age crossed the
+    warning SLA this tick."""
+    review_escalated: list[tuple[str, str, str]] = field(default_factory=list)
+    """Legacy review-required blocked tasks hard-escalated this tick, as
+    ``(source_task_id, escalation_task_id, assignee)`` triples."""
+    old_done_scanned: int = 0
+    """Number of ``done`` tasks with a completion timestamp considered by the
+    old-done archival maintenance step this tick."""
+    old_done_archived: list[str] = field(default_factory=list)
+    """Done task ids archived by the old-done archival maintenance step."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6112,6 +6256,330 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _load_review_policy_config() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config().get("kanban") or {}
+    except Exception:
+        cfg = {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _review_profile_exists(assignee: Optional[str]) -> bool:
+    if not assignee:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        return True
+    try:
+        return bool(profile_exists(assignee))
+    except Exception:
+        return False
+
+
+def _latest_review_required_block(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[tuple[str, int]]:
+    row = conn.execute(
+        "SELECT payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    reason = ""
+    try:
+        payload = json.loads(row["payload"] or "{}")
+        if isinstance(payload, dict):
+            reason = str(payload.get("reason") or "")
+    except Exception:
+        reason = ""
+    if not reason.casefold().startswith(_REVIEW_REQUIRED_PREFIX):
+        return None
+    return reason, int(row["created_at"] or 0)
+
+
+def _review_request_already_routed(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    stage: str,
+    since: int,
+) -> bool:
+    for row in conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('review_routed', 'review_escalated') "
+        "AND created_at >= ?",
+        (task_id, since),
+    ).fetchall():
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict) and payload.get("stage") == stage:
+            return True
+    return False
+
+
+def _review_warning_already_emitted(
+    conn: sqlite3.Connection,
+    task_id: str,
+    since: int,
+) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? "
+        "AND kind = 'review_overdue' AND created_at >= ? LIMIT 1",
+        (task_id, since),
+    ).fetchone())
+
+
+def _classify_review_request(title: str, body: str, reason: str) -> str:
+    haystack = f"{title}\n{body}\n{reason}".casefold()
+    for cls, needles in _REVIEW_ROUTE_PATTERNS:
+        if any(needle in haystack for needle in needles):
+            return cls
+    return "fast_code"
+
+
+def _review_policy_for_class(
+    review_class: str,
+    kanban_cfg: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    merged = dict(_DEFAULT_REVIEW_POLICY.get(review_class) or _DEFAULT_REVIEW_POLICY["fast_code"])
+    policy_cfg = (kanban_cfg or {}).get("review_policy") or {}
+    if isinstance(policy_cfg, dict):
+        override = policy_cfg.get(review_class)
+        if isinstance(override, dict):
+            merged.update(override)
+    if review_class == "fast_code" and (kanban_cfg or {}).get("default_reviewer"):
+        merged["primary"] = (kanban_cfg or {}).get("default_reviewer")
+    if review_class == "ops" and (kanban_cfg or {}).get("review_ops_assignee"):
+        merged["primary"] = (kanban_cfg or {}).get("review_ops_assignee")
+    return merged
+
+
+def _candidate_reviewers(
+    policy: dict[str, Any],
+    *,
+    implementer: Optional[str],
+    kanban_cfg: Optional[dict[str, Any]] = None,
+) -> list[str]:
+    raw: list[Any] = [policy.get("primary")]
+    fallback = policy.get("fallback")
+    if isinstance(fallback, str):
+        raw.extend([p.strip() for p in fallback.split(",")])
+    elif isinstance(fallback, Iterable):
+        raw.extend(list(fallback))
+    raw.append((kanban_cfg or {}).get("review_escalation_assignee") or "adam")
+    out: list[str] = []
+    seen: set[str] = set()
+    implementer_cf = (implementer or "").casefold()
+    for item in raw:
+        name = _canonical_assignee(str(item)) if item else None
+        if not name or name.casefold() == implementer_cf or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _pick_review_assignee(candidates: list[str]) -> Optional[str]:
+    for assignee in candidates:
+        if _review_profile_exists(assignee):
+            return assignee
+    return candidates[0] if candidates else None
+
+
+def _create_review_action_task(
+    conn: sqlite3.Connection,
+    *,
+    source_id: str,
+    source_title: str,
+    source_assignee: Optional[str],
+    reviewer: str,
+    review_class: str,
+    reason: str,
+    stage: str,
+    policy: dict[str, Any],
+    blocked_at: int,
+    board: Optional[str],
+) -> str:
+    body = (
+        f"Review source task `{source_id}`: {source_title}\n\n"
+        f"Review class: {review_class}\n"
+        f"Stage: {stage}\n"
+        f"Source assignee: {source_assignee or 'unassigned'}\n"
+        f"Blocked/review requested at: {blocked_at}\n"
+        f"SLA warning seconds: {int(policy.get('escalate_seconds') or 0)}\n"
+        f"Hard escalation seconds: {int(policy.get('hard_escalate_seconds') or 0)}\n\n"
+        f"Block reason: {reason}\n\n"
+        "Acceptance: inspect the source task handoff/comments/artifacts, "
+        "then leave a typed decision comment on the source task using one of: "
+        "approved, no-blocking-findings, changes_requested, or escalated. "
+        "If approved, unblock the source task so its worker can continue."
+    )
+    return create_task(
+        conn,
+        title=f"Review {source_id}: {source_title[:80]}",
+        body=body,
+        assignee=reviewer,
+        created_by=_REVIEW_ROUTER_AUTHOR,
+        priority=5,
+        idempotency_key=f"review-route:{source_id}:{stage}:{reviewer}:{blocked_at}",
+        skills=["github-code-review"] if review_class == "fast_code" else None,
+        board=board,
+    )
+
+
+def route_review_required_blocks(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+    kanban_cfg: Optional[dict[str, Any]] = None,
+    dry_run: bool = False,
+) -> tuple[list[tuple[str, str, str]], list[str], list[tuple[str, str, str]]]:
+    """Route legacy ``blocked`` + ``review-required:`` tasks.
+
+    The legacy review lane used sticky blocked tasks as review requests. This
+    dispatcher-side pass makes those requests visible and actionable: assign a
+    reviewer task immediately, emit one warning event at the SLA threshold, and
+    create a fallback/escalation task at the hard threshold. Idempotency keys and
+    per-source events prevent a dispatcher tick from creating duplicates.
+    """
+    cfg = kanban_cfg if kanban_cfg is not None else _load_review_policy_config()
+    now = int(time.time())
+    routed: list[tuple[str, str, str]] = []
+    overdue: list[str] = []
+    escalated: list[tuple[str, str, str]] = []
+    rows = conn.execute(
+        "SELECT id, title, body, assignee FROM tasks "
+        "WHERE status = 'blocked' ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    for row in rows:
+        block = _latest_review_required_block(conn, row["id"])
+        if block is None:
+            continue
+        reason, blocked_at = block
+        review_class = _classify_review_request(row["title"] or "", row["body"] or "", reason)
+        policy = _review_policy_for_class(review_class, cfg)
+        candidates = _candidate_reviewers(policy, implementer=row["assignee"], kanban_cfg=cfg)
+        primary = _pick_review_assignee(candidates)
+        if not primary:
+            continue
+        age = max(0, now - blocked_at)
+        if not _review_request_already_routed(conn, row["id"], stage="primary", since=blocked_at):
+            if dry_run:
+                routed.append((row["id"], "", primary))
+            else:
+                child = _create_review_action_task(
+                    conn,
+                    source_id=row["id"],
+                    source_title=row["title"] or "",
+                    source_assignee=row["assignee"],
+                    reviewer=primary,
+                    review_class=review_class,
+                    reason=reason,
+                    stage="primary",
+                    policy=policy,
+                    blocked_at=blocked_at,
+                    board=board,
+                )
+                with write_txn(conn):
+                    payload = {
+                        "stage": "primary",
+                        "review_task_id": child,
+                        "reviewer": primary,
+                        "review_class": review_class,
+                        "blocked_at": blocked_at,
+                        "escalate_seconds": int(policy.get("escalate_seconds") or 0),
+                        "hard_escalate_seconds": int(policy.get("hard_escalate_seconds") or 0),
+                    }
+                    _append_event(conn, row["id"], "review_routed", payload)
+                    conn.execute(
+                        "INSERT INTO task_comments (task_id, author, body, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            row["id"],
+                            _REVIEW_ROUTER_AUTHOR,
+                            "review-router: assigned "
+                            f"{primary} via {child}; class={review_class}; "
+                            f"warning={payload['escalate_seconds']}s; "
+                            f"hard={payload['hard_escalate_seconds']}s",
+                            now,
+                        ),
+                    )
+                routed.append((row["id"], child, primary))
+        warn_after = int(policy.get("escalate_seconds") or 0)
+        if warn_after > 0 and age >= warn_after and not _review_warning_already_emitted(conn, row["id"], blocked_at):
+            if not dry_run:
+                _append_event(
+                    conn,
+                    row["id"],
+                    "review_overdue",
+                    {
+                        "age_seconds": age,
+                        "review_class": review_class,
+                        "reviewer": primary,
+                        "escalate_seconds": warn_after,
+                    },
+                )
+            overdue.append(row["id"])
+        hard_after = int(policy.get("hard_escalate_seconds") or 0)
+        if hard_after <= 0 or age < hard_after:
+            continue
+        fallback = _pick_review_assignee(candidates[1:] or candidates)
+        if not fallback:
+            continue
+        if _review_request_already_routed(conn, row["id"], stage="hard_escalation", since=blocked_at):
+            continue
+        if dry_run:
+            escalated.append((row["id"], "", fallback))
+            continue
+        child = _create_review_action_task(
+            conn,
+            source_id=row["id"],
+            source_title=row["title"] or "",
+            source_assignee=row["assignee"],
+            reviewer=fallback,
+            review_class=review_class,
+            reason=reason,
+            stage="hard_escalation",
+            policy=policy,
+            blocked_at=blocked_at,
+            board=board,
+        )
+        with write_txn(conn):
+            _append_event(
+                conn,
+                row["id"],
+                "review_escalated",
+                {
+                    "stage": "hard_escalation",
+                    "review_task_id": child,
+                    "assignee": fallback,
+                    "previous_reviewer": primary,
+                    "age_seconds": age,
+                    "review_class": review_class,
+                },
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    row["id"],
+                    _REVIEW_ROUTER_AUTHOR,
+                    f"review-router: hard-escalated stale review to {fallback} via {child}",
+                    now,
+                ),
+            )
+        escalated.append((row["id"], child, fallback))
+    return routed, overdue, escalated
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -6159,6 +6627,10 @@ def dispatch_once(
     reap_worker_zombies()
 
     result = DispatchResult()
+    if not dry_run:
+        archive_result = archive_old_done_tasks(conn)
+        result.old_done_scanned = archive_result.scanned
+        result.old_done_archived.extend(archive_result.archived)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -6182,6 +6654,25 @@ def dispatch_once(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+
+    if not dry_run:
+        routed, overdue, escalated = route_review_required_blocks(
+            conn,
+            board=board,
+            dry_run=False,
+        )
+        result.review_routed.extend(routed)
+        result.review_overdue.extend(overdue)
+        result.review_escalated.extend(escalated)
+    else:
+        routed, overdue, escalated = route_review_required_blocks(
+            conn,
+            board=board,
+            dry_run=True,
+        )
+        result.review_routed.extend(routed)
+        result.review_overdue.extend(overdue)
+        result.review_escalated.extend(escalated)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

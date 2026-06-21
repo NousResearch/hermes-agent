@@ -1095,13 +1095,18 @@ class GatewayKanbanWatchersMixin:
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
+                    if res is None:
+                        continue
+                    archived_old_done = len(getattr(res, "old_done_archived", []) or [])
+                    if getattr(res, "spawned", None):
                         any_spawned = True
+                    if getattr(res, "spawned", None) or archived_old_done:
                         # Quiet by default — only log when something actually
                         # happened, so an idle gateway stays silent.
                         logger.info(
                             "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d "
+                            "old_done_scanned=%d old_done_archived=%d",
                             slug,
                             len(res.spawned),
                             res.reclaimed,
@@ -1109,6 +1114,8 @@ class GatewayKanbanWatchersMixin:
                             len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            getattr(res, "old_done_scanned", 0),
+                            len(getattr(res, "old_done_archived", []) or []),
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)

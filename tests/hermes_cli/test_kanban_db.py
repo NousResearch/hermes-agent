@@ -1481,6 +1481,124 @@ def test_archive_hides_from_default_list(kanban_home):
         assert len(kb.list_tasks(conn, include_archived=True)) == 1
 
 
+def test_archive_old_done_tasks_only_archives_completed_before_cutoff(kanban_home):
+    now = 2_000_000
+    old_completed = now - kb.DEFAULT_DONE_ARCHIVE_AFTER_SECONDS - 1
+    recent_completed = now - kb.DEFAULT_DONE_ARCHIVE_AFTER_SECONDS + 1
+    with kb.connect() as conn:
+        old_done = kb.create_task(conn, title="old done")
+        recent_done = kb.create_task(conn, title="recent done")
+        missing_completed = kb.create_task(conn, title="missing timestamp")
+        already_archived = kb.create_task(conn, title="already archived")
+        active = kb.create_task(conn, title="active")
+        for tid in (old_done, recent_done, missing_completed, already_archived):
+            assert kb.complete_task(conn, tid)
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (old_completed, old_done))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (recent_completed, recent_done))
+        conn.execute("UPDATE tasks SET completed_at = NULL WHERE id = ?", (missing_completed,))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (old_completed, active))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (old_completed, already_archived))
+        assert kb.archive_task(conn, already_archived)
+        conn.commit()
+
+        res = kb.archive_old_done_tasks(conn, now_ts=now)
+
+        assert res.scanned == 2
+        assert res.archived == [old_done]
+        assert kb.get_task(conn, old_done).status == "archived"
+        assert kb.get_task(conn, recent_done).status == "done"
+        assert kb.get_task(conn, missing_completed).status == "done"
+        assert kb.get_task(conn, already_archived).status == "archived"
+        assert kb.get_task(conn, active).status == "ready"
+        events = kb.list_events(conn, old_done)
+        archived_events = [e for e in events if e.kind == "archived"]
+        assert archived_events[-1].payload["source"] == "old_done_maintenance"
+
+
+def test_archive_old_done_tasks_boundary_at_exactly_five_days_is_deterministic(kanban_home):
+    """Epoch-second cutoffs avoid local timezone/DST ambiguity at the boundary."""
+    now = 1_725_897_600  # 2024-09-09T16:00:00Z, but treated only as epoch seconds.
+    exact_cutoff = now - kb.DEFAULT_DONE_ARCHIVE_AFTER_SECONDS
+    one_second_recent = exact_cutoff + 1
+    with kb.connect() as conn:
+        exact = kb.create_task(conn, title="exactly five days old")
+        recent = kb.create_task(conn, title="one second younger")
+        assert kb.complete_task(conn, exact)
+        assert kb.complete_task(conn, recent)
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (exact_cutoff, exact))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (one_second_recent, recent))
+        conn.commit()
+
+        res = kb.archive_old_done_tasks(conn, now_ts=now)
+
+        archived_exact = kb.get_task(conn, exact)
+        unarchived_recent = kb.get_task(conn, recent)
+        assert archived_exact is not None
+        assert unarchived_recent is not None
+        assert res.cutoff_ts == exact_cutoff
+        assert res.archived == [exact]
+        assert archived_exact.status == "archived"
+        assert unarchived_recent.status == "done"
+
+
+def test_archive_old_done_tasks_is_idempotent(kanban_home):
+    now = 2_000_000
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="old done")
+        assert kb.complete_task(conn, tid)
+        conn.execute(
+            "UPDATE tasks SET completed_at = ? WHERE id = ?",
+            (now - kb.DEFAULT_DONE_ARCHIVE_AFTER_SECONDS - 1, tid),
+        )
+        conn.commit()
+
+        first = kb.archive_old_done_tasks(conn, now_ts=now)
+        second = kb.archive_old_done_tasks(conn, now_ts=now)
+
+        assert first.archived == [tid]
+        assert second.scanned == 0
+        assert second.archived == []
+        assert kb.get_task(conn, tid).status == "archived"
+
+
+def test_dispatch_once_runs_old_done_archival(kanban_home):
+    now = 2_000_000
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="old done")
+        assert kb.complete_task(conn, tid)
+        conn.execute(
+            "UPDATE tasks SET completed_at = ? WHERE id = ?",
+            (now - kb.DEFAULT_DONE_ARCHIVE_AFTER_SECONDS - 1, tid),
+        )
+        conn.commit()
+
+        with unittest.mock.patch.object(kb.time, "time", return_value=now):
+            res = kb.dispatch_once(conn, dry_run=False)
+
+        assert res.old_done_scanned == 1
+        assert res.old_done_archived == [tid]
+        assert kb.get_task(conn, tid).status == "archived"
+
+
+def test_dispatch_once_dry_run_does_not_archive_old_done_tasks(kanban_home):
+    now = 2_000_000
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="old done")
+        assert kb.complete_task(conn, tid)
+        conn.execute(
+            "UPDATE tasks SET completed_at = ? WHERE id = ?",
+            (now - kb.DEFAULT_DONE_ARCHIVE_AFTER_SECONDS - 1, tid),
+        )
+        conn.commit()
+
+        with unittest.mock.patch.object(kb.time, "time", return_value=now):
+            res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.old_done_scanned == 0
+        assert res.old_done_archived == []
+        assert kb.get_task(conn, tid).status == "done"
+
+
 def test_delete_archived_task_removes_related_rows(kanban_home):
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")
@@ -4537,3 +4655,110 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+def test_dispatch_routes_legacy_review_required_block(kanban_home, all_assignees_spawnable):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Implement API feature",
+            body="Code change with tests passing.",
+            assignee="forge",
+        )
+        assert kb.block_task(conn, source, reason="review-required: needs code review")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+        assert [(source, "", "warden")] == res.review_routed
+        assert conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE created_by = ?",
+            (kb._REVIEW_ROUTER_AUTHOR,),
+        ).fetchone()[0] == 0
+
+        res = kb.dispatch_once(conn, max_spawn=0)
+        assert len(res.review_routed) == 1
+        _, review_task, reviewer = res.review_routed[0]
+        assert reviewer == "warden"
+        child = kb.get_task(conn, review_task)
+        assert child is not None
+        assert child.assignee == "warden"
+        assert child.status == "ready"
+        assert source in (child.body or "")
+
+        second = kb.dispatch_once(conn, max_spawn=0)
+        assert second.review_routed == []
+
+
+def test_dispatch_emits_review_overdue_and_hard_escalates(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Implement API feature",
+            body="Code change with tests passing.",
+            assignee="forge",
+        )
+        assert kb.block_task(conn, source, reason="review-required: needs code review")
+        old = int(time.time()) - 20
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ? AND kind = 'blocked'",
+            (old, source),
+        )
+        conn.commit()
+
+        res = kb.dispatch_once(
+            conn,
+            max_spawn=0,
+            # tiny SLA so the aged block crosses both thresholds.
+        )
+        # Default fast_code hard SLA is hours, so exercise the policy helper directly
+        # with test-local thresholds after proving dispatch wired primary routing.
+        assert res.review_routed and res.review_routed[0][2] == "warden"
+
+    with kb.connect() as conn:
+        routed, overdue, escalated = kb.route_review_required_blocks(
+            conn,
+            kanban_cfg={
+                "review_policy": {
+                    "fast_code": {
+                        "primary": "warden",
+                        "fallback": ["adam"],
+                        "escalate_seconds": 5,
+                        "hard_escalate_seconds": 10,
+                    }
+                }
+            },
+        )
+        assert routed == []
+        assert overdue == [source]
+        assert len(escalated) == 1
+        assert escalated[0][0] == source
+        assert escalated[0][2] == "adam"
+        kinds = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (source,),
+            ).fetchall()
+        ]
+        assert "review_overdue" in kinds
+        assert "review_escalated" in kinds
+
+
+def test_review_router_uses_domain_policy_and_skips_implementer(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Approve production restart",
+            body="Need systemctl restart for runtime fix.",
+            assignee="infra",
+        )
+        assert kb.block_task(conn, source, reason="review-required: ops approval")
+        routed, _, _ = kb.route_review_required_blocks(conn)
+        assert len(routed) == 1
+        assert routed[0][2] == "warden"
+        child = kb.get_task(conn, routed[0][1])
+        assert child is not None
+        assert "Review class: ops" in (child.body or "")
+

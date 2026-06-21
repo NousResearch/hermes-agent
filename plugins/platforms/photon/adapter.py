@@ -94,6 +94,18 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "reset reason: overflow",
 )
 
+# Photon / Spectrum upstream failures that mean the sidecar's gRPC/iMessage
+# session is suspect.  These trigger adapter reconnect/restart for the NEXT
+# message, but never a retry of the send that observed the failure.
+_PHOTON_UPSTREAM_FAILURE_PATTERNS = (
+    "connection dropped",
+    "connectionerror",
+    "stream interrupted",
+    "upstream connection dropped",
+    "upstream connect error",
+    "reset reason: overflow",
+)
+
 # Minimum seconds between typing-indicator calls for the same chat.
 # iMessage is a personal channel — suppressing rapid repeats reduces
 # upstream gRPC pressure during Photon overflow events.
@@ -237,6 +249,8 @@ class PhotonAdapter(BasePlatformAdapter):
         self._inbound_task: Optional[asyncio.Task] = None
         self._inbound_running = False
         self._http_client: Optional["httpx.AsyncClient"] = None
+        self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._upstream_unhealthy_notified = False
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
         # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
@@ -345,6 +359,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
         client = httpx.AsyncClient(timeout=30.0)
         self._http_client = client
+        self._gateway_loop = asyncio.get_running_loop()
+        self._upstream_unhealthy_notified = False
 
         # The sidecar holds the gRPC stream for BOTH directions, so it is
         # required now (not just for outbound).
@@ -419,7 +435,10 @@ class PhotonAdapter(BasePlatformAdapter):
                     "GET", url, headers=headers, timeout=None,
                 ) as resp:
                     if resp.status_code != 200:
-                        raise RuntimeError(f"/inbound returned {resp.status_code}")
+                        body = (await resp.aread()).decode("utf-8", "replace")[:500]
+                        raise RuntimeError(
+                            f"/inbound returned {resp.status_code}: {body}"
+                        )
                     backoff = 1.0  # reset on a successful connect
                     async for line in resp.aiter_lines():
                         if not self._inbound_running:
@@ -437,6 +456,9 @@ class PhotonAdapter(BasePlatformAdapter):
                     "[photon] inbound stream dropped (%s); reconnecting in %.1fs",
                     e, backoff,
                 )
+                if self._is_upstream_failure(str(e)):
+                    await self._mark_upstream_unhealthy(str(e))
+                    break
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
@@ -852,7 +874,10 @@ class PhotonAdapter(BasePlatformAdapter):
                 line = await loop.run_in_executor(None, stdout.readline)
                 if not line:
                     break
-                logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
+                text = line.decode("utf-8", "replace").rstrip()
+                logger.info("[photon-sidecar] %s", text)
+                if self._is_upstream_failure(text):
+                    await self._mark_upstream_unhealthy(text)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
         if self._inbound_running:
@@ -1234,6 +1259,50 @@ class PhotonAdapter(BasePlatformAdapter):
         lowered = error.lower()
         return any(pat in lowered for pat in _PHOTON_RETRYABLE_PATTERNS)
 
+    @staticmethod
+    def _is_upstream_failure(error: Optional[str]) -> bool:
+        if not error:
+            return False
+        lowered = error.lower()
+        if "handler error" in lowered and "connection" not in lowered:
+            return False
+        return any(pat in lowered for pat in _PHOTON_UPSTREAM_FAILURE_PATTERNS)
+
+    async def _mark_upstream_unhealthy(self, reason: str) -> None:
+        """Mark Photon unhealthy so GatewayRunner reconnects/restarts it.
+
+        This is intentionally a self-heal trigger only. The send/read that
+        observed the failure is allowed to fail; we never retry the same
+        iMessage operation because Photon may have accepted it before surfacing
+        a transport error.
+        """
+        if not self._inbound_running:
+            return
+        if self._upstream_unhealthy_notified or self._fatal_error_code:
+            return
+        self._upstream_unhealthy_notified = True
+        message = f"Photon upstream connection unhealthy: {reason[:300]}"
+        logger.warning("[photon] %s", message)
+        self._set_fatal_error(
+            "PHOTON_UPSTREAM_DROPPED",
+            message,
+            retryable=True,
+        )
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - async callers have a loop
+            current_loop = None
+        gateway_loop = self._gateway_loop
+        if (
+            gateway_loop is not None
+            and gateway_loop is not current_loop
+            and not gateway_loop.is_closed()
+        ):
+            asyncio.run_coroutine_threadsafe(self._notify_fatal_error(), gateway_loop)
+            return
+        await self._notify_fatal_error()
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -1243,66 +1312,22 @@ class PhotonAdapter(BasePlatformAdapter):
         max_retries: int = 1,
         base_delay: float = 2.0,
     ) -> SendResult:
-        """Retry sends without the generic Markdown banner.
+        """Single-shot send for Photon/iMessage.
 
-        Photon replies are markdown (rendered by iMessage) or stripped plain
-        text under ``PHOTON_MARKDOWN=false`` — either way the gateway's
-        generic banner never applies.
+        Do not retry or send a plain-text fallback: Photon can accept/deliver
+        an iMessage and still return an upstream transport error. Retrying the
+        same response risks duplicate bubbles. Upstream failures instead mark
+        the adapter unhealthy so the gateway reconnects for the next message.
         """
-        text = self.format_message(content)
         result = await self.send(
             chat_id=chat_id,
-            content=text,
+            content=content,
             reply_to=reply_to,
             metadata=metadata,
         )
-        if result.success:
-            return result
-
-        error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
-        if not is_network and self._is_timeout_error(error_str):
-            return result
-
-        if is_network:
-            for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.warning(
-                    "[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
-                    attempt, max_retries, delay, error_str,
-                )
-                await asyncio.sleep(delay)
-                result = await self.send(
-                    chat_id=chat_id,
-                    content=text,
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-                if result.success:
-                    return result
-                error_str = result.error or ""
-                if not (result.retryable or self._is_retryable_error(error_str)):
-                    break
-            else:
-                logger.error(
-                    "[photon] Failed to deliver response after %d retries: %s",
-                    max_retries, error_str,
-                )
-                return result
-
-        logger.warning(
-            "[photon] Send failed: %s - retrying plain-text message",
-            error_str,
-        )
-        fallback_result = await self.send(
-            chat_id=chat_id,
-            content=text[: self.MAX_MESSAGE_LENGTH],
-            reply_to=reply_to,
-            metadata=metadata,
-        )
-        if not fallback_result.success:
-            logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
-        return fallback_result
+        if not result.success:
+            result.retryable = False
+        return result
 
     async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
         if len(text) > self.MAX_MESSAGE_LENGTH:
@@ -1319,7 +1344,7 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send", body)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=str(e), retryable=False)
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
@@ -1368,7 +1393,7 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=str(e), retryable=False)
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
@@ -1383,18 +1408,23 @@ class PhotonAdapter(BasePlatformAdapter):
         # _http_client directly — it always runs on the gateway's loop.
         url = f"http://{self._sidecar_bind}:{self._sidecar_port}{path}"
         headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=body, headers=headers)
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
-            )
-        data = resp.json() or {}
-        if not data.get("ok"):
-            raise RuntimeError(
-                f"Photon sidecar {path} reported error: {data.get('error')}"
-            )
-        return data
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=body, headers=headers)
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
+                )
+            data = resp.json() or {}
+            if not data.get("ok"):
+                raise RuntimeError(
+                    f"Photon sidecar {path} reported error: {data.get('error')}"
+                )
+            return data
+        except Exception as e:
+            if self._is_upstream_failure(str(e)):
+                await self._mark_upstream_unhealthy(str(e))
+            raise
 
 
 # ---------------------------------------------------------------------------

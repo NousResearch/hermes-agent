@@ -416,13 +416,27 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-function serverError(res) {
+function isUpstreamConnectionError(error) {
+  const text = (error && (error.stack || error.message) ? error.stack || error.message : String(error || "")).toLowerCase();
+  return (
+    text.includes("connection dropped") ||
+    text.includes("connectionerror") ||
+    text.includes("stream interrupted") ||
+    text.includes("upstream connect error") ||
+    text.includes("reset reason: overflow")
+  );
+}
+
+function serverError(res, error = null) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
   // Don't leak stack traces or raw exception text to the caller — even
   // though we listen on loopback, the supervisor logs the real error
-  // and the client only needs a generic failure signal.
-  res.end(JSON.stringify({ ok: false, error: "internal sidecar error" }));
+  // and the client only needs a classified failure signal.
+  const message = isUpstreamConnectionError(error)
+    ? "upstream connection dropped"
+    : "internal sidecar error";
+  res.end(JSON.stringify({ ok: false, error: message }));
 }
 
 function ok(res, data) {
@@ -667,7 +681,7 @@ const server = http.createServer(async (req, res) => {
     );
     // serverError() intentionally returns a generic message — see its
     // body for the rationale.
-    return serverError(res);
+    return serverError(res, e);
   }
 });
 

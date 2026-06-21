@@ -414,6 +414,31 @@ class BaseEnvironment(ABC):
             return f"$HOME/{shlex.quote(cwd[2:])}"
         return shlex.quote(cwd)
 
+    @staticmethod
+    def _session_context_env_exports() -> list[str]:
+        """Return shell exports for explicitly-bound gateway session context.
+
+        Command shells source a persistent snapshot before running user code.
+        If the current gateway turn deliberately has an empty value (for
+        example a top-level Mattermost post with no thread id), that empty
+        value must overwrite any older value saved in the snapshot. Under the
+        gateway, an unset ContextVar must also clear a possibly-foreign
+        process-global/snapshot value from another concurrent session.
+        """
+        try:
+            from gateway.session_context import session_context_env_overlay
+        except ImportError:
+            return []
+
+        under_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+        exports: list[str] = []
+        for var_name, value in session_context_env_overlay(strip_unset=under_gateway):
+            if value is None:
+                exports.append(f"unset {var_name}")
+                continue
+            exports.append(f"export {var_name}={shlex.quote(value)}")
+        return exports
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -438,6 +463,8 @@ class BaseEnvironment(ABC):
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
+
+        parts.extend(self._session_context_env_exports())
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.

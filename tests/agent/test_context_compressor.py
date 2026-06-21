@@ -225,6 +225,39 @@ class TestCompress:
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
 
+    def test_protect_first_n_decays_after_first_compression(self):
+        """Regression for #11996: protect_first_n must protect early turns on
+        the FIRST compaction but DECAY afterwards, so the same early user
+        messages don't get re-copied verbatim into every child session and
+        fossilize (grow immortal) across a long, repeatedly-compressed
+        session. The system prompt is always protected separately."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3)
+
+        msgs = [{"role": "system", "content": "sys"}] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+            for i in range(10)
+        ]
+
+        # First compaction: protect system + first 3 non-system.
+        assert c.compression_count == 0
+        assert c._effective_protect_first_n() == 3
+        assert c._protect_head_size(msgs) == 1 + 3
+
+        # Simulate having compressed once — early turns now live in the summary.
+        c.compression_count = 1
+        assert c._effective_protect_first_n() == 0
+        assert c._protect_head_size(msgs) == 1  # system prompt only
+
+    def test_protect_first_n_decays_when_previous_summary_exists(self):
+        """Even if compression_count was reset, an existing handoff summary
+        means the early turns are already captured — decay still applies."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3)
+        c.compression_count = 0
+        c._previous_summary = "[CONTEXT SUMMARY]: earlier work"
+        assert c._effective_protect_first_n() == 0
+
 
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""

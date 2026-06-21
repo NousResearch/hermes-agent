@@ -584,6 +584,10 @@ export interface SessionSearchResult {
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null
   model: string | null
+  /** Owning profile name, set by the cross-profile search aggregator
+   *  (`?profile=all`). Absent on single-profile searches, which the UI treats
+   *  as the default profile. Routes the transcript read to the right backend. */
+  profile?: string
   role: string | null
   /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string

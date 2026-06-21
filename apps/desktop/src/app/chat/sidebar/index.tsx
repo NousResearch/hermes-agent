@@ -271,6 +271,10 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     model: result.model ?? null,
     output_tokens: 0,
     preview: result.snippet?.trim() || null,
+    // Owning profile from the cross-profile search aggregator — drives the
+    // per-row profile badge and routes the transcript read to the right backend
+    // (absent for single-profile/legacy searches, treated as default).
+    ...(result.profile ? { profile: result.profile } : {}),
     source: result.source ?? null,
     started_at: ts,
     title: null,
@@ -474,8 +478,13 @@ export function ChatSidebar({
 
     let cancelled = false
 
+    // Search the same profile slice the recents show: "all" for the unified
+    // view, otherwise the scoped profile. Keeps server hits consistent with the
+    // visible list instead of leaking other profiles into a scoped view.
+    const searchProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
     const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
+      void searchSessions(trimmedQuery, searchProfile)
         .then(res => {
           if (!cancelled) {
             setServerMatches(res.results)
@@ -488,7 +497,7 @@ export function ChatSidebar({
       cancelled = true
       window.clearTimeout(id)
     }
-  }, [trimmedQuery])
+  }, [trimmedQuery, profileScope])
 
   const searchResults = useMemo(() => {
     if (!trimmedQuery) {

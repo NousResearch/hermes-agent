@@ -206,9 +206,18 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   })
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+// Full-text search scoped to match the sidebar's recents. `profile="all"` (the
+// unified view) aggregates across every profile's on-disk state.db on the
+// primary backend — mirroring listAllProfileSessions — and tags each result
+// with its owning `profile`; a concrete name searches just that profile. Routed
+// by the path's `?profile=`, not request.profile: "all" has no single backend,
+// and the primary serves every local profile's DB directly. Without this a
+// conversation in a non-default profile is listed in recents but unfindable in
+// search. The cross-profile fan-out reuses the longer session-list timeout.
+export function searchSessions(query: string, profile = 'all'): Promise<SessionSearchResponse> {
   return window.hermesDesktop.api<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    path: `/api/sessions/search?q=${encodeURIComponent(query)}&profile=${encodeURIComponent(profile)}`,
+    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 }
 

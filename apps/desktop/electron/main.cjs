@@ -5497,6 +5497,16 @@ async function interceptSessionRequestForRemote(request) {
     return mergeRemoteProfileSessions(searchParams, remoteProfiles)
   }
 
+  // `/api/sessions/search` is a literal collection route, not a per-session
+  // resource — its `?profile=` is a search SCOPE (incl. "all"), not a session
+  // owner. The per-session regex below matches it ("search" looks like an id),
+  // and the remote branches rebuild the URL from `pathname` alone, which would
+  // silently drop the `?q=` term. Let it fall through to the primary/global
+  // backend, where the server aggregates profiles (?profile=all) itself.
+  if (pathname === '/api/sessions/search') {
+    return undefined
+  }
+
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
   // (mutations). Two remote shapes:
   //  - per-profile override: route to that profile's own remote, sans profile

@@ -2016,6 +2016,25 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     ]
 
 
+def test_ensure_session_db_row_persists_session_source(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
+
+    assert created == [
+        {"key": "k1", "source": "tool", "model": "test-model", "model_config": None, "cwd": None}
+    ]
+
+
 def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     """Without an explicit workspace, cwd is left null so the session groups
     under "No workspace" rather than the gateway's launch directory."""
@@ -7724,6 +7743,18 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
         )["result"]["session_id"]
         assert server._sessions[on]["close_on_disconnect"]
         assert not server._sessions[off]["close_on_disconnect"]
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_records_source(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        sid = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"source": "tool"}}
+        )["result"]["session_id"]
+        assert server._sessions[sid]["source"] == "tool"
     finally:
         server._sessions.clear()
 

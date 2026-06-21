@@ -59,6 +59,12 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+:::tip Org deployments
+An administrator can pin specific config and secret values that a standard user
+cannot override, via a system-level managed directory. See
+[Managed Scope](/user-guide/managed-scope).
+:::
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:
@@ -83,7 +89,7 @@ You can set `providers.<id>.request_timeout_seconds` for a provider-wide request
 
 You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming stale-call detector, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var.
 
-Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
 ## Update Behavior
 
@@ -1000,6 +1006,23 @@ auxiliary:
   # Context compression timeout (separate from compression.* config)
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
+    # fallback_chain:           # Optional — providers to try on rate-limit / connectivity failure
+    #   - provider: nous
+    #     model: deepseek/deepseek-chat
+    #   - provider: openrouter
+    #     model: google/gemini-2.5-flash
+    #     base_url: ""
+    #     api_key: ""
+
+  # Auto-generated session titles. Empty language follows the conversation;
+  # set e.g. "English" or "Japanese" to pin titles to one language.
+  title_generation:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+    language: ""
 
   # Skills hub — skill matching and search
   skills_hub:
@@ -1037,6 +1060,34 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::info
 Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
+
+### Per-task fallback chain for auxiliary tasks
+
+Each auxiliary task can optionally define a `fallback_chain` — a list of provider/model entries that Hermes tries when the primary auxiliary provider fails due to rate limits, connectivity issues, or payment restrictions:
+
+```yaml
+auxiliary:
+  compression:
+    provider: openrouter
+    model: openai/gpt-4o-mini
+    fallback_chain:
+      - provider: nous
+        model: deepseek/deepseek-chat
+      - provider: openrouter
+        model: google/gemini-2.5-flash
+```
+
+When the primary auxiliary provider (`openrouter` / `openai/gpt-4o-mini`) returns a rate-limit, connection timeout, or payment-required error, Hermes walks the `fallback_chain` in order. It skips entries whose provider matches the already-failed provider, and tries each remaining entry until one succeeds or the chain is exhausted. If all fallbacks fail, Hermes falls back to the main agent model as a final safety net.
+
+Each entry supports the same three knobs as any auxiliary task config:
+
+| Key | Description |
+|-----|-------------|
+| `provider` | Provider name (`nous`, `openrouter`, `anthropic`, `gemini`, `main`, etc.) |
+| `model` | Model name for that provider |
+| `base_url` | (Optional) Custom OpenAI-compatible endpoint |
+
+`fallback_chain` is available on any auxiliary task — `compression`, `vision`, `web_extract`, `approval`, `skills_hub`, `mcp`, etc.
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 

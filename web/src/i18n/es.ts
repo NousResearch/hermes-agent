@@ -203,6 +203,7 @@ export const es: Translations = {
     selectedSessionsDeleted: "{count} sesiones eliminadas",
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
+    newChat: "Nuevo chat",
     previousPage: "Página anterior",
     nextPage: "Página siguiente",
     roles: {

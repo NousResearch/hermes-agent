@@ -75,10 +75,55 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
+    const handleDispatch = (raw: unknown): void => {
+      const d = asCommandDispatch(raw)
+
+      if (!d) {
+        return sys(translate(ui.locale, 'errors.invalidResponse', { method: 'command.dispatch' }))
+      }
+
+      if (d.type === 'exec' || d.type === 'plugin') {
+        return sys(d.output || translate(ui.locale, 'command.noOutputParen'))
+      }
+
+      if (d.type === 'alias') {
+        return void handler(`/${d.target}${argTail}`)
+      }
+
+      if (d.type === 'skill') {
+        sys(translate(ui.locale, 'command.loadingSkill', { name: d.name }))
+
+        return d.message?.trim() ? send(d.message) : sys(translate(ui.locale, 'command.skillPayloadMissing', { command: parsed.name }))
+      }
+
+      if (d.type === 'send') {
+        if (d.notice?.trim()) {
+          sys(d.notice)
+        }
+        return d.message?.trim() ? send(d.message) : sys(translate(ui.locale, 'command.emptyMessage', { command: parsed.name }))
+      }
+
+      if (d.type === 'prefill') {
+        // /undo returns prefill: drop the backed-up message text into
+        // the composer so the user can edit and resubmit, instead of
+        // submitting it immediately like 'send'.
+        if (d.notice?.trim()) {
+          sys(d.notice)
+        }
+        if (d.message) {
+          ctx.composer.setInput(d.message)
+        }
+      }
+    }
+
     gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sid })
       .then(r => {
         if (stale()) {
           return
+        }
+
+        if (asCommandDispatch(r)) {
+          return handleDispatch(r)
         }
 
         const body = r?.output || translate(ui.locale, 'command.noOutput', { command: parsed.name })
@@ -94,45 +139,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
               return
             }
 
-            const d = asCommandDispatch(raw)
-
-            if (!d) {
-              return sys(translate(ui.locale, 'errors.invalidResponse', { method: 'command.dispatch' }))
-            }
-
-            if (d.type === 'exec' || d.type === 'plugin') {
-              return sys(d.output || translate(ui.locale, 'command.noOutputParen'))
-            }
-
-            if (d.type === 'alias') {
-              return handler(`/${d.target}${argTail}`)
-            }
-
-            if (d.type === 'skill') {
-              sys(translate(ui.locale, 'command.loadingSkill', { name: d.name }))
-
-              return d.message?.trim() ? send(d.message) : sys(translate(ui.locale, 'command.skillPayloadMissing', { command: parsed.name }))
-            }
-
-            if (d.type === 'send') {
-              if (d.notice?.trim()) {
-                sys(d.notice)
-              }
-              return d.message?.trim() ? send(d.message) : sys(translate(ui.locale, 'command.emptyMessage', { command: parsed.name }))
-            }
-
-            if (d.type === 'prefill') {
-              // /undo returns prefill: drop the backed-up message text into
-              // the composer so the user can edit and resubmit, instead of
-              // submitting it immediately like 'send'.
-              if (d.notice?.trim()) {
-                sys(d.notice)
-              }
-              if (d.message) {
-                ctx.composer.setInput(d.message)
-              }
-              return
-            }
+            handleDispatch(raw)
           })
           .catch(guardedErr)
       })

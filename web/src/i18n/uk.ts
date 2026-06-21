@@ -203,6 +203,7 @@ export const uk: Translations = {
     selectedSessionsDeleted: "Видалено сесій: {count}",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
+    newChat: "Новий чат",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
     roles: {

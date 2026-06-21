@@ -227,6 +227,7 @@ export interface Translations {
     selectedSessionsDeleted: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
+    newChat: string;
     previousPage: string;
     nextPage: string;
     roles: {

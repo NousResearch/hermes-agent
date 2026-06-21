@@ -203,6 +203,7 @@ export const ga: Translations = {
     selectedSessionsDeleted: "Scriosadh {count} seisiún",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
+    newChat: "Comhrá nua",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
     roles: {

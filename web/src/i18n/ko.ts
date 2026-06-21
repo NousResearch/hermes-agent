@@ -203,6 +203,7 @@ export const ko: Translations = {
     selectedSessionsDeleted: "{count}개 세션이 삭제되었습니다",
     failedToDeleteSelected: "선택한 세션 삭제에 실패했습니다",
     resumeInChat: "채팅에서 다시 시작",
+    newChat: "새 채팅",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
     roles: {

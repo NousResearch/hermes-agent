@@ -203,6 +203,7 @@ export const ru: Translations = {
     selectedSessionsDeleted: "Удалено сессий: {count}",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
+    newChat: "Новый чат",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {

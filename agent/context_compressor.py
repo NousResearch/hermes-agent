@@ -1649,6 +1649,14 @@ This compaction should PRIORITISE preserving all information related to the focu
                 or "model_not_found" in _err_str
                 or "does not exist" in _err_str
                 or "no available channel" in _err_str
+                # GitHub Copilot Enterprise returns 400 with
+                # code "unsupported_api_for_model" when an Anthropic-family
+                # model (claude-opus-4.x) is asked to speak the OpenAI
+                # Responses API. The fallback to the main chat_completions
+                # client must trigger here, not enter a 60s cooldown that
+                # leaves context growing unbounded.
+                or "unsupported_api_for_model" in _err_str
+                or "does not support responses api" in _err_str
             )
             _is_timeout = (
                 _status in {408, 429, 502, 504}

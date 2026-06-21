@@ -459,7 +459,15 @@ _MCP_INJECTION_PATTERNS = [
      "role tag injection attempt"),
     (re.compile(r"do\s+not\s+(tell|inform|mention|reveal)", re.I),
      "concealment instruction"),
-    (re.compile(r"(curl|wget|fetch)\s+https?://", re.I),
+    # ``fetch`` was previously in this group but matches natural-language
+    # usage examples like \"Fetch https://example.com\" that legitimate MCP
+    # servers (e.g. apify/fetch-apify-docs) put in their descriptions to
+    # tell the agent what the tool does. The shell-exec threat shape we
+    # actually care about is ``curl ...`` or ``wget ...``; both are pure
+    # shell tool names with no English-prose collision. The middle ``.*?``
+    # lets ``curl -X POST -L -o file https://...`` still trip — only the
+    # English verb ``fetch`` is dropped.
+    (re.compile(r"\b(curl|wget)\b[^\n]*?\bhttps?://", re.I),
      "network command in description"),
     (re.compile(r"base64\.(b64decode|decodebytes)", re.I),
      "base64 decode reference"),

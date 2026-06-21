@@ -2626,7 +2626,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                # Demoted to DEBUG: the fallback path below
+                                # delivers the same content cleanly as plain
+                                # text. The model occasionally emits
+                                # unbalanced backticks / stray reserved chars
+                                # that survive format_message's protect-and-
+                                # escape pipeline; warning here just adds
+                                # noise to a fully self-healing path.
+                                logger.debug("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
@@ -2900,8 +2907,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: strip MarkdownV2 escapes and retry as clean plain text
-                logger.warning(
+                # Fallback: strip MarkdownV2 escapes and retry as clean plain
+                # text. Demoted to DEBUG (was WARNING) — every code path
+                # below recovers: parse-failure retries plain, too_long
+                # propagates to the outer except + split-and-deliver. The
+                # log was noise on a self-healing pipeline.
+                logger.debug(
                     "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
                     self.name,
                     fmt_err,

@@ -144,7 +144,10 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError: Path.expanduser() raises when HOME is unset and
+            # the path starts with ~ (some cron / sandboxed contexts).
+            # Treat as a non-resolvable hint candidate.
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):

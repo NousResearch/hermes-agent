@@ -607,11 +607,21 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # Read-only introspection helpers — the review fork frequently
+            # needs to inspect a skill's referenced files, look up a path
+            # mentioned in the conversation, or sanity-check a memory entry's
+            # source before deciding what to consolidate. Denying these
+            # forced the fork into low-quality writes (we logged 10+ denials
+            # in a single day on 2026-06-21). All three are strictly
+            # read-only — no mutation, no network, no shell — so the
+            # review-fork threat model still holds.
+            review_whitelist.update({"read_file", "search_files"})
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/skill/read-only-introspection "
+                    "tools are allowed."
                 ),
             )
             try:

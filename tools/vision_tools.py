@@ -348,6 +348,11 @@ def _is_image_size_error(error: Exception) -> bool:
         "too large", "payload", "413", "content_too_large",
         "request_too_large", "image_url", "invalid_request",
         "exceeds", "size limit",
+        # Anthropic 400 wording when the per-side pixel cap (8000 px) is hit
+        # is "image dimensions exceed max allowed size: 8000 pixels".
+        # Note "exceed" not "exceeds" — the existing "exceeds" substring
+        # doesn't match, so add the singular plus the dimension hint.
+        "exceed max", "image dimensions", "dimensions exceed",
     ))
 
 
@@ -977,16 +982,33 @@ async def vision_analyze_tool(
         try:
             response = await async_call_llm(**call_kwargs)
         except Exception as _api_err:
-            if (_is_image_size_error(_api_err)
-                    and len(image_data_url) > _RESIZE_TARGET_BYTES):
+            # Retry on size error if EITHER bytes OR pixel dimensions exceed
+            # the embed target. A tall small-byte screenshot (e.g. 1200×12000
+            # at 0.06 MB) trips the 8000px per-side cap without ever crossing
+            # the 5 MB byte cap — gating retry on bytes alone leaks those
+            # straight back to the caller as a hard failure.
+            _retry_eligible = (
+                _is_image_size_error(_api_err)
+                and (
+                    len(image_data_url) > _RESIZE_TARGET_BYTES
+                    or _image_exceeds_dimension(temp_image_path, _EMBED_MAX_DIMENSION)
+                )
+            )
+            if _retry_eligible:
                 logger.info(
-                    "API rejected image (%.1f MB, likely too large); "
-                    "auto-resizing to ~%.0f MB and retrying...",
+                    "API rejected image (%.1f MB, dims-over-cap=%s); "
+                    "auto-resizing to <=%.0f MB / <=%dpx and retrying...",
                     len(image_data_url) / (1024 * 1024),
+                    _image_exceeds_dimension(temp_image_path, _EMBED_MAX_DIMENSION),
                     _RESIZE_TARGET_BYTES / (1024 * 1024),
+                    _EMBED_MAX_DIMENSION,
                 )
                 image_data_url = _resize_image_for_vision(
-                    temp_image_path, mime_type=detected_mime_type)
+                    temp_image_path,
+                    mime_type=detected_mime_type,
+                    max_base64_bytes=_RESIZE_TARGET_BYTES,
+                    max_dimension=_EMBED_MAX_DIMENSION,
+                )
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
                 response = await async_call_llm(**call_kwargs)
             else:

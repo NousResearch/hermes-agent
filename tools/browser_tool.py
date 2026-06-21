@@ -1308,6 +1308,94 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _reap_orphaned_chrome_processes() -> int:
+    """Kill orphaned headless Chrome processes from dead agent-browser daemons.
+
+    On Windows, when an agent-browser daemon exits (gateway restart, crash),
+    its Chromium child processes get reparented to Explorer.exe.  The main
+    reaper ``_reap_orphaned_browser_sessions`` handles daemons that are
+    *still alive*, but cannot reach Chrome children whose daemon already
+    exited.  This function catches those orphans by scanning for Chrome
+    processes whose ``--user-data-dir`` points at a stale
+    ``agent-browser-chrome-*`` temp directory.
+
+    Safe to call from the cleanup thread or on startup.
+    """
+    if os.name != "nt":
+        # On POSIX, process-tree SIGTERM cascades reliably; this is a
+        # Windows-specific reparenting problem.
+        return 0
+
+    try:
+        import subprocess, tempfile, re
+        from gateway.status import _pid_exists
+
+        # Only reap when there are NO active browser sessions in this
+        # process.  If sessions exist, Chrome processes likely belong to
+        # them and should not be touched.
+        with _cleanup_lock:
+            if _active_sessions:
+                return 0
+
+        tmpdir = tempfile.gettempdir()
+        result = subprocess.run(
+            [
+                "wmic", "process",
+                "where", "name='chrome.exe'",
+                "get", "processid,parentprocessid,commandline",
+                "/format:csv",
+            ],
+            capture_output=True, timeout=15,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+        )
+        stdout = result.stdout.decode("utf-8", errors="replace")
+
+        # Collect PIDs of main (non-child-type) Chrome processes that use
+        # an agent-browser-chrome user-data-dir.
+        udd_re = re.compile(
+            r'--user-data-dir="?([^"]*agent-browser-chrome-[^" ]+)')
+        main_pids: list[int] = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("Node"):
+                continue
+            parts = line.split(",", 3)
+            if len(parts) < 4:
+                continue
+            try:
+                pid = int(parts[3])
+                cmdline = parts[1]
+            except (ValueError, IndexError):
+                continue
+            m = udd_re.search(cmdline)
+            if not m:
+                continue
+            # Only match main browser processes (have --headless, no --type)
+            if "--headless" in cmdline and "--type=" not in cmdline:
+                main_pids.append(pid)
+
+        if not main_pids:
+            return 0
+
+        reaped = 0
+        from tools.process_registry import ProcessRegistry
+        for pid in main_pids:
+            try:
+                ProcessRegistry._terminate_host_pid(pid)
+                reaped += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+        if reaped:
+            logger.info(
+                "Reaped %d orphaned Chrome process tree(s) whose daemon "
+                "already exited (Windows reparenting workaround)", reaped)
+        return reaped
+    except Exception as exc:
+        logger.debug("Orphan Chrome reap skipped: %s", exc)
+        return 0
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1435,6 +1523,13 @@ def _browser_cleanup_thread_worker():
         _reap_orphaned_browser_sessions()
     except Exception as e:
         logger.warning("Orphan reap error: %s", e)
+
+    # Second pass: kill orphaned Chrome processes whose daemon already
+    # exited (Windows reparenting workaround — see _reap_orphaned_chrome_processes).
+    try:
+        _reap_orphaned_chrome_processes()
+    except Exception as e:
+        logger.warning("Orphan Chrome reap error: %s", e)
 
     while _cleanup_running:
         try:

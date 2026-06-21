@@ -405,3 +405,82 @@ class TestEmergencyCleanupRunsReaper:
         assert reaper_called, (
             "Reaper must run on exit even with no active sessions"
         )
+
+
+class TestReapOrphanedChromeProcesses:
+    """Tests for _reap_orphaned_chrome_processes() — Windows orphan Chrome killer."""
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only test")
+    def test_no_chrome_processes_is_noop(self, monkeypatch):
+        """When wmic finds no chrome.exe, return 0."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {})
+
+        fake_result = type("R", (), {"stdout": b"Node,CommandLine,ParentProcessId,ProcessId\n"})()
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake_result)
+        assert bt._reap_orphaned_chrome_processes() == 0
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only test")
+    def test_skips_when_active_sessions_exist(self, monkeypatch):
+        """Must not kill anything when this process has active browser sessions."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {"some_task": {"session_name": "h_abc"}})
+        assert bt._reap_orphaned_chrome_processes() == 0
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only test")
+    def test_kills_orphaned_headless_chrome(self, monkeypatch):
+        """Kill main headless Chrome processes using agent-browser-chrome user-data-dir."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {})
+
+        csv_lines = (
+            "Node,CommandLine,ParentProcessId,ProcessId\n"
+            'SKYNET,"C:\\\\chrome.exe --headless=new --user-data-dir=C:\\\\Temp\\\\agent-browser-chrome-abc123",100,200\n'
+            'SKYNET,"C:\\\\chrome.exe --type=renderer --user-data-dir=C:\\\\Temp\\\\agent-browser-chrome-abc123",200,201\n'
+            'SKYNET,"C:\\\\chrome.exe --headless=new --user-data-dir=C:\\\\Users\\\\chuckie\\\\Chrome\\\\User Data",300,301\n'
+        )
+        fake_result = type("R", (), {"stdout": csv_lines.encode()})()
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake_result)
+
+        killed_pids = []
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            lambda pid: killed_pids.append(pid),
+        )
+
+        assert bt._reap_orphaned_chrome_processes() == 1
+        assert killed_pids == [200]
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only test")
+    def test_ignores_non_agent_browser_chrome(self, monkeypatch):
+        """Chrome with normal user-data-dir must not be touched."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {})
+
+        csv_lines = (
+            "Node,CommandLine,ParentProcessId,ProcessId\n"
+            'SKYNET,"C:\\\\chrome.exe --headless=new --user-data-dir=C:\\\\Users\\\\chuckie\\\\Chrome\\\\User Data",300,301\n'
+        )
+        fake_result = type("R", (), {"stdout": csv_lines.encode()})()
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake_result)
+
+        killed_pids = []
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            lambda pid: killed_pids.append(pid),
+        )
+
+        assert bt._reap_orphaned_chrome_processes() == 0
+        assert killed_pids == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only test")
+    def test_noop_on_posix(self, monkeypatch):
+        """On non-Windows, the function should be a no-op."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {})
+        assert bt._reap_orphaned_chrome_processes() == 0

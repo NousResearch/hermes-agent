@@ -261,8 +261,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     share it. Only transport-specific code lives here.
     """
 
-    # Default bridge location relative to the hermes-agent install
-    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    # Default bridge location relative to the hermes-agent install.
+    # This file lives at plugins/platforms/whatsapp/adapter.py, so the repo
+    # root is parents[3] (whatsapp -> platforms -> plugins -> <root>). The
+    # installer (hermes_cli/main.py) writes the bridge to <root>/scripts/
+    # whatsapp-bridge/, so this MUST resolve to the same place. parents[2]
+    # (== plugins/) was a relocation off-by-one left over from when this
+    # adapter lived at gateway/platforms/whatsapp.py; it pointed at the
+    # nonexistent plugins/scripts/whatsapp-bridge/ and broke every gateway
+    # start with "Bridge script not found" until a manual symlink papered
+    # over it.
+    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[3] / "scripts" / "whatsapp-bridge"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)

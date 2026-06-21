@@ -1556,32 +1556,29 @@ class MCPServerTask:
                     logger.debug("MCP message handler (%s): exception: %s", self.name, message)
                     return
                 if _MCP_NOTIFICATION_TYPES and isinstance(message, ServerNotification):
-                    match message.root:
-                        case ToolListChangedNotification():
-                            logger.info(
-                                "MCP server '%s': received tools/list_changed notification",
-                                self.name,
-                            )
-                            # Some servers (notably mongodb-mcp-server) emit
-                            # tools/list_changed immediately after initialize,
-                            # while the client may already be executing another
-                            # request. Refreshing synchronously inside the SDK
-                            # notification handler can race with that request
-                            # and wedge the stdio JSON-RPC stream, making all
-                            # subsequent tool calls time out. Do the refresh in
-                            # a separate task and let the handler return
-                            # promptly.
-                            self._schedule_tools_refresh()
-                            # Yield one loop tick so tests and short-lived
-                            # notification contexts can observe the scheduled
-                            # refresh without awaiting the full server RPC.
-                            await asyncio.sleep(0)
-                        case PromptListChangedNotification():
-                            logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
-                        case ResourceListChangedNotification():
-                            logger.debug("MCP server '%s': resources/list_changed (ignored)", self.name)
-                        case _:
-                            pass
+                    if isinstance(message.root, ToolListChangedNotification):
+                        logger.info(
+                            "MCP server '%s': received tools/list_changed notification",
+                            self.name,
+                        )
+                        # Some servers (notably mongodb-mcp-server) emit
+                        # tools/list_changed immediately after initialize,
+                        # while the client may already be executing another
+                        # request. Refreshing synchronously inside the SDK
+                        # notification handler can race with that request
+                        # and wedge the stdio JSON-RPC stream, making all
+                        # subsequent tool calls time out. Do the refresh in
+                        # a separate task and let the handler return
+                        # promptly.
+                        self._schedule_tools_refresh()
+                        # Yield one loop tick so tests and short-lived
+                        # notification contexts can observe the scheduled
+                        # refresh without awaiting the full server RPC.
+                        await asyncio.sleep(0)
+                    elif isinstance(message.root, PromptListChangedNotification):
+                        logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
+                    elif isinstance(message.root, ResourceListChangedNotification):
+                        logger.debug("MCP server '%s': resources/list_changed (ignored)", self.name)
             except Exception:
                 logger.exception("Error in MCP message handler for '%s'", self.name)
         return _handler

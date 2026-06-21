@@ -1,7 +1,7 @@
 ---
 name: xurl
 description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
-version: 1.1.1
+version: 1.2.0
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -422,6 +422,70 @@ xurl --app staging /2/users/me             # one-off against staging
 - **Multiple accounts per app:** Select with `-u / --username`, or set a default with `xurl auth default APP USER`.
 - **Token storage:** `~/.xurl` is YAML. In Docker, use the Hermes subprocess HOME (`/opt/data/home` in the official image) so tokens land under `/opt/data/home/.xurl`. Never read or send this file to LLM context.
 - **Cost:** X API access is typically paid for meaningful usage. Many failures are plan/permission problems, not code problems.
+
+---
+
+## Free Read-Only Alternatives
+
+When the user's X API credits are depleted, xurl auth is not set up, or they
+only need read access, use these free cookie-based backends instead of xurl.
+
+### twitter-cli (preferred free backend)
+
+```bash
+# Install
+pipx install twitter-cli
+
+# Auth (one-time, use Cookie-Editor in Chrome)
+# Export cookies from x.com, set environment variables:
+export TWITTER_AUTH_TOKEN=*** TWITTER_CT0="yyy"
+
+# Search (may 404 if X changed GraphQL endpoints)
+twitter search "query" -n 10
+
+# Home timeline
+twitter feed -n 20
+
+# Read a tweet (single + replies)
+twitter tweet URL_OR_ID
+
+# Read X Article / longform
+twitter article URL_OR_ID
+
+# User timeline / profile
+twitter user-posts @username -n 20
+twitter user @username
+```
+
+#### Search Retry Chain
+
+Twitter GraphQL endpoints change frequently. If `twitter search` returns 404:
+
+1. Retry once: `twitter search "query" -n 10`
+2. Upgrade and retry: `pipx upgrade twitter-cli && twitter search "query" -n 10`
+3. Fall back to OpenCLI (desktop): `opencli twitter search "query" -f yaml`
+4. As last resort, use stable commands: `twitter feed` or `twitter user-posts @somebody`
+
+> IP risk: Don't run twitter-cli on VPS/datacenter IPs (followers/following
+> especially). Use residential IP or local environment.
+
+### OpenCLI (desktop, zero-config)
+
+If OpenCLI is installed (Chrome extension that reuses browser login state):
+
+```bash
+opencli twitter search "query" -f yaml     # Search
+opencli twitter article URL_OR_ID -f yaml  # Read article
+opencli twitter user-posts @user -f yaml   # User timeline
+```
+
+No API key, no cookie export — just log into x.com in Chrome once.
+
+### Backend Selection Priority
+
+1. xurl (official API, full read+write) — preferred when available
+2. twitter-cli (cookie-based, read-only, free) — fallback for reads
+3. OpenCLI (browser session, read-only, free) — zero-config desktop fallback
 
 ---
 

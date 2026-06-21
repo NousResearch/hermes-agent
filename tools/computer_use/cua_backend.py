@@ -251,8 +251,15 @@ def cua_driver_install_hint() -> str:
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     """Parse UIElement list from get_window_state AX tree markdown.
 
+    Last-resort fallback for cua-driver builds that don't carry the
+    canonical ``structuredContent.elements`` array (see
+    ``_parse_elements_from_structured`` — Surface 2 of #47072 prefers
+    that path).
+
     Handles both the classic ``"label"``-quoted format and the newer
-    ``id=Label`` format introduced in cua-driver v0.1.6.
+    ``id=Label`` format introduced in cua-driver v0.1.6. Bounds always
+    come back ``(0, 0, 0, 0)`` because the markdown surface doesn't
+    carry them — yet another reason to prefer the structured path.
     """
     elements = []
     for m in _ELEMENT_LINE_RE.finditer(markdown):
@@ -263,6 +270,53 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
             role=m.group(2),
             label=label,
             bounds=(0, 0, 0, 0),
+        ))
+    return elements
+
+
+def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[UIElement]:
+    """Surface 2 of NousResearch/hermes-agent#47072: read the canonical
+    ``structuredContent.elements`` array cua-driver-rs emits on every
+    ``get_window_state`` response (trycua/cua#1961).
+
+    Each entry has at minimum ``element_index``, ``role``, ``label``;
+    ``frame`` (``{x, y, w, h}``) is included whenever the AT-SPI /
+    AXFrame call returned usable bounds. Older code parsed the same
+    information out of the markdown tree via a regex (lossy: bounds
+    were always ``(0, 0, 0, 0)``) — this path preserves the real
+    frame so downstream consumers (e.g. ``UIElement.center()``) work
+    against pixel coordinates instead of just the index lookup.
+
+    Unknown / malformed entries are skipped rather than failing the
+    whole walk — the wrapper degrades to "fewer elements" rather than
+    "no elements" on a bad row.
+    """
+    elements: List[UIElement] = []
+    for raw in raw_elements:
+        if not isinstance(raw, dict):
+            continue
+        idx = raw.get("element_index")
+        if not isinstance(idx, int):
+            continue
+        role = raw.get("role") if isinstance(raw.get("role"), str) else ""
+        label = raw.get("label") if isinstance(raw.get("label"), str) else ""
+        frame = raw.get("frame") if isinstance(raw.get("frame"), dict) else None
+        bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        if frame:
+            try:
+                bounds = (
+                    int(frame.get("x", 0)),
+                    int(frame.get("y", 0)),
+                    int(frame.get("w", 0)),
+                    int(frame.get("h", 0)),
+                )
+            except (TypeError, ValueError):
+                bounds = (0, 0, 0, 0)
+        elements.append(UIElement(
+            index=idx,
+            role=role,
+            label=label,
+            bounds=bounds,
         ))
     return elements
 
@@ -702,14 +756,22 @@ class CuaDriverBackend(ComputerUseBackend):
 
             # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
             m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
-                # ax mode — no screenshot
-                elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
+
+            # Surface 2 of NousResearch/hermes-agent#47072: prefer the
+            # canonical structuredContent.elements array (trycua/cua#1961).
+            # Falls back to markdown regex parsing for cua-driver builds
+            # that didn't carry the structured shape — those bounds come
+            # back (0,0,0,0); the structured path preserves real frames.
+            sc_elements = (gws_out.get("structuredContent") or {}).get("elements")
+            if isinstance(sc_elements, list) and sc_elements:
+                elements = _parse_elements_from_structured(sc_elements)
+            else:
+                elements = _parse_elements_from_tree(tree) if tree else []
+
+            if gws_out["images"]:
                 png_b64 = gws_out["images"][0]
                 mimes = gws_out.get("image_mime_types") or []
                 image_mime_type = mimes[0] if mimes and mimes[0] else None
-                elements = _parse_elements_from_tree(tree)
 
             # Extract window title from the AX tree first AXWindow line.
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)

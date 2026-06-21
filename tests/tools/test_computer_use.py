@@ -1957,3 +1957,150 @@ class TestMcpInvocationResolution:
         with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
             cmd, args = _resolve_mcp_invocation("cua-driver")
         assert args == ["mcp"]
+
+
+class TestStructuredElementsConsumption:
+    """Surface 2 (NousResearch/hermes-agent#47072): trycua/cua#1961 made
+    `structuredContent.elements` part of every `get_window_state` MCP
+    response. The wrapper used to parse the markdown AX tree with a
+    regex — lossy because bounds always came back (0,0,0,0). The
+    structured path preserves real frames, so UIElement.center() works
+    against pixel coordinates instead of just an index lookup.
+    """
+
+    def test_structured_parser_reads_frames(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_structured
+
+        raw = [
+            {"element_index": 1, "role": "AXButton", "label": "OK",
+             "frame": {"x": 10, "y": 20, "w": 80, "h": 30}},
+            {"element_index": 2, "role": "AXTextField", "label": "search",
+             "frame": {"x": 100, "y": 50, "w": 200, "h": 24}},
+        ]
+        out = _parse_elements_from_structured(raw)
+        assert len(out) == 2
+        assert out[0].index == 1
+        assert out[0].role == "AXButton"
+        assert out[0].label == "OK"
+        assert out[0].bounds == (10, 20, 80, 30)
+        assert out[1].bounds == (100, 50, 200, 24)
+
+    def test_structured_parser_tolerates_missing_frame(self):
+        """Some elements (hidden / virtual) have no frame. They should
+        still surface in the list — just with (0,0,0,0) bounds."""
+        from tools.computer_use.cua_backend import _parse_elements_from_structured
+
+        raw = [{"element_index": 7, "role": "AXGroup", "label": "container"}]
+        out = _parse_elements_from_structured(raw)
+        assert len(out) == 1
+        assert out[0].index == 7
+        assert out[0].bounds == (0, 0, 0, 0)
+
+    def test_structured_parser_skips_malformed_entries(self):
+        """A corrupted row (missing element_index, wrong type) should not
+        kill the whole walk — degrade to fewer elements."""
+        from tools.computer_use.cua_backend import _parse_elements_from_structured
+
+        raw = [
+            {"element_index": 1, "role": "AXButton", "label": "first"},
+            {"role": "AXButton"},                  # missing element_index
+            {"element_index": "not-int", "role": "AXBad"},  # wrong type
+            "not a dict",                           # totally wrong shape
+            {"element_index": 2, "role": "AXButton", "label": "second"},
+        ]
+        out = _parse_elements_from_structured(raw)
+        # Two well-formed rows surface; the three bad ones are skipped.
+        assert [e.index for e in out] == [1, 2]
+
+    def test_capture_prefers_structured_over_markdown_when_both_present(self):
+        """The key contract: when get_window_state returns both
+        structuredContent.elements and a markdown tree, the structured
+        path wins — that's how we recover real bounds."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        windows_payload = {
+            "windows": [{
+                "app_name": "Demo", "pid": 9, "window_id": 1,
+                "is_on_screen": True, "title": "Demo", "z_index": 0,
+            }],
+        }
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                # Markdown text + structured elements with DIFFERENT bounds —
+                # we should see the structured ones in the result.
+                return {
+                    "data": (
+                        '✅ Demo — 1 elements, turn 1\n'
+                        '  - [1] AXButton "from-markdown"\n'
+                    ),
+                    "images": [],
+                    "image_mime_types": [],
+                    "structuredContent": {
+                        "elements": [{
+                            "element_index": 1, "role": "AXButton",
+                            "label": "from-structured",
+                            "frame": {"x": 7, "y": 8, "w": 9, "h": 10},
+                        }],
+                    },
+                    "isError": False,
+                }
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="ax")
+        assert len(cap.elements) == 1
+        # The structured path's bounds are preserved; the markdown
+        # path would have given (0,0,0,0) here.
+        assert cap.elements[0].label == "from-structured"
+        assert cap.elements[0].bounds == (7, 8, 9, 10)
+
+    def test_capture_falls_back_to_markdown_when_structured_absent(self):
+        """Older cua-driver builds didn't emit structuredContent.elements;
+        the wrapper still extracts what it can from the markdown surface."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        windows_payload = {
+            "windows": [{
+                "app_name": "Old", "pid": 9, "window_id": 1,
+                "is_on_screen": True, "title": "Old", "z_index": 0,
+            }],
+        }
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                return {
+                    "data": (
+                        '✅ Old — 1 elements, turn 1\n'
+                        '  - [3] AXButton "fallback-label"\n'
+                    ),
+                    "images": [],
+                    "image_mime_types": [],
+                    "structuredContent": None,  # no elements field
+                    "isError": False,
+                }
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="ax")
+        assert len(cap.elements) == 1
+        assert cap.elements[0].index == 3
+        assert cap.elements[0].label == "fallback-label"
+        # Markdown surface doesn't carry bounds — lossy by design.
+        assert cap.elements[0].bounds == (0, 0, 0, 0)

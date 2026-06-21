@@ -2680,38 +2680,60 @@
         rows: 2,
       }),
       h("div", { className: "flex gap-2" },
+        h("div", { className: "flex flex-col flex-1 min-w-0 gap-0.5" },
+          h(Label, {
+            className: "text-[10px] text-muted-foreground truncate",
+            title: props.columnName === "triage"
+              ? tx(t, "specifier", "Specifier")
+              : tx(t, "assignee", "Assignee"),
+          }, props.columnName === "triage"
+            ? tx(t, "specifier", "Specifier")
+            : tx(t, "assignee", "Assignee")),
+          h(Input, {
+            value: assignee,
+            onChange: function (e) { setAssignee(e.target.value); },
+            placeholder: props.columnName === "triage"
+              ? tx(t, "specifier", "specifier")
+              : tx(t, "assigneePlaceholder", "assignee"),
+            className: "h-7 text-xs w-full",
+            title: props.columnName === "triage"
+              ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
+              : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
+            style: { textTransform: "none" },
+            autoCapitalize: "none",
+            autoCorrect: "off",
+            spellCheck: false,
+          }),
+        ),
+        h("div", { className: "flex flex-col w-16 gap-0.5" },
+          h(Label, {
+            className: "text-[10px] text-muted-foreground truncate",
+            title: tx(t, "priority", "Priority"),
+          }, tx(t, "priority", "Priority")),
+          h(Input, {
+            type: "number",
+            value: priority,
+            onChange: function (e) { setPriority(e.target.value); },
+            placeholder: "pri",
+            className: "h-7 text-xs w-full",
+            title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
+          }),
+        ),
+      ),
+      h("div", { className: "flex flex-col gap-0.5" },
+        h(Label, {
+          className: "text-[10px] text-muted-foreground truncate",
+          title: tx(t, "skills", "Skills"),
+        }, tx(t, "skills", "Skills")),
         h(Input, {
-          value: assignee,
-          onChange: function (e) { setAssignee(e.target.value); },
-          placeholder: props.columnName === "triage"
-            ? tx(t, "specifier", "specifier")
-            : tx(t, "assigneePlaceholder", "assignee"),
-          className: "h-7 text-xs flex-1",
-          title: props.columnName === "triage"
-            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
-          style: { textTransform: "none" },
-          autoCapitalize: "none",
-          autoCorrect: "off",
-          spellCheck: false,
-        }),
-        h(Input, {
-          type: "number",
-          value: priority,
-          onChange: function (e) { setPriority(e.target.value); },
-          placeholder: "pri",
-          className: "h-7 text-xs w-16",
-          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
+          value: skills,
+          onChange: function (e) { setSkills(e.target.value); },
+          placeholder: tx(t, "skillsPlaceholder",
+            "skills (optional, comma-separated): translation, github-code-review"),
+          title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
+          className: "h-7 text-xs w-full",
         }),
       ),
-      h(Input, {
-        value: skills,
-        onChange: function (e) { setSkills(e.target.value); },
-        placeholder: tx(t, "skillsPlaceholder",
-          "skills (optional, comma-separated): translation, github-code-review"),
-        title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
-        className: "h-7 text-xs",
-      }),
       h("div", { className: "flex gap-2 items-center" },
         h("label", {
           className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",

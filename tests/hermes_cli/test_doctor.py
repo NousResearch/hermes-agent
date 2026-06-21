@@ -424,6 +424,58 @@ def test_run_doctor_resolves_docker_backend_from_config_yaml(monkeypatch, tmp_pa
     assert "docker not found (optional)" not in out
 
 
+def test_run_doctor_surfaces_terminal_config_bridge_failure(monkeypatch, tmp_path):
+    """A terminal-config bridge failure must be surfaced, not silently swallowed.
+
+    Regression: the bridge call was wrapped in `except Exception: pass`, so an
+    import/signature regression in `apply_terminal_config_to_env` would silently
+    downgrade doctor to the env-only backend view with no indication — exactly
+    the failure mode the bridge exists to prevent. doctor (whose job is surfacing
+    diagnostics) must emit a lightweight warning and continue, mirroring the
+    sibling TUI/dashboard bridges that debug-report this.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    from hermes_cli import config as _config_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated config bridge regression")
+
+    monkeypatch.setattr(_config_mod, "apply_terminal_config_to_env", _boom)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+
+    # doctor must surface the bridge failure (not swallow it) and keep running.
+    assert "Could not read terminal.backend from config.yaml" in out
+    assert "RuntimeError" in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

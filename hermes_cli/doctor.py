@@ -1400,10 +1400,17 @@ def run_doctor(args):
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env()
-    except Exception:
+    except Exception as exc:
         # Never let a config read failure break the diagnostic; fall back to the
-        # env-only view, which is what the doctor did before this bridge.
-        pass
+        # env-only view, which is what the doctor did before this bridge. Unlike
+        # the sibling TUI/dashboard bridges (which debug-log this), doctor has no
+        # logger and its whole job is surfacing diagnostics, so emit a lightweight
+        # warning so a regression (e.g. import/signature change) is visible rather
+        # than silently downgrading to the env-only backend view.
+        check_warn(
+            "Could not read terminal.backend from config.yaml",
+            f"({type(exc).__name__}: {exc}; using env-only TERMINAL_ENV)",
+        )
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     try:
         from hermes_constants import is_container as _is_container

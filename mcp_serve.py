@@ -953,6 +953,9 @@ def create_profile_router_mcp_server(
         profile_get as _profile_get,
         profile_health as _profile_health,
         profiles_list as _profiles_list,
+        file_patch as _file_patch,
+        file_write as _file_write,
+        terminal_run as _terminal_run,
         session_search as _session_search,
         skill_view as _skill_view,
         skills_list as _skills_list,
@@ -972,6 +975,8 @@ def create_profile_router_mcp_server(
         ProfileRouterAuthError,
         ProfileRouterBearerTokenVerifier,
         ProfileRouterTokenStore,
+        PROFILE_ROUTER_TERMINAL_SCOPE,
+        PROFILE_ROUTER_WRITE_SCOPE,
         VIKING_PROFILE_ROUTER_SCOPE,
         current_access_token_identity,
         extract_result_audit_fields,
@@ -1006,9 +1011,12 @@ def create_profile_router_mcp_server(
             "workspace_instructions_get, workspace_context_status, workspace_get, "
             "workspace_close, workspace_file_list, workspace_file_read, "
             "workspace_diff, and policy-gated local/private OpenViking context "
-            "tools viking_search and viking_read. It does not expose conversation "
-            "messaging, session dumps, write/patch, terminal, cron, deploy, or "
-            "agent-loop execution tools."
+            "tools viking_search and viking_read. Private HTTP nodes also register "
+            "file_patch, file_write, and terminal_run for the public gateway's "
+            "approved pilot wrappers; those direct tools require fresh workspace "
+            "context plus filesystem.write or terminal.execution policy. It does "
+            "not expose conversation messaging, session dumps, cron, deploy, "
+            "Git push/merge, or agent-loop execution tools."
         ),
         host=host,
         port=port,
@@ -1309,6 +1317,71 @@ def create_profile_router_mcp_server(
             workspace_id=workspace_id,
             context_token=context_token,
             max_files=max_files,
+        )
+
+    @mcp.tool()
+    def file_patch(
+        workspace_id: str,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct text patch for approved gateway pilot wrappers."""
+        return _call_tool(
+            "file_patch",
+            PROFILE_ROUTER_WRITE_SCOPE,
+            _file_patch,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            path=path,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def file_write(
+        workspace_id: str,
+        path: str,
+        content: str,
+        context_token: str | None = None,
+    ) -> str:
+        """Private direct UTF-8 write for approved gateway pilot wrappers."""
+        return _call_tool(
+            "file_write",
+            PROFILE_ROUTER_WRITE_SCOPE,
+            _file_write,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            path=path,
+            content=content,
+            context_token=context_token,
+        )
+
+    @mcp.tool()
+    def terminal_run(
+        workspace_id: str,
+        command: str,
+        timeout: int = 30,
+        working_directory: str = ".",
+        context_token: str | None = None,
+        max_output_chars: int | None = 60000,
+    ) -> str:
+        """Private direct read/test terminal allowlist for approved gateway pilot wrappers."""
+        return _call_tool(
+            "terminal_run",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _terminal_run,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            command=command,
+            timeout=timeout,
+            working_directory=working_directory,
+            context_token=context_token,
+            max_output_chars=max_output_chars,
         )
 
     return mcp

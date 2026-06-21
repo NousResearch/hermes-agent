@@ -58,6 +58,8 @@ from mcp_profile_router import (
 )
 from mcp_profile_router_auth import (
     DEFAULT_PROFILE_ROUTER_SCOPES,
+    PROFILE_ROUTER_TERMINAL_SCOPE,
+    PROFILE_ROUTER_WRITE_SCOPE,
     ProfileRouterAuditLogger,
     ProfileRouterBearerTokenVerifier,
     ProfileRouterTokenStore,
@@ -1546,7 +1548,9 @@ def test_terminal_private_runner_executes_allowlisted_commands_but_not_public(
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
     monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
     server = mcp_serve.create_profile_router_mcp_server()
-    assert "terminal_run" not in server._tool_manager._tools
+    assert "terminal_run" in server._tool_manager._tools
+    assert "file_patch" in server._tool_manager._tools
+    assert "file_write" in server._tool_manager._tools
     assert "workspace_diff" in server._tool_manager._tools
     dumped = json.dumps(direct)
     assert "pwd" not in dumped
@@ -1704,7 +1708,9 @@ def test_terminal_private_runner_shapes_failure_and_timeout_without_leaking_valu
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
     monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
     server = mcp_serve.create_profile_router_mcp_server()
-    assert "terminal_run" not in server._tool_manager._tools
+    assert "terminal_run" in server._tool_manager._tools
+    assert "file_patch" in server._tool_manager._tools
+    assert "file_write" in server._tool_manager._tools
 
 
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
@@ -2637,16 +2643,17 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         if tool["enabled_by_default"]
     }
 
-    assert set(tools) == expected_public_tools
-    assert set(tools) == metadata_public_tools
+    private_action_tools = {"file_patch", "file_write", "terminal_run"}
+    assert set(tools) == expected_public_tools | private_action_tools
+    assert expected_public_tools == metadata_public_tools
     assert "messages_send" not in tools
     assert "conversations_list" not in tools
-    assert "terminal_run" not in tools
+    assert "terminal_run" in tools
     assert "workspace_diff" in tools
     assert "file_read" not in tools
     assert "file_search" not in tools
-    assert "file_patch" not in tools
-    assert "file_write" not in tools
+    assert "file_patch" in tools
+    assert "file_write" in tools
     assert "skills_list" in tools
     assert "skill_view" in tools
     assert "session_search" in tools
@@ -2761,6 +2768,18 @@ def test_profile_router_token_store_hashes_verifies_revokes_and_rotates(tmp_path
     viking_token = store.create_token(scopes=[VIKING_PROFILE_ROUTER_SCOPE], name="viking")
     assert viking_token["record"]["scopes"] == [VIKING_PROFILE_ROUTER_SCOPE]
     assert store.verify_token(viking_token["token"], required_scopes=[VIKING_PROFILE_ROUTER_SCOPE]) is not None
+    action_token = store.create_token(
+        scopes=[PROFILE_ROUTER_WRITE_SCOPE, PROFILE_ROUTER_TERMINAL_SCOPE],
+        name="action-pilot",
+    )
+    assert action_token["record"]["scopes"] == [
+        PROFILE_ROUTER_WRITE_SCOPE,
+        PROFILE_ROUTER_TERMINAL_SCOPE,
+    ]
+    assert store.verify_token(
+        action_token["token"],
+        required_scopes=[PROFILE_ROUTER_WRITE_SCOPE, PROFILE_ROUTER_TERMINAL_SCOPE],
+    ) is not None
     assert raw_token not in (tmp_path / "tokens.json").read_text(encoding="utf-8")
     assert "token_hash_prefix" in record
 
@@ -2919,7 +2938,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
         name
         for name, tool in get_router_tool_metadata().items()
         if tool["enabled_by_default"]
-    }
+    } | {"file_patch", "file_write", "terminal_run"}
     server_kwargs = getattr(server, "kwargs")
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765
@@ -2928,9 +2947,9 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     assert str(server_kwargs["auth"].resource_server_url).rstrip("/") == "https://mcp.example.com/mcp"
     assert server_kwargs["token_verifier"].store.path == tmp_path / "tokens.json"
     assert server_kwargs["auth"].required_scopes == []
-    assert "terminal_run" not in tools
-    assert "file_patch" not in tools
-    assert "file_write" not in tools
+    assert "terminal_run" in tools
+    assert "file_patch" in tools
+    assert "file_write" in tools
     assert "skills_list" in tools
     assert "skill_view" in tools
     assert "session_search" in tools

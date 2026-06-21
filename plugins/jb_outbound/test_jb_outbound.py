@@ -67,6 +67,27 @@ def test_classify():
     assert classify.classify("write_file") == classify.PASS
 
 
+def test_classify_browser_lecture_passe_ecriture_propose():
+    # Lecture / navigation / observation : aucun changement d'état → passe.
+    for read_tool in (
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_vision",
+        "browser_get_images",
+        "browser_scroll",
+        "browser_back",
+    ):
+        assert classify.classify(read_tool) == classify.PASS, read_tool
+
+    # Écriture / action d'état / soumission : clic, saisie, touche → proposition à valider.
+    for write_tool in ("browser_click", "browser_type", "browser_press"):
+        assert classify.classify(write_tool) == classify.PROPOSE, write_tool
+
+    # Outils puissants (JS console, CDP, dialogue) et tout `browser_*` inconnu : proposition (fail-safe).
+    for risky_tool in ("browser_console", "browser_cdp", "browser_dialog", "browser_unknown_future"):
+        assert classify.classify(risky_tool) == classify.PROPOSE, risky_tool
+
+
 def test_mapping_email_minimise_le_corps():
     d = mapping.to_draft(
         "mcp_composio_GMAIL_SEND_EMAIL",

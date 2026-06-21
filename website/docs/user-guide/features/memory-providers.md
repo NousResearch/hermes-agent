@@ -385,6 +385,10 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+| `recall_include_tags` | `false` | Include Hindsight result tags in explicit recall output and auto-recall context |
+| `recall_include_metadata` | `false` | Include allowlisted Hindsight result metadata in explicit recall output and auto-recall context |
+| `recall_metadata_keys` | `source,scope,platform,source_system,agent_identity,machine,confidence` | Metadata keys to include when `recall_include_metadata` is enabled |
+| `recall_include_document_id` | `false` | Include the source `document_id` in explicit recall output and auto-recall context |
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 

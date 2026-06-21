@@ -45,6 +45,8 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
         "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_RECALL_INCLUDE_TAGS", "HINDSIGHT_RECALL_INCLUDE_METADATA",
+        "HINDSIGHT_RECALL_INCLUDE_DOCUMENT_ID", "HINDSIGHT_RECALL_METADATA_KEYS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -362,6 +364,10 @@ class TestConfig:
             recall_types=["world", "experience"],
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
+            recall_include_tags=True,
+            recall_include_metadata=True,
+            recall_include_document_id=True,
+            recall_metadata_keys=["source", "platform"],
             bank_mission="Test agent mission",
         )
         assert p._tags == ["tag1", "tag2"]
@@ -380,6 +386,10 @@ class TestConfig:
         assert p._recall_types == ["world", "experience"]
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
+        assert p._recall_include_tags is True
+        assert p._recall_include_metadata is True
+        assert p._recall_include_document_id is True
+        assert p._recall_metadata_keys == ["source", "platform"]
         assert p._bank_mission == "Test agent mission"
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
@@ -392,11 +402,19 @@ class TestConfig:
         monkeypatch.setenv("HINDSIGHT_API_KEY", "env-key")
         monkeypatch.setenv("HINDSIGHT_BANK_ID", "env-bank")
         monkeypatch.setenv("HINDSIGHT_BUDGET", "high")
+        monkeypatch.setenv("HINDSIGHT_RECALL_INCLUDE_TAGS", "true")
+        monkeypatch.setenv("HINDSIGHT_RECALL_INCLUDE_METADATA", "1")
+        monkeypatch.setenv("HINDSIGHT_RECALL_INCLUDE_DOCUMENT_ID", "yes")
+        monkeypatch.setenv("HINDSIGHT_RECALL_METADATA_KEYS", "source, scope")
 
         cfg = _load_config()
         assert cfg["apiKey"] == "env-key"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+        assert cfg["recall_include_tags"] is True
+        assert cfg["recall_include_metadata"] is True
+        assert cfg["recall_include_document_id"] is True
+        assert cfg["recall_metadata_keys"] == "source, scope"
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
@@ -695,6 +713,93 @@ class TestToolHandlers:
         ))
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
+        assert "tags:" not in result["result"]
+        assert "metadata:" not in result["result"]
+
+    def test_recall_can_surface_tags_metadata_and_document_id(self, provider_with_config):
+        p = provider_with_config(
+            recall_include_tags=True,
+            recall_include_metadata=True,
+            recall_include_document_id=True,
+            recall_metadata_keys=["source", "platform"],
+        )
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="David prefers concise answers.",
+                    tags=["scope=core", "source=macbook"],
+                    metadata={
+                        "source": "macbook",
+                        "platform": "discord",
+                        "chat_id": "private-chat-id",
+                    },
+                    document_id="doc-123",
+                )
+            ]
+        )
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "style"}
+        ))
+
+        assert result["result"] == (
+            "1. [tags: scope=core, source=macbook] "
+            "[metadata: source=macbook, platform=discord] "
+            "[document_id: doc-123] David prefers concise answers."
+        )
+        assert result["memories"] == [
+            {
+                "text": "David prefers concise answers.",
+                "tags": ["scope=core", "source=macbook"],
+                "metadata": {"source": "macbook", "platform": "discord"},
+                "document_id": "doc-123",
+            }
+        ]
+        assert "private-chat-id" not in result["result"]
+
+    def test_recall_metadata_uses_default_safe_allowlist(self, provider_with_config):
+        p = provider_with_config(recall_include_metadata=True)
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Memory text",
+                    metadata={"source": "volt", "chat_id": "private-chat-id"},
+                )
+            ]
+        )
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "memory"}
+        ))
+
+        assert "metadata: source=volt" in result["result"]
+        assert "chat_id" not in result["result"]
+        assert result["memories"][0]["metadata"] == {"source": "volt"}
+
+    def test_recall_annotations_are_bounded(self, provider_with_config):
+        p = provider_with_config(
+            recall_include_metadata=True,
+            recall_include_document_id=True,
+            recall_metadata_keys=["source"],
+        )
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Memory text",
+                    metadata={"source": "x" * 250},
+                    document_id="d" * 250,
+                )
+            ]
+        )
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "memory"}
+        ))
+
+        assert f"source={'x' * 200}" in result["result"]
+        assert "x" * 201 not in result["result"]
+        assert f"document_id: {'d' * 200}" in result["result"]
+        assert "d" * 201 not in result["result"]
 
     def test_recall_passes_max_tokens(self, provider_with_config):
         p = provider_with_config(recall_max_tokens=2048)
@@ -854,6 +959,33 @@ class TestPrefetch:
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    def test_queue_prefetch_can_surface_tags_and_metadata(self, provider_with_config):
+        p = provider_with_config(
+            recall_include_tags=True,
+            recall_include_metadata=True,
+            recall_metadata_keys=["source", "scope"],
+        )
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Volt runs the home Hermes gateway.",
+                    tags=["source=volt-box"],
+                    metadata={"source": "volt-box", "scope": "machine", "chat_id": "private"},
+                )
+            ]
+        )
+
+        p.queue_prefetch("where does Hermes run?")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._prefetch_result == (
+            "- [tags: source=volt-box] "
+            "[metadata: source=volt-box, scope=machine] "
+            "Volt runs the home Hermes gateway."
+        )
+        assert "private" not in p._prefetch_result
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,10 @@ Config via environment variables:
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
   HINDSIGHT_RETAIN_OBSERVATION_SCOPES — observation scoping for retained memories: per_tag/combined/all_combinations, or a JSON list of tag-lists for custom scopes
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
+  HINDSIGHT_RECALL_INCLUDE_TAGS    — include result tags in recall output/context
+  HINDSIGHT_RECALL_INCLUDE_METADATA — include allowlisted metadata in recall output/context
+  HINDSIGHT_RECALL_METADATA_KEYS   — comma-separated metadata keys to include
+  HINDSIGHT_RECALL_INCLUDE_DOCUMENT_ID — include source document_id in recall output/context
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
   HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
 
@@ -61,6 +65,16 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_DEFAULT_RECALL_METADATA_KEYS = (
+    "source",
+    "scope",
+    "platform",
+    "source_system",
+    "agent_identity",
+    "machine",
+    "confidence",
+)
+_RECALL_ANNOTATION_VALUE_MAX_CHARS = 200
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -83,6 +97,28 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _parse_bool_setting(value: Any, default: bool = False) -> bool:
+    """Parse a boolean config/env value, falling back on invalid input."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    logger.warning("Invalid boolean Hindsight setting %r; using default %s", value, default)
+    return default
+
+
+def _normalize_string_list(value: Any) -> List[str]:
+    """Normalize list or comma/JSON-list config values to unique strings."""
+    return _normalize_retain_tags(value)
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -343,6 +379,10 @@ def _load_config() -> dict:
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
         "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
         "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
+        "recall_include_tags": _parse_bool_setting(os.environ.get("HINDSIGHT_RECALL_INCLUDE_TAGS"), False),
+        "recall_include_metadata": _parse_bool_setting(os.environ.get("HINDSIGHT_RECALL_INCLUDE_METADATA"), False),
+        "recall_include_document_id": _parse_bool_setting(os.environ.get("HINDSIGHT_RECALL_INCLUDE_DOCUMENT_ID"), False),
+        "recall_metadata_keys": os.environ.get("HINDSIGHT_RECALL_METADATA_KEYS", ""),
         "banks": {
             "hermes": {
                 "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
@@ -658,6 +698,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_types: list[str] = ["observation"]
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
+        self._recall_include_tags = False
+        self._recall_include_metadata = False
+        self._recall_include_document_id = False
+        self._recall_metadata_keys = list(_DEFAULT_RECALL_METADATA_KEYS)
 
         # Bank
         self._bank_mission = ""
@@ -955,6 +999,10 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
+            {"key": "recall_include_tags", "description": "Include Hindsight result tags in recall output and auto-recall context", "default": False},
+            {"key": "recall_include_metadata", "description": "Include allowlisted Hindsight result metadata in recall output and auto-recall context", "default": False},
+            {"key": "recall_metadata_keys", "description": "Metadata keys to include when recall_include_metadata is enabled (comma-separated)", "default": ",".join(_DEFAULT_RECALL_METADATA_KEYS)},
+            {"key": "recall_include_document_id", "description": "Include Hindsight source document_id in recall output and auto-recall context", "default": False},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
         ]
@@ -1298,6 +1346,25 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+        self._recall_include_tags = _parse_bool_setting(
+            self._config.get("recall_include_tags", os.environ.get("HINDSIGHT_RECALL_INCLUDE_TAGS")),
+            False,
+        )
+        self._recall_include_metadata = _parse_bool_setting(
+            self._config.get("recall_include_metadata", os.environ.get("HINDSIGHT_RECALL_INCLUDE_METADATA")),
+            False,
+        )
+        self._recall_include_document_id = _parse_bool_setting(
+            self._config.get("recall_include_document_id", os.environ.get("HINDSIGHT_RECALL_INCLUDE_DOCUMENT_ID")),
+            False,
+        )
+        self._recall_metadata_keys = (
+            _normalize_string_list(
+                self._config.get("recall_metadata_keys")
+                or os.environ.get("HINDSIGHT_RECALL_METADATA_KEYS")
+            )
+            or list(_DEFAULT_RECALL_METADATA_KEYS)
+        )
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1439,7 +1506,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = self._format_recall_results(resp.results, bullet="-") if resp.results else ""
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1448,6 +1515,104 @@ class HindsightMemoryProvider(MemoryProvider):
 
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
+
+    def _stringify_recall_annotation(self, value: Any) -> str:
+        """Return a compact one-line representation for recall annotations."""
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                text = str(value)
+        else:
+            text = str(value)
+        return " ".join(text.split())[:_RECALL_ANNOTATION_VALUE_MAX_CHARS]
+
+    def _filtered_recall_metadata(self, result: Any) -> dict[str, str]:
+        """Return allowlisted metadata for a recall result."""
+        if not self._recall_include_metadata:
+            return {}
+        raw = getattr(result, "metadata", None) or {}
+        if not isinstance(raw, dict):
+            return {}
+        metadata: dict[str, str] = {}
+        for key in self._recall_metadata_keys:
+            if key not in raw:
+                continue
+            value = self._stringify_recall_annotation(raw.get(key))
+            if value:
+                metadata[str(key)] = value
+        return metadata
+
+    def _recall_tags_for_result(self, result: Any) -> list[str]:
+        """Return normalized recall result tags when tag surfacing is enabled."""
+        if not self._recall_include_tags:
+            return []
+        return _normalize_string_list(getattr(result, "tags", None))
+
+    def _recall_document_id_for_result(self, result: Any) -> str:
+        """Return compact document_id when document_id surfacing is enabled."""
+        if not self._recall_include_document_id:
+            return ""
+        return self._stringify_recall_annotation(getattr(result, "document_id", ""))
+
+    def _format_recall_result_text(self, result: Any) -> str:
+        """Format one Hindsight recall result with optional provenance annotations."""
+        text = str(getattr(result, "text", "") or "").strip()
+        if not text:
+            return ""
+        annotations: list[str] = []
+        tags = self._recall_tags_for_result(result)
+        if tags:
+            annotations.append(f"[tags: {', '.join(tags)}]")
+        metadata = self._filtered_recall_metadata(result)
+        if metadata:
+            pairs = ", ".join(f"{key}={value}" for key, value in metadata.items())
+            annotations.append(f"[metadata: {pairs}]")
+        document_id = self._recall_document_id_for_result(result)
+        if document_id:
+            annotations.append(f"[document_id: {document_id}]")
+        if annotations:
+            return f"{' '.join(annotations)} {text}"
+        return text
+
+    def _format_recall_results(self, results: list[Any], *, bullet: str | None = None) -> str:
+        """Format recall results for either tool output or automatic prefetch."""
+        lines: list[str] = []
+        for index, result in enumerate(results, 1):
+            text = self._format_recall_result_text(result)
+            if not text:
+                continue
+            prefix = bullet if bullet is not None else f"{index}."
+            lines.append(f"{prefix} {text}")
+        return "\n".join(lines)
+
+    def _serialize_recall_results(self, results: list[Any]) -> list[dict[str, Any]]:
+        """Return structured recall results when provenance surfacing is enabled."""
+        if not (
+            self._recall_include_tags
+            or self._recall_include_metadata
+            or self._recall_include_document_id
+        ):
+            return []
+        serialized: list[dict[str, Any]] = []
+        for result in results:
+            text = str(getattr(result, "text", "") or "").strip()
+            if not text:
+                continue
+            item: dict[str, Any] = {"text": text}
+            tags = self._recall_tags_for_result(result)
+            if tags:
+                item["tags"] = tags
+            metadata = self._filtered_recall_metadata(result)
+            if metadata:
+                item["metadata"] = metadata
+            document_id = self._recall_document_id_for_result(result)
+            if document_id:
+                item["document_id"] = document_id
+            serialized.append(item)
+        return serialized
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
@@ -1670,8 +1835,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                payload: dict[str, Any] = {
+                    "result": self._format_recall_results(resp.results),
+                }
+                memories = self._serialize_recall_results(resp.results)
+                if memories:
+                    payload["memories"] = memories
+                return json.dumps(payload)
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")

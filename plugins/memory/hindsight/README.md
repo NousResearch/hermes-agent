@@ -76,6 +76,10 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
 | `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
+| `recall_include_tags` | `false` | Include Hindsight result tags in explicit recall output and auto-recall context |
+| `recall_include_metadata` | `false` | Include allowlisted Hindsight result metadata in explicit recall output and auto-recall context |
+| `recall_metadata_keys` | `source,scope,platform,source_system,agent_identity,machine,confidence` | Metadata keys to include when `recall_include_metadata` is enabled |
+| `recall_include_document_id` | `false` | Include the source `document_id` in explicit recall output and auto-recall context |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 
 > **Behavior change — `recall_types` defaults to `observation` only.**
@@ -141,6 +145,10 @@ Available in `hybrid` and `tools` memory modes:
 | `HINDSIGHT_BANK_ID` | Override bank name |
 | `HINDSIGHT_BUDGET` | Override recall budget |
 | `HINDSIGHT_MODE` | Override mode (`cloud`, `local_embedded`, `local_external`) |
+| `HINDSIGHT_RECALL_INCLUDE_TAGS` | Include Hindsight result tags in recall output/context |
+| `HINDSIGHT_RECALL_INCLUDE_METADATA` | Include allowlisted Hindsight result metadata in recall output/context |
+| `HINDSIGHT_RECALL_METADATA_KEYS` | Comma-separated metadata keys to include when metadata surfacing is enabled |
+| `HINDSIGHT_RECALL_INCLUDE_DOCUMENT_ID` | Include source `document_id` in recall output/context |
 
 ## Client Version
 

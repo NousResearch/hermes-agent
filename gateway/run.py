@@ -1115,6 +1115,55 @@ def _collect_auto_append_media_tags(
 
     return media_tags, has_voice_directive
 
+
+def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
+    """Collect every media path already delivered in prior tool results.
+
+    Used to dedup auto-appended MEDIA tags so the same file is not re-sent on
+    later turns. Must cover BOTH delivery shapes:
+      * ``MEDIA:<path>`` text tags in tool results, and
+      * ``image_generate`` JSON-payload paths (``host_image`` / ``image`` /
+        ``agent_visible_image``), which carry no MEDIA: tag.
+
+    Missing the JSON-payload shape caused #46627: after a compression
+    boundary the auto-append fallback rescans full history, re-discovers an
+    earlier ``image_generate`` result whose path was never in the dedup set,
+    and re-emits the MEDIA tag every turn.
+    """
+    paths: set = set()
+    tool_name_by_call_id: Dict[str, str] = {}
+    for msg in agent_history:
+        if msg.get("role") == "assistant":
+            for call in msg.get("tool_calls") or []:
+                cid = call.get("id") or call.get("call_id")
+                fn = call.get("function") or {}
+                name = str(fn.get("name") or call.get("name") or "")
+                if cid and name:
+                    tool_name_by_call_id[str(cid)] = name
+    for msg in agent_history:
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        content = str(msg.get("content", "") or "")
+        if "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                p = match.group(1).strip().rstrip('",}')
+                if p:
+                    paths.add(p)
+            continue
+        cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        if tool_name_by_call_id.get(cid) == "image_generate":
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
+                    jp = payload.get(field)
+                    if isinstance(jp, str) and jp:
+                        paths.add(jp)
+                        break
+    return paths
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -15537,22 +15586,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
-            _history_media_paths: set = set()
-            for _hm in agent_history:
-                if _hm.get("role") in {"tool", "function"}:
-                    _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
-                        for _match in _TOOL_MEDIA_RE.finditer(_hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+            _history_media_paths: set = _collect_history_media_paths(agent_history)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).

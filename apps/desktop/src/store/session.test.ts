@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
@@ -11,6 +11,7 @@ import {
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
+  resolveWorkspaceCwdForNewSession,
   sessionPinId,
   setCurrentCwd,
   setSessionAttention,
@@ -36,6 +37,32 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   tool_call_count: 0,
   ...over
 })
+
+function ensureLocalStorage(): void {
+  try {
+    if (window.localStorage) {
+      return
+    }
+  } catch {
+    // Fall through and install an in-memory implementation.
+  }
+
+  const store = new Map<string, string>()
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => store.clear(),
+      getItem: (key: string) => store.get(key) ?? null,
+      key: (index: number) => [...store.keys()][index] ?? null,
+      removeItem: (key: string) => store.delete(key),
+      setItem: (key: string, value: string) => store.set(key, value),
+      get length() {
+        return store.size
+      }
+    }
+  })
+}
 
 describe('setSessionAttention', () => {
   it('adds and removes a session id without duplicating it', () => {
@@ -184,6 +211,10 @@ describe('mergeSessionPage', () => {
 })
 
 describe('workspaceCwdForNewSession', () => {
+  beforeEach(() => {
+    ensureLocalStorage()
+  })
+
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
     $connection.set(null)
@@ -220,6 +251,33 @@ describe('workspaceCwdForNewSession', () => {
 
     expect($currentCwd.get()).toBe('/live/session/path')
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('syncs the configured desktop default before resolving a new local session cwd', async () => {
+    const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+    const previousBridge = desktopWindow.hermesDesktop
+    const getDefaultProjectDir = vi.fn().mockResolvedValue({ dir: '/Volumes/Kemal HD/My Drive/_Projects' })
+
+    desktopWindow.hermesDesktop = {
+      ...(previousBridge ?? {}),
+      settings: {
+        ...(previousBridge?.settings ?? {}),
+        getDefaultProjectDir
+      }
+    } as unknown as Window['hermesDesktop']
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+    $currentCwd.set('')
+
+    try {
+      await expect(resolveWorkspaceCwdForNewSession()).resolves.toBe('/Volumes/Kemal HD/My Drive/_Projects')
+      expect(getDefaultProjectDir).toHaveBeenCalledTimes(1)
+    } finally {
+      if (previousBridge) {
+        desktopWindow.hermesDesktop = previousBridge
+      } else {
+        delete desktopWindow.hermesDesktop
+      }
+    }
   })
 
   it('keeps remote workspace memory separate from local and other remotes', () => {

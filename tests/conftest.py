@@ -360,6 +360,35 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # If hermes_state was imported during test collection, its module-level
+    # DEFAULT_DB_PATH was already frozen to the developer's real HERMES_HOME.
+    # Re-pin it after the per-test env redirect so bare SessionDB() / gateway
+    # _get_db() calls cannot touch ~/.hermes/state.db. Also clear the gateway's
+    # cached singleton DB between tests; otherwise one test can keep using the
+    # previous test's temp DB (or, before this guard, the real DB).
+    hermes_state_mod = sys.modules.get("hermes_state")
+    if hermes_state_mod is not None:
+        monkeypatch.setattr(
+            hermes_state_mod,
+            "DEFAULT_DB_PATH",
+            fake_hermes_home / "state.db",
+            raising=False,
+        )
+        try:
+            hermes_state_mod._set_last_init_error(None)
+        except Exception:
+            pass
+    gateway_server_mod = sys.modules.get("tui_gateway.server")
+    if gateway_server_mod is not None:
+        existing_db = getattr(gateway_server_mod, "_db", None)
+        if existing_db is not None:
+            try:
+                existing_db.close()
+            except Exception:
+                pass
+        monkeypatch.setattr(gateway_server_mod, "_db", None, raising=False)
+        monkeypatch.setattr(gateway_server_mod, "_db_error", None, raising=False)
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

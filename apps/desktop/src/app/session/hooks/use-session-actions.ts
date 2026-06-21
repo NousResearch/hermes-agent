@@ -46,6 +46,7 @@ import {
   setSessionsTotal,
   setTurnStartedAt,
   setYoloActive,
+  resolveWorkspaceCwdForNewSession,
   workspaceCwdForNewSession
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
@@ -214,7 +215,7 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
     return
   }
 
-  setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
+  setSessions(prev => prev.map(session => (sessionMatchesStoredId(session, sessionId) ? { ...session, cwd } : session)))
 }
 
 function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
@@ -448,7 +449,7 @@ export function useSessionActions({
         // a backend resolves its own launch profile to None (_profile_home).
         const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
         await ensureGatewayProfile(newChatProfile)
-        const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
+        const cwd = $currentCwd.get().trim() || (await resolveWorkspaceCwdForNewSession())
         // The composer's model/effort/fast is sticky UI state ($currentModel,
         // $currentProvider, $currentReasoningEffort, $currentFastMode). Ship it
         // with every session.create so the new chat opens on whatever the picker
@@ -894,7 +895,7 @@ export function useSessionActions({
 
         clearNotifications()
 
-        const cwd = $currentCwd.get().trim()
+        const cwd = $currentCwd.get().trim() || (await resolveWorkspaceCwdForNewSession())
 
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,

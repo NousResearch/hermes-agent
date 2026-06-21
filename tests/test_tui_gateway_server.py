@@ -86,6 +86,151 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_fallback_session_info_uses_lazy_session_cwd(monkeypatch, tmp_path):
+    """Lazy/live resume payloads must not fall back to the gateway cwd.
+
+    A session can be live before its agent is fully built. During that window
+    _live_session_payload() uses _fallback_session_info(); if that reports the
+    process cwd ($HOME / launch dir) instead of session["cwd"], the desktop
+    patches a correct persisted row into the wrong workspace group.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "launcher"
+    launcher.mkdir()
+    env_cwd = tmp_path / "homeish"
+    env_cwd.mkdir()
+
+    monkeypatch.chdir(launcher)
+    monkeypatch.setenv("TERMINAL_CWD", str(env_cwd))
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(
+        server,
+        "_git_branch_for_cwd",
+        lambda cwd: "project-branch" if cwd == str(project) else "wrong",
+    )
+
+    info = server._fallback_session_info(
+        {"session_key": "lazy-key", "cwd": str(project), "explicit_cwd": True}
+    )
+
+    assert info["cwd"] == str(project)
+    assert info["branch"] == "project-branch"
+
+
+def test_fallback_session_info_preserves_no_workspace_for_missing_cwd(monkeypatch, tmp_path):
+    """Legacy NULL-cwd live sessions should stay No workspace, not $HOME."""
+    launcher = tmp_path / "launcher"
+    launcher.mkdir()
+    env_cwd = tmp_path / "homeish"
+    env_cwd.mkdir()
+
+    monkeypatch.chdir(launcher)
+    monkeypatch.setenv("TERMINAL_CWD", str(env_cwd))
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    def fail_branch_lookup(cwd):
+        raise AssertionError(f"branch lookup should not run for empty cwd: {cwd!r}")
+
+    monkeypatch.setattr(server, "_git_branch_for_cwd", fail_branch_lookup)
+
+    info = server._fallback_session_info({"session_key": "lazy-key"})
+
+    assert info["cwd"] == ""
+    assert info["branch"] == ""
+
+
+def test_session_live_item_includes_only_declared_cwd(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = {
+        "created_at": 10.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": "lazy-key",
+    }
+
+    assert server._session_live_item("sid", session)["cwd"] == ""
+
+    session["cwd"] = str(project)
+    session["explicit_cwd"] = True
+    assert server._session_live_item("sid", session)["cwd"] == str(project)
+
+
+def test_session_live_item_hydrates_declared_cwd_from_stored_row(monkeypatch, tmp_path):
+    """A live session missing explicit_cwd should self-heal from its DB row.
+
+    This is the exact Desktop symptom Kemal saw: the sidebar active-list first
+    grouped the live tip under "No workspace", then clicking the row read the
+    stored session and moved it back under kOS_Projects.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+
+    class DbContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get_session(self, key):
+            assert key == "live-tip"
+            return {"cwd": str(project)}
+
+    registered = []
+    session = {
+        "created_at": 10.0,
+        "cwd": str(project),
+        "explicit_cwd": False,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": "live-tip",
+    }
+    monkeypatch.setattr(server, "_session_db", lambda _session: DbContext())
+    monkeypatch.setattr(server, "_register_session_cwd", lambda s: registered.append(s["cwd"]))
+
+    row = server._session_live_item("sid", session)
+
+    assert row["cwd"] == str(project)
+    assert session["explicit_cwd"] is True
+    assert registered == [str(project)]
+
+
+def test_session_declared_cwd_negative_caches_only_stored_null_rows(monkeypatch, tmp_path):
+    """Avoid hot-loop DB reads for true no-workspace rows, but not absent rows."""
+
+    class DbContext:
+        def __init__(self, row):
+            self.row = row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get_session(self, _key):
+            calls.append(_key)
+            return self.row
+
+    calls = []
+    stored_null = {"session_key": "stored-null", "cwd": str(tmp_path)}
+    monkeypatch.setattr(server, "_session_db", lambda _session: DbContext({"cwd": None}))
+
+    assert server._session_declared_cwd(stored_null) == ""
+    assert server._session_declared_cwd(stored_null) == ""
+    assert calls == ["stored-null"]
+
+    calls.clear()
+    absent = {"session_key": "absent-row", "cwd": str(tmp_path)}
+    monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(None))
+
+    assert server._session_declared_cwd(absent) == ""
+    assert server._session_declared_cwd(absent) == ""
+    assert calls == ["absent-row", "absent-row"]
+
+
 def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     class DbContext:
         def __init__(self, db):
@@ -1999,12 +2144,16 @@ def test_session_create_does_not_persist_empty_row(monkeypatch):
 def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     """An explicitly chosen workspace is persisted as the session cwd."""
     created = []
+    updated_cwds = []
 
     class _FakeDB:
         def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
+
+        def update_session_cwd(self, key, cwd):
+            updated_cwds.append({"key": key, "cwd": cwd})
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
@@ -2014,6 +2163,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     assert created == [
         {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
     ]
+    assert updated_cwds == [{"key": "k1", "cwd": str(tmp_path)}]
 
 
 def test_ensure_session_db_row_persists_session_source(monkeypatch):
@@ -3745,6 +3895,8 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
@@ -3800,6 +3952,8 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
@@ -5214,6 +5368,22 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         server._sessions.update(_saved_sessions)
 
 
+def test_get_db_uses_per_test_hermes_home(monkeypatch):
+    """Bare gateway _get_db() must never open the developer's real state.db."""
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    db = server._get_db()
+    try:
+        assert db is not None
+        assert db.db_path == Path(os.environ["HERMES_HOME"]) / "state.db"
+        assert db.db_path != Path.home() / ".hermes" / "state.db"
+    finally:
+        if db is not None:
+            db.close()
+        server._db = None
+
+
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     fake_mod = types.ModuleType("hermes_state")
 
@@ -5790,6 +5960,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     rows = {row["id"]: row for row in session_rows}
     assert rows["sid-a"] == {
         "current": False,
+        "cwd": "",
         "id": "sid-a",
         "last_active": 20.0,
         "message_count": 1,
@@ -6236,10 +6407,12 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         resp["result"]["messages"][0]
         == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
-    assert any(
-        "No supported Chromium-family browser executable was found" in line
-        for line in resp["result"]["messages"]
-    )
+    # The exact launch hint is platform/environment dependent: on a developer
+    # Mac with Chrome installed it includes an `open -a "Google Chrome" ...`
+    # command, while CI without a Chromium executable reports that no supported
+    # executable was found.  The contract this test cares about is that Hermes
+    # gives the user an actionable remote-debugging hint after the auto-launch
+    # attempt failed.
     assert any(
         "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]
     )

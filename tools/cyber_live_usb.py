@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "live-usb"
 _APPROVAL_ENV_VAR = "HERMES_AGENTCYBER_LIVE_USB_APPROVAL"
 _APPROVAL_ARG_KEYS = ("operator_approval", "approval_token", "live_usb_approval")
+_REMOVABLE_SYSFS_ROOTS = (Path("/sys/class/block"), Path("/sys/block"))
 _SECRET_CLI_FLAGS = frozenset({
     "--telegram-token",
     "--model-key",
@@ -137,6 +138,50 @@ def _require_operator_approval(args: dict, action: str) -> dict | None:
     if not hmac.compare_digest(provided, expected):
         return _operator_approval_error(action, "operator_approval did not match")
     return None
+
+
+def _removable_block_device_error(device: str, reason: str) -> dict:
+    """Return a secret-safe error for unverifiable removable-media targets."""
+    return {
+        "error": f"Target block device is not verifiably removable: {device}",
+        "reason": reason,
+    }
+
+
+def _require_verifiably_removable_block_device(device: str) -> str | dict:
+    """Return canonical ``/dev/<block_name>`` if Linux removable flag is ``1``.
+
+    Call this only after ``Path(device).is_block_device()`` succeeds. The guard
+    intentionally treats unresolvable targets, non-/dev aliases, and missing or
+    unreadable sysfs metadata as unsafe rather than guessing from device names
+    or transport strings. Returning a stable canonical /dev path avoids passing
+    a user-writable alias/symlink to destructive shell scripts.
+    """
+    try:
+        resolved_device = Path(device).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return _removable_block_device_error(device, "could not resolve target block device")
+
+    if resolved_device.parent != Path("/dev"):
+        return _removable_block_device_error(device, "resolved target is not a /dev block device")
+
+    block_name = resolved_device.name
+    if not block_name:
+        return _removable_block_device_error(device, "could not resolve target block device")
+
+    canonical_device = Path("/dev") / block_name
+
+    for sysfs_root in _REMOVABLE_SYSFS_ROOTS:
+        removable_flag = sysfs_root / block_name / "removable"
+        try:
+            flag = removable_flag.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            continue
+        if flag == "1":
+            return str(canonical_device)
+        return _removable_block_device_error(device, "Linux removable flag is not 1")
+
+    return _removable_block_device_error(device, "Linux removable flag is missing or unreadable")
 
 
 # ---------------------------------------------------------------------------
@@ -273,13 +318,16 @@ def _write(args: dict, **_kw: Any) -> dict:
         return {"error": "device is required (e.g. /dev/sdb). Use list_usb to find it."}
     if not Path(device).is_block_device():
         return {"error": f"Not a block device: {device}"}
+    canonical_device = _require_verifiably_removable_block_device(device)
+    if isinstance(canonical_device, dict):
+        return canonical_device
 
     iso = args.get("iso", str(_SCRIPTS_DIR / "hermes-cyber-live.iso"))
     if not Path(iso).exists():
         return {"error": f"ISO not found: {iso}. Build it first with the build action."}
 
     script = _script("write_usb.sh")
-    cmd = ["bash", script, "--iso", iso, "--device", device, "--yes"]
+    cmd = ["bash", script, "--iso", iso, "--device", canonical_device, "--yes"]
 
     if args.get("provision"):  cmd += ["--provision", args["provision"]]
     if args.get("verify"):     cmd += ["--verify"]
@@ -308,9 +356,12 @@ def _provision(args: dict, **_kw: Any) -> dict:
         return {"error": "device is required"}
     if not Path(device).is_block_device():
         return {"error": f"Not a block device: {device}"}
+    canonical_device = _require_verifiably_removable_block_device(device)
+    if isinstance(canonical_device, dict):
+        return canonical_device
 
     script = _script("provision.sh")
-    cmd = ["bash", script, "--usb", device]
+    cmd = ["bash", script, "--usb", canonical_device]
 
     if args.get("config"):          cmd += ["--config", args["config"]]
     if args.get("telegram_token"):  cmd += ["--telegram-token", args["telegram_token"]]
@@ -362,8 +413,9 @@ SCHEMA = {
             "Build, write, and provision Hermes AgentCyber live USB drives. "
             "Produces a bootable USB that auto-starts the Hermes gateway (or "
             "interactive shell / headless scan) when plugged into any PC. "
-            "list_usb and status are safe; build, write, and provision require "
-            "root plus operator approval."
+            "list_usb and status are safe; build requires root plus operator "
+            "approval; write and provision require root, operator approval, "
+            "and verifiable Linux removable block-device metadata."
         ),
         "parameters": {
             "type": "object",
@@ -382,7 +434,7 @@ SCHEMA = {
                 "headless_scan": {"type": "boolean", "description": "Enable auto-scan on boot (build)."},
                 "verbose":       {"type": "boolean", "description": "Verbose build output."},
                 # write
-                "device":        {"type": "string", "description": "Target block device (write/provision), e.g. /dev/sdb."},
+                "device":        {"type": "string", "description": "Target block device (write/provision), e.g. /dev/sdb; must resolve to a /dev block device with verifiable removable metadata."},
                 "iso":           {"type": "string", "description": "ISO path to write (write)."},
                 "verify":        {"type": "boolean", "description": "SHA-256 verify after write."},
                 # provision

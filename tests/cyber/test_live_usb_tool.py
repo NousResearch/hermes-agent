@@ -213,6 +213,130 @@ class TestLiveUsbTool:
 
         assert out == {"error": "Not a block device: /dev/sdz"}
 
+    def test_removable_guard_returns_canonical_dev_path_for_flag_one(
+        self,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sysfs_root = tmp_path / "sys_class_block"
+        removable_dir = sysfs_root / "sdz"
+        removable_dir.mkdir(parents=True)
+        (removable_dir / "removable").write_text("1\n", encoding="utf-8")
+
+        def fake_resolve(path: Any, strict: bool = False) -> live_usb.Path:
+            assert strict is True
+            if str(path) == "/tmp/operator-usb-alias":
+                return live_usb.Path("/dev/sdz")
+            raise AssertionError(f"unexpected resolve path: {path}")
+
+        monkeypatch.setattr(live_usb, "_REMOVABLE_SYSFS_ROOTS", (sysfs_root,))
+        monkeypatch.setattr(live_usb.Path, "resolve", fake_resolve)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", lambda path: str(path) == "/dev/sdz")
+
+        assert live_usb._require_verifiably_removable_block_device("/tmp/operator-usb-alias") == "/dev/sdz"
+
+    def test_removable_guard_resolve_failure_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_resolve(_path: Any, strict: bool = False) -> live_usb.Path:
+            assert strict is True
+            raise OSError("cannot resolve")
+
+        monkeypatch.setattr(live_usb.Path, "resolve", fake_resolve)
+
+        assert live_usb._require_verifiably_removable_block_device("/dev/sdz") == {
+            "error": "Target block device is not verifiably removable: /dev/sdz",
+            "reason": "could not resolve target block device",
+        }
+
+    def test_removable_guard_non_dev_resolved_target_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(live_usb.Path, "resolve", lambda _path, strict=False: live_usb.Path("/tmp/sdz"))
+
+        assert live_usb._require_verifiably_removable_block_device("/tmp/operator-usb-alias") == {
+            "error": "Target block device is not verifiably removable: /tmp/operator-usb-alias",
+            "reason": "resolved target is not a /dev block device",
+        }
+
+    @pytest.mark.parametrize(
+        ("action", "payload"),
+        [
+            ("write", {"action": "write", "device": "/dev/sdz", "iso": "/tmp/hermes.iso"}),
+            ("provision", {"action": "provision", "device": "/dev/sdz"}),
+        ],
+    )
+    def test_approved_non_removable_target_fails_before_script_and_run(
+        self,
+        action: str,
+        payload: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def fake_read_text(_path: Any, encoding: str | None = None) -> str:
+            assert encoding == "utf-8"
+            return "0\n"
+
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
+        monkeypatch.setattr(live_usb.Path, "resolve", lambda path, strict=False: path)
+        monkeypatch.setattr(live_usb.Path, "read_text", fake_read_text)
+        monkeypatch.setattr(
+            live_usb,
+            "_script",
+            lambda *_args, **_kw: pytest.fail(f"{action} must fail before resolving scripts"),
+        )
+        monkeypatch.setattr(
+            live_usb,
+            "_run",
+            lambda *_args, **_kw: pytest.fail(f"{action} must fail before running scripts"),
+        )
+
+        out = json.loads(_handle({**payload, "operator_approval": "approved-live-usb-lane"}))
+
+        assert out == {
+            "error": "Target block device is not verifiably removable: /dev/sdz",
+            "reason": "Linux removable flag is not 1",
+        }
+
+    @pytest.mark.parametrize(
+        ("action", "payload"),
+        [
+            ("write", {"action": "write", "device": "/dev/sdz", "iso": "/tmp/hermes.iso"}),
+            ("provision", {"action": "provision", "device": "/dev/sdz"}),
+        ],
+    )
+    @pytest.mark.parametrize("read_error", [FileNotFoundError("missing"), PermissionError("denied")])
+    def test_approved_missing_or_unreadable_removable_flag_fails_closed(
+        self,
+        action: str,
+        payload: dict[str, object],
+        read_error: OSError,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def fake_read_text(_path: Any, encoding: str | None = None) -> str:
+            assert encoding == "utf-8"
+            raise read_error
+
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
+        monkeypatch.setattr(live_usb.Path, "resolve", lambda path, strict=False: path)
+        monkeypatch.setattr(live_usb.Path, "read_text", fake_read_text)
+        monkeypatch.setattr(
+            live_usb,
+            "_script",
+            lambda *_args, **_kw: pytest.fail(f"{action} must fail before resolving scripts"),
+        )
+        monkeypatch.setattr(
+            live_usb,
+            "_run",
+            lambda *_args, **_kw: pytest.fail(f"{action} must fail before running scripts"),
+        )
+
+        out = json.loads(_handle({**payload, "operator_approval": "approved-live-usb-lane"}))
+
+        assert out == {
+            "error": "Target block device is not verifiably removable: /dev/sdz",
+            "reason": "Linux removable flag is missing or unreadable",
+        }
+
     def test_provision_approved_path_is_mocked_and_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
@@ -224,6 +348,7 @@ class TestLiveUsbTool:
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
         monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
         monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
+        monkeypatch.setattr(live_usb, "_require_verifiably_removable_block_device", lambda _device: "/dev/sdz")
         monkeypatch.setattr(live_usb, "_run", fake_run)
 
         out = json.loads(_handle({
@@ -263,6 +388,7 @@ class TestLiveUsbTool:
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
         monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
         monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
+        monkeypatch.setattr(live_usb, "_require_verifiably_removable_block_device", lambda _device: "/dev/sdz")
         monkeypatch.setattr(live_usb.Path, "exists", lambda _path: True)
         monkeypatch.setattr(live_usb, "_run", fake_run)
 
@@ -286,3 +412,76 @@ class TestLiveUsbTool:
             "--yes",
             "--verify",
         ]
+
+    @pytest.mark.parametrize(
+        ("action", "payload", "device_flag", "script_name"),
+        [
+            (
+                "write",
+                {"action": "write", "device": "/tmp/operator-usb-alias", "iso": "/tmp/hermes.iso"},
+                "--device",
+                "write_usb.sh",
+            ),
+            (
+                "provision",
+                {"action": "provision", "device": "/tmp/operator-usb-alias"},
+                "--usb",
+                "provision.sh",
+            ),
+        ],
+    )
+    def test_approved_alias_input_is_canonicalized_before_run(
+        self,
+        action: str,
+        payload: dict[str, object],
+        device_flag: str,
+        script_name: str,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, object] = {}
+        alias = "/tmp/operator-usb-alias"
+        canonical_device = "/dev/sdz"
+        sysfs_root = tmp_path / "sys_class_block"
+        removable_dir = sysfs_root / "sdz"
+        removable_dir.mkdir(parents=True)
+        (removable_dir / "removable").write_text("1\n", encoding="utf-8")
+
+        original_exists = live_usb.Path.exists
+
+        def fake_exists(path: Any) -> bool:
+            if str(path) == "/tmp/hermes.iso":
+                return True
+            return original_exists(path)
+
+        def fake_resolve(path: Any, strict: bool = False) -> live_usb.Path:
+            assert strict is True
+            if str(path) == alias:
+                return live_usb.Path(canonical_device)
+            raise AssertionError(f"unexpected resolve path: {path}")
+
+        def fake_run(cmd: list[str], timeout: int = 300) -> dict:
+            captured["cmd"] = cmd
+            captured["timeout"] = timeout
+            return {"rc": 0, "stdout": f"mocked {action} ok", "stderr": ""}
+
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_REMOVABLE_SYSFS_ROOTS", (sysfs_root,))
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(
+            live_usb.Path,
+            "is_block_device",
+            lambda path: str(path) in {alias, canonical_device},
+        )
+        monkeypatch.setattr(live_usb.Path, "resolve", fake_resolve)
+        monkeypatch.setattr(live_usb.Path, "exists", fake_exists)
+        monkeypatch.setattr(live_usb, "_run", fake_run)
+
+        out = json.loads(_handle({**payload, "operator_approval": "approved-live-usb-lane"}))
+
+        cmd = captured["cmd"]
+        assert isinstance(cmd, list)
+        assert out["success"] is True
+        assert cmd[:2] == ["bash", str(live_usb._SCRIPTS_DIR / script_name)]
+        assert cmd[cmd.index(device_flag) + 1] == canonical_device
+        assert alias not in cmd

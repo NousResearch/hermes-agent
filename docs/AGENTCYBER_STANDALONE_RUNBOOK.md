@@ -177,6 +177,8 @@ Exact spacing and icons may vary by terminal skin.
 
 `status` and `list_usb` are read-only and do not need root or an approval token. The high-consequence actions `build`, `write`, and `provision` require both root and an operator-controlled approval token before any build script, block-device check, or USB-writing command runs.
 
+AgentCyber `write` and `provision` tool calls also require the target to be verifiably removable via Linux block-device metadata; edge-case media that cannot be verified should be handled manually outside unattended tool control.
+
 For an explicitly approved live USB maintenance session only, the operator can set a token in the standalone AgentCyber environment and provide the same value as `operator_approval` in the `live_usb` tool call:
 
 ```bash

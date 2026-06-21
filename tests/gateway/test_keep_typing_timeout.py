@@ -209,7 +209,7 @@ class TestKeepTypingTimeoutPerTick:
         async def send_typing(chat_id, metadata=None):
             late_sends.append(chat_id)
 
-        async def stop_typing(chat_id):
+        async def stop_typing(chat_id, metadata=None):
             stop_calls.append((chat_id, chat_id in adapter._typing_paused))
 
         monkeypatch.setattr(adapter, "send_typing", send_typing)

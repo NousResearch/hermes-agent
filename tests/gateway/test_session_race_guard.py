@@ -30,7 +30,7 @@ class _FakeAdapter:
     async def send(self, chat_id, text, **kwargs):
         pass
 
-    async def interrupt_session_activity(self, session_key, chat_id):
+    async def interrupt_session_activity(self, session_key, chat_id, metadata=None):
         self.interrupted_sessions.append((session_key, chat_id))
         event = self._active_sessions.get(session_key)
         if event is not None:

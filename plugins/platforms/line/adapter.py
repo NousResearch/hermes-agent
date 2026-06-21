@@ -1223,9 +1223,9 @@ class LineAdapter(BasePlatformAdapter):
                 except (asyncio.CancelledError, Exception):
                     pass
 
-    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+    async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata=None) -> None:
         """Resolve any orphan PENDING postback so the button doesn't loop."""
-        await super().interrupt_session_activity(session_key, chat_id)
+        await super().interrupt_session_activity(session_key, chat_id, metadata=metadata)
         rid = self._pending_buttons.pop(chat_id, None)
         if rid:
             self._cache.set_error(rid, self.interrupted_text)

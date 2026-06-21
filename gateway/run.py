@@ -13743,7 +13743,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         adapter = self.adapters.get(source.platform)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
-            await adapter.interrupt_session_activity(session_key, source.chat_id)
+            _interrupt_meta = self._thread_metadata_for_source(source)
+            await adapter.interrupt_session_activity(session_key, source.chat_id, metadata=_interrupt_meta)
         if adapter and hasattr(adapter, "get_pending_message"):
             adapter.get_pending_message(session_key)  # consume and discard
         self._pending_messages.pop(session_key, None)

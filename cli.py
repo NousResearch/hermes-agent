@@ -181,6 +181,17 @@ _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
+_AGENT_STATUS_PATH = _hermes_home / "agent_status"
+
+
+def _write_status_dot(state: str) -> None:
+    """Best-effort status indicator. Never raise — it's cosmetic."""
+    try:
+        with open(_AGENT_STATUS_PATH, "w") as f:
+            f.write(state + "\n")
+    except OSError:
+        logger.debug("status dot write failed (ignored)", exc_info=True)
+
 
 _REASONING_TAGS = (
     "REASONING_SCRATCHPAD",
@@ -13983,6 +13994,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
+                    _write_status_dot("thinking")
 
                     try:
                         self.chat(user_input, images=submit_images or None)
@@ -13994,6 +14006,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
+                        _write_status_dot("idle")
 
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and

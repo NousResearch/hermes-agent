@@ -19,6 +19,27 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Tighter keepalive limits matching the shared platform convention (#18451).
+# TelegramFallbackTransport creates multiple long-lived AsyncHTTPTransport
+# instances (one primary + one per fallback IP).  Using httpx's default
+# keepalive_expiry=5.0 allows idle sockets to sit in CLOSE_WAIT long enough
+# to accumulate across transports.  2.0 s + max 10 keepalive per pool matches
+# every other long-lived adapter (wecom, dingtalk, signal, whatsapp, …).
+_KEEPALIVE_LIMITS = httpx.Limits(
+    max_keepalive_connections=10,
+    keepalive_expiry=2.0,
+)
+
+# TCP keepalive socket options — proactively detect and close dead connections
+# before they accumulate in CLOSE_WAIT.  Matches the kernel-level fix from
+# commit 762eb79f1 (#18451) applied to other platform adapters.
+_TCP_KEEPALIVE_OPTS = [
+    (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3),
+]
+
 _TELEGRAM_API_HOST = "api.telegram.org"
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
@@ -63,6 +84,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        # Apply tighter keepalive limits and TCP keepalive so CLOSE_WAIT
+        # sockets drain promptly rather than lingering until GC (#18451).
+        transport_kwargs.setdefault("limits", _KEEPALIVE_LIMITS)
+        transport_kwargs.setdefault("socket_options", _TCP_KEEPALIVE_OPTS)
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._fallbacks = {
             ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips

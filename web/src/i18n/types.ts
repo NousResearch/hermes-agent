@@ -1121,4 +1121,90 @@ export interface Translations {
     saveFailed: string;
     cancel: string;
   };
+  // ── Auth Widget ──
+  auth: {
+    logOut: string;
+    statusUnavailable: string;
+    loggedInAs: string;
+    via: string;
+  };
+
+  // ── Model Picker Dialog ──
+  modelPicker: {
+    close: string;
+    switch_: string;
+    cancel: string;
+    filterPlaceholder: string;
+    persistLabel: string;
+    savesToConfig: string;
+    expensiveWarning: string;
+    switchAnyway: string;
+    loading: string;
+    noMatches: string;
+    noProviders: string;
+    current: string;
+    unknown: string;
+    models: string;
+    title: string;
+  };
+
+  // ── Model Reload Confirm ──
+  modelReload: {
+    title: string;
+    description: string;
+    reload: string;
+  };
+
+  // ── Toolset Config Drawer ──
+  toolsetConfig: {
+    close: string;
+    enableToolset: string;
+    active: string;
+    inactive: string;
+    enabled: string;
+    disabled: string;
+    noBackends: string;
+    noProviders: string;
+    select: string;
+    selected: string;
+    saveKeys: string;
+    saved: string;
+    nothingToSave: string;
+    enterValue: string;
+    savedPlaceholder: string;
+    getKey: string;
+    needsInstall: string;
+    runSetup: string;
+    installing: string;
+    postSetupComplete: string;
+    postSetupErrors: string;
+    lostTrack: string;
+    failedToggle: string;
+    failedSelect: string;
+    failedSave: string;
+    failedSetup: string;
+    providerSet: string;
+    enabledMsg: string;
+    disabledMsg: string;
+  };
+
+  // ── Pairing Page ──
+  pairing: {
+    pendingRequests: string;
+    noPending: string;
+    approvedUsers: string;
+    noApproved: string;
+    approve: string;
+    revoke: string;
+    revokeAccess: string;
+    revokeDesc: string;
+    clearPending: string;
+    clearAllConfirm: string;
+    cleared: string;
+    missingCode: string;
+    approvedMsg: string;
+    revokedMsg: string;
+    loadFailed: string;
+    ago: string;
+  };
 }

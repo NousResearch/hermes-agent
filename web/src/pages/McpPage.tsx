@@ -23,6 +23,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 type Transport = "http" | "stdio";
 
@@ -64,6 +65,7 @@ const TRANSPORT_TONE: Record<string, "success" | "warning" | "secondary"> = {
 };
 
 export default function McpPage() {
+  const { t } = useI18n();
   const [servers, setServers] = useState<McpServer[]>([]);
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
   const [diagnostics, setDiagnostics] = useState<McpCatalogDiagnostic[]>([]);
@@ -133,15 +135,15 @@ export default function McpPage() {
 
   const handleCreate = async () => {
     if (!name.trim()) {
-      showToast("Name required", "error");
+      showToast(t.mcpPage.nameRequired, "error");
       return;
     }
     if (transport === "http" && !url.trim()) {
-      showToast("URL required", "error");
+      showToast(t.mcpPage.urlRequired, "error");
       return;
     }
     if (transport === "stdio" && !command.trim()) {
-      showToast("Command required", "error");
+      showToast(t.mcpPage.commandRequired, "error");
       return;
     }
     setCreating(true);
@@ -202,7 +204,7 @@ export default function McpPage() {
         ),
       );
       setRestartNote(
-        "Enable/disable takes effect on the next gateway restart.",
+        "{t.mcpPage.toggleNote}",
       );
     } catch (e) {
       showToast(`Error: ${e}`, "error");
@@ -239,7 +241,7 @@ export default function McpPage() {
       try {
         const res = await api.installMcpCatalogEntry(entry.name, envMap, true);
         if (res.background) {
-          showToast("Installing in background…", "success");
+          showToast("{t.mcpPage.installBackground}", "success");
         } else {
           showToast(`Installed: "${truncateText(entry.name, 30)}"`, "success");
         }
@@ -321,7 +323,7 @@ export default function McpPage() {
         open={serverDelete.isOpen}
         onCancel={serverDelete.cancel}
         onConfirm={serverDelete.confirm}
-        title="Remove MCP server"
+        title={t.mcpPage.removeServer}
         description={
           serverDelete.pendingId
             ? `"${truncateText(serverDelete.pendingId, 40)}" — this will remove the server.`
@@ -369,7 +371,7 @@ export default function McpPage() {
 
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="mcp-name">Name</Label>
+                <Label htmlFor="mcp-name">{t.mcpPage.name}</Label>
                 <Input
                   id="mcp-name"
                   autoFocus
@@ -380,7 +382,7 @@ export default function McpPage() {
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="mcp-transport">Transport</Label>
+                <Label htmlFor="mcp-transport">{t.mcpPage.transport}</Label>
                 <Select
                   id="mcp-transport"
                   value={transport}
@@ -393,7 +395,7 @@ export default function McpPage() {
 
               {transport === "http" ? (
                 <div className="grid gap-2">
-                  <Label htmlFor="mcp-url">URL</Label>
+                  <Label htmlFor="mcp-url">{t.mcpPage.url}</Label>
                   <Input
                     id="mcp-url"
                     placeholder="https://example.com/mcp"
@@ -404,7 +406,7 @@ export default function McpPage() {
               ) : (
                 <>
                   <div className="grid gap-2">
-                    <Label htmlFor="mcp-command">Command</Label>
+                    <Label htmlFor="mcp-command">{t.mcpPage.command}</Label>
                     <Input
                       id="mcp-command"
                       placeholder="npx"
@@ -413,7 +415,7 @@ export default function McpPage() {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="mcp-args">Args</Label>
+                    <Label htmlFor="mcp-args">{t.mcpPage.args}</Label>
                     <Input
                       id="mcp-args"
                       placeholder="-y @modelcontextprotocol/server-foo"
@@ -425,7 +427,7 @@ export default function McpPage() {
               )}
 
               <div className="grid gap-2">
-                <Label htmlFor="mcp-env">Environment (KEY=VALUE per line)</Label>
+                <Label htmlFor="mcp-env">{t.mcpPage.env}</Label>
                 <textarea
                   id="mcp-env"
                   className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
@@ -443,7 +445,7 @@ export default function McpPage() {
                   disabled={creating}
                   prefix={creating ? <Spinner /> : undefined}
                 >
-                  {creating ? "Adding..." : "Add"}
+                  {creating ? t.mcpPage.adding : t.mcpPage.add}
                 </Button>
               </div>
             </div>
@@ -490,7 +492,7 @@ export default function McpPage() {
 
             <div className="p-5 grid gap-4">
               <p className="text-xs text-muted-foreground">
-                This MCP requires the following values to be configured.
+                {t.mcpPage.installHint}
               </p>
               {installEntry.required_env.map((item) => (
                 <div className="grid gap-2" key={item.name}>

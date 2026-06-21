@@ -880,9 +880,18 @@ install_node() {
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
     local installed_ver
-    installed_ver=$("$HERMES_HOME/node/bin/node" --version 2>/dev/null)
-    log_success "Node.js $installed_ver installed to ~/.hermes/node/"
-    HAS_NODE=true
+    # `|| true` keeps bash 5's `set -e` from killing the insatll if node won't run.
+    # This can happen on older macOS versions where the bundled Node is too new for the OS.
+    # The install can still complete successfully without Node.
+    installed_ver=$("$HERMES_HOME/node/bin/node" --version 2>/dev/null) || true
+    if [ -n "$installed_ver" ]; then
+        log_success "Node.js $installed_ver installed to ~/.hermes/node/"
+        HAS_NODE=true
+    else
+        # install_node_deps() will see HAS_NODE=false and skip cleanly.
+        log_warn "Node.js binary will not run on this OS (likely too-old macOS); continuing without Node"
+        HAS_NODE=false
+    fi
 }
 
 check_network_prerequisites() {

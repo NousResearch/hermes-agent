@@ -15,11 +15,17 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { ChevronDown, Loader2 } from '@/lib/icons'
+import { AlertCircle, ChevronDown, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
+import {
+  $approvalInlineVisible,
+  $approvalRequest,
+  type ApprovalRequest,
+  clearApprovalRequest,
+  registerApprovalInlineAnchor
+} from '@/store/prompts'
 
 import type { ToolPart } from './tool-fallback-model'
 
@@ -48,12 +54,47 @@ export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
     return null
   }
 
-  return <ApprovalBar request={request} />
+  return <InlineApprovalBar request={request} />
+}
+
+const InlineApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
+  useEffect(() => registerApprovalInlineAnchor(), [])
+
+  return <ApprovalBar request={request} surface="inline" />
+}
+
+export const PendingApprovalFallback: FC = () => {
+  const { t } = useI18n()
+  const request = useStore($approvalRequest)
+  const inlineVisible = useStore($approvalInlineVisible)
+
+  if (!request || inlineVisible) {
+    return null
+  }
+
+  return (
+    <div
+      className="pointer-events-none absolute left-1/2 z-30 w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2"
+      data-slot="tool-approval-fallback"
+      style={{ bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.875rem)' }}
+    >
+      <div className="pointer-events-auto rounded-xl border border-primary/30 bg-(--ui-chat-surface-background) px-3 py-2 shadow-lg backdrop-blur-xl [-webkit-backdrop-filter:blur(1rem)]">
+        <div className="flex min-w-0 items-center gap-2 text-sm text-primary">
+          <AlertCircle className="size-4 shrink-0" />
+          <span className="shrink-0 font-medium">{t.assistant.approval.jumpToApproval}</span>
+          {request.description && (
+            <span className="min-w-0 truncate text-(--ui-text-tertiary)">{request.description}</span>
+          )}
+        </div>
+        <ApprovalBar request={request} surface="floating" />
+      </div>
+    </div>
+  )
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
-const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
+const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline' }> = ({ request, surface }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
   const gateway = useStore($gateway)
@@ -99,7 +140,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         setSubmitting(null)
       }
     },
-    [busy, gateway, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.sessionId]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.
@@ -126,7 +167,10 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   }, [confirmAlways, respond])
 
   return (
-    <div className="mt-1 ps-5" data-slot="tool-approval-inline">
+    <div
+      className={cn(surface === 'inline' ? 'mt-1 ps-5' : 'mt-2')}
+      data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-actions'}
+    >
       <div className="flex items-center gap-2.5">
         <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
           <Button

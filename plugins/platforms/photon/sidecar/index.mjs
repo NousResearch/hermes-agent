@@ -305,7 +305,8 @@ async function normalizeContent(content) {
   }
   if (content.type === "richlink") {
     // Rich links carry a URL plus optional async title/summary accessors.
-    // Resolve them eagerly so the Python adapter gets a plain text payload.
+    // Resolve them eagerly so the Python adapter receives a structured
+    // {type, url, title?, summary?} object with plain string values.
     const out = { type: "richlink", url: content.url || "" };
     if (typeof content.title === "function") {
       try {

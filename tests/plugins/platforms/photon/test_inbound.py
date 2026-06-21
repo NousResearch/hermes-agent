@@ -334,6 +334,104 @@ async def test_on_inbound_line_ignores_bad_json(monkeypatch: pytest.MonkeyPatch)
     assert captured == []
 
 
+def _richlink_event(
+    url: str = "https://example.com/article",
+    title: str | None = "Example Article",
+    summary: str | None = "A summary of the article",
+    msg_id: str = "spc-msg-rl",
+) -> Dict[str, Any]:
+    content: Dict[str, Any] = {"type": "richlink", "url": url}
+    if title is not None:
+        content["title"] = title
+    if summary is not None:
+        content["summary"] = summary
+    return {
+        "messageId": msg_id,
+        "space": {"id": "+155****4567", "type": "dm", "phone": "+155****4567"},
+        "sender": {"id": "+155****4567"},
+        "content": content,
+        "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_richlink_with_title_and_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_richlink_event(
+        url="https://example.com/article",
+        title="Example Article",
+        summary="A summary of the article",
+    ))
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.message_type == MessageType.TEXT
+    lines = event.text.split("\n")
+    assert "Example Article" in lines
+    assert "A summary of the article" in lines
+    assert "https://example.com/article" in lines
+
+
+@pytest.mark.asyncio
+async def test_dispatch_richlink_url_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_richlink_event(
+        url="https://example.com/bare",
+        title=None,
+        summary=None,
+    ))
+
+    assert len(captured) == 1
+    assert captured[0].text == "https://example.com/bare"
+    assert captured[0].message_type == MessageType.TEXT
+
+
+@pytest.mark.asyncio
+async def test_dispatch_richlink_summary_same_as_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When summary duplicates title, it should not appear twice."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_richlink_event(
+        url="https://example.com/dup",
+        title="Same Text",
+        summary="Same Text",
+    ))
+
+    assert len(captured) == 1
+    text = captured[0].text
+    lines = text.split("\n")
+    assert lines.count("Same Text") == 1
+    assert "https://example.com/dup" in lines
+
+
+@pytest.mark.asyncio
+async def test_dispatch_richlink_no_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_richlink_event(
+        url="",
+        title="Some Title",
+        summary=None,
+    ))
+
+    assert len(captured) == 1
+    assert "Some Title" in captured[0].text
+
+
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     assert adapter._is_duplicate("id-1") is False

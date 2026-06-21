@@ -217,6 +217,8 @@ class EventBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
+        self._bridge_started_at = time.time()
+        self._initial_scan_complete = False
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
         # mtime cache — skip expensive work when files haven't changed
@@ -356,7 +358,8 @@ class EventBridge:
         except OSError:
             sj_mtime = 0.0
 
-        if sj_mtime != self._sessions_json_mtime:
+        sessions_changed = sj_mtime != self._sessions_json_mtime
+        if sessions_changed:
             self._sessions_json_mtime = sj_mtime
             self._cached_sessions_index = _load_sessions_index()
 
@@ -372,7 +375,8 @@ class EventBridge:
         except OSError:
             db_mtime = 0.0
 
-        if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
+        db_changed = db_mtime != self._state_db_mtime
+        if not db_changed and not sessions_changed:
             return  # Nothing changed since last poll — skip entirely
 
         self._state_db_mtime = db_mtime
@@ -383,7 +387,11 @@ class EventBridge:
             if not session_id:
                 continue
 
-            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            has_seen_session = session_key in self._last_poll_timestamps
+            if has_seen_session:
+                last_seen = self._last_poll_timestamps[session_key]
+            else:
+                last_seen = 0.0 if not self._initial_scan_complete else self._bridge_started_at
 
             try:
                 messages = db.get_messages(session_id)
@@ -391,6 +399,7 @@ class EventBridge:
                 continue
 
             if not messages:
+                self._last_poll_timestamps.setdefault(session_key, last_seen)
                 continue
 
             # Normalize timestamps to float for comparison
@@ -408,6 +417,16 @@ class EventBridge:
                         except Exception:
                             return 0.0
                 return 0.0
+
+            all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
+            latest = max(all_ts) if all_ts else last_seen
+
+            # The first successful scan establishes a baseline. Without this,
+            # starting the MCP server replays every saved conversation message
+            # as a new live event.
+            if not has_seen_session and not self._initial_scan_complete:
+                self._last_poll_timestamps[session_key] = latest
+                continue
 
             # Find messages newer than our last seen timestamp
             new_messages = []
@@ -435,12 +454,10 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp
-            all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
-            if all_ts:
-                latest = max(all_ts)
-                if latest > last_seen:
-                    self._last_poll_timestamps[session_key] = latest
+            # Update last seen to the most recent message timestamp.
+            self._last_poll_timestamps[session_key] = max(latest, last_seen)
+
+        self._initial_scan_complete = True
 
 
 # ---------------------------------------------------------------------------

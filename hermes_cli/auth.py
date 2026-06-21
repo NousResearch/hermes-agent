@@ -5608,8 +5608,25 @@ def resolve_nous_runtime_credentials(
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
+        # The stored inference_base_url is network-provenance (persisted from a
+        # Portal refresh response), so validate it here too. The refresh sites
+        # already heal a poisoned value, but on the no-refresh read path — the
+        # common steady state, when the access token is still valid and no
+        # refresh fires — the stored value was previously served unvalidated.
+        # A poisoned auth.json (e.g. a staging host persisted before the host
+        # allowlist existed) then 401s forever against a dead endpoint (a 401
+        # from the inference host does not trigger an OAuth refresh, so the
+        # poisoned value never heals). Reject -> fall back to the default,
+        # mirroring the refresh-site heal. The NOUS_INFERENCE_BASE_URL env
+        # override stays unvalidated: it is user-provided (the documented
+        # dev/staging escape hatch), not network-provenance.
+        stored_inference_base_url = _optional_base_url(state.get("inference_base_url"))
+        if stored_inference_base_url is not None:
+            stored_inference_base_url = _validate_nous_inference_url_from_network(
+                stored_inference_base_url
+            )
         inference_base_url = (
-            _optional_base_url(state.get("inference_base_url"))
+            stored_inference_base_url
             or os.getenv("NOUS_INFERENCE_BASE_URL")
             or DEFAULT_NOUS_INFERENCE_URL
         ).rstrip("/")

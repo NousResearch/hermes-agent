@@ -291,3 +291,96 @@ class TestHealsPoisonedStoredValue:
 
         result = auth.refresh_nous_oauth_from_state(state, force_refresh=True)
         assert result["inference_base_url"] == good
+
+
+class TestNoRefreshReadPathHeals:
+    """A poisoned stored inference_base_url must also heal on the
+    *no-refresh* read path of ``resolve_nous_runtime_credentials``.
+
+    The refresh sites (#49735) heal a poisoned value only when a refresh
+    fires. But when the access token is still a usable invoke JWT — the
+    common steady state — no refresh fires, and a poisoned ``auth.json``
+    value (e.g. a staging host persisted before the allowlist existed) was
+    previously read via the unrestricted ``_optional_base_url`` and served
+    verbatim: every nous call + the aux compression call 401s forever
+    against the dead endpoint (a 401 from the inference host does not
+    trigger an OAuth refresh, so it never self-heals). The stored value is
+    network-provenance, so it is now validated on read too; the
+    user-provided ``NOUS_INFERENCE_BASE_URL`` env override stays exempt.
+    """
+
+    def _patch_no_refresh(self, monkeypatch, auth, state):
+        import contextlib
+
+        # No refresh fires: the stored access token is a usable invoke JWT.
+        monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: None)
+        monkeypatch.setattr(
+            auth, "_auth_store_lock", lambda *a, **k: contextlib.nullcontext()
+        )
+        monkeypatch.setattr(auth, "_load_auth_store", lambda *a, **k: {})
+        monkeypatch.setattr(auth, "_load_provider_state", lambda store, pid: state)
+        monkeypatch.setattr(auth, "_save_provider_state", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_sync_nous_pool_from_auth_store", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_resolve_verify", lambda *a, **k: True)
+        monkeypatch.setattr(auth, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_select_nous_invoke_jwt", lambda *a, **k: None)
+        monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+
+    def test_no_refresh_heals_poisoned_stored_url(self, monkeypatch):
+        import hermes_cli.auth as auth
+
+        state = {
+            "access_token": "tok",
+            "refresh_token": "rtok",
+            "client_id": "hermes-cli",
+            "portal_base_url": auth.DEFAULT_NOUS_PORTAL_URL,
+            "inference_base_url": "https://stg-inference-api.nousresearch.com/v1",
+            "agent_key": "ak-123",
+        }
+        self._patch_no_refresh(monkeypatch, auth, state)
+
+        result = auth.resolve_nous_runtime_credentials()
+
+        assert result["base_url"] == auth.DEFAULT_NOUS_INFERENCE_URL, (
+            "poisoned stored URL must heal to the production default on the "
+            f"no-refresh read path, got {result['base_url']!r}"
+        )
+
+    def test_no_refresh_keeps_valid_stored_url(self, monkeypatch):
+        import hermes_cli.auth as auth
+
+        good = "https://inference-api.nousresearch.com/v1"
+        state = {
+            "access_token": "tok",
+            "refresh_token": "rtok",
+            "client_id": "hermes-cli",
+            "portal_base_url": auth.DEFAULT_NOUS_PORTAL_URL,
+            "inference_base_url": good,
+            "agent_key": "ak-123",
+        }
+        self._patch_no_refresh(monkeypatch, auth, state)
+
+        result = auth.resolve_nous_runtime_credentials()
+        assert result["base_url"] == good
+
+    def test_no_refresh_env_override_bypasses_validation(self, monkeypatch):
+        """The documented dev/staging env override is user-provided, not
+        network-provenance, so it must still win and stay unvalidated even
+        when the stored value is rejected."""
+        import hermes_cli.auth as auth
+
+        state = {
+            "access_token": "tok",
+            "refresh_token": "rtok",
+            "client_id": "hermes-cli",
+            "portal_base_url": auth.DEFAULT_NOUS_PORTAL_URL,
+            "inference_base_url": "https://stg-inference-api.nousresearch.com/v1",
+            "agent_key": "ak-123",
+        }
+        self._patch_no_refresh(monkeypatch, auth, state)
+        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://dev-box.local/v1")
+
+        result = auth.resolve_nous_runtime_credentials()
+        assert result["base_url"] == "https://dev-box.local/v1"

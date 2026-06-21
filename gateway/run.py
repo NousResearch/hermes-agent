@@ -39,6 +39,16 @@ from typing import Dict, Optional, Any, List, Union
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from gateway.context_dump import (
+    agent_history_for_context_dump,
+    context_dump_path,
+    context_dump_slug,
+    context_dump_text_path,
+    estimate_context_dump_tokens,
+    write_context_dump_payload,
+    write_context_dump_text,
+)
+from gateway.context_layers import ContextLayer, layers_to_payload
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -11652,14 +11662,13 @@ class GatewayRunner:
 
     @staticmethod
     def _context_dump_slug(session_key: Optional[str]) -> str:
-        slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(session_key or "unknown")).strip("._")
-        return slug[:180] or "unknown"
+        return context_dump_slug(session_key)
 
     def _context_dump_path(self, session_key: Optional[str]) -> Path:
-        return self._context_dump_dir() / f"{self._context_dump_slug(session_key)}.json"
+        return context_dump_path(self._context_dump_dir(), session_key)
 
     def _context_dump_text_path(self, session_key: Optional[str]) -> Path:
-        return self._context_dump_dir() / f"{self._context_dump_slug(session_key)}.message.txt"
+        return context_dump_text_path(self._context_dump_dir(), session_key)
 
     def _write_context_dump_payload(
         self,
@@ -11667,19 +11676,7 @@ class GatewayRunner:
         payload: Dict[str, Any],
     ) -> Optional[Path]:
         try:
-            dump_dir = self._context_dump_dir()
-            dump_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path = self._context_dump_path(session_key)
-            tmp_path = path.with_suffix(".json.tmp")
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
-                fh.write("\n")
-            os.replace(tmp_path, path)
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-            return path
+            return write_context_dump_payload(self._context_dump_dir(), session_key, payload)
         except Exception as exc:
             logger.debug("Failed to write context dump for %s: %s", session_key, exc)
             return None
@@ -11690,75 +11687,13 @@ class GatewayRunner:
         payload: Dict[str, Any],
     ) -> Optional[Path]:
         try:
-            dump_dir = self._context_dump_dir()
-            dump_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path = self._context_dump_text_path(session_key)
-            tmp_path = path.with_suffix(".txt.tmp")
-            lines = [
-                "# Hermes Raw Context Dump",
-                "",
-                f"Captured: {payload.get('captured_at', '')}",
-                f"Mode: {payload.get('capture_mode', payload.get('phase', ''))}",
-                f"Session key: {payload.get('session_key', '')}",
-                f"Session id: {payload.get('session_id', '')}",
-                f"Model: {payload.get('resolved_model') or payload.get('model') or ''}",
-                f"Provider: {payload.get('provider') or ''}",
-                "",
-                "## Raw API Messages",
-                "",
-                json.dumps(payload.get("api_messages", []), ensure_ascii=False, indent=2, default=str),
-                "",
-                "## Tool Schemas",
-                "",
-                json.dumps(payload.get("tools", []), ensure_ascii=False, indent=2, default=str),
-                "",
-                "## Debug Metadata",
-                "",
-                json.dumps(
-                    {k: v for k, v in payload.items() if k not in {"api_messages", "tools"}},
-                    ensure_ascii=False,
-                    indent=2,
-                    default=str,
-                ),
-                "",
-            ]
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                fh.write("\n".join(lines))
-            os.replace(tmp_path, path)
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-            return path
+            return write_context_dump_text(self._context_dump_dir(), session_key, payload)
         except Exception as exc:
             logger.debug("Failed to write context dump text for %s: %s", session_key, exc)
             return None
 
     def _agent_history_for_context_dump(self, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        agent_history: List[Dict[str, Any]] = []
-        for msg in history:
-            role = msg.get("role")
-            if not role or role == "session_meta" or role == "system":
-                continue
-            has_tool_calls = "tool_calls" in msg
-            has_tool_call_id = "tool_call_id" in msg
-            is_tool_message = role == "tool"
-            if has_tool_calls or has_tool_call_id or is_tool_message:
-                agent_history.append({k: v for k, v in msg.items() if k != "timestamp"})
-                continue
-            content = msg.get("content")
-            if content:
-                if msg.get("mirror"):
-                    mirror_src = msg.get("mirror_source", "another session")
-                    content = f"[Delivered from {mirror_src}] {content}"
-                entry = {"role": role, "content": content}
-                if role == "assistant":
-                    for _rkey in ("reasoning", "reasoning_details", "codex_reasoning_items"):
-                        _rval = msg.get(_rkey)
-                        if _rval:
-                            entry[_rkey] = _rval
-                agent_history.append(entry)
-        return agent_history
+        return agent_history_for_context_dump(history)
 
     async def _build_current_context_dump_payload(
         self,
@@ -11778,7 +11713,8 @@ class GatewayRunner:
                 _redact_pii = bool((user_config.get("privacy") or {}).get("redact_pii", False))
             except Exception:
                 _redact_pii = False
-            context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+            session_context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+            context_prompt = session_context_prompt
             startup_context_prompt = await self._build_discord_startup_context_prompt(event, source, False)
             if startup_context_prompt:
                 context_prompt = f"{context_prompt}\n\n{startup_context_prompt}"
@@ -11848,10 +11784,23 @@ class GatewayRunner:
                 "content": debug_user_content or "[Context dump requested: this marker is not sent to inference.]",
             })
 
-            return {
+            tools = getattr(tmp_agent, "tools", []) or []
+            context_layers = [
+                ContextLayer.from_text("agent_base_system_prompt", source="AIAgent._build_system_prompt", text=base_system_prompt),
+                ContextLayer.from_text("session_context", source="gateway.session.build_session_context_prompt", text=session_context_prompt),
+                ContextLayer.from_text("startup_discord_context", source="gateway.discord_startup_context", text=startup_context_prompt),
+                ContextLayer.from_text("channel_prompt", source="gateway.channel_prompt", text=channel_prompt),
+                ContextLayer.from_text("ephemeral_system_prompt", source="gateway.ephemeral_system_prompt", text=self._ephemeral_system_prompt),
+                ContextLayer.from_text("prefill_messages", source="gateway.prefill_messages", text=str(self._prefill_messages or [])),
+                ContextLayer.from_text("conversation_history", source="gateway.session_store", text=str(agent_history)),
+                ContextLayer.from_text("tool_schemas", source="AIAgent.tools", text=str(tools)),
+            ]
+            payload = {
                 "schema": "hermes.context_dump.v2",
                 "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                 "capture_mode": "zero_inference_current_context",
+                "base_context_version": "gateway-context-v1",
+                "loaded_skill_names": [],
                 "session_key": session_key,
                 "session_id": session_entry.session_id,
                 "source": {
@@ -11875,34 +11824,27 @@ class GatewayRunner:
                 "combined_ephemeral_system_prompt": combined_ephemeral,
                 "agent_cached_system_prompt": base_system_prompt,
                 "api_messages": api_messages,
+                "context_layers": layers_to_payload(context_layers),
                 "prefill_messages": self._prefill_messages or [],
                 "conversation_history": agent_history,
                 "history_message_count": len(agent_history),
                 "context_length": getattr(getattr(tmp_agent, "context_compressor", None), "context_length", 0) or 0,
                 "threshold_tokens": getattr(getattr(tmp_agent, "context_compressor", None), "threshold_tokens", 0) or 0,
-                "tools": getattr(tmp_agent, "tools", []) or [],
+                "tools": tools,
                 "notes": [
                     "Generated by /context-dump without calling inference.",
                     "The final debug user marker is not sent to a model; it marks where the next user turn would appear.",
                     "API keys and transport-only credentials are intentionally omitted.",
                 ],
             }
+            payload["estimated_total_tokens"] = self._estimate_context_dump_tokens(payload)
+            return payload
         finally:
             self._clear_session_env(env_tokens)
             self._cleanup_agent_resources(tmp_agent)
 
     def _estimate_context_dump_tokens(self, payload: Dict[str, Any]) -> int:
-        try:
-            from agent.model_metadata import estimate_request_tokens_rough
-
-            return estimate_request_tokens_rough(
-                payload.get("api_messages", []) or [],
-                tools=payload.get("tools", []) or None,
-            )
-        except Exception:
-            messages = payload.get("api_messages", []) or []
-            tools = payload.get("tools", []) or []
-            return (len(str(messages)) + len(str(tools)) + 3) // 4
+        return estimate_context_dump_tokens(payload)
 
     async def _format_context_window_token_line(
         self,

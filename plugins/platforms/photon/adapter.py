@@ -220,9 +220,13 @@ class PhotonAdapter(BasePlatformAdapter):
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
+        self._sidecar_dead: bool = False
         self._inbound_task: Optional[asyncio.Task] = None
         self._inbound_running = False
         self._http_client: Optional["httpx.AsyncClient"] = None
+        # Per-chat typing-indicator cooldown (seconds).  Prevents a failed-typing
+        # cascade from amplifying an upstream overflow (issue #50185).
+        self._typing_last_sent: Dict[str, float] = {}
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
         # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
@@ -746,6 +750,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
     async def _start_sidecar(self) -> None:
+        self._sidecar_dead = False  # reset for fresh start
         if not (_SIDECAR_DIR / "node_modules").exists():
             raise RuntimeError(
                 f"Photon sidecar deps not installed. Run: "
@@ -826,7 +831,12 @@ class PhotonAdapter(BasePlatformAdapter):
         )
 
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:
-        """Pump the sidecar's stdout/stderr into our logger."""
+        """Pump the sidecar's stdout/stderr into our logger.
+
+        When the stdout pipe closes (the process exited), mark the sidecar as
+        dead so :meth:`_sidecar_call` can fail fast instead of hanging on a
+        dead port (issue #50185).
+        """
         if proc.stdout is None:  # subprocess was launched without stdout=PIPE
             return
         stdout = proc.stdout
@@ -837,8 +847,22 @@ class PhotonAdapter(BasePlatformAdapter):
                 if not line:
                     break
                 logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
+        except asyncio.CancelledError:
+            # Supervisor task was cancelled (e.g. during disconnect) — the
+            # sidecar is NOT necessarily dead.
+            raise
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
+        finally:
+            # If the process has actually exited, flag it so callers fail fast.
+            rc = proc.poll()
+            if rc is not None:
+                self._sidecar_dead = True
+                logger.error(
+                    "[photon] sidecar process exited (code %d) — "
+                    "iMessage is degraded until the adapter is restarted",
+                    rc,
+                )
 
     async def _stop_sidecar(self) -> None:
         proc = self._sidecar_proc
@@ -987,7 +1011,15 @@ class PhotonAdapter(BasePlatformAdapter):
             chat_id, animation_url, caption, reply_to, metadata,
         )
 
+    # Suppress typing indicators repeated within this window per chat to avoid
+    # amplifying upstream overflows during Spectrum bursts (issue #50185).
+    _TYPING_COOLDOWN = 4.0
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        now = time.time()
+        if now - self._typing_last_sent.get(chat_id, 0) < self._TYPING_COOLDOWN:
+            return
+        self._typing_last_sent[chat_id] = now
         try:
             await self._sidecar_call(
                 "/typing", {"spaceId": chat_id, "state": "start"}
@@ -1328,6 +1360,8 @@ class PhotonAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        if self._sidecar_dead:
+            raise RuntimeError("Photon sidecar is not running")
         # Guard: adapter not yet connected (no sidecar address known).
         if self._http_client is None:
             raise RuntimeError("Photon adapter not connected")

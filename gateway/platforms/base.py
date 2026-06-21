@@ -1693,6 +1693,12 @@ _RETRYABLE_ERROR_PATTERNS = (
     "broken pipe",
     "remotedisconnected",
     "eoferror",
+    # Photon / Envoy upstream-overflow errors (issue #50185).  Spectrum's
+    # shared-line gateway intermittently returns these during traffic bursts;
+    # they are transient and _send_with_retry should back off and retry.
+    "internal sidecar error",
+    "upstream connect error",
+    "reset reason: overflow",
 )
 
 

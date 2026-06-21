@@ -81,6 +81,20 @@ class TestIsRetryableError:
     def test_connect_timeout_is_retryable(self):
         assert _StubAdapter._is_retryable_error("ConnectTimeout: connection timed out")
 
+    # Photon / Envoy upstream-overflow errors (issue #50185)
+    def test_internal_sidecar_error_is_retryable(self):
+        assert _StubAdapter._is_retryable_error('500 {"ok":false,"error":"internal sidecar error"}')
+
+    def test_upstream_connect_error_is_retryable(self):
+        assert _StubAdapter._is_retryable_error(
+            "upstream connect error or disconnect/reset before headers"
+        )
+
+    def test_reset_reason_overflow_is_retryable(self):
+        assert _StubAdapter._is_retryable_error(
+            "reset reason: overflow"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _is_timeout_error

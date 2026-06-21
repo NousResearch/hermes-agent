@@ -1190,6 +1190,40 @@ def register(ctx):
         args_hint="rebuild|status",
     )
 
+    # ── Hook: pre_tool_call — block find/read_file/recall if graph not searched ──
+    _gated_tools = frozenset({"find", "read_file", "session_search"})
+    _graph_searched_turn: dict[str, bool] = {}  # turn_id → searched
+
+    def _on_pre_tool_call(tool_name: str, args: dict | None = None, **kw: Any) -> str | None:
+        nonlocal _graph_searched_turn
+        turn_id = kw.get("turn_id", "")
+        if not turn_id:
+            return None
+
+        # Turn boundary: reset flag for new turns
+        if turn_id not in _graph_searched_turn:
+            _graph_searched_turn.clear()
+            _graph_searched_turn[turn_id] = False
+
+        # If this IS skill_graph_search, mark it and allow
+        if tool_name == "skill_graph_search":
+            _graph_searched_turn[turn_id] = True
+            return None
+
+        # Check gating: skill-graph mode + restricted tool + not yet searched
+        if (
+            tool_name in _gated_tools
+            and not _graph_searched_turn.get(turn_id, False)
+        ):
+            return (
+                f"Tool '{tool_name}' is blocked until you call "
+                f"skill_graph_search() first. This profile requires graph "
+                f"discovery before filesystem or session searches."
+            )
+        return None
+
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+
     # ── Hook: on_session_start — ensure DB ──
     def _on_session_start(**kw):
         try:
@@ -1227,5 +1261,5 @@ def register(ctx):
 
     logger.info(
         "skill-graph plugin registered: tools=skill_graph_search+skill_load, "
-        "cmd=/skill-graph, hooks=on_session_start+post_tool_call"
+        "cmd=/skill-graph, hooks=on_session_start+post_tool_call+pre_tool_call"
     )

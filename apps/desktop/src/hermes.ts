@@ -343,6 +343,7 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
 
 export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
   return window.hermesDesktop.api<MemoryProviderConfig>({
+    ...profileScoped(),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`
   })
 }
@@ -352,6 +353,7 @@ export function saveMemoryProviderConfig(
   values: Record<string, string>
 ): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',
     body: { values }

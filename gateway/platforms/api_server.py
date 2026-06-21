@@ -3665,6 +3665,38 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return None
 
+    @staticmethod
+    def _bind_api_server_session(
+        *,
+        chat_id: str = "",
+        session_key: str = "",
+        session_id: str = "",
+    ) -> list:
+        """Bind session contextvars for an API-server agent run.
+
+        This is the SINGLE structural chokepoint every API-server agent-entry
+        path must use to seed session context — it hardwires
+        ``platform="api_server"`` and ``async_delivery=False`` so a new route
+        physically cannot reintroduce the silent-no-op bug (#10760) by
+        forgetting to mark the channel as non-delivering. There is no
+        ``async_delivery`` parameter to get wrong; the stateless HTTP path can
+        never wake the agent after the turn ends, on ANY route.
+
+        Returns reset tokens; pass them to ``clear_session_vars`` in a
+        ``finally`` block (the binding is request-scoped and must not outlive
+        the turn — a session resumed later on a delivering interface, e.g. the
+        CLI or a gateway platform, re-binds fresh and is NOT blocked).
+        """
+        from gateway.session_context import set_session_vars
+
+        return set_session_vars(
+            platform="api_server",
+            chat_id=chat_id,
+            session_key=session_key,
+            session_id=session_id,
+            async_delivery=False,
+        )
+
     async def _run_agent(
         self,
         user_message: str,
@@ -3692,14 +3724,12 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
-            from gateway.session_context import clear_session_vars, set_session_vars
+            from gateway.session_context import clear_session_vars
 
-            tokens = set_session_vars(
-                platform="api_server",
+            tokens = self._bind_api_server_session(
                 chat_id=session_id or "",
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
-                async_delivery=False,
             )
             try:
                 agent = self._create_agent(
@@ -3951,7 +3981,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
-                    from gateway.session_context import clear_session_vars, set_session_vars
+                    from gateway.session_context import clear_session_vars
                     from tools.approval import (
                         register_gateway_notify,
                         reset_current_session_key,
@@ -3967,10 +3997,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         # contextvars so concurrent runs do not share process
                         # environment state.
                         approval_token = set_current_session_key(approval_session_key)
-                        session_tokens = set_session_vars(
-                            platform="api_server",
+                        session_tokens = self._bind_api_server_session(
                             session_key=approval_session_key,
-                            async_delivery=False,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(

@@ -101,6 +101,46 @@ class TestAdapterCapabilityFlag:
 
         assert APIServerAdapter.supports_async_delivery is False
 
+    def test_api_server_bind_chokepoint_hardwires_no_delivery(self):
+        """Every API-server agent-entry path binds through
+        _bind_api_server_session, which hardwires async_delivery=False — a new
+        route physically cannot reintroduce the silent no-op (#10760)."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.session_context import clear_session_vars, get_session_env
+
+        tokens = APIServerAdapter._bind_api_server_session(
+            chat_id="c1", session_key="sk1", session_id="sid1"
+        )
+        try:
+            assert async_delivery_supported() is False
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "api_server"
+        finally:
+            clear_session_vars(tokens)
+
+    def test_api_server_binding_does_not_outlive_turn(self):
+        """The no-delivery decision is request-scoped, NOT stuck to the session.
+        After clear, a session resumed on a delivering interface re-binds fresh
+        and is NOT blocked."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.session_context import clear_session_vars
+
+        # Turn 1: same session over the API server -> blocked.
+        tokens = APIServerAdapter._bind_api_server_session(session_key="shared-key")
+        assert async_delivery_supported() is False
+        clear_session_vars(tokens)
+
+        # Turn 2: SAME session_key resumed on a delivering interface (CLI/gateway)
+        # -> supported. The earlier False did not follow the session.
+        tokens = set_session_vars(
+            platform="telegram",
+            session_key="shared-key",
+            async_delivery=True,
+        )
+        try:
+            assert async_delivery_supported() is True
+        finally:
+            clear_session_vars(tokens)
+
 
 # ---------------------------------------------------------------------------
 # terminal_tool: refuses to register a watcher on unsupported sessions

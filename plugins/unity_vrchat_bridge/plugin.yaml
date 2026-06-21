@@ -1,0 +1,28 @@
+name: unity-vrchat-bridge
+version: 0.1.0
+description: "VRChat-first Unity Editor bridge for read-only project health, local bridge status, and commercial asset import audits."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_tools:
+  - unity_bridge_status
+  - unity_bridge_health
+  - unity_bridge_snapshot
+  - unity_bridge_selection_get
+  - unity_bridge_capabilities
+  - unity_bridge_packages
+  - unity_bridge_scene_hierarchy
+  - unity_bridge_console_recent
+  - unity_bridge_asset_search
+  - unity_bridge_asset_info
+  - unity_bridge_menu_execute
+  - unity_bridge_operation_plan
+  - unity_bridge_plan_apply
+  - unity_project_profile
+  - vrchat_project_health
+  - commercial_asset_inspect_archive
+provides_cli:
+  - unity-vrchat-bridge

@@ -1,0 +1,10 @@
+{
+  "name": "com.hermes.unity-vrchat-bridge",
+  "version": "0.1.0",
+  "displayName": "Hermes Unity VRChat Bridge",
+  "description": "Localhost Unity Editor bridge for Hermes VRChat-first diagnostics.",
+  "unity": "2022.3",
+  "author": {
+    "name": "Hermes local plugin"
+  }
+}

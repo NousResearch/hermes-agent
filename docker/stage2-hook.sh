@@ -183,9 +183,11 @@ done
 actual_hermes_uid=$(id -u hermes)
 actual_hermes_gid=$(id -g hermes)
 actual_hermes_owner="$actual_hermes_uid:$actual_hermes_gid"
-# The canonical hermes-owned subdir list, defined once so the ownership probe
-# and the recursive chown below cannot drift out of sync.
-hermes_subdirs="cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing"
+# The canonical hermes-owned subdir list is written inline (literally) in both
+# the ownership probe and the recursive chown below; keep the two lists in sync
+# if it changes (they mirror the s6-setuidgid `mkdir -p` seed block further
+# down). It is spelled out literally rather than via a variable so the
+# subdir-list intent is greppable at each loop.
 needs_chown=false
 # Top-level $HERMES_HOME ownership (the original #35027 path). Compare BOTH
 # uid and gid: a `groupmod -o -g` GID-only remap leaves the uid unchanged, so
@@ -205,7 +207,7 @@ fi
 # GID-only remap leaves subdir GIDs stale — comparing %u:%g (not just %u)
 # catches that.
 if [ "$needs_chown" = false ]; then
-    for sub in $hermes_subdirs; do
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do
         if [ -e "$HERMES_HOME/$sub" ] && \
                 [ "$(stat -c %u:%g "$HERMES_HOME/$sub" 2>/dev/null)" != "$actual_hermes_owner" ]; then
             needs_chown=true
@@ -227,7 +229,7 @@ if [ "$needs_chown" = true ]; then
     # Hermes-owned subdirs: recursive chown is safe here because these are
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
-    for sub in $hermes_subdirs; do
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do
         if [ -e "$HERMES_HOME/$sub" ]; then
             chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
                 echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"

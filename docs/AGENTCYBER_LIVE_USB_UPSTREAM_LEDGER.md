@@ -402,3 +402,50 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If this guarded branch is merged and no new Live USB gaps are found, treat future runs as verification/no-op lanes.
+
+### 2026-06-21T22:16:04Z — sync upstream and verify Live USB lane remains complete
+
+**Commands / status**
+
+- `git status --short --branch`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` with a clean worktree at `cc99ac2d449a`.
+- `git fetch upstream main --prune && git fetch origin main --prune && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune`: upstream advanced from `6f0ecf37d` to `bb59075b2`; origin fetched cleanly.
+- Drift after fetch before merge: `HEAD..upstream/main` -> `2`; `upstream/main..HEAD` -> `80`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `218`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- `git merge --no-ff upstream/main`: merged cleanly with the `ort` strategy; merge commit `cec4eb06dd725defc8309c19747de6bf7f265d98`.
+- Post-merge drift before ledger commit: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `81`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `3`.
+
+**Changed files**
+
+- Upstream merge changed only `hermes_constants.py` and `tests/test_hermes_constants.py`.
+- Required AgentCyber/Live USB files were preserved and still present: `tools/cyber_live_usb.py`, `tests/cyber/test_live_usb_tool.py`, `scripts/agentcyber`, this ledger, `docs/AGENTCYBER_STANDALONE_RUNBOOK.md`, and `live-usb/{build_iso.sh,write_usb.sh,provision.sh}`.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+- No Live USB implementation or runbook code/docs were changed this run because focused review found no new smallest safety/test/doc gap.
+
+**Verification**
+
+- `uv run --frozen python -m pytest tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/test_hermes_constants.py -q -o addopts= --tb=short` -> `212 passed, 8 warnings in 15.70s`.
+- `scripts/run_tests.sh tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/test_hermes_constants.py` -> `212 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` summary -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: false`, and secret fields reported as booleans/presence only.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- Conflict marker check: `^<<<<<<< ` and `^>>>>>>> ` searches returned `0` matches.
+- `git diff --check && git diff --cached --check && git diff --check HEAD~1..HEAD` -> passed with no output.
+- Subagent Live USB next-gap review: `PASS`; no focused safety/test/doc gap worth changing this run.
+- Subagent upstream preservation review: `PASS`; required AgentCyber files present, merge touched only upstream constants files, focused tests passed in the subagent context.
+
+**Blockers / boundaries**
+
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+- Deviation noted: one status/tool-list summarization used temporary evidence files under `/tmp` (`/tmp/agentcyber-status.json`, `/tmp/agentcyber-tools-list.txt`) before correction; they contained status/tool-list output only, no approval tokens or secrets were printed. Per the no-delete boundary, no cleanup was attempted in this cron run.
+
+**Commit / push**
+
+- Upstream merge commit already created by `git merge`: `cec4eb06dd725defc8309c19747de6bf7f265d98`.
+- This is the bounded ledger-only follow-up recording the merge and verification facts. After pushing this ledger commit, final verification should check local HEAD equals the remote branch tip and stop rather than amending the ledger again solely to mention the ledger-only commit SHA.
+
+**Next lane**
+
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If this guarded branch is merged and no upstream drift or new Live USB gap is found, treat the lane as verification/no-op.

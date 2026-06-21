@@ -12,7 +12,8 @@
 #   OPENROUTER_API_KEY=sk-or-...   # key has a $10 hard cap set in OpenRouter \
 #   sh provision-in-container.sh
 #
-# Optional: MODEL (default xiaomi/mimo-v2.5-pro), MAX_ITER (default 40).
+# Optional: MODEL (default xiaomi/mimo-v2.5-pro), VISION_MODEL (default
+#   google/gemini-2.5-flash, used only for image analysis), MAX_ITER (default 40).
 set -eu
 
 # ---- Safety guard: Railway-only. Railway injects RAILWAY_ENVIRONMENT in every
@@ -33,6 +34,9 @@ fi
 # with-contenv, and a key absent from the profile .env falls through to the
 # container env). Pass it explicitly to give a customer their own capped key.
 MODEL="${MODEL:-xiaomi/mimo-v2.5-pro}"
+# Vision model for image analysis. MiMo (the brain) can't see pixels, so image
+# turns delegate to this cheap multimodal model; text turns never touch it.
+VISION_MODEL="${VISION_MODEL:-google/gemini-2.5-flash}"
 MAX_ITER="${MAX_ITER:-40}"
 HOME_DIR="${HERMES_HOME:-/opt/data}"
 PROFILE_DIR="$HOME_DIR/profiles/$SLUG"
@@ -50,6 +54,13 @@ cat > "$PROFILE_DIR/config.yaml" <<YAML
 model:
   default: $MODEL
   provider: openrouter
+auxiliary:
+  # MiMo can't see pixels, so image turns delegate to a cheap multimodal model.
+  # Only fires when an image is attached; text turns stay pure MiMo. Empty
+  # base_url/api_key inherit the OpenRouter key (per-customer or shared fleet).
+  vision:
+    provider: openrouter
+    model: $VISION_MODEL
 agent:
   max_turns: $MAX_ITER
   gateway_timeout: 1800

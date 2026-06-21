@@ -23,8 +23,6 @@ DEFAULT_DOC_PATHS = (
     ".cursorrules",
     "README.md",
     "CONTRIBUTING.md",
-    "docs/ARCHITECTURE.md",
-    "docs/WORKFLOW.md",
     ".github/copilot-instructions.md",
 )
 

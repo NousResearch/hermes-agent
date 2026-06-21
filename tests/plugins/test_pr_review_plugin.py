@@ -21,6 +21,13 @@ def test_register_adds_cli_command():
     assert callable(entry["handler_fn"])
 
 
+def test_default_docs_stay_on_broad_conventions_not_larry_specific_docs():
+    assert "AGENTS.md" in core.DEFAULT_DOC_PATHS
+    assert ".github/copilot-instructions.md" in core.DEFAULT_DOC_PATHS
+    assert "docs/ARCHITECTURE.md" not in core.DEFAULT_DOC_PATHS
+    assert "docs/WORKFLOW.md" not in core.DEFAULT_DOC_PATHS
+
+
 def test_parse_pr_ref_accepts_url_and_short_form():
     url = core.parse_pr_ref("https://github.com/NousResearch/hermes-agent/pull/123")
     short = core.parse_pr_ref("NousResearch/hermes-agent#123")

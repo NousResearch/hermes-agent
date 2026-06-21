@@ -204,6 +204,44 @@ class TestCompress:
             f"#49307), found {count}x:\n{summary}"
         )
 
+    def test_threshold_below_window_at_minimum_ctx(self):
+        """Regression for #14690: at context_length == MINIMUM_CONTEXT_LENGTH
+        the floored threshold used to equal the whole window, so
+        auto-compression could never fire. It now triggers at 85% of the
+        window — high enough not to waste the small budget, below 100% so it
+        actually fires."""
+        from agent.context_compressor import MINIMUM_CONTEXT_LENGTH
+        t = ContextCompressor._compute_threshold_tokens(MINIMUM_CONTEXT_LENGTH, 0.50)
+        assert t < MINIMUM_CONTEXT_LENGTH
+        assert t == 54400  # 85% of 64000
+
+    def test_threshold_below_window_for_small_ctx(self):
+        # 32K model: the 64000 floor exceeds the window — trigger at 85%.
+        t = ContextCompressor._compute_threshold_tokens(32000, 0.50)
+        assert t == 27200  # 85% of 32000
+        assert t < 32000
+
+    def test_threshold_floored_for_large_ctx(self):
+        from agent.context_compressor import MINIMUM_CONTEXT_LENGTH
+        # 200K model at 50% = 100000 (above floor) — unchanged.
+        assert ContextCompressor._compute_threshold_tokens(200000, 0.50) == 100000
+        # 100K model at 50% = 50000 (below floor) — floored to MINIMUM.
+        assert ContextCompressor._compute_threshold_tokens(100000, 0.50) == MINIMUM_CONTEXT_LENGTH
+
+    def test_minimum_ctx_model_can_actually_compress(self):
+        """End-to-end: a model at exactly the minimum context length must have
+        should_compress() fire below its window (at the 85% trigger), not only
+        at 100%."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=64000):
+            c = ContextCompressor(model="small-64k", quiet_mode=True)
+            c.context_length = 64000
+            c.threshold_tokens = c._compute_threshold_tokens(64000, c.threshold_percent)
+        assert c.threshold_tokens == 54400
+        assert c.threshold_tokens < 64000
+        # At 85%+ usage compaction fires; below it, it doesn't (no premature compact).
+        assert c.should_compress(55000) is True
+        assert c.should_compress(40000) is False
+
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
         # Default config (abort_on_summary_failure=False) — fallback path

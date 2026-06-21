@@ -221,7 +221,15 @@ def test_evolution_stats_prints_overview_counts_targets_and_activity(
         "target_name": "user",
     })
     append_event({
-        "id": "evt_20260608_073001_d4e5f6",
+        "id": "evt_20260608_073001_b2c3d4",
+        "timestamp": ts,
+        "type": "memory.add",
+        "target": "memories/MEMORY.md",
+        "target_kind": "memory",
+        "target_name": "memory",
+    })
+    append_event({
+        "id": "evt_20260608_073002_d4e5f6",
         "timestamp": ts,
         "type": "skill.patch",
         "target": "skills/daily-task-assistant/SKILL.md",
@@ -233,13 +241,14 @@ def test_evolution_stats_prints_overview_counts_targets_and_activity(
 
     assert rc == 0
     output = capsys.readouterr().out
-    assert "Total events: 2" in output
-    assert "Memory:" in output
-    assert "Skills:" in output
-    assert "Curator:" in output
+    assert "Total events: 3" in output
+    assert "Memory:  2" in output
+    assert "Skills:  1" in output
+    assert "Curator: 0" in output
     assert "memory.add" in output
     assert "skill.patch" in output
     assert "memories/USER.md" in output
+    assert "memories/MEMORY.md" in output
     assert "skills/daily-task-assistant/SKILL.md" in output
     assert "Activity by day" in output
 

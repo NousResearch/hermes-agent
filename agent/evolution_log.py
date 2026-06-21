@@ -310,9 +310,43 @@ def filter_events(
 
 
 def clear_older_than(days: int, apply: bool = False) -> tuple[int, int]:
+    if apply:
+        path = get_events_path()
+        if not path.exists():
+            return 0, 0
+        with path.open("r+", encoding="utf-8") as f:
+            with _file_lock(f):
+                f.seek(0)
+                events: list[dict] = []
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        events.append(json.loads(stripped))
+                    except json.JSONDecodeError:
+                        continue
+                if not events:
+                    return 0, 0
+                deleted, retained = _partition_clear_events(events, days)
+                f.seek(0)
+                f.truncate()
+                for event in retained:
+                    f.write(
+                        json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+                    )
+                f.flush()
+                os.fsync(f.fileno())
+                return deleted, len(retained)
+
     events, _warnings = read_events()
     if not events:
         return 0, 0
+    deleted, retained = _partition_clear_events(events, days)
+    return deleted, len(retained)
+
+
+def _partition_clear_events(events: list[dict], days: int) -> tuple[int, list[dict]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     retained: list[dict] = []
     deleted = 0
@@ -322,18 +356,7 @@ def clear_older_than(days: int, apply: bool = False) -> tuple[int, int]:
             deleted += 1
         else:
             retained.append(event)
-
-    if apply:
-        path = get_events_path()
-        ensure_evolution_dir()
-        tmp = path.with_suffix(".jsonl.tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            for event in retained:
-                f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(path)
-    return deleted, len(retained)
+    return deleted, retained
 
 
 def _load_config_safely() -> dict:

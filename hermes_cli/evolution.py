@@ -172,8 +172,11 @@ def _stats(args) -> int:
 
     type_counts = Counter(str(event.get("type", "")) for event in events)
     category_counts = Counter(
-        str(event.get("type", "")).split(".", 1)[0] for event in events if event.get("type")
+        str(event.get("type", "")).split(".", 1)[0]
+        for event in events
+        if event.get("type")
     )
+    print("\nBy category:")
     print(f"  Memory:  {category_counts.get('memory', 0)}")
     print(f"  Skills:  {category_counts.get('skill', 0)}")
     print(f"  Curator: {category_counts.get('curator', 0)}")

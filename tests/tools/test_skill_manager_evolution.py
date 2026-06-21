@@ -189,6 +189,50 @@ def test_skill_write_file_and_remove_file_record_evolution_events(
     assert "-Use the stable API." in events[1]["diff"]
 
 
+def test_skill_pending_replay_preserves_summary_and_reason_in_evolution_event(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "evolution:\n"
+        "  enabled: true\n"
+        "  record_diff: true\n"
+        "  redact: true\n"
+        "  max_diff_chars: 20000\n"
+        "skills:\n"
+        "  write_approval: true\n",
+        encoding="utf-8",
+    )
+    skills_dir = tmp_path / "skills"
+
+    with _isolated_skills(skills_dir):
+        from tools import write_approval as wa
+        from tools.skill_manager_tool import apply_skill_pending
+
+        staged = json.loads(
+            skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+                summary="Created approved test skill",
+                reason="Approved skill writes should preserve evolution metadata.",
+            )
+        )
+        pending = wa.get_pending("skills", staged["pending_id"])
+        result = json.loads(apply_skill_pending(pending["payload"]))
+
+    assert result["success"] is True
+    events, warnings = read_events()
+    assert warnings == []
+    assert len(events) == 1
+    assert events[0]["type"] == "skill.create"
+    assert events[0]["summary"] == "Created approved test skill"
+    assert (
+        events[0]["reason"]
+        == "Approved skill writes should preserve evolution metadata."
+    )
+
+
 def test_failed_skill_mutation_records_no_evolution_event(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _enable_evolution(tmp_path)

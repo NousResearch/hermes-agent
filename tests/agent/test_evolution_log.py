@@ -208,3 +208,42 @@ def test_filter_events_supports_days_type_target_and_limit():
         "new-memory"
     ]
     assert [e["id"] for e in filter_events(events, limit=1)] == ["new-skill"]
+
+
+def test_clear_older_than_preserves_preopened_append_writer(tmp_path, monkeypatch):
+    import json
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.evolution_log import (
+        append_event,
+        clear_older_than,
+        get_events_path,
+        read_events,
+    )
+
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=100)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    append_event({"id": "old", "timestamp": old_ts})
+    path = get_events_path()
+    late_event = {
+        "id": "late",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    with path.open("a", encoding="utf-8") as already_open_writer:
+        deleted, retained = clear_older_than(30, apply=True)
+        already_open_writer.write(
+            json.dumps(late_event, ensure_ascii=False, sort_keys=True) + "\n"
+        )
+        already_open_writer.flush()
+        os.fsync(already_open_writer.fileno())
+
+    events, warnings = read_events()
+
+    assert warnings == []
+    assert deleted == 1
+    assert retained == 0
+    assert [event["id"] for event in events] == ["late"]

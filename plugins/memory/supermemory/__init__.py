@@ -316,7 +316,7 @@ class _SupermemoryClient:
         for item in (getattr(response, "results", None) or []):
             results.append({
                 "id": getattr(item, "id", ""),
-                "memory": getattr(item, "memory", "") or "",
+                "memory": getattr(item, "memory", "") or getattr(item, "content", "") or getattr(item, "chunk", "") or getattr(item, "text", "") or "",
                 "similarity": getattr(item, "similarity", None),
                 "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                 "metadata": getattr(item, "metadata", None),
@@ -342,7 +342,7 @@ class _SupermemoryClient:
                     search_results.append(item)
                 else:
                     search_results.append({
-                        "memory": getattr(item, "memory", ""),
+                        "memory": getattr(item, "memory", "") or getattr(item, "content", "") or getattr(item, "chunk", "") or getattr(item, "text", "") or "",
                         "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                         "similarity": getattr(item, "similarity", None),
                     })

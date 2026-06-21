@@ -457,3 +457,101 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class _FakeSDKItem:
+    """Simulate a supermemory SDK response item with arbitrary attributes."""
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+class _FakeSearchResponse:
+    def __init__(self, items):
+        self.results = items
+
+
+class _FakeProfileResponse:
+    def __init__(self, search_items, static=None, dynamic=None):
+        self.profile = type("P", (), {"static": static or [], "dynamic": dynamic or []})()
+        self.search_results = type("S", (), {"results": search_items})()
+
+
+class _FakeSDKClient:
+    """Minimal mock of the Supermemory SDK client."""
+    def __init__(self):
+        self._search_items = []
+        self._profile_items = []
+        self.search = self
+        self.profile = self
+
+    def memories(self, **kwargs):
+        return _FakeSearchResponse(self._search_items)
+
+    def __call__(self, **kwargs):
+        return _FakeProfileResponse(self._profile_items)
+
+
+def test_search_memories_fallback_to_content_field(monkeypatch, tmp_path):
+    """search_memories should fall back to 'content' when 'memory' is empty."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "test"
+    client._search_mode = "hybrid"
+    client._timeout = 10.0
+    sdk = _FakeSDKClient()
+    sdk._search_items = [
+        _FakeSDKItem(id="1", content="Hello from content", memory="", similarity=0.9),
+        _FakeSDKItem(id="2", content="", memory="Hello from memory", similarity=0.8),
+        _FakeSDKItem(id="3", chunk="Hello from chunk", memory="", similarity=0.7),
+    ]
+    client._client = sdk
+
+    results = client.search_memories("test query")
+    assert results[0]["memory"] == "Hello from content"
+    assert results[1]["memory"] == "Hello from memory"
+    assert results[2]["memory"] == "Hello from chunk"
+
+
+def test_search_memories_fallback_to_text_field(monkeypatch, tmp_path):
+    """search_memories should fall back to 'text' when other fields are empty."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "test"
+    client._search_mode = "hybrid"
+    client._timeout = 10.0
+    sdk = _FakeSDKClient()
+    sdk._search_items = [
+        _FakeSDKItem(id="1", text="Hello from text", memory="", content="", chunk=""),
+    ]
+    client._client = sdk
+
+    results = client.search_memories("test query")
+    assert results[0]["memory"] == "Hello from text"
+
+
+def test_get_profile_search_fallback_to_content_field(monkeypatch, tmp_path):
+    """get_profile search results should fall back to 'content' when 'memory' is empty."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "test"
+    client._search_mode = "hybrid"
+    client._timeout = 10.0
+    sdk = _FakeSDKClient()
+    sdk._profile_items = [
+        _FakeSDKItem(id="1", content="Profile content", memory="", similarity=0.85),
+    ]
+    client._client = sdk
+
+    result = client.get_profile(query="test")
+    assert len(result["search_results"]) == 1
+    assert result["search_results"][0]["memory"] == "Profile content"

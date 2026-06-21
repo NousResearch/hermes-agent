@@ -168,6 +168,8 @@
 .hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
 .hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
 .hermes-kanban-dot-archived { background: var(--color-border); }
+.hermes-kanban-dot-scheduled { background: #b47dd6; }  /* lilac — queued */
+.hermes-kanban-dot-review   { background: #d48b3c; }  /* tangerine — needs review */
 
 /* ---- Progress pill (N/M child tasks done) --------------------------- */
 

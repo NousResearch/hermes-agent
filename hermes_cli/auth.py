@@ -4616,7 +4616,7 @@ def _resolve_verify(
     if effective_insecure:
         return False
     if effective_ca:
-        ca_path = str(effective_ca)
+        ca_path = os.path.expanduser(str(effective_ca))
         if not os.path.isfile(ca_path):
             logger.warning(
                 "CA bundle path does not exist: %s — falling back to default certificates",

@@ -122,6 +122,35 @@ class TestResolveVerifyFallback:
             f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
         )
 
+    def test_tilde_ca_bundle_path_is_expanded(self, tmp_path, monkeypatch):
+        import ssl
+        from hermes_cli.auth import _resolve_verify
+
+        # Make ~ resolve to tmp_path on both POSIX (HOME) and Windows (USERPROFILE).
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        ca_file = tmp_path / "certs" / "ca.pem"
+        ca_file.parent.mkdir(parents=True)
+        ca_file.write_text("fake cert")
+
+        # Avoid loading actual PEM — just verify the return type
+        mock_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        monkeypatch.setattr(ssl, "create_default_context", lambda **kw: mock_ctx)
+
+        # --ca-bundle arg channel: a tilde path must expand to the real file.
+        result = _resolve_verify(ca_bundle="~/certs/ca.pem")
+        assert isinstance(result, ssl.SSLContext), (
+            f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
+        )
+
+        # HERMES_CA_BUNDLE env channel: same expansion must apply.
+        monkeypatch.setenv("HERMES_CA_BUNDLE", "~/certs/ca.pem")
+        result_env = _resolve_verify(auth_state={"tls": {}})
+        assert isinstance(result_env, ssl.SSLContext), (
+            f"Expected ssl.SSLContext but got {type(result_env).__name__}: {result_env!r}"
+        )
+
 
 def _setup_nous_auth(
     hermes_home: Path,

@@ -2657,6 +2657,14 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_display_font_size_schema(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA["display.font_size"]
+        assert entry["type"] == "number"
+        assert entry["category"] == "display"
+        assert "0 = default" in entry["description"]
+
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
         test_config = {"model": "test", "nested": {"key": "val"}}

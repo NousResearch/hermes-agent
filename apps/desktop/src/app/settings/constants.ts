@@ -281,6 +281,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
   display: {
+    fontSize: 'Font Size',
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
   },
@@ -432,6 +433,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
+    fontSize: 'Base UI font size in pixels. Use 0 to keep the default.',
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
@@ -515,7 +517,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'appearance',
     label: 'Appearance',
     icon: Palette,
-    keys: []
+    keys: ['display.font_size']
   },
   {
     id: 'workspace',

@@ -206,6 +206,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    font_size?: number
     personality?: string
     skin?: string
   }

@@ -966,6 +966,11 @@ class TestCliRefreshIntervalConfig:
         assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
 
 
+class TestDisplayFontSizeConfig:
+    def test_default_config_keeps_font_size_default(self):
+        assert DEFAULT_CONFIG["display"]["font_size"] == 0
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}

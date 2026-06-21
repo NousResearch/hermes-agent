@@ -514,6 +514,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "How resumed sessions display history",
         "options": ["minimal", "full", "off"],
     },
+    "display.font_size": {
+        "type": "number",
+        "description": "Desktop/web UI base font size in px (0 = default)",
+        "category": "display",
+    },
     "display.busy_input_mode": {
         "type": "select",
         "description": "Input behavior while agent is running",

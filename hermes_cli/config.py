@@ -1533,6 +1533,8 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
+        # Desktop/web UI base font size in px. 0 keeps the packaged CSS default.
+        "font_size": 0,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the
@@ -6477,6 +6479,7 @@ def show_config():
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
+    print(f"  Font size:    {display.get('font_size') or 'default'}")
     print(f"  Personality:  {display.get('personality') or 'none'}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")

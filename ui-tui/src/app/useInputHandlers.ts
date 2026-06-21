@@ -388,6 +388,24 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
+    // Ctrl+C while a turn is running ALWAYS interrupts, before any copy /
+    // selection / clear handling can swallow it. isCopyShortcut() intentionally
+    // also matches the VS Code/Cursor/Windsurf shape where Cmd+C arrives as
+    // super+ctrl; on those terminals a genuine Ctrl+C could otherwise be
+    // captured by the copy branch and consumed by its `if (isMac) return`
+    // early-out, so the running turn never stopped (only Ctrl+X did, because it
+    // sits above that early-out). Anchoring the busy-interrupt here, keyed on
+    // the plain ctrl bit, makes Ctrl+C behave the same in every terminal.
+    // Copy is unaffected: a copy chord only fires when no turn is in flight.
+    if (isCtrl(key, ch, 'c') && live.busy && live.sid) {
+      return turnController.interruptTurn({
+        appendMessage: actions.appendMessage,
+        gw: gateway.gw,
+        sid: live.sid,
+        sys: actions.sys
+      })
+    }
+
     if (key.wheelUp || key.wheelDown) {
       const dir: -1 | 1 = key.wheelUp ? -1 : 1
       const now = Date.now()

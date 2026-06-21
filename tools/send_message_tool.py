@@ -313,16 +313,13 @@ def _handle_send(args):
             resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
                 chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
-            else:
-                return json.dumps({
-                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
-                })
         except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
+            pass  # fall through to verbatim fallback
+
+    # Plugin platforms and opaque IDs: pass target_ref through verbatim;
+    # the adapter validates (same pattern as _handle_react, line 234).
+    if not chat_id and target_ref:
+        chat_id = target_ref
 
     from tools.interrupt import is_interrupted
     if is_interrupted():

@@ -11,7 +11,8 @@ import uuid
 import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -485,6 +486,112 @@ class CredentialPool:
             [entry.to_dict() for entry in self._entries],
         )
 
+    @staticmethod
+    def _pool_entry_version_payload(payload: Dict[str, Any]) -> Tuple[str, str, str]:
+        return (
+            str(payload.get("access_token") or ""),
+            str(payload.get("refresh_token") or ""),
+            str(payload.get("last_refresh") or ""),
+        )
+
+    @classmethod
+    def _pool_entry_version(cls, entry: PooledCredential) -> Tuple[str, str, str]:
+        return cls._pool_entry_version_payload(entry.to_dict())
+
+    def _exact_pool_auth_path_for_entry(self, entry: PooledCredential) -> Path:
+        """Return the auth.json path that currently owns this pool entry."""
+        profile_path = auth_mod._auth_file_path()
+        with auth_mod._auth_store_lock_for_path(profile_path):
+            profile_store = _load_auth_store(profile_path)
+            profile_pool = profile_store.get("credential_pool")
+            profile_entries = profile_pool.get(self.provider) if isinstance(profile_pool, dict) else None
+            if isinstance(profile_entries, list) and any(
+                isinstance(item, dict) and item.get("id") == entry.id
+                for item in profile_entries
+            ):
+                return profile_path
+            if isinstance(profile_entries, list) and profile_entries:
+                return profile_path
+
+        root_path = auth_mod._global_auth_file_path()
+        if root_path is not None:
+            with auth_mod._auth_store_lock_for_path(root_path):
+                root_store = _load_auth_store(root_path)
+                root_pool = root_store.get("credential_pool")
+                root_entries = root_pool.get(self.provider) if isinstance(root_pool, dict) else None
+                if isinstance(root_entries, list) and any(
+                    isinstance(item, dict) and item.get("id") == entry.id
+                    for item in root_entries
+                ):
+                    return root_path
+
+        return profile_path
+
+    def _read_pool_entry_exact(self, auth_path: Path, entry_id: str) -> Optional[PooledCredential]:
+        with auth_mod._auth_store_lock_for_path(auth_path):
+            auth_store = _load_auth_store(auth_path)
+            pool = auth_store.get("credential_pool")
+            entries = pool.get(self.provider) if isinstance(pool, dict) else None
+            if not isinstance(entries, list):
+                return None
+            for item in entries:
+                if isinstance(item, dict) and item.get("id") == entry_id:
+                    return PooledCredential.from_dict(self.provider, item)
+        return None
+
+    @staticmethod
+    def _codex_pool_refresh_lock_key(auth_path: Path, entry_id: str) -> str:
+        return "\0".join(
+            (
+                "openai-codex",
+                "pool",
+                str(auth_path.expanduser().resolve(strict=False)),
+                str(entry_id),
+            )
+        )
+
+    def _update_pool_entry_exact(
+        self,
+        entry: PooledCredential,
+        *,
+        expected_version: Tuple[str, str, str],
+        updater: Callable[[Dict[str, Any]], Dict[str, Any]],
+        auth_path: Optional[Path] = None,
+    ) -> PooledCredential:
+        """Read-modify-write exactly one pool entry without rewriting siblings."""
+        auth_path = auth_path or self._exact_pool_auth_path_for_entry(entry)
+        with auth_mod._auth_store_lock_for_path(auth_path):
+            auth_store = _load_auth_store(auth_path)
+            pool = auth_store.get("credential_pool")
+            if not isinstance(pool, dict):
+                pool = {}
+                auth_store["credential_pool"] = pool
+            entries = pool.get(self.provider)
+            if not isinstance(entries, list):
+                entries = []
+                pool[self.provider] = entries
+
+            target_index: Optional[int] = None
+            current_payload: Optional[Dict[str, Any]] = None
+            for index, item in enumerate(entries):
+                if isinstance(item, dict) and item.get("id") == entry.id:
+                    target_index = index
+                    current_payload = dict(item)
+                    break
+
+            if current_payload is None or target_index is None:
+                current_payload = entry.to_dict()
+                entries.append(current_payload)
+                target_index = len(entries) - 1
+
+            if self._pool_entry_version_payload(current_payload) != expected_version:
+                return PooledCredential.from_dict(self.provider, current_payload)
+
+            updated_payload = updater(dict(current_payload))
+            entries[target_index] = updated_payload
+            _save_auth_store(auth_store, auth_path)
+            return PooledCredential.from_dict(self.provider, updated_payload)
+
     def _is_terminal_auth_failure(
         self,
         status_code: Optional[int],
@@ -900,18 +1007,53 @@ class CredentialPool:
                     return self._sync_codex_entry_from_auth_store(entry)
 
                 # Independent manual OAuth entries are not singleton mirrors.
-                # They keep their own refresh-token chain until the targeted
-                # pool-entry CAS path lands.
-                refreshed = auth_mod.refresh_codex_oauth_pure(
-                    entry.access_token,
-                    entry.refresh_token,
-                )
-                updated = replace(
-                    entry,
-                    access_token=refreshed["access_token"],
-                    refresh_token=refreshed["refresh_token"],
-                    last_refresh=refreshed.get("last_refresh"),
-                )
+                # Serialize per entry and persist only the targeted item so a
+                # stale in-memory pool cannot revert a sibling refreshed by
+                # another process.
+                auth_path = self._exact_pool_auth_path_for_entry(entry)
+                lock_key = self._codex_pool_refresh_lock_key(auth_path, entry.id)
+                lock_timeout = float(getattr(auth_mod, "AUTH_LOCK_TIMEOUT_SECONDS", 30.0))
+                with auth_mod._timed_codex_process_lock(lock_key, lock_timeout):
+                    with auth_mod._codex_refresh_file_lock(
+                        auth_path=auth_path,
+                        lock_key=lock_key,
+                        timeout_seconds=lock_timeout,
+                    ):
+                        current = self._read_pool_entry_exact(auth_path, entry.id) or entry
+                        if self._pool_entry_version(current) != self._pool_entry_version(entry):
+                            if not self._entry_needs_refresh(current):
+                                self._replace_entry(entry, current)
+                                return current
+                            entry = current
+
+                        attempted_version = self._pool_entry_version(entry)
+                        refresh_token = str(entry.refresh_token or "").strip()
+                        if not refresh_token:
+                            return None
+                        refreshed = auth_mod.refresh_codex_oauth_pure(
+                            entry.access_token,
+                            refresh_token,
+                        )
+                        updated = replace(
+                            entry,
+                            access_token=refreshed["access_token"],
+                            refresh_token=refreshed["refresh_token"],
+                            last_refresh=refreshed.get("last_refresh"),
+                            last_status=STATUS_OK,
+                            last_status_at=None,
+                            last_error_code=None,
+                            last_error_reason=None,
+                            last_error_message=None,
+                            last_error_reset_at=None,
+                        )
+                        persisted = self._update_pool_entry_exact(
+                            entry,
+                            expected_version=attempted_version,
+                            updater=lambda _current: updated.to_dict(),
+                            auth_path=auth_path,
+                        )
+                        self._replace_entry(entry, persisted)
+                        return persisted
             elif self.provider == "xai-oauth":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another
@@ -1181,6 +1323,23 @@ class CredentialPool:
                         self._current_id = None
                     self._persist()
                     return None
+            if self.provider == "openai-codex" and _is_manual_source(entry.source):
+                failed = replace(
+                    entry,
+                    last_status=STATUS_EXHAUSTED,
+                    last_status_at=time.time(),
+                    last_error_code=None,
+                    last_error_reason=getattr(exc, "code", None),
+                    last_error_message=str(exc) or None,
+                    last_error_reset_at=None,
+                )
+                persisted = self._update_pool_entry_exact(
+                    entry,
+                    expected_version=self._pool_entry_version(entry),
+                    updater=lambda _current: failed.to_dict(),
+                )
+                self._replace_entry(entry, persisted)
+                return None
             self._mark_exhausted(entry, None)
             return None
 

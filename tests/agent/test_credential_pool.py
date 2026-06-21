@@ -3012,6 +3012,148 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     assert refresh_calls["count"] == 1
 
 
+def test_codex_manual_device_code_refresh_adopts_rotated_entry_without_second_http(
+    tmp_path, monkeypatch
+):
+    """A stale waiter for the same manual entry should reread and skip HTTP refresh."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+    old_access = _jwt_with_claims({"exp": int(time.time()) + 3600})
+    new_access = _jwt_with_claims({"exp": int(time.time()) + 7200})
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "manual-one",
+                        "source": "manual:device_code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "access_token": old_access,
+                        "refresh_token": "refresh-old",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    pool_one = load_pool("openai-codex")
+    pool_two_stale = load_pool("openai-codex")
+    assert pool_one.select() is not None
+    assert pool_two_stale.select() is not None
+
+    refresh_calls = {"count": 0}
+
+    def _manual_refresh(access_token, refresh_token, *_args, **_kwargs):
+        refresh_calls["count"] += 1
+        assert refresh_token == "refresh-old"
+        return {
+            "access_token": new_access,
+            "refresh_token": "refresh-new",
+            "last_refresh": "2026-06-21T01:00:00Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _manual_refresh)
+
+    refreshed_one = pool_one.try_refresh_current()
+    refreshed_two = pool_two_stale.try_refresh_current()
+
+    assert refreshed_one is not None
+    assert refreshed_two is not None
+    assert refreshed_one.access_token == new_access
+    assert refreshed_two.access_token == new_access
+    assert refreshed_two.refresh_token == "refresh-new"
+    assert refresh_calls["count"] == 1
+
+
+def test_codex_manual_device_code_refresh_preserves_unrelated_updates(tmp_path, monkeypatch):
+    """Refreshing one manual entry must not rewrite a stale full pool snapshot."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "manual-one",
+                        "source": "manual:device_code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "access_token": "access-one-old",
+                        "refresh_token": "refresh-one-old",
+                    },
+                    {
+                        "id": "manual-two",
+                        "source": "manual:device_code",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "access_token": "access-two-old",
+                        "refresh_token": "refresh-two-old",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    pool_one = load_pool("openai-codex")
+    pool_two_stale = load_pool("openai-codex")
+    selected_one = pool_one.select()
+    assert selected_one is not None
+    assert selected_one.id == "manual-one"
+    pool_two_stale._current_id = "manual-two"
+
+    refresh_calls = []
+
+    def _manual_refresh(access_token, refresh_token, *_args, **_kwargs):
+        refresh_calls.append(refresh_token)
+        if refresh_token == "refresh-one-old":
+            return {
+                "access_token": "access-one-new",
+                "refresh_token": "refresh-one-new",
+                "last_refresh": "2026-06-21T01:00:00Z",
+            }
+        if refresh_token == "refresh-two-old":
+            return {
+                "access_token": "access-two-new",
+                "refresh_token": "refresh-two-new",
+                "last_refresh": "2026-06-21T02:00:00Z",
+            }
+        raise AssertionError(f"unexpected refresh token {refresh_token}")
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _manual_refresh)
+
+    refreshed_one = pool_one.try_refresh_current()
+    refreshed_two = pool_two_stale.try_refresh_current()
+
+    assert refreshed_one is not None
+    assert refreshed_two is not None
+    assert refreshed_one.access_token == "access-one-new"
+    assert refreshed_two.access_token == "access-two-new"
+    assert refresh_calls == ["refresh-one-old", "refresh-two-old"]
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    by_id = {
+        entry["id"]: entry
+        for entry in auth_payload["credential_pool"]["openai-codex"]
+    }
+    assert by_id["manual-one"]["access_token"] == "access-one-new"
+    assert by_id["manual-one"]["refresh_token"] == "refresh-one-new"
+    assert by_id["manual-two"]["access_token"] == "access-two-new"
+    assert by_id["manual-two"]["refresh_token"] == "refresh-two-new"
+
+
 def test_codex_manual_device_code_terminal_failure_does_not_clear_singleton(
     tmp_path, monkeypatch
 ):

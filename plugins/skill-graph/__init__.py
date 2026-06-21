@@ -895,7 +895,14 @@ def _format_terms(skill_name: str) -> str:
         if terms:
             term_lines = ["", "  Terms:"]
             for t in terms:
-                stats = f"s={t['sc']}/l={t['lc']}/ok={t['suc']}"
+                _sc, _lc, _suc = t['sc'], t['lc'], t['suc']
+                _eff = (_suc * 2 + _lc) / max(_sc * 3, 1)
+                _conf = 1 - __import__("math").pow(0.5, _sc / 5)
+                _adj = (_eff - 0.5) * 2
+                _th = _adj / (1 + abs(_adj) * 0.5)
+                _boost = 0.1 * _th * _conf
+                _sign = "+" if _boost >= 0 else ""
+                stats = f"s={_sc}/l={_lc}/ok={_suc}/b={_sign}{_boost:.3f}"
                 term_lines.append(
                     f"    {skill_name} ──({t['source']})──> {t['term']}  [{stats}]"
                 )
@@ -914,7 +921,13 @@ def _format_terms(skill_name: str) -> str:
         if rev:
             rev_lines = ["", "  Skills with this term:"]
             for sn, s, src, sc, lc, suc in rev:
-                rev_lines.append(f"    {sn:40s} ──({src})──> {skill_name}  [s={sc}/l={lc}/ok={suc}]")
+                _eff2 = (suc * 2 + lc) / max(sc * 3, 1)
+                _conf2 = 1 - __import__("math").pow(0.5, sc / 5)
+                _adj2 = (_eff2 - 0.5) * 2
+                _th2 = _adj2 / (1 + abs(_adj2) * 0.5)
+                _boost2 = 0.1 * _th2 * _conf2
+                _sign2 = "+" if _boost2 >= 0 else ""
+                rev_lines.append(f"    {sn:40s} ──({src})──> {skill_name}  [s={sc}/l={lc}/ok={suc}/b={_sign2}{_boost2:.3f}]")
             parts.append("\n".join(rev_lines))
 
         return "\n".join(parts) if parts else ""

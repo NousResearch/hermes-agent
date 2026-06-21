@@ -118,16 +118,37 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to.  Falls back to raw copy on failure.
+
+    Bounded so it can never hang the whole backup: a ``busy_timeout`` caps how
+    long we wait on a lock, and the copy runs page-wise with a progress guard so
+    a large DB under continuous concurrent writes (e.g. a live gateway writing a
+    1GB+ state.db) cannot restart its copy loop forever. On any timeout/lock
+    error we fall back to a raw file copy rather than blocking indefinitely.
     """
+    conn = None
+    backup_conn = None
     try:
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(dst))
-        conn.backup(backup_conn)
+        # mode=ro + a bounded busy_timeout: never wait forever on the writer's lock.
+        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30.0)
+        conn.execute("PRAGMA busy_timeout=30000")
+        backup_conn = sqlite3.connect(str(dst), timeout=30.0)
+        # Page-wise copy (1000 pages/step). sqlite3.backup restarts the in-flight
+        # step if the source is written mid-copy; small steps keep each restart
+        # cheap and let it actually converge instead of looping on a giant DB.
+        conn.backup(backup_conn, pages=1000, sleep=0.05)
         backup_conn.close()
+        backup_conn = None
         conn.close()
+        conn = None
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
+        for c in (backup_conn, conn):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
         try:
             shutil.copy2(src, dst)
             return True

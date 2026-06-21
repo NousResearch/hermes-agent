@@ -201,7 +201,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # MiniMax — official docs: 204,800 context for all models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api
     "minimax": 204800,
-    # GLM
+    # GLM — only 5.2 has 1M context; older models (GLM-4, GLM-5-turbo, etc.) are ~200k
+    "glm-5.2": 1000000,
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to

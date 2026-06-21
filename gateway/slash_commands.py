@@ -1183,6 +1183,7 @@ class GatewaySlashCommandsMixin:
                         if _cache_lock and _cache is not None:
                             with _cache_lock:
                                 cached_entry = _cache.get(_session_key)
+                        _switch_ok = False
                         if cached_entry and cached_entry[0] is not None:
                             try:
                                 cached_entry[0].switch_model(
@@ -1192,45 +1193,59 @@ class GatewaySlashCommandsMixin:
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
                                 )
+                                _switch_ok = True
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
 
-                        # Persist the new model to the session DB so the
-                        # dashboard shows the updated model (#34850).
-                        _sess_db = getattr(_self, "_session_db", None)
-                        if _sess_db is not None:
-                            try:
-                                _sess_entry = _self.session_store.get_or_create_session(
-                                    event.source
-                                )
-                                _sess_db.update_session_model(
-                                    _sess_entry.session_id, result.new_model
-                                )
-                            except Exception as exc:
-                                logger.debug(
-                                    "Failed to persist model switch to DB: %s", exc
-                                )
+                        if not _switch_ok:
+                            # switch_model rolled back the agent to the
+                            # previous model/provider/client.  Do NOT persist
+                            # the new model to the session DB or store
+                            # overrides — that would create a mismatch where
+                            # the DB says Model B but the agent is still on
+                            # Model A, causing the conversation to die on the
+                            # next turn.  See #50163.
+                            logger.warning(
+                                "Model switch to %s failed; keeping previous model %s",
+                                result.new_model, _cur_model,
+                            )
+                        else:
+                            # Persist the new model to the session DB so the
+                            # dashboard shows the updated model (#34850).
+                            _sess_db = getattr(_self, "_session_db", None)
+                            if _sess_db is not None:
+                                try:
+                                    _sess_entry = _self.session_store.get_or_create_session(
+                                        event.source
+                                    )
+                                    _sess_db.update_session_model(
+                                        _sess_entry.session_id, result.new_model
+                                    )
+                                except Exception as exc:
+                                    logger.debug(
+                                        "Failed to persist model switch to DB: %s", exc
+                                    )
 
-                        # Store model note + session override
-                        if not hasattr(_self, "_pending_model_notes"):
-                            _self._pending_model_notes = {}
-                        _self._pending_model_notes[_session_key] = (
-                            f"[Note: model was just switched from {_cur_model} to {result.new_model} "
-                            f"via {result.provider_label or result.target_provider}. "
-                            f"Adjust your self-identification accordingly.]"
-                        )
-                        _self._session_model_overrides[_session_key] = {
-                            "model": result.new_model,
-                            "provider": result.target_provider,
-                            "api_key": result.api_key,
-                            "base_url": result.base_url,
-                            "api_mode": result.api_mode,
-                        }
+                            # Store model note + session override
+                            if not hasattr(_self, "_pending_model_notes"):
+                                _self._pending_model_notes = {}
+                            _self._pending_model_notes[_session_key] = (
+                                f"[Note: model was just switched from {_cur_model} to {result.new_model} "
+                                f"via {result.provider_label or result.target_provider}. "
+                                f"Adjust your self-identification accordingly.]"
+                            )
+                            _self._session_model_overrides[_session_key] = {
+                                "model": result.new_model,
+                                "provider": result.target_provider,
+                                "api_key": result.api_key,
+                                "base_url": result.base_url,
+                                "api_mode": result.api_mode,
+                            }
 
-                        # Evict cached agent so the next turn creates a fresh
-                        # agent from the override rather than relying on the
-                        # stale cache signature to trigger a rebuild.
-                        _self._evict_cached_agent(_session_key)
+                            # Evict cached agent so the next turn creates a fresh
+                            # agent from the override rather than relying on the
+                            # stale cache signature to trigger a rebuild.
+                            _self._evict_cached_agent(_session_key)
 
                         # Persist to config (default) unless --session opted out,
                         # mirroring the text /model command path above so a picked
@@ -1389,6 +1404,7 @@ class GatewaySlashCommandsMixin:
                 with _cache_lock:
                     cached_entry = _cache.get(session_key)
 
+            _switch_ok = False
             if cached_entry and cached_entry[0] is not None:
                 try:
                     cached_entry[0].switch_model(
@@ -1398,45 +1414,57 @@ class GatewaySlashCommandsMixin:
                         base_url=result.base_url,
                         api_mode=result.api_mode,
                     )
+                    _switch_ok = True
                 except Exception as exc:
                     logger.warning("In-place model switch failed for cached agent: %s", exc)
 
-            # Persist the new model to the session DB so the dashboard
-            # shows the updated model (#34850).
-            _sess_db = getattr(self, "_session_db", None)
-            if _sess_db is not None:
-                try:
-                    _sess_entry = self.session_store.get_or_create_session(source)
-                    _sess_db.update_session_model(
-                        _sess_entry.session_id, result.new_model
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to persist model switch to DB: %s", exc
-                    )
+            if not _switch_ok:
+                # switch_model rolled back the agent to the previous
+                # model/provider/client.  Do NOT persist the new model to
+                # the session DB or store overrides — that would create a
+                # mismatch where the DB says Model B but the agent is still
+                # on Model A, causing the conversation to die.  See #50163.
+                logger.warning(
+                    "Model switch to %s failed; keeping previous model %s",
+                    result.new_model, current_model,
+                )
+            else:
+                # Persist the new model to the session DB so the dashboard
+                # shows the updated model (#34850).
+                _sess_db = getattr(self, "_session_db", None)
+                if _sess_db is not None:
+                    try:
+                        _sess_entry = self.session_store.get_or_create_session(source)
+                        _sess_db.update_session_model(
+                            _sess_entry.session_id, result.new_model
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Failed to persist model switch to DB: %s", exc
+                        )
 
-            # Store a note to prepend to the next user message so the model
-            # knows about the switch (avoids system messages mid-history).
-            if not hasattr(self, "_pending_model_notes"):
-                self._pending_model_notes = {}
-            self._pending_model_notes[session_key] = (
-                f"[Note: model was just switched from {current_model} to {result.new_model} "
-                f"via {result.provider_label or result.target_provider}. "
-                f"Adjust your self-identification accordingly.]"
-            )
+                # Store a note to prepend to the next user message so the model
+                # knows about the switch (avoids system messages mid-history).
+                if not hasattr(self, "_pending_model_notes"):
+                    self._pending_model_notes = {}
+                self._pending_model_notes[session_key] = (
+                    f"[Note: model was just switched from {current_model} to {result.new_model} "
+                    f"via {result.provider_label or result.target_provider}. "
+                    f"Adjust your self-identification accordingly.]"
+                )
 
-            # Store session override so next agent creation uses the new model
-            self._session_model_overrides[session_key] = {
-                "model": result.new_model,
-                "provider": result.target_provider,
-                "api_key": result.api_key,
-                "base_url": result.base_url,
-                "api_mode": result.api_mode,
-            }
+                # Store session override so next agent creation uses the new model
+                self._session_model_overrides[session_key] = {
+                    "model": result.new_model,
+                    "provider": result.target_provider,
+                    "api_key": result.api_key,
+                    "base_url": result.base_url,
+                    "api_mode": result.api_mode,
+                }
 
-            # Evict cached agent so the next turn creates a fresh agent from the
-            # override rather than relying on cache signature mismatch detection.
-            self._evict_cached_agent(session_key)
+                # Evict cached agent so the next turn creates a fresh agent from the
+                # override rather than relying on cache signature mismatch detection.
+                self._evict_cached_agent(session_key)
 
             # Persist to config (default) unless --session opted out
             if persist_global:

@@ -10792,11 +10792,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract
         # guild_id and _send_voice_reply() plays audio in the voice channel.
         from types import SimpleNamespace
+        # Inject the bound text channel's per-channel prompt so voice input
+        # receives the same ephemeral LLM instructions as text input in that
+        # channel. Mirrors the text path, which resolves this at event-build
+        # time; resolve the parent too so a thread inherits its parent's
+        # channel_prompts entry.
+        voice_channel = adapter._client.get_channel(text_ch_id)
+        voice_parent_id = str(getattr(voice_channel, "parent_id", "") or "") or None
         event = MessageEvent(
             source=source,
             text=transcript,
             message_type=MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+            channel_prompt=adapter._resolve_channel_prompt(str(text_ch_id), voice_parent_id),
         )
 
         await adapter.handle_message(event)

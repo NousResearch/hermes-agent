@@ -16240,6 +16240,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                # Skip notification if gateway is draining or restart requested
+                if self._draining or self._restart_requested:
+                    continue
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available. Default
                 # heartbeat is terse: elapsed + current tool. Verbose

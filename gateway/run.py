@@ -56,6 +56,7 @@ from gateway.startup_context import (
     discord_context_channel_id,
     render_reply_chain_payload,
 )
+from gateway.tool_policy import select_gateway_toolsets
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -9611,7 +9612,12 @@ class GatewayRunner:
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = select_gateway_toolsets(
+                platform=platform_key,
+                configured_toolsets=_get_platform_tools(user_config, platform_key),
+                user_text=prompt,
+                auto_skill=None,
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -11685,7 +11691,12 @@ class GatewayRunner:
             from hermes_cli.tools_config import _get_platform_tools
             from run_agent import AIAgent
 
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = select_gateway_toolsets(
+                platform=platform_key,
+                configured_toolsets=_get_platform_tools(user_config, platform_key),
+                user_text=getattr(event, "text", None),
+                auto_skill=getattr(event, "auto_skill", None),
+            )
             agent_cfg_local = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
             model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -13749,7 +13760,12 @@ class GatewayRunner:
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = select_gateway_toolsets(
+            platform=platform_key,
+            configured_toolsets=_get_platform_tools(user_config, platform_key),
+            user_text=message,
+            auto_skill=getattr(event, "auto_skill", None),
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

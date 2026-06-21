@@ -423,8 +423,9 @@ class SessionManager:
     def _persist(self, state: SessionState) -> None:
         """Write session state to the database.
 
-        Creates the session record if it doesn't exist, then replaces all
-        stored messages with the current in-memory history.
+        Creates the session record if it doesn't exist, then replaces the live
+        (active) stored messages with the current in-memory history while
+        leaving any soft-archived rows (e.g. compaction-archived turns) intact.
         """
         db = self._get_db()
         if db is None:
@@ -464,7 +465,18 @@ class SessionManager:
             # Replace stored messages with current history atomically so a
             # mid-rewrite failure rolls back and the previously persisted
             # conversation is preserved (salvaged from #13675).
-            db.replace_messages(state.session_id, state.history)
+            #
+            # active_only=True: the AIAgent shares this session id and its
+            # DB (see _make_agent), so when its context grows past the
+            # compression threshold it runs in-place compaction via
+            # archive_and_compact, which soft-archives the pre-compaction
+            # turns (active=0, compacted=1) to keep them on disk and
+            # discoverable by session_search (#38763). A full-history replace
+            # here would DELETE those archived rows the moment the turn ends,
+            # silently wiping the transcript of every long-running ACP
+            # session. Replacing only the live (active=1) rows keeps the
+            # archived history intact while still refreshing the active set.
+            db.replace_messages(state.session_id, state.history, active_only=True)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 

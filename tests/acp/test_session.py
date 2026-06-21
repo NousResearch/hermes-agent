@@ -216,6 +216,52 @@ class TestListAndCleanup:
         assert messages[0]["content"] == "original"
         assert isinstance(messages[0].get("timestamp"), (int, float))
 
+    def test_save_session_preserves_compaction_archived_history(self, manager):
+        """A per-turn persist must not wipe the agent's archived transcript.
+
+        The ACP AIAgent shares its session id and DB with the SessionManager,
+        so when it compacts in-place it calls archive_and_compact(), which
+        soft-archives the pre-compaction turns (active=0, compacted=1) to keep
+        them on disk and discoverable. The very next save_session() used to run
+        a full-history replace_messages() whose unconditional DELETE wiped those
+        archived rows. _persist now replaces only the active rows, so the
+        archived pre-compaction transcript survives.
+        """
+        state = manager.create_session()
+        state.history = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+        ]
+        manager.save_session(state.session_id)
+
+        db = manager._get_db()
+        # Simulate the agent compacting in place: the live turns become
+        # archived (active=0, compacted=1) and a summary becomes the new live
+        # head — exactly what conversation_compression.archive_and_compact does
+        # against the shared session id.
+        compacted = [{"role": "user", "content": "[summary of earlier turns]"}]
+        db.archive_and_compact(state.session_id, compacted)
+
+        # The next ACP turn ends and persists the (now compacted) history plus a
+        # fresh exchange.
+        state.history = compacted + [
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "second answer"},
+        ]
+        manager.save_session(state.session_id)
+
+        # Live load: only the compacted/active set, no archived rows.
+        active = db.get_messages_as_conversation(state.session_id)
+        active_contents = [m["content"] for m in active]
+        assert "first question" not in active_contents
+        assert "second answer" in active_contents
+
+        # Full load: the pre-compaction transcript is still on disk.
+        all_rows = db.get_messages(state.session_id, include_inactive=True)
+        all_contents = [r["content"] for r in all_rows]
+        assert "first question" in all_contents
+        assert "first answer" in all_contents
+
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
         s2 = manager.create_session()

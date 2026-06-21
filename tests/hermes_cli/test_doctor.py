@@ -972,7 +972,15 @@ def _run_doctor_with_healthy_oauth_fallback(
 
 
 @pytest.mark.parametrize(
-    ("env_key", "bad_key", "failing_host", "gemini_oauth_status", "minimax_oauth_status", "xai_oauth_status", "unexpected_issue"),
+    (
+        "env_key",
+        "bad_key",
+        "failing_host",
+        "gemini_oauth_status",
+        "minimax_oauth_status",
+        "xai_oauth_status",
+        "unexpected_issue",
+    ),
     [
         (
             "GOOGLE_API_KEY",
@@ -1025,13 +1033,78 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
         xai_oauth_status=xai_oauth_status,
     )
 
-    assert "invalid API key" in out
+    assert "OAuth path healthy; direct API key skipped" in out
     assert unexpected_issue not in out
 
 
 def test_has_healthy_oauth_fallback_returns_false_for_unknown_provider():
     from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
     assert _has_healthy_oauth_fallback_for_apikey_provider("unknown-provider") is False
+
+
+def test_has_healthy_oauth_fallback_recognizes_google_ai_studio_label(monkeypatch):
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(
+        _auth_mod,
+        "get_gemini_oauth_auth_status",
+        lambda: {"logged_in": True},
+    )
+
+    from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
+
+    assert _has_healthy_oauth_fallback_for_apikey_provider("Google AI Studio") is True
+
+
+def test_run_doctor_npm_audit_omits_dev_dependencies(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    (project / "node_modules").mkdir()
+    (project / "scripts" / "whatsapp-bridge").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(
+        doctor_mod,
+        "_safe_which",
+        lambda cmd: "/usr/bin/npm" if cmd == "npm" else None,
+    )
+    monkeypatch.setattr(doctor_mod, "_check_gateway_service_linger", lambda issues: None)
+    monkeypatch.setattr(doctor_mod, "_check_s6_supervision", lambda issues: None)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    audit_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["/usr/bin/npm", "audit"]:
+            audit_calls.append(cmd)
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout='{"metadata":{"vulnerabilities":{"critical":0,"high":0,"moderate":0}}}',
+                stderr="",
+            )
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert audit_calls
+    assert all("--omit=dev" in call for call in audit_calls)
 
 
 class TestHasHealthyOauthFallbackForXai:

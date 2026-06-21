@@ -455,6 +455,227 @@ class TestUnifiedCronjobTool:
 
 
 # =========================================================================
+# runtime_cap_seconds — per-job wall-clock cap
+# =========================================================================
+#
+# These tests piggy-back on the TestUnifiedCronjobTool fixture above —
+# new class so the assertions stay grouped, but the same _setup_cron_dir
+# autouse fixture isolates state per test.
+
+
+class TestRuntimeCapSeconds:
+    """Tool boundary for ``runtime_cap_seconds``: accept, persist, reject."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def test_create_persists_valid_cap(self):
+        """A sensible positive int is accepted, stored, and round-trips through list."""
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                runtime_cap_seconds=300,
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["runtime_cap_seconds"] == 300
+
+        stored = get_job(created["job_id"])
+        assert stored["runtime_cap_seconds"] == 300
+
+        # _format_job exposes it on list output too (so the gateway can
+        # serve it back to UI clients for display).
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["runtime_cap_seconds"] == 300
+
+    def test_create_without_cap_omits_field_on_output(self):
+        """Omitting the cap leaves the field out of list output (NULL = no cap)."""
+        created = json.loads(
+            cronjob(action="create", prompt="Check", schedule="every 1h")
+        )
+        assert created["success"] is True
+        # The job_format hides None values to keep list output compact.
+        assert "runtime_cap_seconds" not in created["job"]
+        listing = json.loads(cronjob(action="list"))
+        assert "runtime_cap_seconds" not in listing["jobs"][0]
+
+    def test_create_rejects_negative(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=-1,
+            )
+        )
+        assert result["success"] is False
+        assert "positive" in result["error"]
+
+    def test_create_rejects_zero(self):
+        # 0 is a clear-on-update sentinel, but on create it makes no sense
+        # (storing a 0s cap that would fire instantly). The validator says
+        # "omit the field entirely" — assert that guidance is in the error.
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=0,
+            )
+        )
+        assert result["success"] is False
+        assert "positive" in result["error"]
+        assert "Omit" in result["error"]
+
+    def test_create_rejects_float(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=3.5,
+            )
+        )
+        assert result["success"] is False
+        assert "integer" in result["error"]
+
+    def test_create_rejects_bool(self):
+        # bool is a subclass of int — without an explicit guard, True would
+        # silently become a 1s cap. Pin the rejection.
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=True,
+            )
+        )
+        assert result["success"] is False
+        assert "boolean" in result["error"]
+
+    def test_create_rejects_above_ceiling(self):
+        # 24h + 1 second.
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=86401,
+            )
+        )
+        assert result["success"] is False
+        assert "ceiling" in result["error"] or "86400" in result["error"]
+
+    def test_create_accepts_exact_ceiling(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=86400,
+            )
+        )
+        assert result["success"] is True
+        assert result["job"]["runtime_cap_seconds"] == 86400
+
+    def test_update_replaces_cap(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=120,
+            )
+        )
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                runtime_cap_seconds=900,
+            )
+        )
+        assert updated["success"] is True
+        assert updated["job"]["runtime_cap_seconds"] == 900
+
+    def test_update_with_zero_clears_existing_cap(self):
+        """Sentinel: ``runtime_cap_seconds=0`` on update means "clear the cap"."""
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                runtime_cap_seconds=120,
+            )
+        )
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                runtime_cap_seconds=0,
+            )
+        )
+        assert updated["success"] is True
+        assert "runtime_cap_seconds" not in updated["job"]
+        # And the underlying store really did go to None — not, say, "0".
+        stored = get_job(created["job_id"])
+        assert stored.get("runtime_cap_seconds") is None
+
+    def test_update_rejects_negative(self):
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h")
+        )
+        result = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                runtime_cap_seconds=-30,
+            )
+        )
+        assert result["success"] is False
+        assert "positive" in result["error"]
+
+    def test_update_rejects_above_ceiling(self):
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h")
+        )
+        result = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                runtime_cap_seconds=99999999,
+            )
+        )
+        assert result["success"] is False
+
+    def test_storage_normalizer_clamps_oversize_for_direct_callers(self):
+        """Direct ``create_job`` callers (skipping the tool) get clamped, not crashed.
+
+        The tool boundary rejects above-ceiling values, but kanban swarm helpers
+        and hand-written scripts reach ``create_job`` directly. The defensive
+        normalizer there clamps oversize values to the 24h ceiling so jobs.json
+        is always sane.
+        """
+        from cron.jobs import create_job, get_job
+
+        job = create_job(
+            prompt="direct",
+            schedule="every 1h",
+            runtime_cap_seconds=10_000_000,
+        )
+        stored = get_job(job["id"])
+        assert stored["runtime_cap_seconds"] == 86400
+
+
+# =========================================================================
 # Per-job model/provider override resolution
 # =========================================================================
 

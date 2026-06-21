@@ -15,11 +15,11 @@ import contextvars
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -44,59 +44,6 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
-
-
-def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
-    """Return a compact one-line failure message for chat delivery.
-
-    Full details stay in the cron output directory and the logs. Chat should
-    show the operator what broke without dumping provider JSON, retry noise, or
-    stack traces into the delivery channel.
-    """
-    job_name = job.get("name") or job.get("id") or "cron job"
-    text = (error or "unknown error").strip()
-    lower = text.lower()
-
-    # Provider/API failures are the common noisy path. Keep these short.
-    if "429" in text or "rate limit" in lower or "usage limit" in lower:
-        reason = "rate limit"
-        if "weekly usage limit" in lower:
-            reason = "weekly usage limit"
-        elif "quota" in lower:
-            reason = "quota limit"
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider {reason}. "
-            "Fallback chain was exhausted or unavailable. "
-            "Full details saved in cron output."
-        )
-
-    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider timeout. "
-            "Fallback chain was exhausted or unavailable. "
-            "Full details saved in cron output."
-        )
-
-    # Match authentication/authorization wording at a word boundary and the
-    # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
-    # not trip a misleading auth message.
-    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider authentication error. "
-            "Full details saved in cron output."
-        )
-
-    # Strip common exception wrappers and collapse provider payloads. Bound
-    # the input first so a multi-KB provider blob cannot slow the
-    # substitutions.
-    cleaned = re.sub(
-        r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*",
-        "", text[:2000],
-    )
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if len(cleaned) > 180:
-        cleaned = cleaned[:177].rstrip() + "..."
-    return f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -710,27 +657,6 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _confirm_adapter_delivery(send_result) -> bool:
-    """Return True only if ``send_result`` unambiguously confirms delivery.
-
-    A live adapter that returns ``None`` (e.g. a swallowed exception, a busy
-    platform, or a code path that returns early without producing a
-    ``SendResult``) must NOT be treated as success — doing so causes the
-    scheduler to log ``"delivered to <chat> via live adapter"`` while the
-    gateway never actually sees the message (#47056).
-
-    Likewise, an object missing a ``success`` attribute (e.g. a bare ``dict``
-    or a partial mock) is a contract violation: it does not actually tell us
-    whether the send succeeded.  Require an explicit, truthy ``success``
-    attribute to count as confirmed.
-    """
-    if send_result is None:
-        return False
-    if not hasattr(send_result, "success"):
-        return False
-    return bool(getattr(send_result, "success"))
-
-
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -744,25 +670,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     """
     targets = _resolve_delivery_targets(job)
     if not targets:
-        deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
-        if deliver_value == "local":
-            return None  # local-only jobs don't deliver — not a failure
-        # deliver=origin with no resolvable origin and no configured home
-        # channels: treat as local rather than reporting an error.  CLI-created
-        # jobs never capture a {platform, chat_id} origin, so failing here would
-        # make every CLI `deliver=origin` (or auto-detect) job emit a spurious
-        # "no delivery target resolved" error on every run (#43014).  The output
-        # is still persisted in last_output for `cron list`/resume.
-        if deliver_value == "origin":
-            logger.info(
-                "Job '%s': deliver=origin but no origin or home channels — "
-                "skipping delivery (output saved in last_output)",
-                job.get("name", job.get("id", "?")),
-            )
-            return None
-        msg = f"no delivery target resolved for deliver={deliver_value}"
-        logger.warning("Job '%s': %s", job["id"], msg)
-        return msg
+        if job.get("deliver", "local") != "local":
+            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
+            logger.warning("Job '%s': %s", job["id"], msg)
+            return msg
+        return None  # local-only jobs don't deliver — not a failure
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -845,226 +757,66 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
-        target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            # Telegram three-mode topic routing (#22773): a private chat
-            # (positive chat_id) with a NUMERIC topic id is a Bot API Direct
-            # Messages topic and must be addressed via ``direct_messages_topic_id``
-            # — a bare ``message_thread_id`` is rejected/mis-routed by Bot API
-            # 10.0 and lands in General.  Forum/supergroup targets (negative
-            # chat_id) and named DM-topic lanes keep the default thread_id
-            # handling.  Compute the routed metadata ONCE so both the text send
-            # (via DeliveryRouter) and the media send use the same routing.
-            from gateway.delivery import (
-                DeliveryRouter,
-                DeliveryTarget,
-                _looks_like_int,
-                _looks_like_telegram_private_chat_id,
-            )
-
-            is_private_dm_topic = (
-                platform == Platform.TELEGRAM
-                and thread_id is not None
-                and _looks_like_telegram_private_chat_id(str(chat_id))
-                and _looks_like_int(str(thread_id))
-            )
-            if is_private_dm_topic:
-                # Routed via direct_messages_topic_id (mode 2), no bare thread_id.
-                route_thread_id = None
-                route_metadata = {
-                    "direct_messages_topic_id": str(thread_id),
-                    "job_id": job["id"],
-                }
-                # Media metadata mirrors the text routing so attachments land in
-                # the same DM topic instead of the General lane (#22773).
-                media_metadata = {"direct_messages_topic_id": str(thread_id)}
-            else:
-                route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"]}
-                media_metadata = {"thread_id": thread_id} if thread_id else None
-
+            send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
-                # Send cleaned text (MEDIA tags stripped) — not the raw content.
-                # Route through the gateway's DeliveryRouter so the live send
-                # gets the same platform-specific routing as live messages —
-                # in particular Telegram's three-mode topic routing.  The
-                # standalone cron path lacked this, so DM-topic cron deliveries
-                # landed in the General topic or were rejected by Bot API 10.0
-                # (#22773).
+                # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
-                timed_out = False
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
-
-                    router = DeliveryRouter(config, adapters)
-                    route_target = DeliveryTarget(
-                        platform=platform,
-                        chat_id=str(chat_id),
-                        thread_id=route_thread_id,
-                        is_explicit=True,
-                    )
-                    # Pass thread routing via the target (not a bare metadata
-                    # "thread_id"): the router only applies its Telegram DM-topic
-                    # detection when "thread_id"/"message_thread_id" are absent
-                    # from metadata, deriving the routing from target.thread_id
-                    # or the explicit direct_messages_topic_id above.
                     future = safe_schedule_threadsafe(
-                        router._deliver_to_platform(
-                            route_target,
-                            text_to_send,
-                            route_metadata,
-                        ),
+                        runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
                     )
                     if future is None:
                         adapter_ok = False
-                        target_errors.append("live adapter event loop scheduling failed")
                     else:
-                        send_result = None
-                        timeout_handled = False
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
-                            # #38922: a slow confirmation does NOT necessarily
-                            # mean the send failed — but we must distinguish two
-                            # cases via future.cancel()'s return value:
-                            #
-                            #   cancel() == False -> the coroutine was already
-                            #     running on the gateway loop when the timeout
-                            #     fired; the request is in flight on the wire and
-                            #     cannot be un-sent.  Re-sending via standalone
-                            #     would be a guaranteed DUPLICATE, so treat it as
-                            #     delivered (assume-delivered).
-                            #
-                            #   cancel() == True -> the scheduled callback never
-                            #     started executing (loop wedged/backlogged for
-                            #     the full 60s), so nothing was sent.  We MUST
-                            #     fall through to the standalone path or the
-                            #     message is silently dropped (worse than a
-                            #     duplicate).
-                            cancelled = future.cancel()
-                            if cancelled:
-                                msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
-                                    "timed out before the coroutine was dispatched"
-                                )
-                                logger.warning(
-                                    "Job '%s': %s, falling back to standalone",
-                                    job["id"], msg,
-                                )
-                                target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
-                                timeout_handled = True
-                            else:
-                                timed_out = True
-                                timeout_handled = True
-                                logger.warning(
-                                    "Job '%s': live adapter send to %s:%s timed out "
-                                    "after 60s; already dispatched (in flight), "
-                                    "assuming delivered (skipping standalone fallback "
-                                    "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
-                                )
-                        except Exception as ex:
-                            # A real send error (not a slow confirmation) — fall
-                            # through to the standalone path so the message is
-                            # still delivered.
-                            target_errors.append(f"live adapter send failed: {ex}")
+                            future.cancel()
                             raise
+                        if send_result and not getattr(send_result, "success", True):
+                            err = getattr(send_result, "error", "unknown")
+                            logger.warning(
+                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                                job["id"], platform_name, chat_id, err,
+                            )
+                            adapter_ok = False  # fall through to standalone path
+                        elif (
+                            send_result
+                            and thread_id
+                            and getattr(send_result, "raw_response", None)
+                            and send_result.raw_response.get("thread_fallback")
+                        ):
+                            requested_thread_id = send_result.raw_response.get("requested_thread_id") or thread_id
+                            msg = (
+                                f"configured thread_id {requested_thread_id} for "
+                                f"{platform_name}:{chat_id} was not found; delivered without thread_id"
+                            )
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
 
-                        if timeout_handled:
-                            # The timeout branch above already decided the
-                            # outcome (assume-delivered if in flight, or
-                            # adapter_ok=False to fall through if never
-                            # dispatched).  send_result is None, so skip the
-                            # confirmation/thread-fallback inspection below.
-                            pass
-                        else:
-                            # _deliver_to_platform returns either a SendResult
-                            # (.success attr) or, when the silence-narration
-                            # filter drops the message, a plain dict
-                            # {"success": True, "delivered": False, ...}.
-                            # Normalize both shapes so a getattr default doesn't
-                            # misread a dict, and so a None / success-less object
-                            # is NOT counted as delivered (#47056).
-                            if isinstance(send_result, dict):
-                                send_success = bool(send_result.get("success", False))
-                                send_raw_response = send_result.get("raw_response")
-                            else:
-                                send_success = _confirm_adapter_delivery(send_result)
-                                send_raw_response = getattr(send_result, "raw_response", None)
-
-                            if not send_success:
-                                if isinstance(send_result, dict):
-                                    err = send_result.get("error", "unknown")
-                                    shape = "dict"
-                                elif send_result is not None:
-                                    err = getattr(send_result, "error", None)
-                                    shape = type(send_result).__name__
-                                else:
-                                    err = "no response from adapter"
-                                    shape = "None"
-                                msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
-                                    f"returned unconfirmed result ({shape}, error={err})"
-                                )
-                                logger.warning(
-                                    "Job '%s': %s, falling back to standalone",
-                                    job["id"], msg,
-                                )
-                                target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
-                            elif (
-                                send_raw_response
-                                and thread_id
-                                and send_raw_response.get("thread_fallback")
-                            ):
-                                requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
-                                msg = (
-                                    f"configured thread_id {requested_thread_id} for "
-                                    f"{platform_name}:{chat_id} was not found; delivered without thread_id"
-                                )
-                                logger.warning("Job '%s': %s", job["id"], msg)
-                                delivery_errors.append(msg)
-
-                # Send extracted media files as native attachments via the live
-                # adapter, using the same DM-topic-aware routing as the text send
-                # (#22773 — media previously used a bare thread_id and landed in
-                # the General lane for private DM topics).  Skip on an in-flight
-                # confirmation timeout: the gateway loop is contended, so each
-                # media send would also block its 30s budget, and the text
-                # payload is already assumed delivered (#38922).  Record the
-                # skipped attachments so the drop is visible rather than silently
-                # lost.
-                if adapter_ok and not timed_out and media_files:
+                # Send extracted media files as native attachments via the live adapter
+                if adapter_ok and media_files:
                     _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
-                        media_metadata,
+                        send_metadata,
                         loop,
                         job,
                         platform=platform,
                     )
-                elif timed_out and media_files:
-                    msg = (
-                        f"{len(media_files)} media attachment(s) not delivered to "
-                        f"{platform_name}:{chat_id} (live adapter confirmation timed out)"
-                    )
-                    logger.warning("Job '%s': %s", job["id"], msg)
-                    delivery_errors.append(msg)
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
-                err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
-                if not any(err_msg in err for err in target_errors):
-                    target_errors.append(err_msg)
                 logger.warning(
-                    "Job '%s': %s, falling back to standalone",
-                    job["id"], err_msg,
+                    "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
+                    job["id"], platform_name, chat_id, e,
                 )
 
         if not delivered:
@@ -1084,15 +836,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                target_errors.extend([msg])
-                delivery_errors.extend(target_errors)
+                delivery_errors.append(msg)
                 continue
 
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                target_errors.extend([msg])
-                delivery_errors.extend(target_errors)
+                delivery_errors.append(msg)
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
@@ -1158,10 +908,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
-    Subprocess environment is passed through ``_sanitize_subprocess_env`` so
-    provider credentials and other Hermes-managed secrets are not inherited
-    (SECURITY.md §2.3), matching terminal and MCP child processes.
-
     Args:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
@@ -1223,8 +969,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [sys.executable, str(path)]
 
     try:
-        from tools.environments.local import _sanitize_subprocess_env
-
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
@@ -1232,7 +976,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -1835,11 +1578,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        # Model resolution precedence: per-job override > HERMES_MODEL env >
-        # config.yaml ``model:`` (string or ``{default: ...}``). The per-job
-        # value is intentionally re-read from storage every tick so a
-        # ``cronjob action=update model=...`` after a failed run takes effect
-        # on the next tick — there is no in-memory cache.
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
@@ -1850,43 +1588,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if os.path.exists(_cfg_path):
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
-                # Managed scope: a scheduled job must honor administrator-pinned
-                # model / reasoning / toolsets / provider_routing too. This loader
-                # builds its own dict, so overlay managed values via the shared
-                # helper (fail-open, no-op when no managed scope).
-                try:
-                    from hermes_cli import managed_scope
-                    _cfg = managed_scope.apply_managed_overlay(_cfg)
-                except Exception:
-                    pass
                 _cfg = _expand_env_vars(_cfg)
-                # Coerce null/missing to {} so a falsy default never
-                # clobbers an already-resolved env value with ``None``.
-                _model_cfg = _cfg.get("model") or {}
+                _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        # Mirror the CLI/oneshot resolution: prefer ``default``,
-                        # accept a ``model`` alias, overwrite only when truthy.
-                        _default = _model_cfg.get("default") or _model_cfg.get("model")
-                        if _default:
-                            model = _default
+                        model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
-
-        # Fail fast if no model resolved from job / env / config.yaml: an empty
-        # model otherwise reaches the provider as an opaque 400 (#23979).
-        if not (isinstance(model, str) and model.strip()):
-            raise RuntimeError(
-                f"Cron job '{job_name}' has no model configured "
-                f"(job.model={job.get('model')!r}, "
-                f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
-                "config.yaml model.default missing or empty). "
-                f"Set a per-job model via "
-                f"`cronjob action=update job_id={job_id} model=<name>` or set a "
-                "default with `hermes model <name>`."
-            )
 
         # Apply IPv4 preference if configured.
         try:
@@ -2055,6 +1765,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
+        #
+        # Optional per-job ``runtime_cap_seconds`` wall-clock cap runs
+        # in parallel with the inactivity poll: a positive int caps wall-clock
+        # time for a single tick regardless of how active the agent is.
+        # ``None`` / missing falls through to the inactivity-only behaviour.
         _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
         if _raw_cron_timeout:
             try:
@@ -2068,6 +1783,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        # Per-job wall-clock cap. We read it defensively because legacy
+        # jobs.json records pre-date the field and a hand-edited value could
+        # be anything; positive int = enforce, anything else = disabled.
+        _raw_runtime_cap = job.get("runtime_cap_seconds")
+        _runtime_cap_seconds: Optional[float]
+        try:
+            _runtime_cap_seconds = (
+                float(_raw_runtime_cap)
+                if _raw_runtime_cap is not None and not isinstance(_raw_runtime_cap, bool)
+                and float(_raw_runtime_cap) > 0
+                else None
+            )
+        except (TypeError, ValueError):
+            _runtime_cap_seconds = None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
@@ -2076,35 +1805,86 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _runtime_cap_timeout = False
+        _wallclock_start = time.monotonic()
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
+            # Pick a polling cadence small enough that ``runtime_cap_seconds``
+            # values like 5s aren't blown by 4s+ of inherent latency in the
+            # outer wait loop. Without this, a 5s cap on a 5s poll would only
+            # trip at ~10s. Cap the floor at 0.2s to avoid spinning, and the
+            # ceiling at the inactivity-poll default (5s).
+            if _runtime_cap_seconds is not None:
+                _poll = max(0.2, min(_POLL_INTERVAL, _runtime_cap_seconds / 4.0))
+            else:
+                _poll = _POLL_INTERVAL
+
+            if _cron_inactivity_limit is None and _runtime_cap_seconds is None:
+                # Neither limit configured — wait directly without polling.
                 result = _cron_future.result()
             else:
                 result = None
                 while True:
                     done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
+                        {_cron_future}, timeout=_poll,
                     )
                     if done:
                         result = _cron_future.result()
                         break
+                    # Wall-clock cap check (per-job, independent of activity).
+                    if _runtime_cap_seconds is not None:
+                        _elapsed = time.monotonic() - _wallclock_start
+                        if _elapsed >= _runtime_cap_seconds:
+                            _runtime_cap_timeout = True
+                            break
                     # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+                    if _cron_inactivity_limit is not None:
+                        _idle_secs = 0.0
+                        if hasattr(agent, "get_activity_summary"):
+                            try:
+                                _act = agent.get_activity_summary()
+                                _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            except Exception:
+                                pass
+                        if _idle_secs >= _cron_inactivity_limit:
+                            _inactivity_timeout = True
+                            break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+        if _runtime_cap_timeout:
+            # Wall-clock cap fired — interrupt the agent (graceful) and raise
+            # a TimeoutError that the existing failure formatter renders the
+            # same way as the inactivity path. The shutdown(cancel_futures=
+            # True) above acts as the SIGTERM equivalent for the worker
+            # thread once the agent's run loop notices the interrupt and
+            # exits; we don't need to OS-signal because cron jobs run in a
+            # ThreadPoolExecutor, not a subprocess.
+            #
+            # ``_runtime_cap_seconds`` is guaranteed non-None here — the loop
+            # only flips ``_runtime_cap_timeout=True`` inside the
+            # ``if _runtime_cap_seconds is not None`` branch — but Pyright's
+            # narrowing doesn't survive the loop, so we re-assert it before
+            # int()'ing for the message.
+            assert _runtime_cap_seconds is not None
+            _cap_for_msg = int(_runtime_cap_seconds)
+            _elapsed_seconds = int(time.monotonic() - _wallclock_start)
+            logger.error(
+                "Job '%s' exceeded runtime_cap_seconds=%s (elapsed %ss); "
+                "interrupting agent.",
+                job_name, _cap_for_msg, _elapsed_seconds,
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt(
+                    f"Cron job exceeded runtime_cap_seconds={_cap_for_msg}s"
+                )
+            raise TimeoutError(
+                f"cron job '{job_name}' exceeded "
+                f"runtime_cap_seconds={_cap_for_msg} "
+                f"(elapsed {_elapsed_seconds}s)"
+            )
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
@@ -2258,82 +2038,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
-    """Run ONE due job end-to-end: execute → save output → deliver → mark.
-
-    This is the shared firing body extracted from ``tick``'s per-job closure so
-    that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
-    Chronos) run the identical sequence — no duplicated correctness.
-
-    It does NOT decide whether the job is due, claim it, or compute the next
-    run — those are the caller's concern (``tick`` advances ``next_run_at``
-    under the file lock before dispatch; an external provider claims via the
-    store CAS). This function only fires the given job once.
-
-    Returns True if the job was processed (even if the job itself failed —
-    failure is recorded via ``mark_job_run``), False only if processing raised.
-    """
-    try:
-        success, output, final_response, error = run_job(job)
-
-        output_file = save_job_output(job["id"], output)
-        if verbose:
-            logger.info("Output saved to: %s", output_file)
-
-        # Deliver the final response to the origin/target chat.
-        # If the agent responded with [SILENT], skip delivery (but
-        # output is already saved above).  Failed jobs always deliver.
-        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-        # Treat whitespace-only final responses the same as empty
-        # responses: do not deliver a blank message, and let the
-        # empty-response guard below mark the run as a soft failure.
-        should_deliver = bool(deliver_content.strip())
-        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-            should_deliver = False
-
-        delivery_error = None
-        if should_deliver:
-            try:
-                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-            except Exception as de:
-                delivery_error = str(de)
-                logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-        # Treat empty final_response as a soft failure so last_status
-        # is not "ok" — the agent ran but produced nothing useful.
-        # (issue #8585)
-        if success and not final_response.strip():
-            success = False
-            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        return True
-
-    except Exception as e:
-        logger.error("Error processing job %s: %s", job['id'], e)
-        mark_job_run(job["id"], False, str(e))
-        return False
-
-
-def _notify_provider_jobs_changed() -> None:
-    """Best-effort: tell the active scheduler provider the job set changed.
-
-    Called by the consumer surfaces (model tool / CLI / REST) AFTER a
-    successful store mutation (create/update/remove/pause/resume) so an external
-    provider (Chronos) can re-provision/cancel the affected one-shot via NAS.
-    No-op for the built-in (it re-reads jobs.json each tick), so the default
-    path is unchanged. Lives here (not in cron/jobs.py) to keep the store free
-    of provider imports — avoids an import cycle and keeps jobs.py low-coupling.
-    Never raises into the caller.
-    """
-    try:
-        from cron.scheduler_provider import resolve_cron_scheduler
-        resolve_cron_scheduler().on_jobs_changed()
-    except Exception as e:
-        logger.debug("on_jobs_changed notify failed: %s", e)
-
-
 def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
     Check and run all due jobs.
@@ -2412,11 +2116,48 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             )
 
         def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end. Thin wrapper around the shared
-            module-level ``run_one_job`` so ``tick`` and external providers
-            (Chronos ``fire_due``) use the identical execute→save→deliver→mark
-            body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            """Run one due job end-to-end: execute, save, deliver, mark."""
+            try:
+                success, output, final_response, error = run_job(job)
+
+                output_file = save_job_output(job["id"], output)
+                if verbose:
+                    logger.info("Output saved to: %s", output_file)
+
+                # Deliver the final response to the origin/target chat.
+                # If the agent responded with [SILENT], skip delivery (but
+                # output is already saved above).  Failed jobs always deliver.
+                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                # Treat whitespace-only final responses the same as empty
+                # responses: do not deliver a blank message, and let the
+                # empty-response guard below mark the run as a soft failure.
+                should_deliver = bool(deliver_content.strip())
+                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    should_deliver = False
+
+                delivery_error = None
+                if should_deliver:
+                    try:
+                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    except Exception as de:
+                        delivery_error = str(de)
+                        logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                # Treat empty final_response as a soft failure so last_status
+                # is not "ok" — the agent ran but produced nothing useful.
+                # (issue #8585)
+                if success and not final_response.strip():
+                    success = False
+                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                return True
+
+            except Exception as e:
+                logger.error("Error processing job %s: %s", job['id'], e)
+                mark_job_run(job["id"], False, str(e))
+                return False
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
@@ -2515,12 +2256,6 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
             def _on_done(_f: concurrent.futures.Future) -> None:
                 _remaining[0] -= 1
-                try:
-                    _exc = _f.exception()
-                    if _exc is not None:
-                        logger.error("Cron job future failed in async mode: %s", _exc, exc_info=(type(_exc), _exc, _exc.__traceback__))
-                except Exception:
-                    pass
                 if _remaining[0] <= 0:
                     _sweep_mcp_orphans()
 

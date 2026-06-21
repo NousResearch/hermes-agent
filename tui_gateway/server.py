@@ -10813,17 +10813,47 @@ def _(rid, params: dict) -> dict:
         if action == "list":
             return _ok(rid, json.loads(cronjob(action="list")))
         if action == "add":
-            return _ok(
-                rid,
-                json.loads(
-                    cronjob(
-                        action="create",
-                        name=jid,
-                        schedule=params.get("schedule", ""),
-                        prompt=params.get("prompt", ""),
-                    )
-                ),
-            )
+            # Forward the optional runtime_cap_seconds field when present.
+            # The tool itself validates (positive int, ≤24h); we just pipe
+            # through so a stale/malicious client can't bypass that gate.
+            _add_kwargs = {
+                "action": "create",
+                "name": jid,
+                "schedule": params.get("schedule", ""),
+                "prompt": params.get("prompt", ""),
+            }
+            if "runtime_cap_seconds" in params:
+                _add_kwargs["runtime_cap_seconds"] = params.get("runtime_cap_seconds")
+            return _ok(rid, json.loads(cronjob(**_add_kwargs)))
+        if action == "update":
+            # New action: edit the safely-mutable fields the underlying tool
+            # already supports. The tool's
+            # update branch only applies fields explicitly supplied — passing
+            # the empty/sentinel value for any field is meaningful (e.g.
+            # ``runtime_cap_seconds=0`` clears the cap), so we forward exactly
+            # the keys the caller sent, not a None-stripped subset.
+            _update_kwargs: dict = {"action": "update", "job_id": jid}
+            for _field in (
+                "prompt",
+                "schedule",
+                "name",
+                "deliver",
+                "skills",
+                "skill",
+                "model",
+                "provider",
+                "base_url",
+                "script",
+                "context_from",
+                "enabled_toolsets",
+                "workdir",
+                "no_agent",
+                "repeat",
+                "runtime_cap_seconds",
+            ):
+                if _field in params:
+                    _update_kwargs[_field] = params.get(_field)
+            return _ok(rid, json.loads(cronjob(**_update_kwargs)))
         if action in {"remove", "pause", "resume"}:
             return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
         return _err(rid, 4016, f"unknown cron action: {action}")

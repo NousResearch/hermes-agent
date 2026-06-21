@@ -12,7 +12,6 @@ import logging
 import shutil
 import tempfile
 import threading
-import time
 import os
 import re
 import uuid
@@ -52,20 +51,6 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
-# Heartbeat file the in-process ticker touches on every loop iteration. The
-# gateway process and the (separate) ``hermes cron status`` process share it
-# so status can tell whether the ticker THREAD is alive, not just whether the
-# gateway PROCESS exists — a ticker that dies silently inside a live gateway
-# would otherwise report healthy (#32612, #32895).
-TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
-# Last tick that completed WITHOUT raising. Distinguishing this from the plain
-# heartbeat lets status detect a ticker that is alive but failing every tick.
-TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
-# Default ticker loop interval (seconds). The single source of truth shared by
-# the in-process ticker (cron/scheduler_provider.py) and the staleness
-# threshold in `hermes cron status` (hermes_cli/cron.py), so the two never
-# drift apart.
-TICKER_INTERVAL_SECONDS = 60
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
@@ -409,31 +394,6 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
-def _timezone_offset_mismatch(stored: datetime, current: datetime) -> bool:
-    """Return True when a stored aware timestamp uses a different UTC offset.
-
-    Naive stored timestamps return False: they carry no offset to compare, and
-    are normalized by ``_ensure_aware`` instead — they intentionally never take
-    the offset-repair path.
-    """
-    if stored.tzinfo is None or current.tzinfo is None:
-        return False
-    return stored.utcoffset() != current.utcoffset()
-
-
-def _stored_wall_clock_is_future(stored: datetime, current: datetime) -> bool:
-    """Return True when the stored local wall-clock time has not arrived yet.
-
-    Cron schedules express local wall-clock intent. If Hermes/system local time
-    changes after next_run_at was persisted, an old offset can make a future
-    wall-clock run look due at the converted absolute time (for example
-    21:00+10 becomes 13:00+02). Comparing naive wall-clock values lets us
-    distinguish that migration case from a genuinely missed run whose scheduled
-    wall time has already passed.
-    """
-    return stored.replace(tzinfo=None) > current.replace(tzinfo=None)
-
-
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,
@@ -537,78 +497,6 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         return next_run.isoformat()
 
     return None
-
-
-# =============================================================================
-# Ticker heartbeat (liveness signal for `hermes cron status`)
-# =============================================================================
-
-def _atomic_write_epoch(path: Path) -> None:
-    """Atomically write the current epoch time to ``path``.
-
-    Uses the same tmpfile + ``atomic_replace`` pattern as ``save_jobs`` so a
-    concurrent reader in another process (``hermes cron status``) never sees a
-    torn/truncated file. Best-effort: failures are swallowed by callers.
-    """
-    ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".hb_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-def record_ticker_heartbeat(success: bool = False) -> None:
-    """Record a ticker liveness signal, and optionally a successful-tick signal.
-
-    The ticker calls this once per loop iteration. ``success=True`` additionally
-    bumps the *last successful tick* marker. We track two distinct signals so
-    `hermes cron status` can tell a thread that is merely *alive and looping*
-    (heartbeat fresh, success stale) from one that is actually *firing jobs*
-    (both fresh) — a ticker stuck failing every tick would otherwise keep the
-    plain heartbeat fresh and falsely report healthy (#32612, #32895).
-
-    Best-effort: a write failure must never disrupt the tick loop.
-    """
-    try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
-    except Exception:
-        pass
-    if success:
-        try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
-        except Exception:
-            pass
-
-
-def _epoch_file_age(path: Path) -> Optional[float]:
-    try:
-        raw = path.read_text(encoding="utf-8").strip()
-        return max(0.0, time.time() - float(raw))
-    except Exception:
-        return None
-
-
-def get_ticker_heartbeat_age() -> Optional[float]:
-    """Seconds since the ticker loop last iterated, or None if unknown.
-
-    None = heartbeat file missing/unreadable (older build, never ran, or a
-    torn read). Callers treat None as "cannot determine", not "dead".
-    """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
-
-
-def get_ticker_success_age() -> Optional[float]:
-    """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
 
 
 # =============================================================================
@@ -721,6 +609,46 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+# Maximum runtime cap a single cron tick may request (24h). Anything longer
+# is almost certainly a mistake — and unbounded runtimes defeat the cap's
+# purpose, since the inactivity limit already exists for "really long but
+# making progress" jobs. Tool boundary rejects > ceiling; this defensive
+# normalizer clamps anything that slips past direct callers.
+_RUNTIME_CAP_SECONDS_CEILING = 24 * 60 * 60
+
+
+def _normalize_runtime_cap_seconds(value: Any) -> Optional[int]:
+    """Coerce a user-supplied ``runtime_cap_seconds`` value to the stored shape.
+
+    Returns ``None`` (no cap) for any of: ``None``, ``""``, ``0``, negatives,
+    or a value the caller can't represent as an integer. Positive integers
+    are clamped to ``_RUNTIME_CAP_SECONDS_CEILING`` so a hand-written 99999999
+    can't push the wall-clock loop into effectively-infinite territory.
+
+    Why this lives next to ``create_job`` instead of in ``tools/cronjob_tools``:
+    direct Python callers (legacy tests, kanban swarm helpers, hand-written
+    scripts) bypass the tool and go straight at ``create_job``/``update_job``.
+    The tool boundary already rejects bad values with a friendly error; this
+    is the storage-side belt-and-suspenders that guarantees the persisted
+    field is either ``None`` or a sane positive int.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, bool):
+        # bool is a subclass of int — guard against ``runtime_cap_seconds=True``
+        # being silently stored as 1 second.
+        return None
+    if n <= 0:
+        return None
+    if n > _RUNTIME_CAP_SECONDS_CEILING:
+        return _RUNTIME_CAP_SECONDS_CEILING
+    return n
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -738,6 +666,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    runtime_cap_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -782,6 +711,14 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        runtime_cap_seconds: Optional wall-clock cap on a single tick of this
+                job. When ``None`` (default) only the process-wide inactivity
+                limit (``HERMES_CRON_TIMEOUT``) applies. When a positive int,
+                the scheduler interrupts and SIGTERMs the agent after roughly
+                that many seconds of wall time and records the run as a
+                ``TimeoutError``. Mirrors kanban's ``max_runtime_seconds``
+                semantics; the underlying tool clamps the value to a 24h
+                ceiling at the API boundary.
 
     Returns:
         The created job dict
@@ -816,6 +753,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_runtime_cap = _normalize_runtime_cap_seconds(runtime_cap_seconds)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -869,6 +807,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "runtime_cap_seconds": normalized_runtime_cap,
     }
 
     with _jobs_lock():
@@ -959,6 +898,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # Normalize runtime_cap_seconds on the same belt-and-suspenders
+            # principle as create_job(): the tool boundary already rejects
+            # bad values, but direct callers (legacy tests, hand-written
+            # scripts) reach update_job() without that gate. Empty/None/0/
+            # negative all clear the cap; integers >24h are clamped.
+            if "runtime_cap_seconds" in updates:
+                updates["runtime_cap_seconds"] = _normalize_runtime_cap_seconds(
+                    updates["runtime_cap_seconds"]
+                )
 
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
@@ -1088,9 +1037,6 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
-                # Clear any external-fire claim so a re-armed recurring job can
-                # be claimed again on its next fire (Phase 4C CAS).
-                job["fire_claim"] = None
                 
                 # Increment completed count
                 if job.get("repeat"):
@@ -1172,71 +1118,6 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
-def _machine_id() -> str:
-    """Stable-ish identifier for claim attribution/debugging (NOT correctness).
-
-    Uses ``HERMES_MACHINE_ID`` if set, else hostname + pid. The CAS correctness
-    comes from the file lock + the fresh-claim check, not from this value.
-    """
-    explicit = os.getenv("HERMES_MACHINE_ID", "").strip()
-    if explicit:
-        return explicit
-    try:
-        import socket
-        host = socket.gethostname()
-    except Exception:
-        host = "unknown"
-    return f"{host}:{os.getpid()}"
-
-
-def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
-    """Atomically claim a job for a single external 'fire' (multi-machine
-    at-most-once). Returns True iff THIS caller won the claim.
-
-    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
-    external scheduler (Chronos) signals a job is due across N gateway replicas:
-    exactly one wins. Single-machine deployments always win.
-
-    Under the file lock: reject if the job is missing/disabled/paused. If a
-    fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
-    Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
-    ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
-    re-delivery for the old time can't re-fire). One-shots keep ``next_run_at``
-    but the fresh ``fire_claim`` blocks a duplicate retry for the same fire.
-    ``mark_job_run`` clears the claim on completion so a re-armed recurring job
-    is claimable again next fire.
-
-    The stale-claim TTL means a machine that crashed after claiming but before
-    completing doesn't wedge the job forever — after the TTL another fire can
-    reclaim it.
-    """
-    with _jobs_lock():
-        jobs = load_jobs()
-        for job in jobs:
-            if job["id"] != job_id:
-                continue
-            if not job.get("enabled", True) or job.get("state") == "paused":
-                return False
-            now = _hermes_now()
-            existing = job.get("fire_claim")
-            if existing:
-                try:
-                    claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
-                    if (now - claimed_at).total_seconds() < claim_ttl_seconds:
-                        return False  # someone holds a fresh claim
-                except Exception:
-                    pass  # malformed claim → overwrite
-            job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
-            kind = job.get("schedule", {}).get("kind")
-            if kind in {"cron", "interval"}:
-                nxt = compute_next_run(job["schedule"], now.isoformat())
-                if nxt:
-                    job["next_run_at"] = nxt
-            save_jobs(jobs)
-            return True
-        return False
-
-
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
@@ -1301,50 +1182,10 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
 
-        raw_next_run_dt = datetime.fromisoformat(next_run)
-        schedule = job.get("schedule", {})
-        kind = schedule.get("kind")
-
-        next_run_dt = _ensure_aware(raw_next_run_dt)
-        # Migration repair: a cron job persists next_run_at as an absolute
-        # instant, but the cron expr describes local wall-clock intent. If the
-        # configured/system timezone changed after persistence, the stored
-        # instant's offset no longer matches now's, and its converted time can
-        # look due hours early (21:00+10 -> 13:00+02). When the stored *wall
-        # clock* is still in the future, recompute from the schedule so we fire
-        # at the intended local time instead of early-then-again.
-        #
-        # TRADE-OFF: this cannot distinguish a config/host TZ migration from a
-        # legitimate DST offset change. A DST boundary that satisfies all four
-        # conditions will recompute (and thus SKIP the pending occurrence, no
-        # catch-up) rather than fire it. Accepted: in the pure-migration case
-        # the recompute lands on the same wall-clock time later the same period,
-        # and DST-boundary collisions with a still-future stored wall clock are
-        # rare relative to the double-fire bug this prevents (#28934).
-        if (
-            kind == "cron"
-            and next_run_dt <= now
-            and _timezone_offset_mismatch(raw_next_run_dt, now)
-            and _stored_wall_clock_is_future(raw_next_run_dt, now)
-        ):
-            new_next = compute_next_run(schedule, now.isoformat())
-            if new_next:
-                logger.info(
-                    "Job '%s' next_run_at offset changed (%s -> %s). "
-                    "Recomputing cron run to preserve local wall-clock intent: %s",
-                    job.get("name", job["id"]),
-                    raw_next_run_dt.utcoffset(),
-                    now.utcoffset(),
-                    new_next,
-                )
-                for rj in raw_jobs:
-                    if rj["id"] == job["id"]:
-                        rj["next_run_at"] = new_next
-                        needs_save = True
-                        break
-                continue
-
+        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
         if next_run_dt <= now:
+            schedule = job.get("schedule", {})
+            kind = schedule.get("kind")
 
             # For recurring jobs, check if the scheduled time is stale
             # (gateway was down and missed the window). Fast-forward to

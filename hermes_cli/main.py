@@ -593,6 +593,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_qwen_oauth,
     _model_flow_minimax_oauth,
     _model_flow_google_gemini_cli,
+    _model_flow_google_antigravity,
     _model_flow_custom,
     _model_flow_azure_foundry,
     _model_flow_named_custom,
@@ -3521,14 +3522,6 @@ _DEFAULT_QWEN_PORTAL_MODELS = [
     "qwen3-coder-plus",
     "qwen3-coder",
 ]
-
-
-
-
-
-
-
-
 
 
 def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -90,6 +91,7 @@ _DESTRUCTIVE_TERMS = (
     "format disk",
     "factory reset",
     "reset the firewall",
+    "firewall reset",
     "password reset",
     "rotate credentials",
     "disable account",
@@ -139,10 +141,35 @@ _EXPLOIT_TERMS = (
     "scan",
     "nmap",
 )
+_THREAT_HUNT_TERMS = (
+    "apt-style",
+    "advanced persistent threat",
+    "threat actor",
+    "threat hunting",
+    "threat hunt",
+    "intrusion activity",
+    "attacker activity",
+    "suspicious activity",
+)
+_THREAT_HUNT_UNSCOPED_TERMS = (
+    "apt-style",
+    "advanced persistent threat",
+    "intrusion activity",
+    "attacker activity",
+)
+_THREAT_HUNT_ACTION_TERMS = (
+    "track",
+    "analyze",
+    "investigate",
+    "monitor",
+    "detect",
+    "hunt",
+    "triage",
+)
 _LAB_SCOPE_TERMS = (
     "owned",
     "lab",
-    "vm ",
+    "vm",
     "proxmox",
     "breaking circuits",
     "bc-owned",
@@ -205,10 +232,21 @@ def _classify_route(text: str) -> tuple[CyberRoute, str]:
         return CyberRoute.CREDENTIALS_SENSITIVE, "credential or secret handling request"
     if _contains_any(text, _MALWARE_TERMS):
         return CyberRoute.MALWARE_RE, "malware or reverse-engineering request"
+
+    is_threat_hunt = _contains_any(text, _THREAT_HUNT_TERMS)
+    is_lab_scoped = _contains_scope_term(text)
+    if is_threat_hunt and is_lab_scoped:
+        return CyberRoute.CYBER_LAB, "lab-scoped threat-hunting request"
+    if _contains_any(text, _THREAT_HUNT_UNSCOPED_TERMS) and _contains_any_word_or_phrase(
+        text,
+        _THREAT_HUNT_ACTION_TERMS,
+    ):
+        return CyberRoute.CYBER_LAB, "cyber-sensitive threat investigation request needing scope tracking"
+
     if _contains_any(text, _OSINT_TERMS):
         return CyberRoute.OSINT, "OSINT or public-source investigation"
-    if _contains_any(text, _EXPLOIT_TERMS) and _contains_any(text, _LAB_SCOPE_TERMS):
-        return CyberRoute.CYBER_LAB, "authorized lab security testing request"
+    if _contains_any(text, _EXPLOIT_TERMS) and is_lab_scoped:
+        return CyberRoute.CYBER_LAB, "lab-scoped security testing request"
     if _contains_any(text, _EXPLOIT_TERMS):
         return CyberRoute.CYBER_LAB, "cyber-sensitive testing request needing scope tracking"
     return CyberRoute.GENERAL, "ordinary general task"
@@ -232,6 +270,22 @@ def _provider_preference(route: CyberRoute, override: str | None) -> ProviderPre
 
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
+
+
+def _contains_scope_term(text: str) -> bool:
+    return any(_contains_word_or_phrase(text, term) for term in _LAB_SCOPE_TERMS)
+
+
+def _contains_any_word_or_phrase(text: str, needles: tuple[str, ...]) -> bool:
+    return any(_contains_word_or_phrase(text, term) for term in needles)
+
+
+def _contains_word_or_phrase(text: str, needle: str) -> bool:
+    term = str(needle or "").strip()
+    if not term:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
+
 
 _LOCAL_PROVIDER_NAMES = {"ollama", "lmstudio", "llama.cpp", "llamacpp", "local", "vllm", "text-generation-webui"}
 _OPEN_WEIGHT_MODEL_TERMS = (

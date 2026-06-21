@@ -2,6 +2,8 @@
 
 AgentCyber break-glass approvals are for rare S5 actions on owned or explicitly approved assets. They do not make destructive work autonomous. They create a short-lived, exact-action approval that the S5 gate can verify before one scoped tool call.
 
+Standalone AgentCyber runs should use the repo-local `scripts/agentcyber` wrapper from `/home/kbun/Desktop/hermes-agentcyber`. The wrapper keeps approvals, config, and audit artifacts inside the dedicated AgentCyber boundary instead of the default Hermes home/profile. Shell examples below assume `cd /home/kbun/Desktop/hermes-agentcyber` first.
+
 ## When to use this
 
 Use break-glass only when all are true:
@@ -28,7 +30,8 @@ Do not use break-glass for unknown third-party targets, vague operator intent, b
 Check AgentCyber health:
 
 ```bash
-uv run --frozen hermes agentcyber status --json
+cd /home/kbun/Desktop/hermes-agentcyber
+scripts/agentcyber status --json
 ```
 
 Confirm the target is in the authorized asset registry. Built-in BC assets include:
@@ -45,7 +48,7 @@ If the target is not covered, add a scoped asset entry first. Do not use break-g
 Dry-run first. This prints the approval payload but does not write it:
 
 ```bash
-uv run --frozen hermes agentcyber breakglass create \
+scripts/agentcyber breakglass create \
   --tool terminal \
   --args-json '{"command":"printf '\''[DRY RUN] password reset 192.168.1.120\\n'\''"}' \
   --operator kbun \
@@ -66,8 +69,8 @@ Review:
 After reviewing the dry-run output, write the approval:
 
 ```bash
-STORE=/tmp/agentcyber-breakglass.jsonl
-APPROVAL_JSON=$(uv run --frozen hermes agentcyber breakglass create \
+STORE="$PWD/.agentcyber-home/agentcyber/breakglass.jsonl"
+APPROVAL_JSON=$(scripts/agentcyber breakglass create \
   --tool terminal \
   --args-json '{"command":"printf '\''[DRY RUN] password reset 192.168.1.120\\n'\''"}' \
   --operator kbun \
@@ -76,11 +79,7 @@ APPROVAL_JSON=$(uv run --frozen hermes agentcyber breakglass create \
   --store "$STORE" \
   --apply \
   --json)
-APPROVAL_ID=$(python3 - <<'PY' <<<"$APPROVAL_JSON"
-import json, sys
-print(json.load(sys.stdin)["approval_id"])
-PY
-)
+APPROVAL_ID=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["approval_id"])' <<<"$APPROVAL_JSON")
 printf 'approval id: %s\n' "$APPROVAL_ID"
 ```
 
@@ -101,15 +100,15 @@ If you change the command after approval creation, the S5 gate must reject it.
 
 ## Audit-enabled rehearsal
 
-Use a temporary `HERMES_HOME` so the rehearsal does not touch production audit logs:
+Use a temporary standalone `AGENTCYBER_HOME` so the wrapper-owned `HERMES_HOME` and audit logs stay outside production/default Hermes state:
 
 ```bash
 TMP_HOME=$(mktemp -d)
 STORE="$TMP_HOME/breakglass.jsonl"
-export HERMES_HOME="$TMP_HOME"
+export AGENTCYBER_HOME="$TMP_HOME"
 export HERMES_CYBER_AUDIT=true
 
-APPROVAL_JSON=$(uv run --frozen hermes agentcyber breakglass create \
+APPROVAL_JSON=$(scripts/agentcyber breakglass create \
   --tool terminal \
   --args-json '{"command":"printf '\''[DRY RUN] password reset 192.168.1.120\\n'\''"}' \
   --operator kbun \
@@ -124,14 +123,14 @@ Then evaluate the gate and write an audit event from the same environment. The e
 
 - gate: `S5`
 - allowed: `true`
-- audit log exists at `$HERMES_HOME/logs/cyber_audit.jsonl`
+- audit log exists at `$AGENTCYBER_HOME/logs/cyber_audit.jsonl`
 - audit record includes `breakglass_approval_id`
 - audit record redacts `approval_token` and other secret-looking keys
 
 ## List approvals
 
 ```bash
-uv run --frozen hermes agentcyber breakglass list --store "$STORE"
+scripts/agentcyber breakglass list --store "$STORE"
 ```
 
 The list view shows metadata only. It should not print raw secret values.
@@ -139,7 +138,7 @@ The list view shows metadata only. It should not print raw secret values.
 ## Revoke an approval
 
 ```bash
-uv run --frozen hermes agentcyber breakglass revoke "$APPROVAL_ID" --store "$STORE"
+scripts/agentcyber breakglass revoke "$APPROVAL_ID" --store "$STORE"
 ```
 
 Revocation is append-only. A later record marks the same approval id revoked. After revocation, policy validation must fail closed.

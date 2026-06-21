@@ -48,11 +48,32 @@ def test_access_recovery_phrases_with_lab_hosts_are_breakglass():
         assert decision.requires_hosted_secret_confirmation is True
 
 
+def test_threat_hunt_operator_phrase_routes_to_local_lab_without_false_positive():
+    threat_hunt = classify_cyber_route("track APT-style activity in my BC lab")
+    assert threat_hunt.route == CyberRoute.CYBER_LAB
+    assert threat_hunt.provider_preference == ProviderPreference.LOCAL_OPEN_WEIGHT
+    assert threat_hunt.requires_hosted_secret_confirmation is False
+    assert "lab-scoped" in threat_hunt.reason
+
+    assert classify_cyber_route("Discuss suspicious activity reporting policy.").route == CyberRoute.GENERAL
+    assert classify_cyber_route("Discuss suspicious activity monitoring policy.").route == CyberRoute.GENERAL
+    assert classify_cyber_route("Discuss how banks monitor suspicious activity under reporting policy.").route == CyberRoute.GENERAL
+    assert classify_cyber_route("Write fiction with a threat actor collaboration scene.").route == CyberRoute.GENERAL
+    assert classify_cyber_route("Write detective fiction with a threat actor scene.").route == CyberRoute.GENERAL
+    assert classify_cyber_route("Make a soundtrack for a threat actor collaboration scene.").route == CyberRoute.GENERAL
+    assert classify_cyber_route("Write fiction where detectives hunt a threat actor collaboration scene.").route == CyberRoute.GENERAL
+
+
 def test_malware_exploit_osint_and_destructive_routes_are_distinct():
     assert classify_cyber_route("Analyze this worm sample in the sandbox.").route == CyberRoute.MALWARE_RE
+    malware = classify_cyber_route("analyze this malware sample offline in the lab")
+    assert malware.route == CyberRoute.MALWARE_RE
+    assert malware.provider_preference == ProviderPreference.LOCAL_OPEN_WEIGHT
     assert classify_cyber_route("Test the exploit against owned lab VM 112.").route == CyberRoute.CYBER_LAB
+
     assert classify_cyber_route("Collect OSINT on this public company domain.").route == CyberRoute.OSINT
     assert classify_cyber_route("Wipe the disk and reset the firewall on the lab box.").route == CyberRoute.DESTRUCTIVE_HIGH_RISK
+    assert classify_cyber_route("please do a firewall reset on the lab box").route == CyberRoute.DESTRUCTIVE_HIGH_RISK
 
 
 def test_explicit_operator_overrides_adjust_provider_preference_without_hiding_route():

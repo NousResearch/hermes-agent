@@ -112,6 +112,11 @@ docs/superpowers/*
 # logs, and per-session caches are never artifacts of the codebase.
 .hermes/
 
+# AgentCyber standalone runtime homes are local operator state. The repo-local
+# launcher defaults to .agentcyber-home/ so repair smoke checks do not touch the
+# default ~/.hermes runtime.
+.agentcyber-home*/
+
 # Desktop/bootstrap install marker written into the managed checkout root by the
 # bootstrap installer. It is Hermes-managed runtime state, never a code change —
 # ignore it so `hermes update`'s `git stash push --include-untracked` does not

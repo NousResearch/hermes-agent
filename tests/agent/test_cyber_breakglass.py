@@ -90,6 +90,45 @@ def test_store_create_get_revoke_and_validate(tmp_path):
     ).allowed is False
 
 
+def test_store_jsonl_redacts_secret_values_and_input_approval_tokens(tmp_path):
+    store = BreakGlassStore(tmp_path / "breakglass.jsonl")
+    embedded_token = "sk-" + "testredactiontoken000000000000"
+    function_args = {
+        "command": "printf " + embedded_token + " 192.168.1.120",
+        "password": "raw-password-value",
+        "api_key": "raw-api-key-value",
+        "nested": {"credential": "raw-nested-credential"},
+        "approval_token": "bg_input_token_should_not_persist",
+    }
+
+    approval = store.create(
+        tool_name="terminal",
+        function_args=function_args,
+        gate="S5",
+        asset_matches=("bc-lab-lan",),
+        operator="kbun",
+        reason="owned lab recovery",
+        ttl_minutes=15,
+        now=_now(),
+    )
+
+    raw_jsonl = store.path.read_text(encoding="utf-8")
+    assert approval.approval_id in raw_jsonl
+    assert "bg_input_token_should_not_persist" not in raw_jsonl
+    assert "raw-password-value" not in raw_jsonl
+    assert "raw-api-key-value" not in raw_jsonl
+    assert "raw-nested-credential" not in raw_jsonl
+    assert embedded_token not in raw_jsonl
+    loaded = store.get(approval.approval_id)
+    assert loaded is not None
+    assert loaded.redacted_args == {
+        "api_key": "[REDACTED]",
+        "command": "printf [REDACTED] 192.168.1.120",
+        "nested": {"credential": "[REDACTED]"},
+        "password": "[REDACTED]",
+    }
+
+
 def test_validate_rejects_expired_mismatched_and_unknown(tmp_path):
     store = BreakGlassStore(tmp_path / "breakglass.jsonl")
     args = {"command": "password reset 192.168.1.120"}

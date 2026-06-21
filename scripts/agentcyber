@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Standalone AgentCyber launcher.
+#
+# This wrapper is intentionally repo-local: it runs the Cyber Edition checkout
+# with a dedicated HERMES_HOME so default ~/.hermes state is not mutated.
+
+set -euo pipefail
+
+_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+_repo_root="$(cd -- "$_script_dir/.." && pwd)"
+_agentcyber_home="${AGENTCYBER_HOME:-$_repo_root/.agentcyber-home}"
+
+if [ -n "${HOME:-}" ]; then
+  _home_check="$(python3 - "$_agentcyber_home" "$HOME/.hermes" <<'PY'
+from pathlib import Path
+import sys
+
+candidate = Path(sys.argv[1]).expanduser().resolve(strict=False)
+default = Path(sys.argv[2]).expanduser().resolve(strict=False)
+try:
+    candidate.relative_to(default)
+except ValueError:
+    print("outside")
+else:
+    print("inside")
+PY
+)"
+  if [ "$_home_check" = "inside" ]; then
+    echo "error: AGENTCYBER_HOME must not point at default ~/.hermes or its profiles" >&2
+    exit 2
+  fi
+fi
+
+for _raw_arg in "$@"; do
+  case "$_raw_arg" in
+    --profile|-p|--profile=*)
+      echo "error: scripts/agentcyber is standalone and does not accept --profile/-p" >&2
+      exit 2
+      ;;
+  esac
+done
+
+_translate_args() {
+  if [ "$#" -eq 0 ]; then
+    return 0
+  fi
+
+  case "$1" in
+    status)
+      shift
+      printf '%s\0' "agentcyber" "status" "$@"
+      ;;
+    setup|init)
+      shift
+      printf '%s\0' "agentcyber" "setup" "$@"
+      ;;
+    breakglass)
+      shift
+      printf '%s\0' "agentcyber" "breakglass" "$@"
+      ;;
+    chat)
+      shift
+      printf '%s\0' "chat" "$@"
+      ;;
+    hermes)
+      shift
+      printf '%s\0' "$@"
+      ;;
+    *)
+      printf '%s\0' "$@"
+      ;;
+  esac
+}
+
+_print_runtime_env=false
+if [ "${1:-}" = "--print-runtime-env" ]; then
+  _print_runtime_env=true
+  shift
+fi
+
+_translated=()
+while IFS= read -r -d '' _arg; do
+  _translated+=("$_arg")
+done < <(_translate_args "$@")
+
+if [ "$_print_runtime_env" = true ]; then
+  python3 - "$_repo_root" "$_agentcyber_home" "${_translated[@]}" <<'PY'
+import json
+import sys
+
+repo_root = sys.argv[1]
+hermes_home = sys.argv[2]
+argv = sys.argv[3:]
+print(json.dumps({"repo_root": repo_root, "hermes_home": hermes_home, "argv": argv}, sort_keys=True))
+PY
+  exit 0
+fi
+
+mkdir -p -- "$_agentcyber_home"
+export HERMES_HOME="$_agentcyber_home"
+export HERMES_AGENTCYBER_STANDALONE=1
+cd -- "$_repo_root"
+
+exec uv run --frozen hermes "${_translated[@]}"

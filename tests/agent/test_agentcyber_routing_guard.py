@@ -1,5 +1,6 @@
 """Tests for concrete AgentCyber routing guard and S0-S5 gates."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -165,6 +166,57 @@ def test_execution_gate_rejects_mismatched_breakglass_approval(tmp_path):
     assert "fingerprint mismatch" in decision.reason
 
 
+def test_execution_gate_rejects_expired_and_revoked_s5_breakglass_approvals(tmp_path):
+    store = BreakGlassStore(tmp_path / "breakglass.jsonl")
+    command_args = {"command": "password reset 192.168.1.120"}
+    config = {
+        "agent_cyber": {
+            "include_builtin_bc_assets": True,
+            "execution_gates": {"breakglass_store": str(store.path)},
+        }
+    }
+    expired = store.create(
+        tool_name="terminal",
+        function_args=command_args,
+        gate="S5",
+        asset_matches=("bc-lab-lan",),
+        operator="kbun",
+        reason="owned lab recovery",
+        ttl_minutes=1,
+        now=datetime(2000, 1, 1, tzinfo=timezone.utc),
+    )
+    revoked = store.create(
+        tool_name="terminal",
+        function_args=command_args,
+        gate="S5",
+        asset_matches=("bc-lab-lan",),
+        operator="kbun",
+        reason="owned lab recovery",
+        ttl_minutes=15,
+    )
+    store.revoke(revoked.approval_id)
+
+    expired_decision = evaluate_execution_gate(
+        "terminal",
+        {**command_args, "approval_token": expired.approval_id},
+        config=config,
+    )
+    revoked_decision = evaluate_execution_gate(
+        "terminal",
+        {**command_args, "approval_token": revoked.approval_id},
+        config=config,
+    )
+
+    assert expired_decision.gate == "S5"
+    assert expired_decision.allowed is False
+    assert "expired" in expired_decision.reason
+    assert expired_decision.approval_id == expired.approval_id
+    assert revoked_decision.gate == "S5"
+    assert revoked_decision.allowed is False
+    assert "revoked" in revoked_decision.reason
+    assert revoked_decision.approval_id == revoked.approval_id
+
+
 def test_registered_cyber_tools_have_intentional_gate_classification():
     config = {"agent_cyber": {"include_builtin_bc_assets": True}}
 
@@ -180,6 +232,70 @@ def test_registered_cyber_tools_have_intentional_gate_classification():
     scan = evaluate_execution_gate("network_scan", {"target": "192.168.1.120"}, config=config)
     assert scan.gate == "S2"
     assert scan.allowed is True
+
+    owned_lab_scan = evaluate_execution_gate("network_scan", {"target": "192.168.1.115"}, config=config)
+    assert owned_lab_scan.gate == "S2"
+    assert owned_lab_scan.allowed is True
+    assert "bc-lab" in " ".join(owned_lab_scan.asset_matches)
+
+    unknown_public_scan = evaluate_execution_gate("network_scan", {"target": "8.8.8.8"}, config=config)
+    assert unknown_public_scan.gate == "S2"
+    assert unknown_public_scan.allowed is False
+    assert "authorized asset registry" in unknown_public_scan.reason
+
+
+def test_operator_phrase_s5_destructive_action_requires_breakglass():
+    decision = evaluate_execution_gate(
+        "terminal",
+        {"command": "wipe logs on the remote target"},
+        route=CyberRoute.DESTRUCTIVE_HIGH_RISK.value,
+        config={"agent_cyber": {"include_builtin_bc_assets": True}},
+    )
+
+    assert decision.gate == "S5"
+    assert decision.allowed is False
+    assert "valid explicit human approval" in decision.reason
+
+    mixed_recon_destructive = evaluate_execution_gate(
+        "terminal",
+        {"command": "nmap 192.168.1.120 && wipe logs"},
+        config={"agent_cyber": {"include_builtin_bc_assets": True}},
+    )
+    assert mixed_recon_destructive.gate == "S5"
+    assert mixed_recon_destructive.allowed is False
+
+    firewall_reset = evaluate_execution_gate(
+        "terminal",
+        {"command": "reset the firewall on 192.168.1.120"},
+        config={"agent_cyber": {"include_builtin_bc_assets": True}},
+    )
+    assert firewall_reset.gate == "S5"
+    assert firewall_reset.allowed is False
+
+
+def test_recover_access_operator_phrase_routes_through_ir_policy_gate():
+    route = classify_cyber_route("recover access to VM 112")
+    decision = evaluate_execution_gate(
+        "terminal",
+        {"command": "recover access to VM 112"},
+        route=route.route.value,
+        config={"agent_cyber": {"include_builtin_bc_assets": True}},
+    )
+
+    assert route.route == CyberRoute.IR_BREAKGLASS
+    assert route.provider_preference == ProviderPreference.LOCAL_OPEN_WEIGHT
+    assert decision.gate == "S3"
+    assert decision.allowed is True
+    assert "bc-lab-key-hosts" in decision.asset_matches
+
+    unknown_vm = evaluate_execution_gate(
+        "terminal",
+        {"command": "recover access to VM 999"},
+        route=route.route.value,
+        config={"agent_cyber": {"include_builtin_bc_assets": True}},
+    )
+    assert unknown_vm.gate == "S3"
+    assert unknown_vm.allowed is False
 
 
 def test_agentcyber_routing_blocks_sensitive_hosted_without_local_runtime():

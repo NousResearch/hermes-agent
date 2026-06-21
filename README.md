@@ -19,10 +19,37 @@
 
 Use any model — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), OpenAI, Anthropic, Bedrock, or your own endpoint. Switch with `hermes model` — no lock-in.
 
+## Standalone AgentCyber quickstart
+
+AgentCyber should be operated as its own runtime from this checkout, not by
+turning the default `~/.hermes` assistant into a cyber agent. The repo-local
+wrapper uses this fork's code and a dedicated `.agentcyber-home` by default:
+
+```bash
+cd /home/kbun/Desktop/hermes-agentcyber
+scripts/agentcyber setup --apply
+scripts/agentcyber status --json
+scripts/agentcyber                  # interactive AgentCyber chat
+scripts/agentcyber chat -q "Summarize the AgentCyber runtime boundary."
+scripts/agentcyber hermes config path
+```
+
+Acceptance checks:
+
+- `scripts/agentcyber hermes config path` resolves under `.agentcyber-home`,
+  not default `~/.hermes`.
+- `scripts/agentcyber status --json` reports Cyber routing enabled, local/open
+  weight routing configured, built-in BC assets loaded, `cyber` enabled, and
+  `live_usb` disabled.
+- No external shell alias, gateway service, cron job, push, deploy, or default
+  Hermes profile/config change is required for the standalone CLI runtime.
+
+Full operator runbook: [`docs/AGENTCYBER_STANDALONE_RUNBOOK.md`](docs/AGENTCYBER_STANDALONE_RUNBOOK.md).
+
 <table>
 <tr><td><b>Cybersecurity toolkit</b></td><td>Native tools for CVE lookup (NVD), IOC reputation (VirusTotal, AbuseIPDB), MITRE ATT&CK TTP lookup, IOC extraction from logs/reports, CVSS+EPSS vulnerability triage, and an in-session incident response playbook. All in the <code>cyber</code> toolset — no wiring required.</td></tr>
 <tr><td><b>Live USB — plug in and act</b></td><td>Builds on <b>Kali Linux Rolling</b> — the full offensive/defensive toolkit (nmap, Metasploit, Burp, sqlmap, Hydra, hashcat, Wireshark, aircrack-ng, and 300+ more) on x86-64 or ARM64. Boot any PC, complete a 60-second wizard, and the gateway starts. Add <code>--persistence 8G</code> to survive reboots; <code>HERMES_AUTOUPDATE=true</code> to update hermes on each boot.</td></tr>
-<tr><td><b>SOC audit trail</b></td><td>Set <code>HERMES_CYBER_AUDIT=true</code> to get a tamper-evident NDJSON log of every tool call at <code>~/.hermes/logs/cyber_audit.jsonl</code>. Credentials redacted. File mode 0600.</td></tr>
+<tr><td><b>SOC audit trail</b></td><td>Set <code>HERMES_CYBER_AUDIT=true</code> to get a tamper-evident NDJSON log of every tool call under the active AgentCyber home (for the repo-local wrapper, <code>.agentcyber-home/logs/cyber_audit.jsonl</code>). Credentials redacted. File mode 0600.</td></tr>
 <tr><td><b>Protected subagent operations</b></td><td>In-flight subagents (parallel CVE triage, recon sweeps) are shielded from accidental interrupts — a follow-up message queues rather than killing running work. <code>/stop</code> still force-cancels everything.</td></tr>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
@@ -39,7 +66,9 @@ Use any model — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](h
 
 ### Cyber Toolset
 
-Enable the `cyber` toolset in `config.yaml` to get four purpose-built security tools:
+In the standalone runtime, enable the `cyber` toolset in the dedicated
+AgentCyber config under `.agentcyber-home/config.yaml`, not in default `~/.hermes/config.yaml`,
+to get four purpose-built security tools:
 
 ```yaml
 toolsets:
@@ -82,14 +111,16 @@ Three agent playbooks live in `skills/cybersecurity/` and are available as slash
 
 ```bash
 export HERMES_CYBER_AUDIT=true
-hermes gateway start
+scripts/agentcyber hermes gateway run
 ```
 
-Every `agent:step` (tool name + redacted inputs + result preview) and `agent:end` (stop reason, token counts) is appended to `~/.hermes/logs/cyber_audit.jsonl` in NDJSON format. The file is created with mode `0600`. Rotate externally with `logrotate`.
+Every `agent:step` (tool name + redacted inputs + result preview) and `agent:end` (stop reason, token counts) is appended to the active AgentCyber home (for the repo-local wrapper, `.agentcyber-home/logs/cyber_audit.jsonl`) in NDJSON format. The file is created with mode `0600`. Rotate externally with `logrotate`.
 
 ### Optional API Keys
 
-Add to `~/.hermes/.env` — all cyber tools degrade gracefully when keys are absent:
+Add to the dedicated AgentCyber `.env` (for the repo-local wrapper,
+`.agentcyber-home/.env`) — all cyber tools degrade gracefully when keys are
+absent:
 
 ```bash
 VT_API_KEY=your-virustotal-key        # IOC reputation via VirusTotal
@@ -287,15 +318,20 @@ The provisioned config is written to the `HERMESCFG` FAT32 partition. On first b
 
 ### Orchestrate from inside the agent
 
-The `live_usb` tool lets you build and write USBs from a chat message. Enable it first:
+The `live_usb` tool lets you build and write USBs from a chat message. Keep it
+disabled in the standalone AgentCyber runtime unless the operator explicitly
+approves the hardware lane, then enable it only inside the dedicated
+AgentCyber home:
 
 ```bash
-# In config.yaml
-toolsets:
-  enabled: [live_usb, cyber, ...]
+# In .agentcyber-home/config.yaml
+platform_toolsets:
+  cli:
+    - cyber
+    - live_usb
 
-# Or from the CLI
-hermes tools --enable live_usb
+# Or from the standalone wrapper
+scripts/agentcyber hermes tools enable live_usb
 ```
 
 Then ask the agent:
@@ -307,7 +343,7 @@ Then ask the agent:
 "Build a headless-scan ISO"       → live_usb(action="build", headless_scan=true)
 "Write it to /dev/sdb"            → live_usb(action="write", device="/dev/sdb")
 "Provision with my config"        → live_usb(action="provision", device="/dev/sdb",
-                                             config="~/.hermes")
+                                             config=".agentcyber-home")
 ```
 
 The `list_usb` and `status` actions are safe and need no root. `build` and `write` require the agent session to run as root (or pass `sudo` separately).

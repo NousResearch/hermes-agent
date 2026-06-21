@@ -1,6 +1,6 @@
 # Hermes AgentCyber Edition
 
-Hermes AgentCyber is the Breaking Circuits downstream profile of Hermes for authorized defensive security work. It is not a separate agent loop; it is a policy-and-tooling patchset layered into the normal Hermes runtime.
+Hermes AgentCyber is the Breaking Circuits downstream edition of Hermes for authorized defensive security work. Operate it as a standalone runtime from this checkout, with the repo-local `scripts/agentcyber` wrapper and a dedicated `HERMES_HOME`, so default Hermes remains the general assistant/front door and Cyber Edition state stays isolated.
 
 ## Current implemented runtime surfaces
 
@@ -13,7 +13,17 @@ Hermes AgentCyber is the Breaking Circuits downstream profile of Hermes for auth
 
 ## Configure local/open-weight routing
 
-Set this in `~/.hermes/config.yaml` for a Cyber Edition profile:
+For the standalone CLI runtime, initialize the dedicated AgentCyber home with:
+
+```bash
+cd /home/kbun/Desktop/hermes-agentcyber
+scripts/agentcyber setup --apply
+scripts/agentcyber status --json
+```
+
+The wrapper keeps `HERMES_HOME` under `.agentcyber-home` by default. Do not edit default `~/.hermes/config.yaml` for AgentCyber behavior.
+
+The resulting AgentCyber-only config should include:
 
 ```yaml
 agent_cyber:
@@ -23,20 +33,32 @@ agent_cyber:
     allow_hosted_override: true
     allow_hosted_open_weight: false
     local_open_weight:
-      provider: custom
-      model: qwen3-coder
-      base_url: http://127.0.0.1:11434/v1
-      api_key_env: HERMES_LOCAL_OPENAI_KEY
+      provider: ollama
+      model: qwen3-coder:30b
+      base_url: http://192.168.1.120:11434/v1
+      api_key_env: ""
       api_mode: chat_completions
       context_length: 131072
+  include_builtin_bc_assets: true
+  execution_gates:
+    enabled: true
+
+platform_toolsets:
+  cli:
+    - cyber
 ```
 
-Environment-only shortcut:
+`live_usb` should remain absent/disabled unless the operator explicitly approves
+that lane. Acceptance status should show `toolsets.cyber_enabled: true`,
+`toolsets.live_usb_enabled: false`, and `scripts/agentcyber hermes config path`
+resolving under `.agentcyber-home`, not default `~/.hermes`.
+
+Environment-only shortcut for a different local endpoint:
 
 ```bash
-export HERMES_AGENTCYBER_LOCAL_PROVIDER=custom
-export HERMES_AGENTCYBER_LOCAL_BASE_URL=http://127.0.0.1:11434/v1
-export HERMES_AGENTCYBER_LOCAL_MODEL=qwen3-coder
+export HERMES_AGENTCYBER_LOCAL_PROVIDER=ollama
+export HERMES_AGENTCYBER_LOCAL_BASE_URL=http://192.168.1.120:11434/v1
+export HERMES_AGENTCYBER_LOCAL_MODEL=qwen3-coder:30b
 export HERMES_AGENTCYBER_LOCAL_API_MODE=chat_completions
 ```
 
@@ -64,15 +86,18 @@ agent_cyber:
         allowed_gates: [S0, S1, S2]
 ```
 
-Or point at a YAML/JSON file:
+Or point at a YAML/JSON file under the dedicated AgentCyber home:
 
 ```yaml
 agent_cyber:
   asset_registry:
-    file: ~/.hermes/agentcyber/assets.yaml
+    file: .agentcyber-home/agentcyber/assets.yaml
 ```
 
-`HERMES_AGENTCYBER_ASSET_REGISTRY=/path/to/assets.yaml` overrides the file path.
+When launched via `scripts/agentcyber`, keep asset files under the dedicated
+AgentCyber home (for example `${HERMES_HOME}/agentcyber/assets.yaml`) rather
+than default `~/.hermes`. `HERMES_AGENTCYBER_ASSET_REGISTRY=/path/to/assets.yaml`
+overrides the file path.
 
 ## S0-S5 execution gates
 
@@ -94,9 +119,23 @@ The gate runs before plugin hooks, checkpoints, callbacks, and actual tool dispa
 
 ## Verification
 
-Focused tests:
+Standalone acceptance checks:
 
 ```bash
-source .venv/bin/activate
-python -m pytest tests/agent/test_cyber_routing.py tests/run_agent/test_cyber_route_capture.py tests/agent/test_agentcyber_routing_guard.py -q
+cd /home/kbun/Desktop/hermes-agentcyber
+scripts/agentcyber status --json
+scripts/agentcyber hermes config path
+scripts/agentcyber hermes tools list | grep -Ei 'cyber|live_usb'
+uv run --frozen python -m pytest \
+  tests/hermes_cli/test_agentcyber_wrapper.py \
+  tests/agent/test_cyber_routing.py \
+  tests/agent/test_agentcyber_routing_guard.py \
+  tests/agent/test_cyber_breakglass.py \
+  tests/hermes_cli/test_agentcyber_cmd.py \
+  tests/gateway/test_cyber_audit_hook.py \
+  -q -o addopts= --tb=short
 ```
+
+For the complete operator workflow, use
+`docs/AGENTCYBER_STANDALONE_RUNBOOK.md` as the authoritative standalone
+front-door runbook.

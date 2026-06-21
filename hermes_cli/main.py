@@ -453,6 +453,12 @@ def _apply_profile_override() -> None:
         if Path(hermes_home_env).parent.name == "profiles":
             return
 
+    # AgentCyber standalone launchers set an explicit dedicated HERMES_HOME that
+    # is intentionally not a profile path. Do not let sticky active_profile files
+    # redirect the Cyber Edition into a normal Hermes profile.
+    if profile_name is None and hermes_home_env and os.environ.get("HERMES_AGENTCYBER_STANDALONE"):
+        return
+
     # 2. If no flag, check active_profile in the hermes root.
     #
     # EXCEPTION: a supervised s6 gateway child (exported by the container

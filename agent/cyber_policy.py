@@ -69,12 +69,13 @@ _LOCAL_INCIDENT_TOOLS = frozenset({"ir_incident"})
 _DESTRUCTIVE_RE = re.compile(
     r"\b(rm\s+-rf|mkfs|dd\s+if=|shred|wipe|format\s+disk|factory\s+reset|"
     r"delete\s+all|rotate\s+credentials?|password\s+reset|disable\s+account|"
-    r"iptables\s+-F|ufw\s+disable|firewall\s+reset)\b",
+    r"iptables\s+-F|ufw\s+disable|firewall\s+reset|reset\s+the\s+firewall)\b",
     re.IGNORECASE,
 )
 _RECON_RE = re.compile(r"\b(nmap|masscan|zmap|rustscan|nikto|sqlmap|ffuf|gobuster|scan)\b", re.IGNORECASE)
 _IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d.])")
 _DOMAIN_RE = re.compile(r"\b(?=.{4,253}\b)(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,63}\b")
+_VM_ID_RE = re.compile(r"\bvm\s*#?\s*(\d{1,5})\b", re.IGNORECASE)
 _LOCAL_FILE_DOMAIN_SUFFIXES = frozenset({
     "bash",
     "cfg",
@@ -189,6 +190,8 @@ def builtin_bc_asset_registry() -> AssetRegistry:
                     "192.168.1.121",
                     "192.168.1.122",
                     "192.168.1.137",
+                    "vm 112",
+                    "vm112",
                 ),
                 tags=("bc-owned", "lab"),
                 allowed_gates=("S0", "S1", "S2", "S3"),
@@ -336,10 +339,10 @@ def classify_tool_gate(tool_name: str, function_args: dict[str, Any], *, route: 
         return "S1", "read-only cyber analysis/intel helper", candidates
     if name in _LOCAL_INCIDENT_TOOLS:
         return "S3", "local incident-response state mutation", candidates
-    if name == "network_scan" or _RECON_RE.search(arg_text):
-        return "S2", "controlled reconnaissance/scanning", candidates
     if _DESTRUCTIVE_RE.search(arg_text) or route == "destructive_high_risk":
         return "S5", "destructive or high-impact operation", candidates
+    if name == "network_scan" or _RECON_RE.search(arg_text):
+        return "S2", "controlled reconnaissance/scanning", candidates
     if route in {"credentials_sensitive", "ir_breakglass"}:
         return "S3", "credential-sensitive or incident-recovery action", candidates
     if route in {"cyber_lab", "malware_re"} and name in _MUTATING_TOOLS:
@@ -395,6 +398,10 @@ def _extract_candidates(text: str) -> list[str]:
         if _looks_like_local_file_candidate(candidate):
             continue
         found.append(candidate)
+    for match in _VM_ID_RE.findall(text or ""):
+        vm_id = str(match).lstrip("0") or "0"
+        found.append(f"vm {vm_id}")
+        found.append(f"vm{vm_id}")
     # URL parser pass catches hosts where regex context is awkward.
     for token in re.findall(r"https?://[^\s'\"<>]+", text or ""):
         parsed = urlparse(token)

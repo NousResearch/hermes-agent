@@ -905,6 +905,75 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 
 ---
 
+## Submitting Changes
+
+This section walks through the full contribution workflow: from forking the repo to opening a pull request.
+
+### 1. Fork and clone
+
+Fork the repo on GitHub, then clone your fork:
+
+```bash
+# Fork via the GitHub UI: https://github.com/NousResearch/hermes-agent/fork
+# Then clone your fork (replace YOUR_USERNAME):
+git clone https://github.com/YOUR_USERNAME/hermes-agent.git
+cd hermes-agent
+
+# Add the upstream repo to keep your fork in sync:
+git remote add upstream https://github.com/NousResearch/hermes-agent.git
+git fetch upstream
+```
+
+**GitHub token note:** Fine-grained personal access tokens cannot fork repositories the user doesn't own — attempting to fork `NousResearch/hermes-agent` with a fine-grained token returns 403, regardless of configured permissions. Use OAuth authentication instead:
+
+```bash
+gh auth login --web -p https
+```
+
+This is a GitHub platform limitation, not a Hermes bug — the OAuth path works correctly.
+
+### 2. Create a feature branch
+
+Always branch from an up-to-date `main`:
+
+```bash
+git checkout main
+git pull upstream main
+git checkout -b <type>/<description>
+```
+
+Use the branch naming conventions in [Branch naming](#branch-naming) below.
+
+### 3. Make your changes
+
+Follow the [Development Setup](#development-setup) guide for environment setup and testing. Before committing, run the test suite:
+
+```bash
+scripts/run_tests.sh
+```
+
+### 4. Push and open a pull request
+
+```bash
+git push -u origin HEAD
+```
+
+Then open a pull request via the GitHub UI (the push output includes a link) or the CLI:
+
+```bash
+gh pr create --repo NousResearch/hermes-agent --base main
+```
+
+Fill out the PR template — include what changed, why, how to test, and which platforms you tested on. See [PR description](#pr-description) for details.
+
+### 5. Review process
+
+- Maintainers will review your PR and may request changes. This is normal — respond to feedback and push updates to the same branch.
+- CI checks must pass before merge. Check the Actions tab if something fails.
+- Keep PRs focused: one logical change per PR.
+
+---
+
 ## Pull Request Process
 
 ### Branch naming

@@ -144,7 +144,10 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError covers Path.expanduser() failing on a "~unknownuser/..."
+            # token (e.g. the model emitting "cat ~freshcrawl/log"). Hint discovery
+            # is purely advisory and must never break the tool-execution loop.
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):

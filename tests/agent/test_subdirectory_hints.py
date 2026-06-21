@@ -291,6 +291,47 @@ class TestPermissionErrorHandling:
             assert result is None or isinstance(result, str)
 
 
+class TestExpanduserRuntimeError:
+    """Regression tests for RuntimeError from Path.expanduser().
+
+    A shell command token of the form ``~unknownuser/...`` makes
+    ``Path(token).expanduser()`` raise ``RuntimeError("Could not determine
+    home directory.")``. ``_add_path_candidate`` previously caught only
+    ``(OSError, ValueError)``, so the RuntimeError propagated up through
+    ``check_tool_call`` and aborted the tool-execution loop, discarding the
+    real tool result and replacing it with a misleading error.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat ~freshcrawl/results.log",   # ~unknownuser -> RuntimeError
+            "grep x ~bob/.bashrc",           # another unknown user
+            "tar -tf ~deploy/release.tgz",   # unknown user in an arg
+        ],
+    )
+    def test_check_tool_call_survives_unknown_tilde_user(self, project, command):
+        """A ``~unknownuser/...`` token must not crash hint discovery."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        # Must return cleanly (None here — no real hints) and never raise.
+        assert tracker.check_tool_call("terminal", {"command": command}) is None
+
+    def test_current_user_tilde_still_works(self, project):
+        """A valid ``~/...`` token must continue to resolve without error."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        # No hints under ~, but it must not raise.
+        result = tracker.check_tool_call("terminal", {"command": "ls ~/some/path"})
+        assert result is None or isinstance(result, str)
+
+    def test_add_path_candidate_swallows_runtime_error(self, tmp_path):
+        """The low-level helper must swallow RuntimeError from expanduser()."""
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        candidates: set = set()
+        # Should not raise even though "~nouser" has no resolvable home dir.
+        tracker._add_path_candidate("~nouser/some/path", candidates)
+        assert candidates == set()
+
+
 class TestOutsideWorkspaceRejection:
     """Direct tests for _is_valid_subdir rejecting outside-workspace paths."""
 

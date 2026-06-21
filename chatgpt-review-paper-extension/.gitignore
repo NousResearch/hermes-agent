@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tar.gz
+*.zip
+.env
+.env.*
+!.env.example

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Review Paper",
+  "description": "Generate local review papers from your signed-in ChatGPT history.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "sidePanel", "tabs"],
+  "host_permissions": ["https://chatgpt.com/*", "https://api.openai.com/*", "https://api.anthropic.com/*"],
+  "action": { "default_title": "ChatGPT Review Paper" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "background": { "service_worker": "background/service-worker.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content/chatgpt-content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

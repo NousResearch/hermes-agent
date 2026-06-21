@@ -26,7 +26,7 @@ from pathlib import Path
 HOST = os.environ.get("HERMES_DESKTOP_LANGFLOW_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_DESKTOP_LANGFLOW_PORT", "7860"))
 FRONTEND_REL = "src/backend/base/langflow/frontend"
-DEFAULT_KARI_CLOUD_BASE_URL = (os.environ.get("VITE_KARI_CLOUD_URL") or "https://flow.karivibe.com").strip().rstrip("/")
+DEFAULT_KARI_CLOUD_BASE_URL = (os.environ.get("VITE_KARI_CLOUD_URL") or "https://lotjc.com/hermes").strip().rstrip("/")
 _READY_TIMEOUT_S = 10 * 60
 _PROBE_TIMEOUT_S = 1.5
 _STOP_TIMEOUT_S = 8

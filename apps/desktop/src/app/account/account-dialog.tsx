@@ -13,7 +13,7 @@ import { $accountDialogOpen, closeAccountDialog, setAccountDialogOpen } from '@/
 import { PermissionsSection, ProfileSection, RechargeSection, RolesSection, TeamSection, UsageSection } from './index'
 
 const DEFAULT_CLOUD_URL =
-  (import.meta.env?.VITE_KARI_CLOUD_URL as string | undefined)?.trim() || 'https://flow.karivibe.com'
+  (import.meta.env?.VITE_KARI_CLOUD_URL as string | undefined)?.trim() || 'https://lotjc.com/hermes'
 
 function notifyAccountChanged() {
   window.dispatchEvent(new Event('hermes-account-changed'))

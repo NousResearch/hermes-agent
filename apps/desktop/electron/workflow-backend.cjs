@@ -15,7 +15,7 @@ const DEFAULT_READY_TIMEOUT_MS = 10 * 60 * 1000
 const DEFAULT_POLL_INTERVAL_MS = 1_000
 const DEFAULT_PROBE_TIMEOUT_MS = 1_500
 const DEFAULT_STOP_TIMEOUT_MS = 8_000
-const DEFAULT_KARI_CLOUD_BASE_URL = process.env.VITE_KARI_CLOUD_URL || 'https://flow.karivibe.com'
+const DEFAULT_KARI_CLOUD_BASE_URL = process.env.VITE_KARI_CLOUD_URL || 'https://lotjc.com/hermes'
 const LANGFLOW_FRONTEND_RELATIVE_PATH = 'src/backend/base/langflow/frontend'
 
 function workflowUrl(host = DEFAULT_LANGFLOW_HOST, port = DEFAULT_LANGFLOW_PORT) {

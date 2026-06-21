@@ -7,7 +7,7 @@ import { Loader2, LogIn, Sparkles } from '@/lib/icons'
 
 import { ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
 
-const DEFAULT_CLOUD_URL = (import.meta.env?.VITE_KARI_CLOUD_URL as string | undefined)?.trim() || 'https://flow.karivibe.com'
+const DEFAULT_CLOUD_URL = (import.meta.env?.VITE_KARI_CLOUD_URL as string | undefined)?.trim() || 'https://lotjc.com/hermes'
 
 function notifyAccountChanged() {
   window.dispatchEvent(new Event('hermes-account-changed'))

@@ -22,7 +22,7 @@ import { PermissionsPanel, RolesPanel } from './team-roles'
 import type { TeamGrant, TeamResource, TeamUserGrant } from './team-types'
 
 const DEFAULT_CLOUD_URL =
-  (import.meta.env?.VITE_KARI_CLOUD_URL as string | undefined)?.trim() || 'https://flow.karivibe.com'
+  (import.meta.env?.VITE_KARI_CLOUD_URL as string | undefined)?.trim() || 'https://lotjc.com/hermes'
 
 const PAGE_SIZE = 20
 

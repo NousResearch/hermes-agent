@@ -63,7 +63,7 @@ def _data_volume_block(text: str) -> str:
     # subdir chown so the match spans the WHOLE block (gate + body), not just
     # the probe loop's earlier `done`/`fi`.
     m = re.search(
-        r"(actual_hermes_uid=\$\(id -u hermes\)\nneeds_chown=false\n[\s\S]*?"
+        r"(actual_hermes_uid=\$\(id -u hermes\)[\s\S]*?"
         r'chown -R hermes:hermes "\$HERMES_HOME/\$sub"[\s\S]*?\n    done\nfi)',
         text,
     )
@@ -80,9 +80,10 @@ def test_data_volume_chown_probes_subdirs(stage2_text: str) -> None:
     gated form is exactly the #41699 (#35027/#38556 family) regression."""
     block = _data_volume_block(stage2_text)
     # A per-subdir ownership probe must exist (not only the $HERMES_HOME stat).
+    # It must compare BOTH uid and gid (%u:%g) so a GID-only remap is caught.
     assert re.search(
-        r'stat -c %u "\$HERMES_HOME/\$sub"', block
-    ), "data-volume needs_chown must probe each subdir's owner directly"
+        r'stat -c %u:%g "\$HERMES_HOME/\$sub"', block
+    ), "data-volume needs_chown must probe each subdir's uid:gid directly"
     # The probe must loop over the canonical hermes-owned subdir list.
     for sub in ("cron", "sessions", "platforms/pairing"):
         assert sub in block, f"subdir probe/chown must cover {sub}"
@@ -91,18 +92,20 @@ def test_data_volume_chown_probes_subdirs(stage2_text: str) -> None:
 def _run_data_volume_block(
     text: str,
     *,
-    hermes_uid: int,
-    home_owner: int,
-    subdir_owner: int,
+    hermes_owner: str,
+    home_owner: str,
+    subdir_owner: str,
 ) -> bool:
     """Run the extracted data-volume block against a real tmp $HERMES_HOME with
-    the subdirs present, with `stat` and `chown` stubbed. `stat -c %u <path>`
-    returns ``home_owner`` for the top-level dir and ``subdir_owner`` for any
-    subdir. Returns True iff the block attempted a chown."""
+    the subdirs present, with `stat` and `chown` stubbed. Owners are
+    ``"uid:gid"`` strings. `stat -c %u:%g <path>` returns ``home_owner`` for the
+    top-level dir and ``subdir_owner`` for any subdir; the runtime hermes
+    identity is ``hermes_owner``. Returns True iff the block attempted a chown."""
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash not available")
     block = _data_volume_block(text)
+    hermes_uid, hermes_gid = hermes_owner.split(":")
 
     with tempfile.TemporaryDirectory() as d:
         dpath = Path(d)
@@ -111,29 +114,37 @@ def _run_data_volume_block(
             (home / sub).mkdir(parents=True, exist_ok=True)
         log = dpath / "chown.log"
         # Stubs:
-        #   stat -c %u <path>  -> home_owner for $HERMES_HOME, else subdir_owner
-        #   chown ...          -> record that it fired
+        #   stat -c <fmt> <path> -> owner for path; honours the FORMAT arg so a
+        #       `%u` (uid-only) probe and a `%u:%g` (uid:gid) probe return
+        #       different strings. This is what lets the GID-only test detect a
+        #       uid-only gate: under `%u` the stale GID is invisible.
+        #   chown ...            -> record that it fired
         # The real $HERMES_HOME dir tree backs the `[ -e ]` guards.
         script = (
             "set -eu\n"
             f'HERMES_HOME="{home}"\n'
-            "id() { :; }\n"  # never invoked; actual_hermes_uid set below
+            "id() { :; }\n"  # never invoked; actual_hermes_uid/gid set below
             f"actual_hermes_uid={hermes_uid}\n"
+            f"actual_hermes_gid={hermes_gid}\n"
             "stat() {\n"
-            '    target="${3:-}"\n'
-            f'    if [ "$target" = "{home}" ]; then echo {home_owner};\n'
-            f"    else echo {subdir_owner}; fi\n"
+            '    fmt="$2"; target="$3"\n'
+            f'    if [ "$target" = "{home}" ]; then owner="{home_owner}";\n'
+            f'    else owner="{subdir_owner}"; fi\n'
+            '    if [ "$fmt" = "%u" ]; then echo "${owner%%:*}";\n'
+            '    else echo "$owner"; fi\n'
             "}\n"
             f'chown() {{ echo fired >> "{log}"; }}\n'
             + block
         )
-        # The extracted block opens with `actual_hermes_uid=$(id -u hermes)`,
-        # which would override our stub — neutralise the `id` call by making it
-        # a no-op and re-pinning actual_hermes_uid right after the block's
-        # assignment. Simplest: replace that first line in the block.
+        # The extracted block opens with `actual_hermes_uid=$(id -u hermes)` and
+        # `actual_hermes_gid=$(id -g hermes)`, which would override our stubs —
+        # re-pin both right at the block's own assignments.
         script = script.replace(
             "actual_hermes_uid=$(id -u hermes)",
             f"actual_hermes_uid={hermes_uid}",
+        ).replace(
+            "actual_hermes_gid=$(id -g hermes)",
+            f"actual_hermes_gid={hermes_gid}",
         )
         script_path = dpath / "harness.sh"
         script_path.write_text(script)
@@ -144,10 +155,11 @@ def _run_data_volume_block(
 
 def test_chown_fires_when_subdir_owner_differs(stage2_text: str) -> None:
     """#41699 repro: after a HERMES_UID/PUID remap `usermod` already chowned
-    $HERMES_HOME to the new UID (home_owner == hermes_uid), but the subdirs are
-    still owned by the build-time UID (10000). The targeted chown MUST fire."""
+    $HERMES_HOME to the new UID (home_owner == hermes_owner), but the subdirs
+    are still owned by the build-time UID (10000). The targeted chown MUST
+    fire."""
     fired = _run_data_volume_block(
-        stage2_text, hermes_uid=4242, home_owner=4242, subdir_owner=10000
+        stage2_text, hermes_owner="4242:4242", home_owner="4242:4242", subdir_owner="10000:10000"
     )
     assert fired, (
         "data-volume chown must fire when a hermes-owned subdir is not owned by "
@@ -160,11 +172,27 @@ def test_chown_fires_when_hermes_home_owner_differs(stage2_text: str) -> None:
     """Original #35027 path intact: $HERMES_HOME itself owned by the build UID
     (10000) while hermes is now 4242 — the chown must still fire."""
     fired = _run_data_volume_block(
-        stage2_text, hermes_uid=4242, home_owner=10000, subdir_owner=4242
+        stage2_text, hermes_owner="4242:4242", home_owner="10000:10000", subdir_owner="4242:4242"
     )
     assert fired, (
         "data-volume chown must still fire on the original $HERMES_HOME-owner "
         "mismatch path"
+    )
+
+
+def test_chown_fires_on_gid_only_remap(stage2_text: str) -> None:
+    """#41699 GID-only repro: a `groupmod -o -g <new> hermes` PGID remap leaves
+    every UID unchanged (usermod/groupmod do NOT re-chown files), so the UID of
+    $HERMES_HOME and the subdirs still matches hermes — only the GID is stale.
+    A uid-only gate (`stat -c %u`) would miss this entirely and skip the chown,
+    leaving stale group ownership. Comparing %u:%g MUST fire the chown."""
+    fired = _run_data_volume_block(
+        stage2_text, hermes_owner="10000:5555", home_owner="10000:10000", subdir_owner="10000:10000"
+    )
+    assert fired, (
+        "data-volume chown must fire on a GID-only remap (uid matches but gid is "
+        "stale) — a uid-only gate would skip it and leave stale group ownership "
+        "(#41699)"
     )
 
 
@@ -173,7 +201,7 @@ def test_chown_skipped_when_all_owned(stage2_text: str) -> None:
     hermes-owned, the expensive recursive chown is skipped on subsequent
     boots."""
     fired = _run_data_volume_block(
-        stage2_text, hermes_uid=4242, home_owner=4242, subdir_owner=4242
+        stage2_text, hermes_owner="4242:4242", home_owner="4242:4242", subdir_owner="4242:4242"
     )
     assert not fired, (
         "data-volume chown must be skipped when $HERMES_HOME and all subdirs "
@@ -186,6 +214,6 @@ def test_chown_skipped_for_default_uid(stage2_text: str) -> None:
     """No remap: home + subdirs owned by the default build UID (10000) and
     hermes is still 10000 — nothing to do."""
     fired = _run_data_volume_block(
-        stage2_text, hermes_uid=10000, home_owner=10000, subdir_owner=10000
+        stage2_text, hermes_owner="10000:10000", home_owner="10000:10000", subdir_owner="10000:10000"
     )
     assert not fired

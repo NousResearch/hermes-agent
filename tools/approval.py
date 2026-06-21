@@ -36,7 +36,7 @@ _LAST_APPROVAL_REQUEST: dict[str, Any] = {
 _CLIO_MVP_HARD_GATE_RE = re.compile(
     r"\b("
     r"provider\s*(call|run|test|credential|key|secret|api)|"
-    r"prompt\s*(execution|run|test)|"
+    r"prompt\s*(execution|run|test)|live\s+blind\s+prompt|blind\s+prompt|"
     r"image\s*(generation|gen|create|test)|"
     r"deploy\s+(production|prod)|production\s+deploy|"
     r"\bdns\b|db\s*migration|database\s*migration|migrate\s+db|"
@@ -743,6 +743,38 @@ class _ApprovalEntry:
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
+_APPROVAL_CATEGORIES = {
+    "SAFE_AUTONOMOUS",
+    "GOAL_ENVELOPE_APPROVED",
+    "DELEGATED_AGENT_APPROVAL",
+    "NIKO_HARD_GATE",
+    "UNKNOWN_RED",
+}
+_APPROVAL_DELEGATE_ROLES = {"Reviewer Agent", "Verifier Agent", "Ops Agent"}
+_APPROVAL_PENDING_RECORDS: list[dict[str, Any]] = []
+_APPROVAL_RESOLVED_RECORDS: list[dict[str, Any]] = []
+_APPROVAL_ID_COUNTER = 0
+
+_SECRET_STATUS_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{8,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{12,}\b"),
+    re.compile(r"\b(?:ANTHROPIC|OPENAI|OPENROUTER|POSTGRES|GHCR|CADDY)[A-Z0-9_]*(?:=|:)\S+", re.IGNORECASE),
+    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{12,}\b"),
+)
+
+
+def _sanitize_approval_text(value: Any, *, limit: int = 240) -> str:
+    text = str(value or "")
+    for pattern in _SECRET_STATUS_PATTERNS:
+        text = pattern.sub(lambda match: (match.group(1) if match.lastindex else "") + "[REDACTED]", text)
+    return text[:limit]
+
+
+def _next_approval_id() -> str:
+    global _APPROVAL_ID_COUNTER
+    _APPROVAL_ID_COUNTER += 1
+    return f"approval_{_APPROVAL_ID_COUNTER}"
+
 
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
@@ -1130,6 +1162,143 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _approval_summary_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": record.get("id", ""),
+        "category": record.get("category", "UNKNOWN_RED"),
+        "action": record.get("action", ""),
+        "requested_by": record.get("requested_by", ""),
+        "resolved_by": record.get("resolved_by", ""),
+        "resolution_reason": record.get("resolution_reason", ""),
+        "niko_required": bool(record.get("niko_required", False)),
+        "timeout_status": record.get("timeout_status", "not_timed_out"),
+        "current_blocker_status": record.get("current_blocker_status", "NOISE"),
+    }
+
+
+def has_pending_approval_blockers() -> bool:
+    """Return True when any unresolved approval is still blocking Goal OS GREEN."""
+    with _lock:
+        return bool(_APPROVAL_PENDING_RECORDS or _pending or any(_gateway_queues.values()))
+
+
+def _classify_approval_request(
+    *,
+    action: str,
+    payload: str,
+    reason: str = "",
+    goal_envelope_approved: bool = False,
+    delegated_role: str = "",
+) -> tuple[str, str, bool]:
+    text = f"{action} {payload} {reason}"
+    if _contains_clio_mvp_hard_gate(text):
+        return "NIKO_HARD_GATE", "Niko hard gate requires explicit user approval and cannot be delegated.", True
+    if goal_envelope_approved or ("goal envelope" in reason.lower() and "approved" in reason.lower()):
+        return "GOAL_ENVELOPE_APPROVED", "Action is inside the active goal's explicitly approved safe envelope.", False
+    if action == "terminal" and _is_clio_mvp_safe_command(payload):
+        return "SAFE_AUTONOMOUS", "Safe engineering action is automatically approved by Clio MVP policy.", False
+    if action == "execute_code" and _is_clio_mvp_safe_execute_code(payload):
+        return "SAFE_AUTONOMOUS", "Safe execute_code helper is automatically approved by Clio MVP policy.", False
+    if action == "apply_patch" and not _contains_clio_mvp_hard_gate(text):
+        return "SAFE_AUTONOMOUS", "Safe repo patch is automatically approved by Clio MVP policy.", False
+    if action == "decision" or delegated_role in _APPROVAL_DELEGATE_ROLES:
+        return "DELEGATED_AGENT_APPROVAL", "Safe ambiguous approval can be resolved by Reviewer, Verifier or Ops evidence because it is not a hard gate.", False
+    return "UNKNOWN_RED", "Unknown approval category is RED and is not auto-approved.", False
+
+
+def _store_approval_record(record: dict[str, Any], *, resolved: bool) -> dict[str, Any]:
+    clean = dict(record)
+    clean["payload"] = _sanitize_approval_text(clean.get("payload", ""))
+    clean["reason"] = _sanitize_approval_text(clean.get("reason", ""))
+    clean["evidence"] = _sanitize_approval_text(clean.get("evidence", ""))
+    with _lock:
+        if resolved:
+            _APPROVAL_RESOLVED_RECORDS.append(clean)
+        else:
+            _APPROVAL_PENDING_RECORDS.append(clean)
+    _record_approval_status(
+        category=str(clean.get("category") or "UNKNOWN_RED"),
+        action=str(clean.get("action") or ""),
+        summary=str(clean.get("payload") or ""),
+        reason=str(clean.get("resolution_reason") or clean.get("reason") or ""),
+        asked_niko=bool(clean.get("niko_required", False)),
+    )
+    return clean
+
+
+def resolve_approval_request(
+    *,
+    action: str,
+    payload: str,
+    requested_by: str,
+    reason: str = "",
+    goal_envelope_approved: bool = False,
+    delegated_role: str = "",
+    evidence: str = "",
+    timeout: bool = False,
+) -> dict[str, Any]:
+    """Classify and resolve an approval request without abandoning safe work."""
+    category, resolution_reason, niko_required = _classify_approval_request(
+        action=action,
+        payload=payload,
+        reason=reason,
+        goal_envelope_approved=goal_envelope_approved,
+        delegated_role=delegated_role,
+    )
+    if category != "NIKO_HARD_GATE" and not _clio_mvp_safe_actions_enabled():
+        category, resolution_reason, niko_required = "UNKNOWN_RED", "Clio MVP safe-action auto-approval is not active.", False
+    approved = category in {"SAFE_AUTONOMOUS", "GOAL_ENVELOPE_APPROVED", "DELEGATED_AGENT_APPROVAL"}
+    resolved_by = ""
+    if category == "SAFE_AUTONOMOUS":
+        resolved_by = "policy"
+    elif category == "GOAL_ENVELOPE_APPROVED":
+        resolved_by = "goal_envelope"
+    elif category == "DELEGATED_AGENT_APPROVAL":
+        resolved_by = delegated_role if delegated_role in _APPROVAL_DELEGATE_ROLES else "Verifier Agent"
+        evidence = evidence or f"{resolved_by} classified the action as safe ambiguous work."
+        resolution_reason = f"{resolution_reason} This is not a hard gate."
+    record = {
+        "id": _next_approval_id(),
+        "category": category,
+        "action": str(action or ""),
+        "payload": payload,
+        "requested_by": str(requested_by or "unknown"),
+        "resolved_by": resolved_by,
+        "resolution_reason": resolution_reason,
+        "reason": reason,
+        "evidence": evidence,
+        "niko_required": niko_required,
+        "timeout_status": "not_timed_out",
+        "current_blocker_status": "RED" if category in {"NIKO_HARD_GATE", "UNKNOWN_RED"} else "NOISE",
+        "approved": approved,
+        "created_at": time.time(),
+    }
+    if timeout:
+        if category in {"SAFE_AUTONOMOUS", "GOAL_ENVELOPE_APPROVED", "DELEGATED_AGENT_APPROVAL"}:
+            record["timeout_status"] = "auto_resolved_after_timeout"
+        elif category == "NIKO_HARD_GATE":
+            record["timeout_status"] = "blocked_after_timeout"
+        else:
+            record["timeout_status"] = "red_after_timeout"
+    resolved = approved
+    clean = _store_approval_record(record, resolved=resolved)
+    return clean
+
+
+def resolve_approval_timeout(**kwargs: Any) -> dict[str, Any]:
+    """Timeout policy: safe continues, delegated routes to agents, hard gates stay RED."""
+    return resolve_approval_request(timeout=True, **kwargs)
+
+
+def clear_all_approval_records_for_tests() -> None:
+    with _lock:
+        _APPROVAL_PENDING_RECORDS.clear()
+        _APPROVAL_RESOLVED_RECORDS.clear()
+        _pending.clear()
+        _gateway_queues.clear()
+    _record_approval_status(category="unknown", action="", summary="", reason="No approval request recorded yet.", asked_niko=False)
+
+
 def _record_approval_status(*, category: str, action: str, summary: str, reason: str, asked_niko: bool) -> None:
     _LAST_APPROVAL_REQUEST.update({
         "category": category,
@@ -1152,6 +1321,19 @@ def approval_status_snapshot() -> dict[str, Any]:
     except Exception:
         profile_active = False
     safe_active = _clio_mvp_safe_actions_enabled()
+    with _lock:
+        pending_records = [_approval_summary_from_record(item) for item in _APPROVAL_PENDING_RECORDS]
+        resolved_records = [_approval_summary_from_record(item) for item in _APPROVAL_RESOLVED_RECORDS[-25:]]
+        legacy_pending = [
+            {"id": f"legacy:{key}", "category": "UNKNOWN_RED", "action": "legacy_pending", "requested_by": key, "resolved_by": "", "resolution_reason": "Legacy pending approval is unresolved.", "niko_required": True, "timeout_status": "pending", "current_blocker_status": "RED"}
+            for key in _pending
+        ]
+        queue_pending = [
+            {"id": f"gateway:{key}", "category": "UNKNOWN_RED", "action": "gateway_queue", "requested_by": key, "resolved_by": "", "resolution_reason": "Gateway approval queue has unresolved entries.", "niko_required": True, "timeout_status": "pending", "current_blocker_status": "RED"}
+            for key, entries in _gateway_queues.items() if entries
+        ]
+    pending_records.extend(legacy_pending)
+    pending_records.extend(queue_pending)
     return {
         "mvp_execution_profile_active": profile_active,
         "safe_action_auto_approval_active": safe_active,
@@ -1161,23 +1343,50 @@ def approval_status_snapshot() -> dict[str, Any]:
         "last_approval_request_summary": _LAST_APPROVAL_REQUEST.get("summary", ""),
         "last_approval_asked_niko": bool(_LAST_APPROVAL_REQUEST.get("asked_niko", False)),
         "why_it_asked_niko": _LAST_APPROVAL_REQUEST.get("reason", "No approval request recorded yet."),
+        "pending_approvals": pending_records,
+        "resolved_approvals": resolved_records,
+        "current_blocker_status": "RED" if pending_records else "NOISE",
     }
 
 
 def format_approval_status() -> str:
     status = approval_status_snapshot()
     yes_no = lambda value: "yes" if value else "no"
-    return "\n".join([
+    lines = [
         "Approval status",
         f"- MVP execution profile active: {yes_no(status['mvp_execution_profile_active'])}",
         f"- Safe-action auto-approval active: {yes_no(status['safe_action_auto_approval_active'])}",
         f"- Hard gates active: {yes_no(status['hard_gates_active'])}",
+        f"- Current blocker status: {status['current_blocker_status']}",
         f"- Last approval request category: {status['last_approval_request_category']}",
         f"- Last approval request action: {status['last_approval_request_action'] or 'none'}",
         f"- Last approval request summary: {status['last_approval_request_summary'] or 'none'}",
         f"- Asked Niko: {yes_no(status['last_approval_asked_niko'])}",
         f"- Why it asked Niko: {status['why_it_asked_niko']}",
-    ])
+        "",
+        "Pending approvals",
+    ]
+    pending = status["pending_approvals"]
+    if not pending:
+        lines.append("- none")
+    for item in pending:
+        lines.append(
+            f"- {item['id']}: {item['category']} action={item['action']} requested_by={item['requested_by']} "
+            f"resolved_by={item['resolved_by'] or 'pending'} Niko required: {yes_no(item['niko_required'])} "
+            f"timeout={item['timeout_status']} blocker={item['current_blocker_status']} reason={item['resolution_reason']}"
+        )
+    lines.append("")
+    lines.append("Resolved approvals")
+    resolved = status["resolved_approvals"]
+    if not resolved:
+        lines.append("- none")
+    for item in resolved:
+        lines.append(
+            f"- {item['id']}: {item['category']} action={item['action']} requested_by={item['requested_by']} "
+            f"resolved_by={item['resolved_by'] or 'policy'} Niko required: {yes_no(item['niko_required'])} "
+            f"timeout={item['timeout_status']} blocker={item['current_blocker_status']} reason={item['resolution_reason']}"
+        )
+    return "\n".join(lines)
 
 def _clio_mvp_safe_actions_enabled() -> bool:
     """Return True when Clio MVP standing safe-action approvals are active."""
@@ -1206,7 +1415,12 @@ def _is_approved_buidl_setup_or_provider_safe_wrapper(text: str) -> bool:
 def _contains_clio_mvp_hard_gate(text: str) -> bool:
     if _is_approved_buidl_setup_or_provider_safe_wrapper(text):
         return False
-    return bool(_CLIO_MVP_HARD_GATE_RE.search(text or ""))
+    candidate = str(text or "")
+    bare_hard_gate_re = re.compile(
+        r"\b(providers?|prompts?|production|db|dns|billing|credits?|payments?|secrets?|workers?)\b",
+        re.IGNORECASE,
+    )
+    return bool(_CLIO_MVP_HARD_GATE_RE.search(candidate) or bare_hard_gate_re.search(candidate))
 
 
 def _is_clio_mvp_safe_command(command: str) -> bool:
@@ -1250,31 +1464,23 @@ def _is_clio_mvp_safe_execute_code(code: str) -> bool:
 
 def _clio_mvp_auto_approve(action: str, payload: str, description: str) -> bool:
     """Auto-approve already delegated Clio MVP safe engineering actions."""
-    if not _clio_mvp_safe_actions_enabled():
-        _record_approval_status(category="unknown", action=action, summary=payload, reason="Clio MVP safe-action auto-approval is not active.", asked_niko=False)
-        return False
-    if action == "terminal" and not _is_clio_mvp_safe_command(payload):
-        category = "hard_gate" if _contains_clio_mvp_hard_gate(payload + " " + description) else "unknown"
-        _record_approval_status(category=category, action=action, summary=payload, reason="Command is not in the Clio MVP safe-action allowlist or touches a hard gate.", asked_niko=category != "hard_gate")
-        return False
-    if action == "execute_code" and not _is_clio_mvp_safe_execute_code(payload):
-        category = "hard_gate" if _contains_clio_mvp_hard_gate(payload + " " + description) else "unknown"
-        _record_approval_status(category=category, action=action, summary=payload, reason="execute_code payload is not a recognized safe engineering helper or touches a hard gate.", asked_niko=category != "hard_gate")
-        return False
-    if action == "apply_patch" and _contains_clio_mvp_hard_gate(payload + " " + description):
-        _record_approval_status(category="hard_gate", action=action, summary=payload, reason="Patch request mentions a hard approval gate.", asked_niko=False)
-        return False
-    if action not in {"terminal", "execute_code", "apply_patch"}:
-        _record_approval_status(category="unknown", action=action, summary=payload, reason="Unknown approval action category.", asked_niko=True)
-        return False
-    logger.info(
-        "Clio MVP safe-action auto-approved %s: %s (%s)",
-        action,
-        str(payload or "")[:200],
-        str(description or "")[:200],
+    decision = resolve_approval_request(
+        action=action,
+        payload=payload,
+        requested_by="Clio Orchestrator",
+        reason=description,
+        goal_envelope_approved=_is_approved_buidl_setup_or_provider_safe_wrapper(payload) and "approved" in str(description or "").lower(),
     )
-    _record_approval_status(category="safe", action=action, summary=payload, reason="Safe delegated engineering action auto-approved; Niko was not asked.", asked_niko=False)
-    return True
+    if decision.get("approved"):
+        logger.info(
+            "Clio MVP %s auto-approved %s: %s (%s)",
+            decision.get("category"),
+            action,
+            str(payload or "")[:200],
+            str(description or "")[:200],
+        )
+        return True
+    return False
 
 
 def _smart_approve(command: str, description: str) -> str:
@@ -1553,6 +1759,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
     _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    if not resolved:
+        resolve_approval_timeout(
+            action="execute_code" if primary_key == "execute_code" else "terminal",
+            payload=command,
+            requested_by="Gateway approval queue",
+            reason=description,
+        )
     _fire_approval_hook(
         "post_approval_response",
         command=command,

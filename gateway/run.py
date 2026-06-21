@@ -7760,6 +7760,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_commands_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "approval-status":
+                    return await self._handle_approval_status_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
                 if _cmd_def_inner.name == "version":
@@ -10375,6 +10377,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_approval_status_command(self, event: MessageEvent) -> str:
+        """Handle /approval-status command without exposing secrets."""
+        try:
+            from tools.approval import format_approval_status
+            return format_approval_status()
+        except Exception as exc:
+            logger.warning("approval-status command failed: %s", exc)
+            return f"Approval status unavailable: {exc}"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

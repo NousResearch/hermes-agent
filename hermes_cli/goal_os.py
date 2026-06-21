@@ -347,8 +347,18 @@ def _is_ui_or_browser_work(goal: GoalContract, card: TaskCard | None = None) -> 
     return bool(re.search(r"\bui\b", haystack)) or any(marker in haystack for marker in ("browser", "product qa", "design qa", "design quality", "generated website", "live preview"))
 
 
+def _has_pending_approval_blocker() -> bool:
+    try:
+        from tools.approval import has_pending_approval_blockers
+        return has_pending_approval_blockers()
+    except Exception:
+        return False
+
+
 def _has_true_blocker(goal: GoalContract) -> bool:
-    return any(bool(blocker.get("true_blocker")) for blocker in goal.blockers)
+    if any(bool(blocker.get("true_blocker")) for blocker in goal.blockers):
+        return True
+    return _has_pending_approval_blocker()
 
 
 def _has_contradiction(goal: GoalContract) -> bool:
@@ -399,6 +409,8 @@ def evaluate_goal_report_readiness(goal: GoalContract, *, requested_label: str) 
     label = str(requested_label or "").upper()
     if label != "GREEN":
         return GreenReadinessVerdict(classify_report(label), "GREEN guard not requested.")
+    if _has_pending_approval_blocker():
+        return GreenReadinessVerdict("RED", "Unresolved approval request exists.")
     if _has_true_blocker(goal):
         return GreenReadinessVerdict("RED", "Unresolved RED blocker exists.")
     if _has_contradiction(goal):
@@ -617,6 +629,8 @@ class GoalOSManager:
                 break
         if goal is None or card is None:
             return GoalOSReport("RED", "RED: card not found for verifier close.")
+        if _has_true_blocker(goal):
+            return GoalOSReport("RED", "RED: card cannot close while a true blocker or pending approval is unresolved.", goal)
         if actor_role != "Verifier Agent":
             card.status = "verification"
             card.evidence.append({"role": actor_role, **dict(evidence or {}), "at": time.time()})
@@ -715,6 +729,12 @@ class GoalOSManager:
             for blocker in goal.blockers:
                 if blocker.get("true_blocker"):
                     blockers.append(f"- {goal.goal_id}: {blocker.get('reason')}")
+        try:
+            from tools.approval import approval_status_snapshot
+            for item in approval_status_snapshot().get("pending_approvals", []):
+                blockers.append(f"- approval {item.get('id')}: {item.get('category')} {item.get('action')} requires Niko={item.get('niko_required')}")
+        except Exception:
+            pass
         if not blockers:
             return GoalOSReport("GREEN", "GREEN: no true blockers.")
         return GoalOSReport("RED", "RED: true blockers\n" + "\n".join(blockers))

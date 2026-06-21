@@ -421,7 +421,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
 
     Three detectors run in order:
 
-    * cross-profile (#TBD) — writes that hit another profile's
+    * cross-profile — writes that hit another profile's
       ``skills/plugins/cron/memories`` directory.
     * sandbox-mirror (#32049) — writes that hit the
       ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a

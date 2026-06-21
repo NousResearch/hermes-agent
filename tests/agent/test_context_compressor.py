@@ -170,6 +170,40 @@ class TestCompress:
         assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count == 3
 
+    def test_fallback_summary_does_not_triplicate_latest_user_ask(self):
+        """Regression for #49307: the deterministic fallback summary used to
+        render the latest user ask verbatim under THREE headings (Task
+        Snapshot, In-Progress, Pending Asks). The model then re-answered it
+        and buried the genuinely-new post-compaction turn (answer repetition +
+        new-instruction loss). The latest ask must appear ONCE, as historical
+        context only — never re-presented as unfulfilled in-progress/pending
+        work.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)
+
+        unique_ask = "PLEASE_COMPUTE_THE_ARITHMETIC_CHAIN_XYZ"
+        turns = [
+            {"role": "user", "content": unique_ask},
+            {"role": "assistant", "content": "working on it"},
+        ]
+        summary = c._build_static_fallback_summary(turns, reason="provider down")
+
+        # The triplication bug rendered the SAME ``active_task`` line —
+        # formatted as ``User asked: '<ask>'`` — verbatim under three
+        # headings (Task Snapshot, In-Progress, Pending Asks), making the
+        # model treat an already-handled ask as unresolved work and re-answer
+        # it. That exact formatted line must now appear at most ONCE (only as
+        # the historical Task Snapshot record). The raw ask text may still
+        # appear elsewhere (e.g. the "Last Dropped Turns" verbatim transcript),
+        # but never re-labeled as in-progress/pending work.
+        active_task_line = f"User asked: {unique_ask!r}"
+        count = summary.count(active_task_line)
+        assert count <= 1, (
+            f"active_task line should appear at most once (was triplicated in "
+            f"#49307), found {count}x:\n{summary}"
+        )
+
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
         # Default config (abort_on_summary_failure=False) — fallback path
@@ -190,6 +224,39 @@ class TestCompress:
         # (head=assistant, tail=user in this fixture).  Verify the
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
+
+    def test_protect_first_n_decays_after_first_compression(self):
+        """Regression for #11996: protect_first_n must protect early turns on
+        the FIRST compaction but DECAY afterwards, so the same early user
+        messages don't get re-copied verbatim into every child session and
+        fossilize (grow immortal) across a long, repeatedly-compressed
+        session. The system prompt is always protected separately."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3)
+
+        msgs = [{"role": "system", "content": "sys"}] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+            for i in range(10)
+        ]
+
+        # First compaction: protect system + first 3 non-system.
+        assert c.compression_count == 0
+        assert c._effective_protect_first_n() == 3
+        assert c._protect_head_size(msgs) == 1 + 3
+
+        # Simulate having compressed once — early turns now live in the summary.
+        c.compression_count = 1
+        assert c._effective_protect_first_n() == 0
+        assert c._protect_head_size(msgs) == 1  # system prompt only
+
+    def test_protect_first_n_decays_when_previous_summary_exists(self):
+        """Even if compression_count was reset, an existing handoff summary
+        means the early turns are already captured — decay still applies."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3)
+        c.compression_count = 0
+        c._previous_summary = "[CONTEXT SUMMARY]: earlier work"
+        assert c._effective_protect_first_n() == 0
 
 
 class TestGenerateSummaryNoneContent:

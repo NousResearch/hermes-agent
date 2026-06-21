@@ -457,3 +457,60 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+
+class TestCoerceNumberLargeIntegers:
+    """Large integers passed as strings must survive coercion exactly.
+
+    Regression: ``_coerce_number`` used to parse every value via ``float()``
+    and only then narrow to ``int``. IEEE-754 doubles can represent integers
+    exactly only up to 2**53, so a value like a 19-digit Telegram/Discord
+    snowflake, a nanosecond timestamp, a DB row id, or a generation seed was
+    silently rounded to a neighbouring integer with no error raised.
+    """
+
+    def test_value_beyond_2_53_is_exact(self):
+        from model_tools import _coerce_number
+        # 9007199254740993 == 2**53 + 1, the first integer a double cannot hold.
+        assert _coerce_number("9007199254740993", integer_only=True) == 9007199254740993
+
+    def test_19_digit_snowflake_is_exact(self):
+        from model_tools import _coerce_number
+        # A realistic Discord/Telegram-style 64-bit id.
+        assert _coerce_number("12345678901234567", integer_only=True) == 12345678901234567
+
+    def test_large_integer_not_rounded_to_float(self):
+        from model_tools import _coerce_number
+        result = _coerce_number("99999999999999999999")
+        assert result == 99999999999999999999
+        assert isinstance(result, int)
+
+    def test_negative_large_integer_is_exact(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("-9007199254740993", integer_only=True) == -9007199254740993
+
+    def test_large_integer_coerced_through_full_tool_args_path(self):
+        """The fix must hold through the public coerce_tool_args entrypoint,
+        not just the private helper — this is the path every tool call hits."""
+        from model_tools import coerce_tool_args, registry
+
+        schema = {
+            "name": "_precision_probe_tool",
+            "description": "test-only probe",
+            "parameters": {
+                "type": "object",
+                "properties": {"chat_id": {"type": "integer"}},
+            },
+        }
+        registry.register(
+            name="_precision_probe_tool",
+            toolset="_test",
+            schema=schema,
+            handler=lambda args, **kw: "{}",
+        )
+        try:
+            coerced = coerce_tool_args("_precision_probe_tool", {"chat_id": "12345678901234567"})
+            assert coerced["chat_id"] == 12345678901234567
+            assert isinstance(coerced["chat_id"], int)
+        finally:
+            registry.deregister("_precision_probe_tool")

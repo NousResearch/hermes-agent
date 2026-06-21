@@ -785,7 +785,21 @@ def _coerce_json(value: str, expected_python_type: type):
 
 
 def _coerce_number(value: str, integer_only: bool = False):
-    """Try to parse *value* as a number.  Returns original string on failure."""
+    """Try to parse *value* as a number.  Returns original string on failure.
+
+    Plain integer literals are parsed with ``int()`` *before* any ``float()``
+    fallback so that large 64-bit values survive intact. Routing them through
+    ``float()`` first would silently round any magnitude beyond 2**53 (the
+    largest integer an IEEE-754 double can represent exactly), e.g.
+    ``"9007199254740993"`` -> ``9007199254740992`` and a 19-digit Telegram /
+    Discord snowflake or nanosecond timestamp would land on the wrong entity.
+    Only non-integer literals ("3.14", "1e3", "42.0") take the float path.
+    """
+    # Exact integer fast path — no float round-trip, no precision loss.
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        pass
     try:
         f = float(value)
     except (ValueError, OverflowError):
@@ -793,7 +807,8 @@ def _coerce_number(value: str, integer_only: bool = False):
     # Guard against inf/nan — not JSON-serializable, keep original string
     if f != f or f == float("inf") or f == float("-inf"):
         return value
-    # If it looks like an integer (no fractional part), return int
+    # Whole-valued floats ("42.0", "1e3") collapse to int, matching the
+    # historical behaviour for both integer- and number-typed parameters.
     if f == int(f):
         return int(f)
     if integer_only:

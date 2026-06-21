@@ -670,7 +670,7 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
                JOIN skill_nodes n ON t.skill_name = n.name
                WHERE t.term = ? AND t.skill_name NOT IN ({})
                ORDER BY t.strength DESC
-               LIMIT 5""".format(",".join("?" for _ in seen)) if seen else "1=1",
+               LIMIT 5""".format(",".join("?" for _ in seen)) if seen else "NULL",
             (term.lower(),) + (tuple(seen) if seen else ()),
         )
         for row in cursor:

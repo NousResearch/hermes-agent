@@ -53,6 +53,12 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Hermes source/workspace deterministic hot-path search
+    "hermes_source_search", "hermes_source_open",
+    "hermes_source_status", "hermes_source_refresh",
+    # Per-project deterministic hot-path search (user projects outside Hermes)
+    "project_source_search", "project_source_open",
+    "project_source_status", "project_source_refresh",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -153,6 +159,13 @@ TOOLSETS = {
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
+        "includes": []
+    },
+
+    "source_intel": {
+        "description": "Deterministic Hermes + per-project source/workspace hot-path lookup (SQLite FTS5/trigram + ctags). Use before broad source orientation search. hermes_source_* for Hermes-internal lookups; project_source_* for user projects rooted outside Hermes.",
+        "tools": ["hermes_source_search", "hermes_source_open", "hermes_source_status", "hermes_source_refresh",
+                  "project_source_search", "project_source_open", "project_source_status", "project_source_refresh"],
         "includes": []
     },
     

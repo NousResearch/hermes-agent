@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
-import { Spinner } from "@nous-research/ui";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
 import { formatTokenCount } from "@/lib/format";
@@ -60,11 +60,11 @@ export function ModelInfoCard({
             {formatTokenCount(info.effective_context_length)}
           </span>
           {info.config_context_length > 0 ? (
-            <span className="text-amber-500/80 text-[10px]">
+            <span className="text-amber-500 text-xs">
               (override — auto: {formatTokenCount(info.auto_context_length)})
             </span>
           ) : (
-            <span className="text-muted-foreground/60 text-[10px]">
+            <span className="text-text-tertiary text-xs">
               auto-detected
             </span>
           )}
@@ -86,22 +86,22 @@ export function ModelInfoCard({
       {hasCaps && (
         <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
           {caps.supports_tools && (
-            <span className="inline-flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+            <span className="inline-flex items-center gap-1 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
               <Wrench className="h-2.5 w-2.5" /> Tools
             </span>
           )}
           {caps.supports_vision && (
-            <span className="inline-flex items-center gap-1 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+            <span className="inline-flex items-center gap-1 bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
               <Eye className="h-2.5 w-2.5" /> Vision
             </span>
           )}
           {caps.supports_reasoning && (
-            <span className="inline-flex items-center gap-1 bg-purple-500/10 px-2 py-0.5 text-[10px] font-medium text-purple-600 dark:text-purple-400">
+            <span className="inline-flex items-center gap-1 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
               <Brain className="h-2.5 w-2.5" /> Reasoning
             </span>
           )}
           {caps.model_family && (
-            <span className="inline-flex items-center gap-1 bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            <span className="inline-flex items-center gap-1 bg-muted px-2 py-0.5 text-xs font-medium text-text-secondary">
               {caps.model_family}
             </span>
           )}

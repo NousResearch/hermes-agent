@@ -51,10 +51,11 @@ QQ_CLIENT_SECRET=your-app-secret
 | `QQBOT_HOME_CHANNEL` | OpenID for cron/notification delivery | — |
 | `QQBOT_HOME_CHANNEL_NAME` | Display name for home channel | `Home` |
 | `QQ_ALLOWED_USERS` | Comma-separated user OpenIDs for DM access | open (all users) |
+| `QQ_GROUP_ALLOWED_USERS` | Comma-separated group OpenIDs for group access | — |
 | `QQ_ALLOW_ALL_USERS` | Set to `true` to allow all DMs | `false` |
-| `QQ_SANDBOX` | Route requests to the QQ sandbox gateway for development testing | `false` |
+| `QQ_PORTAL_HOST` | Override the QQ portal host (set to `sandbox.q.qq.com` for sandbox routing) | `q.qq.com` |
 | `QQ_STT_API_KEY` | API key for voice-to-text provider | — |
-| `QQ_STT_BASE_URL` | Base URL for STT provider | `https://open.bigmodel.cn/api/coding/paas/v4` |
+| `QQ_STT_BASE_URL` | (Not read directly — set `platforms.qqbot.extra.stt.baseUrl` in `config.yaml` instead) | n/a |
 | `QQ_STT_MODEL` | STT model name | `glm-asr` |
 
 ## Advanced Configuration
@@ -63,7 +64,7 @@ For fine-grained control, add platform settings to `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
-  qq:
+  qqbot:
     enabled: true
     extra:
       app_id: "your-app-id"

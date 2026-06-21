@@ -46,6 +46,22 @@ hermes chat
 
 After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](./installation.md) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
 
+:::warning Messaging platforms (Discord, Telegram, Slack)
+The default package doesn't include messaging platform libraries — they were moved to on-demand installation, which can't work in Nix's read-only environment. If you plan to connect the agent to Discord, Telegram, or Slack, install the `messaging` variant:
+
+```bash
+nix profile install github:NousResearch/hermes-agent#messaging
+```
+
+For all optional extras (voice, all providers, all platforms):
+
+```bash
+nix profile install github:NousResearch/hermes-agent#full
+```
+
+The `full` variant adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
+:::
+
 <details>
 <summary><strong>Building from a local clone</strong></summary>
 
@@ -122,7 +138,9 @@ services.hermes-agent.environmentFiles = [ "/var/lib/hermes/env" ];
 Setting `addToSystemPackages = true` does two things: puts the `hermes` CLI on your system PATH **and** sets `HERMES_HOME` system-wide so the interactive CLI shares state (sessions, skills, cron) with the gateway service. Without it, running `hermes` in your shell creates a separate `~/.hermes/` directory.
 :::
 
-:::info Container-aware CLI
+### Container-aware CLI
+
+:::info
 When `container.enable = true` and `addToSystemPackages = true`, **every** `hermes` command on the host automatically routes into the managed container. This means your interactive CLI session runs inside the same environment as the gateway service — with access to all container-installed packages and tools.
 
 - The routing is transparent: `hermes chat`, `hermes sessions list`, `hermes version`, etc. all exec into the container under the hood
@@ -317,6 +335,7 @@ Quick reference for the most common things Nix users want to customize:
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
 | Give the agent a personality | `${services.hermes-agent.stateDir}/.hermes/SOUL.md` | manage the file directly |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
+| Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
@@ -564,7 +583,7 @@ Host                                    Container
   │   ├── state.db, sessions/, memories/   (runtime state)
   │   └── mcp-tokens/                      (OAuth tokens for MCP servers)
   ├── home/                                ──►  /home/hermes    (rw)
-  └── workspace/                           (MESSAGING_CWD)
+  └── workspace/                           (agent working directory)
       ├── SOUL.md                          (from documents option)
       └── (agent-created files)
 
@@ -643,6 +662,56 @@ services.hermes-agent.extraPythonPackages = [
 
 The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `importlib.metadata` discovers the entry point at session start.
 
+### Optional Dependency Groups (`extraDependencyGroups`)
+
+For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra not in the default `[all]` set — on Nix, runtime installation into the read-only store is not possible.
+
+```nix
+# Enable Discord, Telegram, Slack
+services.hermes-agent.extraDependencyGroups = [ "messaging" ];
+```
+
+```nix
+# Enable a memory provider
+services.hermes-agent = {
+  extraDependencyGroups = [ "hindsight" ];
+  settings.memory.provider = "hindsight";
+};
+```
+
+This is resolved by uv alongside core dependencies — no PYTHONPATH patching, no collision risk. Available groups:
+
+| Group | What it enables |
+|-------|-----------------|
+| `messaging` | Discord, Telegram, Slack |
+| `matrix` | Matrix/Element (mautrix with encryption; Linux only) |
+| `dingtalk` | DingTalk |
+| `feishu` | Feishu/Lark |
+| `voice` | Local speech-to-text (faster-whisper) |
+| `edge-tts` | Edge TTS provider |
+| `tts-premium` | ElevenLabs TTS |
+| `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
+| `bedrock` | AWS Bedrock (boto3) |
+| `azure-identity` | Azure Entra ID auth |
+| `honcho` | Honcho memory provider |
+| `hindsight` | Hindsight memory provider |
+| `modal` | Modal terminal backend |
+| `daytona` | Daytona terminal backend |
+| `exa` | Exa web search |
+| `firecrawl` | Firecrawl web search |
+| `fal` | FAL image generation |
+
+Or use the pre-built `#messaging` or `#full` flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
+
+**When to use which:**
+
+| Need | Option |
+|------|--------|
+| Enable a pyproject.toml optional extra | `extraDependencyGroups` |
+| Add an external Python plugin not in pyproject.toml | `extraPythonPackages` |
+| Add a system binary (pandoc, jq, etc.) | `extraPackages` |
+| Add a directory-based plugin source tree | `extraPlugins` |
+
 ### Combining Both
 
 A directory plugin with third-party Python dependencies needs both options:
@@ -664,7 +733,9 @@ External flakes can override the package directly:
   inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
   outputs = { hermes-agent, nixpkgs, ... }: {
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
-    # Then: pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+    # Then:
+    #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "hindsight" ]; }
   };
 }
 ```
@@ -690,15 +761,15 @@ A build-time collision check prevents plugin packages from shadowing core hermes
 
 ### Dev Shell
 
-The flake provides a development shell with Python 3.11, uv, Node.js, and all runtime tools:
+The flake provides a development shell with Python 3.12, uv, Node.js, and all runtime tools:
 
 ```bash
 cd hermes-agent
 nix develop
 
 # Shell provides:
-#   - Python 3.11 + uv (deps installed into .venv on first entry)
-#   - Node.js 20, ripgrep, git, openssh, ffmpeg on PATH
+#   - Python 3.12 + uv (deps installed into .venv on first entry)
+#   - Node.js 22, ripgrep, git, openssh, ffmpeg on PATH
 #   - Stamp-file optimization: re-entry is near-instant if deps haven't changed
 
 hermes setup
@@ -760,7 +831,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `group` | `str` | `"hermes"` | System group |
 | `createUser` | `bool` | `true` | Auto-create user/group |
 | `stateDir` | `str` | `"/var/lib/hermes"` | State directory (`HERMES_HOME` parent) |
-| `workingDirectory` | `str` | `"${stateDir}/workspace"` | Agent working directory (`MESSAGING_CWD`) |
+| `workingDirectory` | `str` | `"${stateDir}/workspace"` | Agent working directory |
 | `addToSystemPackages` | `bool` | `false` | Add `hermes` CLI to system PATH and set `HERMES_HOME` system-wide |
 
 ### Configuration
@@ -810,6 +881,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
+| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["hindsight"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | systemd `Restart=` policy |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` value |
 
@@ -846,7 +918,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 │   ├── cron/
 │   └── logs/
 ├── home/                            # Agent HOME
-└── workspace/                       # MESSAGING_CWD
+└── workspace/                       # Agent working directory
     ├── SOUL.md                      # From documents option
     └── (agent-created files)
 ```
@@ -867,8 +939,8 @@ Same layout, mounted into the container:
 ## Updating
 
 ```bash
-# Update the flake input
-nix flake update hermes-agent --flake /etc/nixos
+# Update the flake input (run from the directory containing flake.nix)
+cd /etc/nixos && nix flake update hermes-agent
 
 # Rebuild
 sudo nixos-rebuild switch
@@ -939,10 +1011,11 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Cannot save configuration: managed by NixOS` | CLI guards active | Edit `configuration.nix` and `nixos-rebuild switch` |
+| `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Check `journalctl -u hermes-agent` for `FeatureUnavailable` or `requirements not met` for the underlying error. |
 | Container recreated unexpectedly | `extraVolumes`, `extraOptions`, or `image` changed | Expected — writable layer resets. Reinstall packages or use a custom image |
 | `hermes version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
 | Permission denied on `/var/lib/hermes` | State dir is `0750 hermes:hermes` | Use `docker exec` or `sudo -u hermes` |
 | `nix-collect-garbage` removed hermes | GC root missing | Restart the service (preStart recreates the GC root) |
-| `no container with name or ID "hermes-agent"` (Podman) | Podman rootful container not visible to regular user | Add passwordless sudo for podman (see [Container-aware CLI](#container-aware-cli) section) |
+| `no container with name or ID "hermes-agent"` (Podman) | Podman rootful container not visible to regular user | Add passwordless sudo for podman (see [Container Mode](#container-mode) section) |
 | `unable to find user hermes` | Container still starting (entrypoint hasn't created user yet) | Wait a few seconds and retry — the CLI retries automatically |
 | Tool added via `extraPackages` not found in terminal | Requires `nixos-rebuild switch` to update the per-user profile | Rebuild and restart: `nixos-rebuild switch && systemctl restart hermes-agent` |

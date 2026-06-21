@@ -1,9 +1,61 @@
-import { Box, Link, Text } from '@hermes/ink'
+import { Box, Link, stringWidth, Text } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
+import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
+import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
+
+// `\boxed{X}` regions in `texToUnicode` output are marked with the
+// non-printable U+0001 / U+0002 sentinels. Split on them and render the
+// boxed segment with `inverse + bold` so it reads as a highlighter-pen
+// emphasis on top of whatever color the parent `<Text>` is using (the
+// theme accent for math). The leading / trailing space inside the
+// highlight gives a one-cell visual margin so the highlight reads as a
+// block, not a hug.
+const renderMath = (text: string): ReactNode => {
+  if (!text.includes(BOX_OPEN)) {
+    return text
+  }
+
+  const out: ReactNode[] = []
+  let i = 0
+  let key = 0
+
+  while (i < text.length) {
+    const start = text.indexOf(BOX_OPEN, i)
+
+    if (start < 0) {
+      out.push(text.slice(i))
+
+      break
+    }
+
+    if (start > i) {
+      out.push(text.slice(i, start))
+    }
+
+    const end = text.indexOf(BOX_CLOSE, start + 1)
+
+    if (end < 0) {
+      out.push(text.slice(start))
+
+      break
+    }
+
+    out.push(
+      <Text bold inverse key={key++}>
+        {' '}
+        {text.slice(start + 1, end)}{' '}
+      </Text>
+    )
+
+    i = end + 1
+  }
+
+  return out
+}
 
 const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
 const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/
@@ -18,6 +70,21 @@ const NUMBERED_RE = /^(\s*)(\d+)[.)]\s+(.*)$/
 const QUOTE_RE = /^\s*(?:>\s*)+/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
+const MD_IDENTIFIER_RE = '[A-Za-z_][A-Za-z0-9_]*'
+const MD_DUNDER_IDENTIFIER_RE = `(?:${MD_IDENTIFIER_RE}__(?!\\w))`
+const MD_UNDERSCORE_BOLD_RE = `(?<!\\w)__(?!${MD_DUNDER_IDENTIFIER_RE})(.+?)__(?!\\w)`
+const MD_UNDERSCORE_ITALIC_RE = `(?<![\\w_])_(?!_)(.+?)(?<!_)_(?![\\w_])`
+const STRIP_UNDERSCORE_BOLD_RE = new RegExp(MD_UNDERSCORE_BOLD_RE, 'g')
+const STRIP_UNDERSCORE_ITALIC_RE = new RegExp(MD_UNDERSCORE_ITALIC_RE, 'g')
+
+// Display math openers: `$$ ... $$` (TeX) and `\[ ... \]` (LaTeX). The
+// opener is matched only when `$$` / `\[` appears at the very start of the
+// trimmed line — `startsWith('$$')` used to fire on prose like
+// `$$x+y$$ followed by more`, opening a block that never closed because the
+// trailing `$$` on the same line was invisible to the close-scan loop.
+const MATH_BLOCK_OPEN_RE = /^\s*(\$\$|\\\[)(.*)$/
+const MATH_BLOCK_CLOSE_DOLLAR_RE = /^(.*?)\$\$\s*$/
+const MATH_BLOCK_CLOSE_BRACKET_RE = /^(.*?)\\\]\s*$/
 
 export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
 export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
@@ -31,6 +98,13 @@ export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 // `thing ~! more ~?` from Kimi / Qwen / GLM (kaomoji-style decorators)
 // doesn't pair up the first `~` with the next one on the line and swallow
 // the text between them as a dim `_`-prefixed span.
+//
+// Inline math (`$x$` and `\(x\)`) takes precedence over emphasis at the
+// same start position because regex alternation is leftmost-first; a
+// dollar-delimited span at column N wins over a `*` at column N+1, so
+// `$P=a*b*c$` renders as math instead of having `*b*` corrupted into
+// italics. Single-character minimums and "no space adjacent to delimiter"
+// rules keep currency prose like `$5 to $10` from being swallowed.
 export const INLINE_RE = new RegExp(
   [
     `!\\[(.*?)\\]\\(${MD_URL_RE}\\)`, // 1,2  image
@@ -39,14 +113,20 @@ export const INLINE_RE = new RegExp(
     `~~(.+?)~~`, // 6    strike
     `\`([^\\\`]+)\``, // 7    code
     `\\*\\*(.+?)\\*\\*`, // 8    bold *
-    `(?<!\\w)__(.+?)__(?!\\w)`, // 9    bold _
+    MD_UNDERSCORE_BOLD_RE, // 9    bold _
     `\\*(.+?)\\*`, // 10   italic *
-    `(?<!\\w)_(.+?)_(?!\\w)`, // 11   italic _
+    MD_UNDERSCORE_ITALIC_RE, // 11   italic _
     `==(.+?)==`, // 12   highlight
     `\\[\\^([^\\]]+)\\]`, // 13   footnote ref
     `\\^([^^\\s][^^]*?)\\^`, // 14   superscript
     `~([A-Za-z0-9]{1,8})~`, // 15   subscript
-    `https?:\\/\\/[^\\s<]+` //  16   bare URL
+    `(https?:\\/\\/[^\\s<]+)`, // 16   bare URL — wrapped so it owns its own
+    //                                capture group; without this, the math
+    //                                spans below would land in m[16] and the
+    //                                MdInline dispatcher would treat them as
+    //                                bare URLs and render them as autolinks.
+    `(?<!\\$)\\$([^\\s$](?:[^$\\n]*?[^\\s$])?)\\$(?!\\$)`, // 17   inline math $...$
+    `\\\\\\(([^\\n]+?)\\\\\\)` // 18   inline math \(...\)
   ].join('|'),
   'g'
 )
@@ -70,13 +150,43 @@ const isTableDivider = (row: string) => {
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
-const renderAutolink = (k: number, t: Theme, raw: string) => (
-  <Link key={k} url={autolinkUrl(raw)}>
-    <Text color={t.color.accent} underline>
-      {raw.replace(/^mailto:/, '')}
-    </Text>
-  </Link>
-)
+const defaultLinkLabel = (url: string) =>
+  url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
+
+const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
+  const trimmed = label?.trim()
+
+  if (!trimmed) {
+    return undefined
+  }
+
+  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
+}
+
+interface ResolvedLinkProps {
+  fallbackLabel?: string
+  t: Theme
+  url: string
+}
+
+function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
+  const fetched = useLinkTitle(url)
+  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+
+  return (
+    <Link url={url}>
+      <Text color={t.color.accent} underline>
+        {display}
+      </Text>
+    </Link>
+  )
+}
+
+const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+  const target = normalizeExternalUrl(rawUrl)
+
+  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
+}
 
 export const stripInlineMarkup = (v: string) =>
   v
@@ -86,46 +196,298 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/(?<!\w)__(.+?)__(?!\w)/g, '$1')
+    .replace(STRIP_UNDERSCORE_BOLD_RE, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
+    .replace(STRIP_UNDERSCORE_ITALIC_RE, '$1')
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
     .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
+    .replace(/(?<!\$)\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\$)/g, '$1')
+    .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
-const renderTable = (k: number, rows: string[][], t: Theme) => {
-  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
+const SAFETY_MARGIN = 4
+const MIN_COL_WIDTH = 3
+const COL_GAP = 2 // the '  ' between columns
+const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
 
-  // Thin divider under the header.  Without it tables look like prose
-  // with extra spacing because the header is just amber-coloured text
-  // (#15534).  We avoid full borders on purpose — column widths come
-  // from `stripInlineMarkup(...).length` (UTF-16 code units, not
-  // display width), so a real outline often misaligns on emoji and
-  // East-Asian wide characters; one dim solid rule (`─`) under row 0
-  // plus tab-style column gaps reads cleanly on every terminal we
-  // tested.
-  const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
+  // Guard: empty table
+  if (rows.length === 0 || rows[0]!.length === 0) return null
 
-  return (
-    <Box flexDirection="column" key={k} paddingLeft={2}>
-      {rows.map((row, ri) => (
-        <Fragment key={ri}>
-          <Box>
-            {widths.map((w, ci) => (
-              <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} key={ci}>
-                <MdInline t={t} text={row[ci] ?? ''} />
-                {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
-                {ci < widths.length - 1 ? '  ' : ''}
-              </Text>
-            ))}
-          </Box>
-          {ri === 0 && rows.length > 1 ? (
-            <Text color={t.color.muted} dimColor>
-              {sep}
+  const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
+
+  // Minimum width: longest word in a cell (to avoid breaking words)
+  const minCellWidth = (raw: string) => {
+    const text = stripInlineMarkup(raw)
+    const words = text.split(/\s+/).filter(w => w.length > 0)
+    if (words.length === 0) return MIN_COL_WIDTH
+    return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
+  }
+
+  const numCols = rows[0]!.length
+
+  // Normalize ragged rows: ensure every row has exactly numCols cells
+  const normalizedRows = rows.map(row => {
+    if (row.length >= numCols) return row.slice(0, numCols)
+    return [...row, ...Array<string>(numCols - row.length).fill('')]
+  })
+
+  // Ideal widths: max cell content per column
+  const idealWidths = normalizedRows[0]!.map((_, ci) =>
+    Math.max(...normalizedRows.map(r => cellDisplayWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+  )
+
+  // Min widths: longest word per column
+  const minWidths = normalizedRows[0]!.map((_, ci) =>
+    Math.max(...normalizedRows.map(r => minCellWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+  )
+
+  // Available width: cols minus table padding minus column gaps minus safety.
+  // transcriptBodyWidth (source of cols) subtracts message gutter + scrollbar,
+  // but NOT this table's paddingLeft — we subtract it here.
+  const gapOverhead = (numCols - 1) * COL_GAP
+  const availableWidth = cols
+    ? Math.max(cols - TABLE_PADDING_LEFT - gapOverhead - SAFETY_MARGIN, numCols * MIN_COL_WIDTH)
+    : Infinity
+
+  const totalIdeal = idealWidths.reduce((a, b) => a + b, 0)
+  const totalMin = minWidths.reduce((a, b) => a + b, 0)
+
+  let columnWidths: number[]
+  let needsWrap = false
+
+  if (totalIdeal <= availableWidth) {
+    // Tier 1: everything fits at ideal widths
+    columnWidths = idealWidths
+  } else if (totalMin <= availableWidth) {
+    // Tier 2: proportional shrink — distribute extra space beyond minimums
+    needsWrap = true
+    const extraSpace = availableWidth - totalMin
+    const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!)
+    const totalOverflow = overflows.reduce((a, b) => a + b, 0)
+    if (totalOverflow === 0) {
+      columnWidths = [...minWidths]
+    } else {
+      const rawAlloc = minWidths.map((min, i) =>
+        min + (overflows[i]! / totalOverflow) * extraSpace
+      )
+      columnWidths = rawAlloc.map(v => Math.floor(v))
+      // Distribute rounding remainders to columns with largest fractional part
+      let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
+      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
+        .sort((a, b) => b.frac - a.frac)
+      for (const { i } of fracs) {
+        if (remainder <= 0) break
+        columnWidths[i]!++
+        remainder--
+      }
+    }
+  } else {
+    // Tier 3: even min-widths don't fit — scale proportionally, allow hard breaks.
+    // NOTE: Math.max(..., MIN_COL_WIDTH) can push total above availableWidth when
+    // many columns are scaled below 3. This is caught by safetyOverflow → vertical fallback.
+    needsWrap = true
+    const scaleFactor = availableWidth / totalMin
+    const rawAlloc = minWidths.map(w => w * scaleFactor)
+    columnWidths = rawAlloc.map(v => Math.max(Math.floor(v), MIN_COL_WIDTH))
+    let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
+    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
+      .sort((a, b) => b.frac - a.frac)
+    for (const { i } of fracs) {
+      if (remainder <= 0) break
+      columnWidths[i]!++
+      remainder--
+    }
+  }
+
+  // Grapheme-safe hard-break: prefer Intl.Segmenter, fall back to code-point split
+  const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
+    ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
+    : null
+
+  const graphemes = (s: string): string[] =>
+    segmenter
+      ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment)
+      : [...s]
+
+  // Word-wrap plain text to fit within `width` display columns.
+  // Operates on stripped text for correct width measurement.
+  const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
+    const text = stripInlineMarkup(raw)
+    if (width <= 0) return [text]
+    if (stringWidth(text) <= width) return [text]
+
+    const words = text.split(/\s+/).filter(w => w.length > 0)
+    const lines: string[] = []
+    let current = ''
+    let currentWidth = 0
+
+    for (const word of words) {
+      const w = stringWidth(word)
+      if (currentWidth === 0) {
+        if (hard && w > width) {
+          for (const ch of graphemes(word)) {
+            const cw = stringWidth(ch)
+            if (currentWidth + cw > width && current) {
+              lines.push(current)
+              current = ''
+              currentWidth = 0
+            }
+            current += ch
+            currentWidth += cw
+          }
+        } else {
+          current = word
+          currentWidth = w
+        }
+      } else if (currentWidth + 1 + w <= width) {
+        current += ' ' + word
+        currentWidth += 1 + w
+      } else {
+        lines.push(current)
+        current = word
+        currentWidth = w
+      }
+    }
+    if (current) lines.push(current)
+    return lines.length > 0 ? lines : ['']
+  }
+
+  const isHard = totalMin > availableWidth // tier 3 needs hard word breaks
+  const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+
+  // When wrapping isn't needed, build single-line strings per row.
+  // All cells render as plain text via stripInlineMarkup.
+  // TODO: follow-up — format to ANSI then wrap with wrapAnsi for inline markdown preservation.
+  // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
+  if (!needsWrap) {
+    const buildRowString = (row: string[]): string =>
+      row.map((cell, ci) => {
+        const text = stripInlineMarkup(cell)
+        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
+        const gap = ci < numCols - 1 ? '  ' : ''
+        return text + pad + gap
+      }).join('')
+
+    return (
+      <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+        {normalizedRows.map((row, ri) => (
+          <Fragment key={ri}>
+            <Text
+              bold={ri === 0}
+              color={ri === 0 ? t.color.accent : undefined}
+              wrap="truncate-end"
+            >
+              {buildRowString(row)}
             </Text>
-          ) : null}
-        </Fragment>
+            {ri === 0 && normalizedRows.length > 1 ? (
+              <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>
+            ) : null}
+          </Fragment>
+        ))}
+      </Box>
+    )
+  }
+
+  // Wrapping path: build multi-line rows as complete strings.
+  type LineEntry = { text: string; kind: 'header' | 'separator' | 'body' }
+
+  const buildRowLines = (row: string[]): string[] => {
+    const cellLines = row.map((cell, ci) =>
+      wrapCell(cell, columnWidths[ci]!, isHard)
+    )
+    const maxLines = Math.max(...cellLines.map(l => l.length), 1)
+
+    const result: string[] = []
+    for (let li = 0; li < maxLines; li++) {
+      let line = ''
+      for (let ci = 0; ci < numCols; ci++) {
+        const cl = cellLines[ci] ?? ['']
+        const cellText = li < cl.length ? cl[li]! : ''
+        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(cellText)))
+        line += cellText + pad
+        if (ci < numCols - 1) line += '  '
+      }
+      result.push(line)
+    }
+    return result
+  }
+
+  // Build all lines with metadata for styling, tracking tallest body row
+  const allEntries: LineEntry[] = []
+  let tallestBodyRow = 0
+  normalizedRows.forEach((row, ri) => {
+    const kind = ri === 0 ? 'header' as const : 'body' as const
+    const rowLines = buildRowLines(row)
+    rowLines.forEach(text => allEntries.push({ text, kind }))
+    if (ri > 0) tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+    if (ri === 0 && normalizedRows.length > 1) {
+      allEntries.push({ text: sep, kind: 'separator' })
+    }
+  })
+
+  // Post-render safety condition: compute max line width.
+  const maxLineWidth = Math.max(...allEntries.map(e => stringWidth(e.text)))
+  const safetyOverflow = cols != null && maxLineWidth > cols - TABLE_PADDING_LEFT - SAFETY_MARGIN
+
+  // Scaled vertical threshold — 2-3 col tables stay tabular even with tall cells
+  const maxRowLinesThreshold = numCols <= 3 ? 8 : numCols <= 6 ? 5 : 4
+
+  const useVertical = tallestBodyRow > maxRowLinesThreshold || safetyOverflow
+
+  if (useVertical) {
+    // Edge case: header-only table
+    if (normalizedRows.length <= 1) {
+      return (
+        <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+          <Text bold color={t.color.accent} wrap="wrap-trim">
+            {normalizedRows[0]!.map(h => stripInlineMarkup(h)).join(' · ')}
+          </Text>
+        </Box>
+      )
+    }
+
+    const headers = normalizedRows[0]!
+    const dataRows = normalizedRows.slice(1)
+    const sepWidth = Math.max(1, cols ? Math.min(cols - TABLE_PADDING_LEFT - 1, 40) : 40)
+
+    return (
+      <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+        {dataRows.map((row, ri) => (
+          <Fragment key={ri}>
+            {ri > 0 ? (
+              <Text color={t.color.muted} dimColor>{'─'.repeat(sepWidth)}</Text>
+            ) : null}
+            {headers.map((header, ci) => {
+              const cell = row[ci] ?? ''
+              const label = stripInlineMarkup(header) || `Col ${ci + 1}`
+              return (
+                <Text key={ci} wrap="wrap-trim">
+                  <Text bold color={t.color.accent}>{label}:</Text>
+                  {' '}{stripInlineMarkup(cell)}
+                </Text>
+              )
+            })}
+          </Fragment>
+        ))}
+      </Box>
+    )
+  }
+
+  // Render wrapped horizontal rows — one <Text> per visual line.
+  return (
+    <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+      {allEntries.map((entry, i) => (
+        <Text
+          bold={entry.kind === 'header'}
+          color={entry.kind === 'header' ? t.color.accent : entry.kind === 'separator' ? t.color.muted : undefined}
+          dimColor={entry.kind === 'separator'}
+          key={i}
+          wrap="truncate-end"
+        >
+          {entry.text}
+        </Text>
       ))}
     </Box>
   )
@@ -151,43 +513,45 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[3] && m[4]) {
-      parts.push(
-        <Link key={parts.length} url={m[4]}>
-          <Text color={t.color.accent} underline>
-            {m[3]}
-          </Text>
-        </Link>
-      )
+      parts.push(renderResolvedLink(parts.length, t, m[4], m[3]))
     } else if (m[5]) {
-      parts.push(renderAutolink(parts.length, t, m[5]))
+      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
-          {m[6]}
+          <MdInline t={t} text={m[6]} />
         </Text>
       )
     } else if (m[7]) {
+      // Code is the one wrap that does NOT recurse — inline `code` spans
+      // are verbatim by definition. Letting MdInline reprocess them
+      // would corrupt regex examples and shell snippets.
       parts.push(
         <Text color={t.color.accent} dimColor key={parts.length}>
           {m[7]}
         </Text>
       )
     } else if (m[8] ?? m[9]) {
+      // Recurse into bold / italic / strike / highlight so nested
+      // `$...$` math (and other inline tokens) inside a `**bolded
+      // statement with $\mathbb{Z}$ math**` actually render. Without
+      // this the inner content is dropped into a single `<Text bold>`
+      // verbatim and the math renderer never sees it.
       parts.push(
         <Text bold key={parts.length}>
-          {m[8] ?? m[9]}
+          <MdInline t={t} text={m[8] ?? m[9]!} />
         </Text>
       )
     } else if (m[10] ?? m[11]) {
       parts.push(
         <Text italic key={parts.length}>
-          {m[10] ?? m[11]}
+          <MdInline t={t} text={m[10] ?? m[11]!} />
         </Text>
       )
     } else if (m[12]) {
       parts.push(
         <Text backgroundColor={t.color.diffAdded} color={t.color.diffAddedWord} key={parts.length}>
-          {m[12]}
+          <MdInline t={t} text={m[12]} />
         </Text>
       )
     } else if (m[13]) {
@@ -213,11 +577,24 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       // so `see https://x.com/, which…` keeps the comma outside the link.
       const url = m[16].replace(/[),.;:!?]+$/g, '')
 
-      parts.push(renderAutolink(parts.length, t, url))
+      parts.push(renderResolvedLink(parts.length, t, url))
 
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
       }
+    } else if (m[17] ?? m[18]) {
+      // Inline math is run through `texToUnicode` (Greek letters, ℕℤℚℝ,
+      // operators, sub/superscripts, fractions) and rendered in italic
+      // accent. Italic is the disambiguator — links use accent+underline,
+      // so without italic readers can't tell `\mathbb{R}` (math) from a
+      // hyperlinked word. Anything `texToUnicode` doesn't recognise is
+      // preserved verbatim, so unfamiliar commands just look like their
+      // raw LaTeX rather than vanishing.
+      parts.push(
+        <Text color={t.color.accent} italic key={parts.length}>
+          {renderMath(texToUnicode(m[17] ?? m[18]!))}
+        </Text>
+      )
     }
 
     last = i + m[0].length
@@ -227,7 +604,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
   }
 
-  return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
+  return <Text wrap="wrap-trim">{parts.length ? parts : text}</Text>
 }
 
 // Cross-instance parsed-children cache: useMemo's per-instance cache dies
@@ -268,10 +645,10 @@ const cacheSet = (b: Map<string, ReactNode[]>, key: string, v: ReactNode[]) => {
   }
 }
 
-function MdImpl({ compact, t, text }: MdProps) {
+function MdImpl({ cols, compact, t, text }: MdProps) {
   const nodes = useMemo(() => {
     const bucket = cacheBucket(t)
-    const cacheKey = `${compact ? '1' : '0'}|${text}`
+    const cacheKey = `${compact ? '1' : '0'}|${cols ?? ''}|${text}`
     const cached = cacheGet(bucket, cacheKey)
 
     if (cached) {
@@ -324,7 +701,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (media) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             {'▸ '}
 
             <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
@@ -363,7 +740,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
         if (['md', 'markdown'].includes(lang)) {
           start('paragraph')
-          nodes.push(<Md compact={compact} key={key} t={t} text={block.join('\n')} />)
+          nodes.push(<Md cols={cols} compact={compact} key={key} t={t} text={block.join('\n')} />)
 
           continue
         }
@@ -415,32 +792,80 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      if (line.trim().startsWith('$$')) {
-        start('code')
+      const mathOpen = line.match(MATH_BLOCK_OPEN_RE)
 
+      if (mathOpen) {
+        const opener = mathOpen[1]!
+        const closeRe = opener === '$$' ? MATH_BLOCK_CLOSE_DOLLAR_RE : MATH_BLOCK_CLOSE_BRACKET_RE
+        const headRest = mathOpen[2] ?? ''
         const block: string[] = []
 
-        for (i++; i < lines.length; i++) {
-          if (lines[i]!.trim().startsWith('$$')) {
-            i++
+        // Single-line block: `$$x + y = z$$` or `\[x\]`. Capture inner content
+        // and emit the block immediately. Without this, the close-scan loop
+        // skips line `i` and treats the next opener as our closer, swallowing
+        // every paragraph in between.
+        const sameLineClose = headRest.match(closeRe)
+
+        if (sameLineClose) {
+          const inner = sameLineClose[1]!.trim()
+
+          start('code')
+          nodes.push(
+            <Box flexDirection="column" key={key} paddingLeft={2}>
+              {inner ? <Text color={t.color.accent}>{renderMath(texToUnicode(inner))}</Text> : null}
+            </Box>
+          )
+          i++
+
+          continue
+        }
+
+        // Multi-line block: scan ahead for a real closer before committing.
+        // If none exists in the rest of the document, render this line as a
+        // paragraph instead of consuming everything that follows.
+        let closeIdx = -1
+
+        for (let j = i + 1; j < lines.length; j++) {
+          if (closeRe.test(lines[j]!)) {
+            closeIdx = j
 
             break
           }
-
-          block.push(lines[i]!)
         }
 
+        if (closeIdx < 0) {
+          start('paragraph')
+          nodes.push(<MdInline key={key} t={t} text={line} />)
+          i++
+
+          continue
+        }
+
+        if (headRest.trim()) {
+          block.push(headRest)
+        }
+
+        for (let j = i + 1; j < closeIdx; j++) {
+          block.push(lines[j]!)
+        }
+
+        const tail = lines[closeIdx]!.match(closeRe)![1]!.trimEnd()
+
+        if (tail.trim()) {
+          block.push(tail)
+        }
+
+        start('code')
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            <Text color={t.color.muted}>─ math</Text>
-
             {block.map((l, j) => (
               <Text color={t.color.accent} key={j}>
-                {l}
+                {renderMath(texToUnicode(l))}
               </Text>
             ))}
           </Box>
         )
+        i = closeIdx + 1
 
         continue
       }
@@ -450,8 +875,8 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (heading) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key}>
-            {heading}
+          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
+            <MdInline t={t} text={heading} />
           </Text>
         )
         i++
@@ -462,8 +887,8 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (i + 1 < lines.length && SETEXT_RE.test(lines[i + 1]!)) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key}>
-            {line.trim()}
+          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
+            <MdInline t={t} text={line.trim()} />
           </Text>
         )
         i += 2
@@ -488,7 +913,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (footnote) {
         start('list')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             [{footnote[1]}] <MdInline t={t} text={footnote[2] ?? ''} />
           </Text>
         )
@@ -497,7 +922,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
           nodes.push(
             <Box key={`${key}-cont-${i}`} paddingLeft={2}>
-              <Text color={t.color.muted}>
+              <Text color={t.color.muted} wrap="wrap-trim">
                 <MdInline t={t} text={lines[i]!.trim()} />
               </Text>
             </Box>
@@ -511,7 +936,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (i + 1 < lines.length && DEF_RE.test(lines[i + 1]!)) {
         start('list')
         nodes.push(
-          <Text bold key={key}>
+          <Text bold key={key} wrap="wrap-trim">
             {line.trim()}
           </Text>
         )
@@ -525,7 +950,7 @@ function MdImpl({ compact, t, text }: MdProps) {
           }
 
           nodes.push(
-            <Text key={`${key}-def-${i}`}>
+            <Text key={`${key}-def-${i}`} wrap="wrap-trim">
               <Text color={t.color.muted}> · </Text>
               <MdInline t={t} text={def} />
             </Text>
@@ -545,14 +970,12 @@ function MdImpl({ compact, t, text }: MdProps) {
         const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
 
         nodes.push(
-          <Text key={key}>
-            <Text color={t.color.muted}>
-              {' '.repeat(indentDepth(bullet[1]!) * 2)}
-              {marker}{' '}
+          <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
+            <Text wrap="wrap-trim">
+              <Text color={t.color.muted}>{marker} </Text>
+              <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
-
-            <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
-          </Text>
+          </Box>
         )
         i++
 
@@ -564,14 +987,12 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (numbered) {
         start('list')
         nodes.push(
-          <Text key={key}>
-            <Text color={t.color.muted}>
-              {' '.repeat(indentDepth(numbered[1]!) * 2)}
-              {numbered[2]}.{' '}
+          <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
+            <Text wrap="wrap-trim">
+              <Text color={t.color.muted}>{numbered[2]}. </Text>
+              <MdInline t={t} text={numbered[3]!} />
             </Text>
-
-            <MdInline t={t} text={numbered[3]!} />
-          </Text>
+          </Box>
         )
         i++
 
@@ -593,11 +1014,11 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key}>
             {quoteLines.map((ql, qi) => (
-              <Text color={t.color.muted} key={qi}>
-                {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
-                {'│ '}
-                <MdInline t={t} text={ql.text} />
-              </Text>
+              <Box key={qi} paddingLeft={Math.max(0, ql.depth - 1) * 2}>
+                <Text color={t.color.muted} wrap="wrap-trim">
+                  │ <MdInline t={t} text={ql.text} />
+                </Text>
+              </Box>
             ))}
           </Box>
         )
@@ -614,7 +1035,7 @@ function MdImpl({ compact, t, text }: MdProps) {
           rows.push(splitRow(lines[i]!))
         }
 
-        nodes.push(renderTable(key, rows, t))
+        nodes.push(renderTable(key, rows, t, cols))
 
         continue
       }
@@ -630,7 +1051,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (summary) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             ▶ {summary}
           </Text>
         )
@@ -642,7 +1063,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (/^<\/?[^>]+>$/.test(line.trim())) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             {line.trim()}
           </Text>
         )
@@ -667,7 +1088,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         }
 
         if (rows.length) {
-          nodes.push(renderTable(key, rows, t))
+          nodes.push(renderTable(key, rows, t, cols))
         }
 
         continue
@@ -681,7 +1102,7 @@ function MdImpl({ compact, t, text }: MdProps) {
     cacheSet(bucket, cacheKey, nodes)
 
     return nodes
-  }, [compact, t, text])
+  }, [cols, compact, t, text])
 
   return <Box flexDirection="column">{nodes}</Box>
 }
@@ -691,6 +1112,7 @@ export const Md = memo(MdImpl)
 type Kind = 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'rule' | 'table' | null
 
 interface MdProps {
+  cols?: number
   compact?: boolean
   t: Theme
   text: string

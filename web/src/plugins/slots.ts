@@ -46,6 +46,8 @@ import React, { Fragment, useEffect, useState } from "react";
  *  - `cron:bottom`      — bottom of /cron page
  *  - `skills:top`       — top of /skills page
  *  - `skills:bottom`    — bottom of /skills page
+ *  - `plugins:top`       — top of /plugins page
+ *  - `plugins:bottom`    — bottom of /plugins page
  *  - `config:top`       — top of /config page
  *  - `config:bottom`    — bottom of /config page
  *  - `env:top`          — top of /env (Keys) page
@@ -78,6 +80,8 @@ export const KNOWN_SLOT_NAMES = [
   "cron:bottom",
   "skills:top",
   "skills:bottom",
+  "plugins:top",
+  "plugins:bottom",
   "config:top",
   "config:bottom",
   "env:top",

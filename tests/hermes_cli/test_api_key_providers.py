@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax)."""
 
 import os
 
@@ -6,7 +6,6 @@ import pytest
 
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
-    ProviderConfig,
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
@@ -40,7 +39,6 @@ class TestProviderRegistry:
         ("stepfun", "StepFun Step Plan", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
-        ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
     ])
@@ -97,11 +95,6 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
-    def test_ai_gateway_env_vars(self):
-        pconfig = PROVIDER_REGISTRY["ai-gateway"]
-        assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
-        assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
-
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -125,7 +118,6 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
-        assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
@@ -149,7 +141,6 @@ PROVIDER_ENV_VARS = (
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
-    "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "GMI_API_KEY", "GMI_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -184,9 +175,6 @@ class TestResolveProvider:
     def test_explicit_minimax_cn(self):
         assert resolve_provider("minimax-cn") == "minimax-cn"
 
-    def test_explicit_ai_gateway(self):
-        assert resolve_provider("ai-gateway") == "ai-gateway"
-
     def test_explicit_gmi(self):
         assert resolve_provider("gmi") == "gmi"
 
@@ -210,12 +198,6 @@ class TestResolveProvider:
 
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
-
-    def test_alias_aigateway(self):
-        assert resolve_provider("aigateway") == "ai-gateway"
-
-    def test_alias_vercel(self):
-        assert resolve_provider("vercel") == "ai-gateway"
 
     def test_alias_gmi_cloud(self):
         assert resolve_provider("gmi-cloud") == "gmi"
@@ -291,10 +273,6 @@ class TestResolveProvider:
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
         assert resolve_provider("auto") == "minimax-cn"
 
-    def test_auto_detects_ai_gateway_key(self, monkeypatch):
-        monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
-        assert resolve_provider("auto") == "ai-gateway"
-
     def test_auto_detects_gmi_key(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "test-gmi-key")
         assert resolve_provider("auto") == "gmi"
@@ -314,6 +292,16 @@ class TestResolveProvider:
         assert resolve_provider("auto") == "openrouter"
 
     def test_auto_does_not_select_copilot_from_github_token(self, monkeypatch):
+        # AWS Bedrock auto-detection (via boto3's credential chain) runs at
+        # the tail of resolve_provider("auto") and will silently pick up
+        # ~/.aws/credentials on developer machines that aren't blanked by
+        # the hermetic conftest. Force-disable it so this test exercises
+        # the specific "GitHub token alone shouldn't auto-pick copilot"
+        # behavior, not the Bedrock fallback.
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.has_aws_credentials",
+            lambda env=None: False,
+        )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
         with pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto")
@@ -525,13 +513,6 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "mmcn-secret-key"
         assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
 
-    def test_resolve_ai_gateway_with_key(self, monkeypatch):
-        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-secret-key")
-        creds = resolve_api_key_provider_credentials("ai-gateway")
-        assert creds["provider"] == "ai-gateway"
-        assert creds["api_key"] == "gw-secret-key"
-        assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
-
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
         creds = resolve_api_key_provider_credentials("kilocode")
@@ -630,15 +611,6 @@ class TestRuntimeProviderResolution:
         result = resolve_runtime_provider(requested="minimax")
         assert result["provider"] == "minimax"
         assert result["api_key"] == "mm-key"
-
-    def test_runtime_ai_gateway(self, monkeypatch):
-        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="ai-gateway")
-        assert result["provider"] == "ai-gateway"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "gw-key"
-        assert "ai-gateway.vercel.sh" in result["base_url"]
 
     def test_runtime_kilocode(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
@@ -1097,3 +1069,230 @@ class TestHuggingFaceModels:
         from hermes_cli.models import _PROVIDER_LABELS
         assert "huggingface" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"
+
+
+# =============================================================================
+# NovitaAI provider tests (added by feat/add-novita-provider)
+# =============================================================================
+
+class TestNovitaProvider:
+    """Tests for NovitaAI — an OpenAI-compatible multi-model aggregator."""
+
+    def test_novita_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("novita")
+        assert profile is not None
+        assert profile.name == "novita"
+        assert profile.display_name == "NovitaAI"
+        assert profile.base_url == "https://api.novita.ai/openai/v1"
+        assert "NOVITA_API_KEY" in profile.env_vars
+
+    def test_novita_aliases(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("novita")
+        assert "novita-ai" in profile.aliases
+        assert "novitaai" in profile.aliases
+
+    def test_novita_alias_resolves(self):
+        assert resolve_provider("novita-ai") == "novita"
+        assert resolve_provider("novitaai") == "novita"
+
+    def test_novita_in_provider_registry(self):
+        """Auto-registration from ProviderProfile should expose Novita."""
+        assert "novita" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["novita"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "novita"
+        assert pconfig.inference_base_url == "https://api.novita.ai/openai/v1"
+        assert pconfig.api_key_env_vars == ("NOVITA_API_KEY",)
+        assert pconfig.base_url_env_var == "NOVITA_BASE_URL"
+
+    def test_novita_aliases_in_registry(self):
+        assert "novita-ai" in PROVIDER_REGISTRY
+        assert "novitaai" in PROVIDER_REGISTRY
+
+    def test_main_provider_models_has_novita(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "novita" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["novita"]) >= 1
+
+    def test_models_py_has_novita(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "novita" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["novita"]) >= 1
+
+    def test_novita_model_lists_match(self):
+        """Model lists in main.py and models.py should be identical."""
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["novita"] == models_models["novita"]
+
+    def test_novita_models_use_org_name_format(self):
+        """Novita models should use org/name format."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS["novita"]:
+            assert "/" in model, f"Novita model {model!r} missing org/ prefix"
+
+    def test_novita_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("novita-ai") == "novita"
+        assert _PROVIDER_ALIASES.get("novitaai") == "novita"
+
+    def test_novita_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "novita" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["novita"] == "NovitaAI"
+
+    def test_novita_in_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+        assert "novita" in _PROVIDER_PREFIXES
+
+    def test_novita_url_to_provider(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("api.novita.ai") == "novita"
+
+    def test_context_size_in_context_length_keys(self):
+        """Novita /v1/models uses 'context_size' as the context length key."""
+        from agent.model_metadata import _CONTEXT_LENGTH_KEYS
+        assert "context_size" in _CONTEXT_LENGTH_KEYS
+
+    def test_novita_pricing_unit_conversion(self):
+        """Novita returns prices in 0.0001 USD per Mtok; divide by 10_000 * 1_000_000."""
+        from agent.model_metadata import _extract_pricing
+        # Sample shape from real Novita /v1/models response
+        payload = {
+            "id": "deepseek/deepseek-v3-0324",
+            "input_token_price_per_m": 2690,    # = $0.269 / Mtok
+            "output_token_price_per_m": 4000,   # = $0.400 / Mtok
+        }
+        result = _extract_pricing(payload)
+        # Resulting strings represent per-token prices in dollars.
+        assert "prompt" in result
+        assert "completion" in result
+        assert float(result["prompt"]) == 2690 / 10_000 / 1_000_000
+        assert float(result["completion"]) == 4000 / 10_000 / 1_000_000
+
+    def test_novita_pricing_cache(self, monkeypatch):
+        """_fetch_novita_pricing should cache results in _pricing_cache."""
+        from hermes_cli import models as models_mod
+        monkeypatch.setenv("NOVITA_API_KEY", "sk-test-key")
+        monkeypatch.setenv("NOVITA_BASE_URL", "https://api.novita.ai/openai/v1")
+        models_mod._pricing_cache.pop("https://api.novita.ai/openai/v1", None)
+
+        call_count = {"n": 0}
+        fake_payload = {
+            "data": [
+                {
+                    "id": "x/y",
+                    "input_token_price_per_m": 1000,
+                    "output_token_price_per_m": 2000,
+                }
+            ]
+        }
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                import json as _json
+                return _json.dumps(fake_payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            return _FakeResp()
+
+        monkeypatch.setattr(
+            models_mod.urllib.request, "urlopen", fake_urlopen
+        )
+
+        # First call hits the network.
+        first = models_mod._fetch_novita_pricing()
+        assert "x/y" in first
+        assert call_count["n"] == 1
+
+        # Second call returns cached result without re-hitting the network.
+        second = models_mod._fetch_novita_pricing()
+        assert second == first
+        assert call_count["n"] == 1
+
+        # force_refresh bypasses the cache.
+        models_mod._fetch_novita_pricing(force_refresh=True)
+        assert call_count["n"] == 2
+
+
+# =============================================================================
+# MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
+# =============================================================================
+
+class TestMinimaxOAuthProvider:
+    """Tests for the minimax-oauth OAuth provider."""
+
+    def test_minimax_oauth_in_provider_registry(self):
+        assert "minimax-oauth" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.auth_type == "oauth_minimax"
+        assert pconfig.id == "minimax-oauth"
+
+    def test_minimax_oauth_has_correct_endpoints(self):
+        from hermes_cli.auth import (
+            MINIMAX_OAUTH_GLOBAL_BASE,
+            MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            MINIMAX_OAUTH_CN_BASE,
+            MINIMAX_OAUTH_CN_INFERENCE,
+        )
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.portal_base_url == MINIMAX_OAUTH_GLOBAL_BASE
+        assert pconfig.inference_base_url == MINIMAX_OAUTH_GLOBAL_INFERENCE
+        assert pconfig.extra["cn_portal_base_url"] == MINIMAX_OAUTH_CN_BASE
+        assert pconfig.extra["cn_inference_base_url"] == MINIMAX_OAUTH_CN_INFERENCE
+
+    def test_minimax_oauth_alias_resolves_portal(self):
+        result = resolve_provider("minimax-portal")
+        assert result == "minimax-oauth"
+
+    def test_minimax_oauth_alias_resolves_global(self):
+        result = resolve_provider("minimax-global")
+        assert result == "minimax-oauth"
+
+    def test_minimax_oauth_alias_resolves_underscore(self):
+        result = resolve_provider("minimax_oauth")
+        assert result == "minimax-oauth"
+
+    def test_minimax_oauth_listed_in_canonical_providers(self):
+        from hermes_cli.models import CANONICAL_PROVIDERS
+        slugs = [p.slug for p in CANONICAL_PROVIDERS]
+        assert "minimax-oauth" in slugs
+
+    def test_minimax_oauth_models_alias_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("minimax-portal") == "minimax-oauth"
+        assert _PROVIDER_ALIASES.get("minimax-global") == "minimax-oauth"
+        assert _PROVIDER_ALIASES.get("minimax_oauth") == "minimax-oauth"
+
+    def test_minimax_oauth_has_models(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        models = _PROVIDER_MODELS.get("minimax-oauth", [])
+        assert len(models) >= 1
+
+    def test_minimax_oauth_aux_model_registered(self):
+        # Aux model for the minimax-oauth provider now lives on the
+        # ProviderProfile (plugins/model-providers/minimax/__init__.py),
+        # not the legacy _API_KEY_PROVIDER_AUX_MODELS dict in
+        # agent/auxiliary_client.py. The profile layer is the source
+        # of truth; _get_aux_model_for_provider() reads from it first
+        # and only falls back to the dict when no profile is registered.
+        import model_tools  # noqa: F401  -- triggers plugin discovery
+        import providers
+
+        profile = providers.get_provider_profile("minimax-oauth")
+        assert profile is not None, "minimax-oauth provider profile must be registered"
+        assert profile.default_aux_model, (
+            "minimax-oauth profile must advertise a non-empty default_aux_model "
+            "so the auxiliary client (compression / vision / session-search) "
+            "doesn't fire the 'No auxiliary LLM provider configured' warning "
+            "for every minimax-oauth session."
+        )

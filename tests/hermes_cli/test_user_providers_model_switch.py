@@ -254,8 +254,13 @@ def test_openai_native_curated_catalog_is_non_empty():
     assert len(_PROVIDER_MODELS["openai"]) >= 4
 
 
-def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch):
-    """Built-in openai row must not report total_models=0 when creds exist."""
+def test_list_authenticated_providers_openai_alias_not_emitted_as_phantom(monkeypatch):
+    """Bare 'openai' is an alias to the OpenRouter aggregator, NOT a directly-
+    routable provider. It must NOT be emitted as its own picker row: selecting
+    such a row resolves via resolve_provider_full() to OpenRouter, silently
+    switching the user onto an endpoint they may have no key for (HTTP 401).
+    Real OpenAI access comes via 'openai-api' (direct) or a providers.openai
+    config entry — both of which carry api.openai.com. See model-picker bug."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         "agent.models_dev.fetch_models_dev",
@@ -271,8 +276,63 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
         max_models=50,
     )
     row = next((p for p in providers if p.get("slug") == "openai"), None)
-    assert row is not None
-    assert row["total_models"] > 0
+    assert row is None, (
+        "bare 'openai' alias must not appear as a standalone picker row — "
+        "it routes through OpenRouter and traps users without an OR key"
+    )
+
+
+def test_resolve_provider_full_user_config_openai_beats_alias():
+    """A providers.openai config entry must win over the built-in
+    'openai' → 'openrouter' alias. Regression for the model-picker bug
+    where users with provider=openai-api + a providers.openai config block
+    had their OpenAI selection silently routed to OpenRouter (HTTP 401)."""
+    from hermes_cli.providers import resolve_provider_full
+
+    user_providers = {
+        "openai": {
+            "name": "OpenAI-API",
+            "api": "https://api.openai.com/v1",
+            "transport": "codex_responses",
+            "models": {"gpt-5.4-nano": {}},
+        }
+    }
+    pdef = resolve_provider_full("openai", user_providers, [])
+    assert pdef is not None
+    # Must resolve to the user's direct endpoint, NOT the OpenRouter aggregator.
+    assert pdef.id == "openai"
+    assert pdef.source == "user-config"
+    assert pdef.base_url == "https://api.openai.com/v1"
+    assert "openrouter" not in pdef.base_url
+
+
+def test_switch_model_user_config_openai_does_not_hop_to_openrouter(monkeypatch):
+    """End-to-end: selecting a providers.openai config row in the picker must
+    resolve to api.openai.com, never silently switch to OpenRouter."""
+    monkeypatch.setenv("CUSTOM_OPENAI_API_KEY", "sk-resolved")
+    user_providers = {
+        "openai": {
+            "name": "OpenAI-API",
+            "api": "https://api.openai.com/v1",
+            "api_key": "${CUSTOM_OPENAI_API_KEY}",
+            "transport": "codex_responses",
+            "models": {"gpt-5.4-nano": {}, "gpt-4o-mini": {}},
+        }
+    }
+    result = switch_model(
+        raw_input="gpt-4o-mini",
+        current_provider="openai-api",
+        current_model="gpt-5.4-nano",
+        current_base_url="https://api.openai.com/v1",
+        current_api_key="sk-test",
+        explicit_provider="openai",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+    assert result.success, result.error_message
+    assert result.target_provider != "openrouter"
+    assert "openrouter" not in (result.base_url or "")
+    assert result.base_url == "https://api.openai.com/v1"
 
 
 def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypatch):
@@ -748,6 +808,317 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
         is_global=False,
         user_providers=config["providers"],
     )
-    
+
     assert result.success is True
     assert result.error_message == ""
+
+
+# =============================================================================
+# Regression: providers: dict ``transport`` field must be honored
+# =============================================================================
+
+
+def test_get_named_custom_provider_reads_transport_field(monkeypatch):
+    """v12+ ``providers:`` dict stores api mode under ``transport:`` (not the
+    legacy ``api_mode:``).  ``_get_named_custom_provider`` must accept both
+    field names.
+
+    Bug: this function read only ``entry.get("api_mode")`` for v12+ entries.
+    After ``migrate_config()`` writes ``transport`` on every entry, the
+    lookup returns None and ``_resolve_named_custom_runtime`` falls back
+    through ``_detect_api_mode_for_url(base_url) or "chat_completions"``
+    — silently downgrading every codex_responses / anthropic_messages
+    provider to chat_completions.
+    """
+    config = {
+        "_config_version": 12,
+        "providers": {
+            "my-codex-provider": {
+                "name": "my-codex-provider",
+                "api": "http://127.0.0.1:4000/v1",
+                "api_key": "test-key",
+                "default_model": "gpt-5",
+                "transport": "codex_responses",
+            },
+        },
+    }
+
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    result = rp._get_named_custom_provider("my-codex-provider")
+    assert result is not None
+    assert result["api_mode"] == "codex_responses"
+    assert result["base_url"] == "http://127.0.0.1:4000/v1"
+    assert result["model"] == "gpt-5"
+
+
+def test_get_named_custom_provider_legacy_api_mode_field_still_works(monkeypatch):
+    """Hand-edited configs that used ``api_mode:`` (legacy spelling) inside
+    the v12+ providers: dict shape must keep working — the migration writer
+    produces ``transport:`` but human-edited configs may carry the older
+    spelling forward."""
+    config = {
+        "_config_version": 12,
+        "providers": {
+            "anthropic-proxy": {
+                "name": "anthropic-proxy",
+                "api": "http://127.0.0.1:8082",
+                "api_key": "test-key",
+                "default_model": "claude-opus-4-7",
+                "api_mode": "anthropic_messages",  # legacy spelling
+            },
+        },
+    }
+
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    result = rp._get_named_custom_provider("anthropic-proxy")
+    assert result is not None
+    assert result["api_mode"] == "anthropic_messages"
+
+
+def test_get_named_custom_provider_transport_resolves_via_display_name(monkeypatch):
+    """When the requested name matches the entry's ``name:`` field rather
+    than its dict key, the same transport-vs-api_mode logic must apply
+    (second branch in ``_get_named_custom_provider``)."""
+    config = {
+        "_config_version": 12,
+        "providers": {
+            "slug-different-from-name": {
+                "name": "Codex Provider",  # display name
+                "api": "http://127.0.0.1:4000/v1",
+                "api_key": "test-key",
+                "default_model": "gpt-5",
+                "transport": "codex_responses",
+            },
+        },
+    }
+
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    result = rp._get_named_custom_provider("Codex Provider")
+    assert result is not None
+    assert result["api_mode"] == "codex_responses"
+
+
+# =============================================================================
+# Regression: user_providers override for private models not listed by /v1/models
+# =============================================================================
+
+_REJECTED_VALIDATION = {
+    "accepted": False,
+    "persist": False,
+    "recognized": False,
+    "message": "not found",
+}
+
+
+def _run_user_provider_override_case(
+    *,
+    slug,
+    name,
+    base_url,
+    models,
+    raw_input,
+):
+    """Run ``switch_model`` with a private user provider and a rejected API check.
+
+    The bug in PR #17964 was that ``user_providers`` was treated like a list,
+    so private models listed in ``models:`` never triggered the override path.
+    These tests keep the validation failure in place and prove the config list
+    still wins for both dict- and list-shaped ``models`` entries.
+    """
+    from unittest.mock import patch
+
+    user_providers = {
+        slug: {
+            "name": name,
+            "api": base_url,
+            "discover_models": False,
+            "models": models,
+        }
+    }
+
+    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
+         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
+         patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
+         patch("hermes_cli.models.validate_requested_model", return_value=_REJECTED_VALIDATION), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_info", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
+         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={"api_key": "***", "base_url": base_url, "api_mode": "anthropic_messages"}):
+        return switch_model(
+            raw_input=raw_input,
+            current_provider=slug,
+            current_model="old-model",
+            current_base_url=base_url,
+            user_providers=user_providers,
+            custom_providers=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("slug", "name", "base_url", "models", "raw_input", "expected_model"),
+    [
+        (
+            "kimi-coding",
+            "Kimi Coding Plan",
+            "https://api.kimi.com/coding",
+            {"kimi-k2.6": {}},
+            "kimi-k2.6",
+            "kimi-k2.6",
+        ),
+        (
+            "kimi-dedicated",
+            "Kimi Dedicated",
+            "https://api.kimi.com/v1",
+            [{"name": "moonshotai/Kimi-K2.6-ACED"}],
+            "moonshotai/Kimi-K2.6-ACED",
+            "moonshotai/Kimi-K2.6-ACED",
+        ),
+    ],
+    ids=["kimi-coding-plan-dict", "kimi-k2-6-aced-list"],
+)
+def test_user_provider_override_accepts_listed_private_models(
+    slug,
+    name,
+    base_url,
+    models,
+    raw_input,
+    expected_model,
+):
+    """Private models listed in providers: config should override /v1/models misses.
+
+    Covers both config shapes the fix now accepts:
+    - dict models for the Kimi Coding Plan K2p6 case
+    - list-of-dicts models for the Kimi-K2.6-ACED dedicated case
+    """
+    result = _run_user_provider_override_case(
+        slug=slug,
+        name=name,
+        base_url=base_url,
+        models=models,
+        raw_input=raw_input,
+    )
+
+    assert result.success is True
+    assert result.new_model == expected_model
+    assert result.error_message == ""
+
+
+@pytest.mark.parametrize(
+    ("slug", "name", "base_url", "models", "raw_input"),
+    [
+        (
+            "kimi-coding",
+            "Kimi Coding Plan",
+            "https://api.kimi.com/coding",
+            {"kimi-k2.6": {}},
+            "kimi-k2.6-mangled",
+        ),
+        (
+            "kimi-dedicated",
+            "Kimi Dedicated",
+            "https://api.kimi.com/v1",
+            [{"name": "moonshotai/Kimi-K2.6-ACED"}],
+            "moonshotai/Kimi-K2.6-ACED!!!",
+        ),
+    ],
+    ids=["kimi-coding-plan-dict-mangled", "kimi-k2-6-aced-list-mangled"],
+)
+def test_user_provider_override_rejects_mangled_private_models(
+    slug,
+    name,
+    base_url,
+    models,
+    raw_input,
+):
+    """Malformed model names should fail cleanly, not crash or auto-accept."""
+    result = _run_user_provider_override_case(
+        slug=slug,
+        name=name,
+        base_url=base_url,
+        models=models,
+        raw_input=raw_input,
+    )
+
+    assert result.success is False
+    assert result.error_message == "not found"
+
+
+# =============================================================================
+# Section 3 no-auth live discovery (PR #29575)
+# =============================================================================
+
+def test_section3_probes_no_key_endpoint_without_explicit_models(monkeypatch):
+    """A providers: entry with no api_key and no explicit models: list should
+    still probe /v1/models for live discovery — mirroring section 4's policy.
+
+    Regression for #29575: local self-hosted backends (llama.cpp, Ollama,
+    vLLM) that don't require auth previously showed an empty/minimal model
+    list because section 3 gated probing on ``api_url and api_key``.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    probed = {}
+
+    def _fake_fetch(api_key, api_url):
+        probed["called"] = True
+        probed["api_key"] = api_key
+        probed["api_url"] = api_url
+        return ["live-model-1", "live-model-2", "live-model-3"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    user_providers = {
+        "local-llamacpp": {
+            "name": "Local llama.cpp",
+            "api": "http://localhost:8080/v1",
+            # No api_key, no models list — bare local endpoint.
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="local-llamacpp",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    assert probed.get("called") is True, "no-key bare endpoint should be probed"
+    assert probed["api_key"] == ""
+    row = next(p for p in providers if p["slug"] == "local-llamacpp")
+    assert row["models"] == ["live-model-1", "live-model-2", "live-model-3"]
+    assert row["total_models"] == 3
+
+
+def test_section3_skips_probe_when_no_key_but_explicit_models(monkeypatch):
+    """A no-key endpoint WITH an explicit models: list is the user narrowing a
+    public endpoint to a subset — skip live discovery and keep the list."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    def _fail_fetch(api_key, api_url):
+        raise AssertionError("should not probe when explicit models are set")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fail_fetch)
+
+    user_providers = {
+        "public-subset": {
+            "name": "Public Subset",
+            "api": "https://ollama.com/v1",
+            "models": ["only-a", "only-b"],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="public-subset",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    row = next(p for p in providers if p["slug"] == "public-subset")
+    assert row["models"] == ["only-a", "only-b"]
+    assert row["total_models"] == 2

@@ -1194,7 +1194,7 @@ def register(ctx):
     _gated_tools = frozenset({"find", "read_file", "session_search"})
     _graph_searched_turn: dict[str, bool] = {}  # turn_id → searched
 
-    def _on_pre_tool_call(tool_name: str, args: dict | None = None, **kw: Any) -> str | None:
+    def _on_pre_tool_call(tool_name: str, args: dict | None = None, **kw: Any) -> dict | str | None:
         nonlocal _graph_searched_turn
         turn_id = kw.get("turn_id", "")
         if not turn_id:
@@ -1215,11 +1215,11 @@ def register(ctx):
             tool_name in _gated_tools
             and not _graph_searched_turn.get(turn_id, False)
         ):
-            return (
+            return {"action": "block", "message":
                 f"Tool '{tool_name}' is blocked until you call "
                 f"skill_graph_search() first. This profile requires graph "
                 f"discovery before filesystem or session searches."
-            )
+            }
         return None
 
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)

@@ -2104,3 +2104,52 @@ class TestStructuredElementsConsumption:
         assert cap.elements[0].label == "fallback-label"
         # Markdown surface doesn't carry bounds — lossy by design.
         assert cap.elements[0].bounds == (0, 0, 0, 0)
+
+
+class TestCapabilityDiscovery:
+    """Surface 4 (NousResearch/hermes-agent#47072): the wrapper learns
+    what cua-driver supports from the per-tool `capabilities[]` array on
+    `tools/list` (trycua/cua#1961) instead of name-checking. The infra
+    here is consumed by other surfaces (e.g. Surface 6 only carries
+    element_token when `accessibility.element_tokens` is advertised);
+    these tests freeze the supports_capability contract.
+    """
+
+    def test_supports_capability_returns_false_before_session_start(self):
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+
+        session = _CuaDriverSession(_AsyncBridge())
+        # No session started → no capabilities populated.
+        assert session.supports_capability("accessibility.element_tokens") is False
+        assert session.supports_capability("anything", tool="click") is False
+        assert session.capability_version == ""
+
+    def test_supports_capability_global_match_any_tool(self):
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+
+        session = _CuaDriverSession(_AsyncBridge())
+        session._capabilities = {
+            "click": {"input.pointer.click", "accessibility.element_tokens"},
+            "type_text": {"input.keyboard.type"},
+        }
+        # `accessibility.element_tokens` is advertised by `click` — the
+        # global probe should see it without naming the tool.
+        assert session.supports_capability("accessibility.element_tokens") is True
+        # Not advertised by anyone:
+        assert session.supports_capability("never.heard.of.it") is False
+
+    def test_supports_capability_scoped_to_specific_tool(self):
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+
+        session = _CuaDriverSession(_AsyncBridge())
+        session._capabilities = {
+            "click":     {"input.pointer.click", "accessibility.element_tokens"},
+            "type_text": {"input.keyboard.type"},  # no element_tokens
+        }
+        # Tool-scoped check is precise:
+        assert session.supports_capability("accessibility.element_tokens",
+                                           tool="click") is True
+        assert session.supports_capability("accessibility.element_tokens",
+                                           tool="type_text") is False
+        # Unknown tool → False (instead of KeyError).
+        assert session.supports_capability("anything", tool="never_registered") is False

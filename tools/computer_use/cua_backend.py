@@ -456,6 +456,15 @@ class _CuaDriverSession:
         self._exit_stack = None
         self._lock = threading.Lock()
         self._started = False
+        # Surface 4 of NousResearch/hermes-agent#47072: per-tool
+        # capability-token sets, populated from `tools/list` at session
+        # init. Keys are tool names (e.g. "click", "get_window_state");
+        # values are sets of capability strings (e.g.
+        # "accessibility.element_tokens", "input.keyboard.type.terminal_safe").
+        # Empty until the session starts; consumers should call
+        # `supports_capability` rather than reading directly.
+        self._capabilities: Dict[str, set] = {}
+        self._capability_version: str = ""
 
     def _require_started(self) -> None:
         if not self._started:
@@ -482,9 +491,48 @@ class _CuaDriverSession:
         stack = AsyncExitStack()
         read, write = await stack.enter_async_context(stdio_client(params))
         session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
+        init_result = await session.initialize()
         self._exit_stack = stack
         self._session = session
+
+        # Surface 4: extract `capability_version` from the initialize
+        # response's serverInfo (trycua/cua#1961 set this to "1"). Bumps
+        # mean breaking renames; we just record the value so callers can
+        # log it on a connect cycle for debuggability.
+        server_info = getattr(init_result, "serverInfo", None)
+        if server_info is not None:
+            cv = getattr(server_info, "capability_version", None) or getattr(server_info, "capabilityVersion", None)
+            if isinstance(cv, str):
+                self._capability_version = cv
+
+        # Populate the per-tool capability map from tools/list. cua-driver
+        # always emits `capabilities` (even when empty) per tool, so this
+        # is a cheap one-shot — and falling back to an empty set on a
+        # missing field means older drivers degrade to "no capabilities
+        # advertised", which the supports_capability check handles.
+        try:
+            tools_list = await session.list_tools()
+            for tool in getattr(tools_list, "tools", []) or []:
+                tool_name = getattr(tool, "name", None)
+                if not isinstance(tool_name, str):
+                    continue
+                caps = getattr(tool, "capabilities", None)
+                if caps is None:
+                    # Some MCP client SDKs forward custom fields via
+                    # the model_extra dict instead of attribute access.
+                    extra = getattr(tool, "model_extra", None) or {}
+                    caps = extra.get("capabilities")
+                if isinstance(caps, list):
+                    self._capabilities[tool_name] = {
+                        c for c in caps if isinstance(c, str)
+                    }
+                else:
+                    self._capabilities[tool_name] = set()
+        except Exception as e:
+            # Capability discovery is a soft prerequisite — if it fails,
+            # supports_capability just returns False and consumers degrade
+            # to pre-#47072 behaviour. Log and continue.
+            logger.debug("cua-driver tools/list capability discovery failed: %s", e)
 
     async def _aexit(self) -> None:
         if self._exit_stack is not None:
@@ -515,6 +563,29 @@ class _CuaDriverSession:
     async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         result = await self._session.call_tool(name, args)
         return _extract_tool_result(result)
+
+    # ── Capability detection (Surface 4 of #47072) ────────────────────
+    def supports_capability(self, capability: str, tool: Optional[str] = None) -> bool:
+        """Return True when the connected cua-driver advertises the given
+        capability token (trycua/cua#1961 capability vocabulary).
+
+        When ``tool`` is given, scope the check to that specific tool's
+        advertised capability set. When omitted, return True if ANY tool
+        advertises the capability — useful for "is this feature available
+        anywhere on the driver" probes.
+
+        Always returns False before the session is started (so consumers
+        on a dead/uninitialised wrapper degrade rather than crash).
+        """
+        if tool is not None:
+            return capability in self._capabilities.get(tool, set())
+        return any(capability in caps for caps in self._capabilities.values())
+
+    @property
+    def capability_version(self) -> str:
+        """Driver-advertised capability vocabulary version (empty string
+        when the driver predates the field — older builds had no version)."""
+        return self._capability_version
 
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:

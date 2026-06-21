@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import sys
 import threading
 from pathlib import Path, PurePosixPath
@@ -136,6 +137,78 @@ def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bo
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
+
+# Browser exports and storage dumps commonly place opaque cookie/localStorage
+# values under generic keys like "value", which the global code-file redactor
+# intentionally skips to avoid false positives in source code.  File reads for
+# these dump names are never source-code reads, so force a narrower extra pass.
+_BROWSER_EXPORT_NAME_RE = re.compile(
+    r"(?:cookie|localstorage|sessionstorage|conversationdb|indexeddb|browser[-_]?storage|^general[_-])",
+    re.IGNORECASE,
+)
+_BROWSER_EXPORT_JSON_VALUE_RE = re.compile(
+    r'("(?:value|cookie|cookies|localStorage|sessionStorage|auth|authorization)"\s*:\s*")([^"\\]*(?:\\.[^"\\]*)*)(")',
+    re.IGNORECASE,
+)
+
+
+def _looks_like_sensitive_browser_export(path: str) -> bool:
+    """Return True for browser cookie/storage/conversation export filenames."""
+    try:
+        return bool(_BROWSER_EXPORT_NAME_RE.search(Path(path).name))
+    except Exception:
+        return False
+
+
+def _redact_cookie_tsv_lines(content: str) -> str:
+    """Redact Netscape/browser-cookie TSV value columns in text exports."""
+    redacted_lines = []
+    for line in content.splitlines(keepends=True):
+        newline = ""
+        body = line
+        if line.endswith("\r\n"):
+            body, newline = line[:-2], "\r\n"
+        elif line.endswith("\n"):
+            body, newline = line[:-1], "\n"
+        elif line.endswith("\r"):
+            body, newline = line[:-1], "\r"
+
+        parts = body.split("\t")
+        # Netscape cookie rows have at least 7 columns; the final column is the
+        # cookie value.  Preserve metadata while removing the secret payload.
+        if len(parts) >= 7 and ("." in parts[0] or parts[0].startswith("http")):
+            parts[-1] = "[REDACTED]"
+            body = "\t".join(parts)
+        redacted_lines.append(body + newline)
+    return "".join(redacted_lines)
+
+
+def _redact_read_content(path: str, content: str) -> str:
+    """Redact read_file content, with stricter handling for browser exports.
+
+    Both branches use ``file_read=True`` so prefix-matched credentials become
+    the non-reusable ``«redacted:ghp_…»`` sentinel rather than a head/tail mask
+    (see ``agent.redact.redact_sensitive_text``): a file read must never hand
+    back a string that looks like a truncated-but-usable key.  Browser exports
+    additionally get an opaque-value pass because cookie/localStorage dumps
+    stash secrets under generic keys (``"value"``) or in the final TSV column,
+    which the built-in patterns intentionally leave alone to avoid false
+    positives in ordinary source code.
+    """
+    if not content:
+        return content
+    if _looks_like_sensitive_browser_export(path):
+        # force=True: browser dumps must be scrubbed even when the operator
+        # disabled global log redaction; file_read=True keeps the
+        # non-reusable-sentinel guarantee for recognized credential prefixes.
+        content = redact_sensitive_text(content, force=True, file_read=True)
+        content = _BROWSER_EXPORT_JSON_VALUE_RE.sub(
+            lambda m: f"{m.group(1)}[REDACTED]{m.group(3)}",
+            content,
+        )
+        return _redact_cookie_tsv_lines(content)
+    return redact_sensitive_text(content, file_read=True)
+
 
 # ---------------------------------------------------------------------------
 # Device path blocklist — reading these hangs the process (infinite output
@@ -1906,8 +1979,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
+        # Browser cookie/localStorage/IndexedDB exports get an extra opaque-value
+        # pass on top of the standard file_read redaction (see
+        # _redact_read_content); ordinary files fall through to the same
+        # file_read=True contract main already uses.
         if result.content:
-            result.content = redact_sensitive_text(result.content, file_read=True)
+            result.content = _redact_read_content(path, result.content)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask

@@ -41,6 +41,106 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    @patch("tools.file_tools._get_file_ops")
+    def test_oversized_read_truncated_within_cap(self, mock_get, mock_max):
+        """An oversized read is truncated to a bounded, continuation-friendly
+        result rather than erroring, and the returned content never exceeds the
+        configured cap (sweeper concern #1: honor file_read_max_chars)."""
+        cap = 1000
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        # Many short lines so line-boundary truncation kicks in well over the cap.
+        result_obj.content = "\n".join(f"{i}|" + "z" * 40 for i in range(1, 200))
+        result_obj.to_dict.return_value = {
+            "content": result_obj.content,
+            "total_lines": 199,
+            "file_size": len(result_obj.content),
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/long.txt"))
+        assert "error" not in result
+        assert result["truncated"] is True
+        assert result["truncated_by"] == "bytes"
+        assert "next_offset" in result
+        # Core sweeper assertion: content must honor the configured cap.
+        assert len(result["content"]) <= cap
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_browser_export_values_are_force_redacted(self, mock_get):
+        """Browser cookie/localStorage exports get the extra opaque-value pass:
+        JSON "value" fields and the Netscape TSV cookie column are scrubbed even
+        though the built-in code-file patterns intentionally leave them alone."""
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = (
+            '{"name":"session","value":"super-secret-cookie-value"}\n'
+            ".example.com\tTRUE\t/\tFALSE\t0\tsid\tplain-cookie-value"
+        )
+        result_obj.to_dict.return_value = {
+            "content": result_obj.content,
+            "total_lines": 2,
+            "file_size": len(result_obj.content),
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/LocalStorage_export.json"))
+        assert "super-secret-cookie-value" not in result["content"]
+        assert "plain-cookie-value" not in result["content"]
+        assert result["content"].count("[REDACTED]") >= 2
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_browser_export_prefix_cred_uses_nonreusable_sentinel(self, mock_get):
+        """File-read redaction of a recognized prefix credential in a browser
+        export must emit the NON-REUSABLE sentinel (sweeper concern #2:
+        file_read=True contract), never a head/tail mask that looks like a
+        truncated-but-usable key."""
+        secret = "ghp_" + "A" * 36
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = f'{{"name":"token","value":"{secret}"}}'
+        result_obj.to_dict.return_value = {
+            "content": result_obj.content,
+            "total_lines": 1,
+            "file_size": len(result_obj.content),
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/cookies.json"))
+        # Raw secret gone; the value key is force-redacted to the opaque marker.
+        assert secret not in result["content"]
+        # Non-reusable sentinel guarantee: no head/tail-preserving mask that
+        # still starts with the real prefix + a truncated body.
+        assert "ghp_A" not in result["content"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_ordinary_file_prefix_cred_uses_nonreusable_sentinel(self, mock_get):
+        """Non-browser file reads keep main's file_read=True contract: a prefix
+        credential becomes the non-reusable sentinel, not a reusable mask."""
+        secret = "ghp_" + "B" * 36
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = f"token = {secret}\n"
+        result_obj.to_dict.return_value = {
+            "content": result_obj.content,
+            "total_lines": 1,
+            "file_size": len(result_obj.content),
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/config.txt"))
+        assert secret not in result["content"]
+        assert "ghp_B" not in result["content"]
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")

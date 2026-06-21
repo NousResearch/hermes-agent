@@ -885,7 +885,7 @@ def _handle_slash_command(args: str) -> str | None:
             logger.exception("skill-graph: rebuild failed")
             return f"Rebuild failed: {e}"
 
-    elif subcmd == "load":
+    elif subcmd in ("load", "show", "detail"):
         """Directly load and display a skill's content."""
         if not rest:
             return "Usage: /skill-graph load <skill-name>"
@@ -1044,7 +1044,7 @@ def _handle_slash_command(args: str) -> str | None:
             "/skill-graph — Skill knowledge graph\n\n"
             "Subcommands:\n"
             "  /skill-graph search <query>   Search skills by intent\n"
-            "  /skill-graph load <name>      Load and display skill details\n"
+            "  /skill-graph load|show <name>      Load and display skill details\n"
             "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
             "  /skill-graph list             List all skills in graph\n"
             "  /skill-graph config           Show configuration (paths, DB)\n"

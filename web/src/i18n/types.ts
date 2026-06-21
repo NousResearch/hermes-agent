@@ -114,6 +114,14 @@ export interface Translations {
     managingProfile?: string;
     currentProfileOption?: string;
     managingProfileBanner?: string;
+    /** Optional — DashboardOfflineBanner falls back to English literals. */
+    offlineBannerTitle?: string;
+    offlineBannerBody?: string;
+    offlineRetry?: string;
+    /** Sidebar "Gateway Status:" label when the dashboard backend is unreachable. */
+    statusUnreachable?: string;
+    /** Tooltip on the stale "Active Sessions" count when unreachable. */
+    statusUnreachableHint?: string;
   };
 
   // ── Status page ──

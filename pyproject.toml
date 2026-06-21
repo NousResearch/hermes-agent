@@ -135,6 +135,10 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
+  # Windows Service support (pywin32 provides win32service/win32serviceutil).
+  # Required for `hermes gateway install --service-type service` on Windows.
+  # On POSIX this is a no-op install marker (pywin32 has no POSIX wheel).
+  "pywin32>=228; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

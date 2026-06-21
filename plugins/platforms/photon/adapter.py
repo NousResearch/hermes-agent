@@ -617,6 +617,19 @@ class PhotonAdapter(BasePlatformAdapter):
             text = "\n".join(part for part in text_parts if part).strip()
             if not text:
                 text = "(attachment)" if media_urls else "[Photon empty group received]"
+        elif ctype == "richlink":
+            url = content.get("url") or ""
+            title = content.get("title") or ""
+            summary = content.get("summary") or ""
+            parts = []
+            if title:
+                parts.append(title)
+            if summary and summary != title:
+                parts.append(summary)
+            if url:
+                parts.append(url)
+            text = "\n".join(parts) if parts else url or "[Photon richlink with no URL]"
+            mtype = MessageType.TEXT
         else:
             text = f"[Photon content type not handled: {ctype}]"
             mtype = MessageType.TEXT

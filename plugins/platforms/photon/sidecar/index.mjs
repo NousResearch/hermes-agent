@@ -475,11 +475,12 @@ async function resolveSpace(spaceId) {
   // A bare E.164 phone number addresses a DM, so callers can pass just
   // "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of an opaque
   // inbound space id. Photon also represents DM chat ids as `any;-;+1...`;
-  // normalize those through the same path. `space.create` accepts the raw
-  // phone string directly.
+  // normalize those through the same path and resolve the phone to a user
+  // before creating the DM space.
   if (phoneTarget) {
     try {
-      space = await im.space.create(phoneTarget);
+      const user = await im.user(phoneTarget);
+      space = await im.space.create(user);
     } catch (e) {
       console.error(
         "photon-sidecar: phone->DM space.create failed: " +

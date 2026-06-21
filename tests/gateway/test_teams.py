@@ -499,6 +499,72 @@ class TestTeamsSend:
         assert call_args[0][0] == "conv-id"
 
 
+# ---------------------------------------------------------------------------
+# Tests: Slash-command confirmation buttons (/new, /reset, /undo, /reload-mcp)
+# ---------------------------------------------------------------------------
+
+class TestTeamsSlashConfirm:
+    def _make_card_ctx(self, data):
+        action = SimpleNamespace(data=data)
+        ctx = MagicMock()
+        ctx.activity.value.action = action
+        return ctx
+
+    @pytest.mark.anyio
+    async def test_send_slash_confirm_returns_error_without_app(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = None
+        result = await adapter.send_slash_confirm(
+            "conv-id", "/new", "Confirm /new", "sess-1", "c1",
+        )
+        assert result.success is False
+        assert "not initialized" in result.error
+
+    @pytest.mark.anyio
+    async def test_send_slash_confirm_sends_card(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        mock_result = MagicMock()
+        mock_result.id = "msg-9"
+        mock_app = MagicMock()
+        mock_app.send = AsyncMock(return_value=mock_result)
+        adapter._app = mock_app
+
+        result = await adapter.send_slash_confirm(
+            "conv-id", "/new", "Confirm /new", "sess-1", "c1",
+        )
+        assert result.success is True
+        assert result.message_id == "msg-9"
+        mock_app.send.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_card_action_routes_slash_confirm_to_resolve(self, monkeypatch):
+        import tools.slash_confirm as _slash_confirm
+
+        resolve_mock = AsyncMock(return_value="🔄 Started a new session.")
+        monkeypatch.setattr(_slash_confirm, "resolve", resolve_mock)
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        ctx = self._make_card_ctx({
+            "hermes_action": "slash_confirm_once",
+            "session_key": "sess-1",
+            "confirm_id": "c1",
+        })
+
+        # No TEAMS_ALLOWED_USERS set: slash-confirm must NOT be blocked by the
+        # exec-approval auth gate (it runs before that gate).
+        monkeypatch.delenv("TEAMS_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+
+        await adapter._on_card_action(ctx)
+        resolve_mock.assert_awaited_once_with("sess-1", "c1", "once")
+
+
 def _make_summary_payload():
     return TeamsMeetingSummaryPayload(
         meeting_ref=TeamsMeetingRef(meeting_id="meeting-123"),

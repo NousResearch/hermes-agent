@@ -1005,6 +1005,33 @@ class TeamsAdapter(BasePlatformAdapter):
                 body=AdaptiveCardActionMessageResponse(value="Unknown action."),
             )
 
+        # Slash-command confirmation buttons (/new, /reset, /undo, /reload-mcp)
+        # route through tools.slash_confirm, NOT the exec-approval path. They
+        # govern the clicker's own session lifecycle, and the base-class text
+        # fallback (reply /approve|/always|/cancel) is itself ungated — so this
+        # branch runs before the TEAMS_ALLOWED_USERS gate that protects the
+        # dangerous-command approval buttons below.
+        slash_choice = {
+            "slash_confirm_once": "once",
+            "slash_confirm_always": "always",
+            "slash_confirm_cancel": "cancel",
+        }.get(hermes_action)
+        if slash_choice is not None:
+            from tools import slash_confirm as _slash_confirm
+
+            confirm_id = data.get("confirm_id", "")
+            result_text = await _slash_confirm.resolve(session_key, confirm_id, slash_choice)
+            if result_text is None:
+                result_text = "⚠️ Confirmation already resolved or expired."
+            return InvokeResponse(
+                status=200,
+                body=AdaptiveCardActionCardResponse(
+                    value=AdaptiveCard()
+                    .with_version("1.4")
+                    .with_body([TextBlock(text=result_text, wrap=True)])
+                ),
+            )
+
         # Only authorized users may click approval buttons.
         # Default-deny: require either TEAMS_ALLOWED_USERS or an explicit
         # TEAMS_ALLOW_ALL_USERS=true opt-in. Without one of these set, the
@@ -1143,6 +1170,67 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e), retryable=True)
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a three-button slash-command confirmation as an Adaptive Card.
+
+        Overrides the base text fallback so /new, /reset, /undo and /reload-mcp
+        get native Approve Once / Always Approve / Cancel buttons on Teams, on
+        par with Telegram/Discord/Slack. Button clicks are routed back through
+        ``_on_card_action`` to ``tools.slash_confirm.resolve()``.
+
+        ``session_key`` and ``confirm_id`` ride directly in the button data;
+        Action.Execute payloads have no tight size limit (unlike Telegram's
+        64-byte callback_data), so no server-side state map is needed.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+
+        btn_data_base = {"session_key": session_key, "confirm_id": confirm_id}
+
+        card = (
+            AdaptiveCard()
+            .with_version("1.4")
+            .with_body([
+                TextBlock(text=title, wrap=True, weight="Bolder"),
+                TextBlock(text=message, wrap=True),
+            ])
+            .with_actions([
+                ExecuteAction(
+                    title="Approve Once",
+                    verb="hermes_slash_confirm",
+                    data={**btn_data_base, "hermes_action": "slash_confirm_once"},
+                    style="positive",
+                ),
+                ExecuteAction(
+                    title="Always Approve",
+                    verb="hermes_slash_confirm",
+                    data={**btn_data_base, "hermes_action": "slash_confirm_always"},
+                ),
+                ExecuteAction(
+                    title="Cancel",
+                    verb="hermes_slash_confirm",
+                    data={**btn_data_base, "hermes_action": "slash_confirm_cancel"},
+                    style="destructive",
+                ),
+            ])
+        )
+
+        try:
+            result = await self._send_card(chat_id, card)
+            message_id = getattr(result, "id", None) if result else None
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.error("[teams] send_slash_confirm failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
 
     async def send(

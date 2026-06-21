@@ -432,8 +432,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
-    # External memory provider system prompt block (additive to built-in)
-    if agent._memory_manager:
+    # External memory provider system prompt block (additive to built-in).
+    # Some system contexts (cron) need provider tools like fact_store without
+    # injecting provider memory into the prompt. They set
+    # _skip_memory_provider_prompt while still initialising _memory_manager.
+    if agent._memory_manager and not getattr(agent, "_skip_memory_provider_prompt", False):
         try:
             _ext_mem_block = agent._memory_manager.build_system_prompt()
             if _ext_mem_block:

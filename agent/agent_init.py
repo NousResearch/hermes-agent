@@ -213,6 +213,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    expose_memory_tools_when_skipping: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -1147,9 +1148,15 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
-    if not skip_memory:
+    agent._skip_memory_provider_prompt = bool(skip_memory and expose_memory_tools_when_skipping)
+    mem_config = {}
+    if not skip_memory or expose_memory_tools_when_skipping:
         try:
             mem_config = _agent_cfg.get("memory", {})
+        except Exception:
+            mem_config = {}
+    if not skip_memory:
+        try:
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -1168,7 +1175,7 @@ def init_agent(
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
-    if not skip_memory:
+    if not skip_memory or expose_memory_tools_when_skipping:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 

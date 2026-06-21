@@ -121,6 +121,7 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     - ``tasks.session_id``       -> ``idx_tasks_session_id``    (#28447)
     - ``tasks.tenant``           -> ``idx_tasks_tenant``        (#16081)
     - ``tasks.idempotency_key``  -> ``idx_tasks_idempotency``   (#17805)
+    - ``tasks.block_class``      -> ``idx_tasks_block_class``
     - ``task_events.run_id``     -> ``idx_events_run``          (#17805)
     """
     db_path = tmp_path / "legacy-kanban.db"
@@ -182,11 +183,14 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
+    assert "block_class" in task_columns
+    assert "block_metadata" in task_columns
     assert "run_id" in event_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
+    assert "idx_tasks_block_class" in indexes
     assert "idx_events_run" in indexes
 
 
@@ -3535,6 +3539,64 @@ def test_dispatch_review_counts_toward_max_spawn(
     # Only 2 should spawn (ready tasks get priority in the loop)
     assert len(res.spawned) == 2
     assert len(spawns) == 2
+
+
+def test_dispatch_review_profile_cap_override_visible_in_dry_run(
+    kanban_home, all_assignees_spawnable,
+):
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="worker")
+        ready = kb.create_task(conn, title="ordinary ready", assignee="backend-engineer")
+        review = kb.create_task(conn, title="review packet", assignee="pr-reviewer")
+        kb.claim_task(conn, running)
+        _set_task_status(conn, review, "review")
+
+        res = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            max_spawn=1,
+            profile_cap_overrides={"pr-reviewer": 1},
+        )
+
+        assert res.spawned == [(review, "pr-reviewer", "")]
+        assert kb.get_task(conn, ready).status == "ready"
+        assert res.cap_overrides == [
+            {
+                "task_id": review,
+                "assignee": "pr-reviewer",
+                "status": "review",
+                "cap": 1,
+                "running": 0,
+                "planned": 1,
+            }
+        ]
+
+
+def test_dispatch_profile_cap_override_does_not_apply_to_ordinary_ready_rows(
+    kanban_home, all_assignees_spawnable,
+):
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="worker")
+        ready = kb.create_task(conn, title="ordinary ready", assignee="backend-engineer")
+        kb.claim_task(conn, running)
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=1,
+            profile_cap_overrides={"backend-engineer": 3},
+        )
+
+        assert res.spawned == []
+        assert spawns == []
+        assert res.cap_overrides == []
+        assert kb.get_task(conn, ready).status == "ready"
 
 
 def test_dispatch_review_spawns_when_ready_empty(

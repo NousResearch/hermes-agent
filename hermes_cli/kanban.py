@@ -54,7 +54,8 @@ def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    block_class = f" [{t.block_class}]" if t.block_class else ""
+    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}{block_class}  {t.title}"
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -79,6 +80,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "block_class": t.block_class,
+        "block_metadata": t.block_metadata,
     }
 
 
@@ -491,6 +494,34 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+    # --- drain (safe board maintenance) ---
+    p_drain = sub.add_parser(
+        "drain",
+        help="Plan or apply safe Kanban drain actions",
+    )
+    p_drain.add_argument(
+        "--class",
+        dest="drain_class",
+        choices=["review_packets", "review_required", "timeout_gave_up", "superseded_duplicates"],
+        default="review_packets",
+        help="Drain class to run (default: review_packets)",
+    )
+    p_drain.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        default=False,
+        help="Report planned actions without mutation (default)",
+    )
+    p_drain.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Apply safe drain actions",
+    )
+    p_drain.add_argument("--limit", type=int, default=None)
+    p_drain.add_argument("--json", action="store_true")
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -554,6 +585,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
+    p_block.add_argument("--block-class", choices=sorted(kb.VALID_BLOCK_CLASSES), default=None,
+                         help="Machine-readable block class for safe drain classification")
+    p_block.add_argument("--block-metadata", default=None,
+                         help="JSON object with optional owner/evidence/source metadata")
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -627,6 +662,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
+    p_disp.add_argument(
+        "--profile-cap-override",
+        action="append",
+        default=[],
+        metavar="PROFILE=N",
+        help="Allow an explicit review/drain profile to exceed --max up to N running/planned tasks",
+    )
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -932,6 +974,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
             "diag":     _cmd_diagnostics,
+            "drain":    _cmd_drain,
             "link":     _cmd_link,
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
@@ -1796,6 +1839,90 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_drain(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_drain as kd
+
+    with kb.connect_closing() as conn:
+        drain_class = getattr(args, "drain_class", "review_packets")
+        if drain_class == "review_required":
+            report = kd.drain_review_required(
+                conn,
+                apply=bool(getattr(args, "apply", False)),
+                limit=getattr(args, "limit", None),
+            )
+        elif drain_class == "timeout_gave_up":
+            report = kd.drain_timeout_gave_up(
+                conn,
+                apply=bool(getattr(args, "apply", False)),
+                limit=getattr(args, "limit", None),
+            )
+        elif drain_class == "superseded_duplicates":
+            report = kd.drain_superseded_duplicates(
+                conn,
+                apply=bool(getattr(args, "apply", False)),
+                limit=getattr(args, "limit", None),
+            )
+        else:
+            report = kd.drain_review_packets(
+                conn,
+                apply=bool(getattr(args, "apply", False)),
+                limit=getattr(args, "limit", None),
+            )
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    mode = "dry-run" if report["dry_run"] else "apply"
+    summary = report["summary"]
+    print(f"Kanban drain ({report['class']}, {mode})")
+    total = summary.get("total_packets", summary.get("total_candidates", 0))
+    total_label = "packets" if "total_packets" in summary else "candidates"
+    print(
+        f"  {total_label}={total} planned={summary['planned']} applied={summary['applied']} "
+        f"already_applied={summary['already_applied']} refused={summary['refused']} skipped={summary['skipped']}"
+    )
+    classification = report.get("classification") or {}
+    classification_summary = classification.get("summary") or {}
+    if classification_summary:
+        print(
+            "  classification total={total} parent_gated_todo={parent_gated_todo} "
+            "review_required={review_required} classification_debt={classification_debt}".format(
+                **classification_summary,
+            )
+        )
+        by_class = classification_summary.get("by_class") or {}
+        if by_class:
+            top_classes = sorted(by_class.items(), key=lambda item: (-item[1], item[0]))[:8]
+            print(
+                "  classes: "
+                + ", ".join(f"{name}={count}" for name, count in top_classes)
+            )
+        queues = classification.get("profile_queues") or []
+        if queues:
+            top_queues = sorted(queues, key=lambda item: (-item.get("count", 0), item.get("owner", "")))[:6]
+            print(
+                "  owner queues: "
+                + ", ".join(f"{item['owner']}={item['count']}" for item in top_queues)
+            )
+    for action in report["actions"]:
+        line = (
+            f"  {action['status']:15s} {action['action']} "
+            f"source={action['source_task_id']} "
+            f"id={action['drain_action_id']}"
+        )
+        if action.get("review_task_id"):
+            line += f" review={action['review_task_id']}"
+        if action.get("rework_task_id"):
+            line += f" rework={action['rework_task_id']}"
+        if action.get("child_task_id"):
+            line += f" child={action['child_task_id']}"
+        if action.get("reason"):
+            line += f" reason={action['reason']}"
+        print(line)
+    return 0
+
+
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         kb.link_tasks(conn, args.parent_id, args.child_id)
@@ -1940,6 +2067,16 @@ def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    block_metadata = None
+    if getattr(args, "block_metadata", None):
+        try:
+            block_metadata = json.loads(args.block_metadata)
+        except Exception as exc:
+            print(f"invalid --block-metadata JSON: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(block_metadata, dict):
+            print("--block-metadata must be a JSON object", file=sys.stderr)
+            return 2
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
@@ -1950,6 +2087,9 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 expected_run_id=_worker_run_id_for(tid),
+                block_class=getattr(args, "block_class", None),
+                block_metadata=block_metadata,
+                block_source=(block_metadata or {}).get("source", "operator"),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -2099,6 +2239,25 @@ def _cmd_tail(args: argparse.Namespace) -> int:
         return 0
 
 
+def _parse_profile_cap_overrides(values: list[str]) -> dict[str, int]:
+    overrides: dict[str, int] = {}
+    for raw in values:
+        if "=" not in raw:
+            raise SystemExit(f"invalid --profile-cap-override {raw!r}: expected PROFILE=N")
+        profile, cap_raw = raw.split("=", 1)
+        profile = profile.strip()
+        if not profile:
+            raise SystemExit(f"invalid --profile-cap-override {raw!r}: profile is required")
+        try:
+            cap = int(cap_raw)
+        except ValueError as exc:
+            raise SystemExit(f"invalid --profile-cap-override {raw!r}: N must be an integer") from exc
+        if cap < 1:
+            raise SystemExit(f"invalid --profile-cap-override {raw!r}: N must be >= 1")
+        overrides[profile] = cap
+    return overrides
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee as the fallback for unassigned ready
     # tasks (#27145), kanban.max_in_progress as the global concurrency cap
@@ -2143,6 +2302,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
+            profile_cap_overrides=_parse_profile_cap_overrides(
+                getattr(args, "profile_cap_override", None) or []
+            ),
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
@@ -2166,6 +2328,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "cap_overrides": res.cap_overrides,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2203,6 +2366,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.cap_overrides:
+        print("Cap overrides:")
+        for item in res.cap_overrides:
+            print(
+                "  - {task_id} -> {assignee} status={status} "
+                "cap={cap} running={running} planned={planned}".format(**item)
+            )
     return 0
 
 

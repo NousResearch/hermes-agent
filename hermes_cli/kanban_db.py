@@ -83,6 +83,7 @@ import sys
 import threading
 import logging
 import time
+from collections import Counter
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,16 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+VALID_BLOCK_CLASSES = {
+    "review_required",
+    "human_hold",
+    "credential_hold",
+    "prod_risk_hold",
+    "timeout_gave_up",
+    "superseded_duplicate",
+    "parent_gated",
+    "unknown",
+}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -811,6 +822,8 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    block_class: Optional[str] = None
+    block_metadata: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -824,6 +837,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        block_metadata_value: Optional[dict] = None
+        if "block_metadata" in keys and row["block_metadata"]:
+            try:
+                parsed_metadata = json.loads(row["block_metadata"])
+                if isinstance(parsed_metadata, dict):
+                    block_metadata_value = parsed_metadata
+            except Exception:
+                block_metadata_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -886,6 +907,10 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            block_class=(
+                row["block_class"] if "block_class" in keys else None
+            ),
+            block_metadata=block_metadata_value,
         )
 
 
@@ -1047,7 +1072,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Machine-readable current block classification used by safe drain
+    -- reporting. NULL on legacy rows; reason-only blocks write 'unknown'.
+    block_class          TEXT,
+    -- JSON object with source, reason, evidence, owner, created_at, and any
+    -- caller-supplied metadata for the current block.
+    block_metadata       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1703,6 +1734,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "block_class" not in cols:
+        _add_column_if_missing(conn, "tasks", "block_class", "block_class TEXT")
+    if "block_metadata" not in cols:
+        _add_column_if_missing(conn, "tasks", "block_metadata", "block_metadata TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -1716,6 +1752,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_block_class ON tasks(block_class)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -4133,8 +4172,19 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    block_class: Optional[str] = None,
+    block_metadata: Optional[dict[str, Any]] = None,
+    block_source: str = "worker",
 ) -> bool:
     """Transition ``running -> blocked``."""
+    normalized_block_class = _normalize_block_class(block_class)
+    normalized_metadata = _build_block_metadata(
+        block_class=normalized_block_class,
+        reason=reason,
+        block_metadata=block_metadata,
+        block_source=block_source,
+    )
+    metadata_json = json.dumps(normalized_metadata, sort_keys=True)
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -4143,11 +4193,13 @@ def block_task(
                    SET status       = 'blocked',
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       block_class  = ?,
+                       block_metadata = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """,
-                (task_id,),
+                (normalized_block_class, metadata_json, task_id),
             )
         else:
             cur = conn.execute(
@@ -4156,12 +4208,14 @@ def block_task(
                    SET status       = 'blocked',
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       block_class  = ?,
+                       block_metadata = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                    AND current_run_id = ?
                 """,
-                (task_id, int(expected_run_id)),
+                (normalized_block_class, metadata_json, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -4178,8 +4232,52 @@ def block_task(
                 outcome="blocked",
                 summary=reason,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {
+                "reason": reason,
+                "block_class": normalized_block_class,
+                "block_metadata": normalized_metadata,
+            },
+            run_id=run_id,
+        )
         return True
+
+
+def _normalize_block_class(block_class: Optional[str]) -> str:
+    if block_class is None or not str(block_class).strip():
+        return "unknown"
+    normalized = str(block_class).strip()
+    if normalized not in VALID_BLOCK_CLASSES:
+        raise ValueError(
+            f"block_class must be one of {sorted(VALID_BLOCK_CLASSES)}"
+        )
+    return normalized
+
+
+def _build_block_metadata(
+    *,
+    block_class: str,
+    reason: Optional[str],
+    block_metadata: Optional[dict[str, Any]],
+    block_source: str,
+) -> dict[str, Any]:
+    metadata = dict(block_metadata or {})
+    evidence = metadata.get("evidence")
+    if evidence is None:
+        metadata["evidence"] = []
+    elif isinstance(evidence, list):
+        metadata["evidence"] = [str(item) for item in evidence if str(item).strip()]
+    else:
+        metadata["evidence"] = [str(evidence)]
+    metadata["block_class"] = block_class
+    metadata.setdefault("source", str(block_source).strip() or "worker")
+    metadata["reason"] = reason or ""
+    metadata.setdefault("owner", "")
+    metadata.setdefault("created_at", int(time.time()))
+    return metadata
 
 
 
@@ -4237,7 +4335,8 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', "
+            "block_class = NULL, block_metadata = NULL "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
             (task_id,),
         )
@@ -4296,7 +4395,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         new_status = "todo" if undone_parents else "ready"
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "block_class = NULL, block_metadata = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
@@ -4925,6 +5025,8 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    cap_overrides: list[dict[str, Any]] = field(default_factory=list)
+    """Review/drain profile cap overrides applied during this pass."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
@@ -6120,6 +6222,7 @@ def dispatch_once(
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
+    profile_cap_overrides: Optional[dict[str, int]] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
@@ -6197,6 +6300,16 @@ def dispatch_once(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
             ).fetchone()[0]
         )
+    normalized_profile_cap_overrides = _normalize_profile_cap_overrides(profile_cap_overrides)
+    profile_running_counts: Counter[str] = Counter()
+    profile_planned_counts: Counter[str] = Counter()
+    if normalized_profile_cap_overrides:
+        rows = conn.execute(
+            "SELECT assignee, COUNT(*) AS count FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ).fetchall()
+        profile_running_counts = Counter({row["assignee"]: int(row["count"]) for row in rows})
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
@@ -6440,8 +6553,16 @@ def dispatch_once(
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     for row in review_rows:
+        cap_override_applied = False
+        override_cap = normalized_profile_cap_overrides.get(row["assignee"] or "")
         if max_spawn is not None and running_count + spawned >= max_spawn:
-            break
+            if override_cap is None:
+                continue
+            running_for_profile = profile_running_counts[row["assignee"] or ""]
+            planned_for_profile = profile_planned_counts[row["assignee"] or ""]
+            if running_for_profile + planned_for_profile >= override_cap:
+                continue
+            cap_override_applied = True
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
@@ -6454,6 +6575,18 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if cap_override_applied:
+                profile_planned_counts[row["assignee"]] += 1
+                result.cap_overrides.append(
+                    {
+                        "task_id": row["id"],
+                        "assignee": row["assignee"],
+                        "status": "review",
+                        "cap": override_cap,
+                        "running": profile_running_counts[row["assignee"]],
+                        "planned": profile_planned_counts[row["assignee"]],
+                    }
+                )
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -6491,6 +6624,18 @@ def dispatch_once(
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            if cap_override_applied and claimed.assignee:
+                profile_planned_counts[claimed.assignee] += 1
+                result.cap_overrides.append(
+                    {
+                        "task_id": claimed.id,
+                        "assignee": claimed.assignee,
+                        "status": "review",
+                        "cap": override_cap,
+                        "running": profile_running_counts[claimed.assignee],
+                        "planned": profile_planned_counts[claimed.assignee],
+                    }
+                )
             spawned += 1
         except Exception as exc:
             auto = _record_spawn_failure(
@@ -6500,6 +6645,25 @@ def dispatch_once(
             if auto:
                 result.auto_blocked.append(claimed.id)
     return result
+
+
+def _normalize_profile_cap_overrides(
+    raw: Optional[dict[str, int]],
+) -> dict[str, int]:
+    if not raw:
+        return {}
+    normalized: dict[str, int] = {}
+    for profile, cap in raw.items():
+        name = str(profile).strip()
+        if not name:
+            continue
+        try:
+            parsed = int(cap)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            normalized[name] = parsed
+    return normalized
 
 
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:

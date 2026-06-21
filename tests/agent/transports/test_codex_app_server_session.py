@@ -136,6 +136,57 @@ class TestTurnInputCoercion:
         assert text == "caption\n\n[image attached]"
 
 
+# ---- deleted-CWD tolerance ----
+
+class TestSafeGetcwd:
+    """`_safe_getcwd()` must tolerate a CWD that was deleted out from under
+    the process. `os.getcwd()` raises FileNotFoundError in that case, and the
+    codex bootstrap resolves the cwd before any try/except, so an unguarded
+    call would crash the whole turn. Mirrors tools.terminal_tool._safe_getcwd."""
+
+    def test_returns_real_cwd_normally(self):
+        import os
+        assert session_mod._safe_getcwd() == os.getcwd()
+
+    def test_falls_back_to_terminal_cwd_when_cwd_deleted(self, monkeypatch, tmp_path):
+        def _deleted():
+            raise FileNotFoundError("[Errno 2] No such file or directory")
+        monkeypatch.setattr(session_mod.os, "getcwd", _deleted)
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        assert session_mod._safe_getcwd() == str(tmp_path)
+
+    def test_falls_back_to_home_when_no_terminal_cwd(self, monkeypatch):
+        import os
+        def _deleted():
+            raise FileNotFoundError()
+        monkeypatch.setattr(session_mod.os, "getcwd", _deleted)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        assert session_mod._safe_getcwd() == os.path.expanduser("~")
+
+
+class TestConstructorToleratesDeletedCwd:
+    def test_constructor_falls_back_when_cwd_none_and_getcwd_raises(
+        self, monkeypatch, tmp_path
+    ):
+        """A direct CodexAppServerSession(cwd=None) must not crash when the
+        process CWD has been deleted — the constructor's fallback resolves
+        through _safe_getcwd()."""
+        def _deleted():
+            raise FileNotFoundError()
+        monkeypatch.setattr(session_mod.os, "getcwd", _deleted)
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        sess = CodexAppServerSession(cwd=None)
+        assert sess._cwd == str(tmp_path)
+
+    def test_explicit_cwd_bypasses_resolver(self, monkeypatch):
+        """An explicit cwd is honored verbatim and never calls os.getcwd()."""
+        def _boom():
+            raise AssertionError("os.getcwd() must not be called when cwd is set")
+        monkeypatch.setattr(session_mod.os, "getcwd", _boom)
+        sess = CodexAppServerSession(cwd="/explicit/path")
+        assert sess._cwd == "/explicit/path"
+
+
 # ---- lifecycle ----
 
 class TestLifecycle:

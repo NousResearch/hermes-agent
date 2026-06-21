@@ -294,6 +294,48 @@ class TestRunConversationCodexPath:
         assert not client_mock.chat.completions.create.called
 
 
+class TestBootstrapToleratesDeletedCwd:
+    """Regression: run_codex_app_server_turn resolves the thread cwd in its
+    lazy-session bootstrap, which runs BEFORE the per-turn try/except. A bare
+    os.getcwd() there crashes the whole turn when the process CWD has been
+    deleted out from under it (FileNotFoundError). The bootstrap must route
+    cwd resolution through the deleted-CWD-tolerant _safe_getcwd() resolver
+    instead. (_safe_getcwd's own FileNotFoundError handling is covered by the
+    unit tests in test_codex_app_server_session.py.)"""
+
+    def test_bootstrap_resolves_cwd_via_safe_getcwd(
+        self, monkeypatch, fake_session, tmp_path
+    ):
+        import agent.transports.codex_app_server_session as session_mod
+
+        fallback = str(tmp_path)
+        called = {"n": 0}
+
+        def _fake_safe_getcwd():
+            # Stand in for the real resolver having tolerated a deleted CWD
+            # and fallen back. If the bootstrap still called a bare
+            # os.getcwd() (the bug), this is never invoked.
+            called["n"] += 1
+            return fallback
+
+        monkeypatch.setattr(session_mod, "_safe_getcwd", _fake_safe_getcwd)
+
+        agent = _make_codex_agent()
+        # No session_cwd → the bootstrap must resolve the cwd itself, which
+        # must go through _safe_getcwd().
+        agent.session_cwd = None
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hi from a deleted cwd")
+
+        # The turn completed normally and the session was created with the
+        # resolver's value rather than a raw os.getcwd().
+        assert called["n"] >= 1, "bootstrap did not route cwd through _safe_getcwd()"
+        assert result["completed"] is True
+        assert result["final_response"] == "echo: hi from a deleted cwd"
+        assert agent._codex_session is not None
+        assert agent._codex_session._cwd == fallback
+
+
 class TestReviewForkApiModeDowngrade:
     """When the parent agent runs on codex_app_server, the background
     review fork must downgrade to codex_responses — otherwise the fork

@@ -42,6 +42,24 @@ from agent.transports.codex_event_projector import CodexEventProjector
 logger = logging.getLogger(__name__)
 
 
+def _safe_getcwd() -> str:
+    """Return the current working directory, tolerating a deleted CWD.
+
+    ``os.getcwd()`` raises :class:`FileNotFoundError` when the process's
+    working directory has been removed out from under it (e.g. a scratch
+    workspace that was cleaned up mid-session). The codex app-server
+    bootstrap resolves the thread cwd *before* the per-turn ``try`` in
+    ``run_codex_app_server_turn``, so an unguarded ``os.getcwd()`` there
+    would crash the whole turn instead of degrading. Fall back to
+    ``TERMINAL_CWD`` then the user's home directory so a stale CWD never
+    takes the runtime down. Mirrors ``tools.terminal_tool._safe_getcwd``.
+    """
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
+
+
 # How many tailing stderr lines from the codex subprocess to attach to a
 # user-facing error when we don't have a more specific classification (OAuth,
 # wedge watchdog, etc.). Small enough to keep error messages legible, large
@@ -209,7 +227,7 @@ class CodexAppServerSession:
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
     ) -> None:
-        self._cwd = cwd or os.getcwd()
+        self._cwd = cwd or _safe_getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
         self._permission_profile = (

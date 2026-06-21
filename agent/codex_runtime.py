@@ -17,7 +17,6 @@ compatibility.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
@@ -189,13 +188,20 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
-    from agent.transports.codex_app_server_session import CodexAppServerSession
+    from agent.transports.codex_app_server_session import (
+        CodexAppServerSession,
+        _safe_getcwd,
+    )
 
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
-        cwd = getattr(agent, "session_cwd", None) or os.getcwd()
+        # Resolve the thread cwd via _safe_getcwd() (not a bare os.getcwd()):
+        # this bootstrap runs before the run_turn() try/except below, so a CWD
+        # deleted out from under the process must degrade gracefully instead
+        # of crashing the turn with FileNotFoundError.
+        cwd = getattr(agent, "session_cwd", None) or _safe_getcwd()
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.

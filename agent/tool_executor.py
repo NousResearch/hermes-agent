@@ -44,8 +44,25 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
+from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+
+def _budget_for_agent(agent) -> BudgetConfig:
+    """Resolve a tool-result BudgetConfig scaled to the agent's context window.
+
+    Large-context models keep the historical 100K/200K char defaults; small
+    models (e.g. a 65K-token local model switched into mid-session) get a budget
+    proportional to their window so a single large tool result can't push the
+    request past the model's limit (#23767). Falls back to the default budget
+    when the context length isn't resolvable.
+    """
+    try:
+        ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+        return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
+    except Exception:
+        return DEFAULT_BUDGET
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -248,6 +265,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
+
+    # Resolve the context-scaled tool-output budget once per turn (cheap, but
+    # avoids rebuilding it per result inside the loop below).
+    _tool_budget = _budget_for_agent(agent)
 
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
@@ -725,6 +746,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_name=name,
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
+            config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -756,7 +778,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -769,6 +791,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    # Resolve the context-scaled tool-output budget once per turn.
+    _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -1377,6 +1401,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_name=function_name,
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
+            config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
@@ -1425,7 +1450,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

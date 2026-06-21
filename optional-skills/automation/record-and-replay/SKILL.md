@@ -1,13 +1,7 @@
 ---
 name: record-and-replay
-description: |
-  Record any workflow by performing it once — the agent watches your screen,
-  captures your clicks and keystrokes globally across all apps, and generates a
-  replayable skill. Replay the skill later to automate the task autonomously.
-  Cadillac version: real input event capture via CGEventTap (macOS) or pynput
-  (Linux/Windows), not just screenshot diffing. Works across all applications
-  and browser windows.
-version: 2.0.0
+description: "Record any workflow by performing it once — the agent watches your screen, captures your clicks and keystrokes globally across all apps, and generates a replayable skill."
+version: 3.0.0
 author: Eric Woodard (Snail3D)
 license: MIT
 platforms: [macos, linux, windows]
@@ -28,10 +22,6 @@ screenshots and accessibility tree snapshots. It then analyzes the recording
 and generates a replayable skill. Later, invoke the skill to have the agent
 repeat the task autonomously via `computer_use` (macOS) or `browser_*` tools.
 
-This is the "Cadillac" version — it captures actual system input events, not
-just screenshot diffs. This means it knows exactly where you clicked, what keys
-you pressed, and in what order, producing much more precise replay skills.
-
 **Cross-platform:** Works on macOS (CGEventTap), Linux (pynput/X11), and
 Windows (pynput/Win32).
 
@@ -41,6 +31,17 @@ Windows (pynput/Win32).
 - The user wants to automate a repetitive GUI task
 - The user wants to create a reusable skill from a manual process
 - The user says "replay" or "run the <name> skill"
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `scripts/record_workflow.py` | Recording script — captures input events, screenshots, AX trees, clipboard, window state |
+| `scripts/analyze_recording.py` | Analysis script — step detection, pattern/retry detection, HTML viewer generation |
+| `scripts/generate_skill.py` | Vision-based skill generation from analysis JSON |
+| `scripts/replay_skill.py` | Replay engine — executes generated skills step by step |
+| `scripts/view_recording.html.template` | HTML viewer template (reference for the generated viewer) |
+| `scripts/test_record_replay.sh` | Integration test — full pipeline validation |
 
 ## How to Launch from Hermes
 
@@ -59,6 +60,23 @@ The agent will:
 5. Analyze the recording and generate a new skill
 6. Confirm the skill is saved and ready to replay
 
+### Full Pipeline: Record → Analyze → Generate → Replay
+
+```bash
+# 1. Record
+python3 scripts/record_workflow.py --interval 1.0 --output-dir ~/.hermes/recordings/my-task
+
+# 2. Analyze (with optional HTML viewer)
+python3 scripts/analyze_recording.py ~/.hermes/recordings/my-task --html --output analysis.json
+
+# 3. Generate skill (vision-based if configured, text-only fallback)
+python3 scripts/generate_skill.py --analysis analysis.json --recording-dir ~/.hermes/recordings/my-task --name my-task
+
+# 4. Replay (dry-run first, then real)
+python3 scripts/replay_skill.py --skill ~/.hermes/skills/automation/my-task/SKILL.md --dry-run
+python3 scripts/replay_skill.py --skill ~/.hermes/skills/automation/my-task/SKILL.md --step-delay 1.0
+```
+
 Later, to replay:
 > "run the youtube-upload skill"
 > "replay my expense-report workflow"
@@ -68,7 +86,7 @@ Later, to replay:
 ### macOS (CGEventTap — Cadillac mode)
 
 ```bash
-pip install pyobjc-framework-Quartz mss
+pip install pyobjc-framework-Quartz mss Pillow
 ```
 
 - **cua-driver** (optional, for AX trees): Install via `hermes tools` →
@@ -83,7 +101,7 @@ pip install pyobjc-framework-Quartz mss
 ### Linux (pynput + X11)
 
 ```bash
-pip install pynput mss
+pip install pynput mss Pillow
 # Screenshot backends (any one):
 sudo apt install scrot       # or gnome-screenshot, or imagemagick
 # Window info (optional, for AX tree fallback):
@@ -92,56 +110,26 @@ sudo apt install xdotool
 pip install pyatspi
 ```
 
-- On Wayland: pynput may not work (X11 only). Check if `XDG_SESSION_TYPE=x11`.
-  If on Wayland, the script falls back to screenshot-only mode.
-
 ### Windows (pynput + Win32)
 
 ```bash
-pip install pynput mss pygetwindow uiautomation
+pip install pynput mss Pillow pygetwindow uiautomation
 ```
-
-- No special permissions needed for standard windows.
-- Run as admin if recording interactions with elevated applications.
-- `uiautomation` package provides the UI Automation tree (replaces macOS AX
-  trees).
 
 ## Phase 1: Record
 
 ### Starting a Recording
 
-When the user says "record this workflow" (or similar):
+```bash
+python3 <skill_dir>/scripts/record_workflow.py \
+  --interval 1.0 \
+  --output-dir ~/.hermes/recordings/<descriptive-name>
+```
 
-1. **Check prerequisites:**
-   ```bash
-   # macOS
-   python3 -c "import Quartz; print('Quartz OK')" 2>/dev/null
-   # Linux/Windows
-   python3 -c "import pynput; print('pynput OK')" 2>/dev/null
-   ```
-
-2. **Start the recording script** in the background via `terminal(background=true)`:
-   ```bash
-   python3 <skill_dir>/scripts/record_workflow.py \
-     --interval 1.0 \
-     --output-dir ~/.hermes/recordings/<descriptive-name>
-   ```
-
-   Faster intervals (0.5s) capture more detail but produce more screenshots.
-   Default 1.0s is a good balance.
-
-3. **Tell the user:**
-   > 🔴 Recording started. Go ahead and perform your workflow.
-   > I'm capturing your clicks, keystrokes, and screenshots across ALL apps.
-   > Open any browser, any app, switch between them — I see everything.
-   > When you're done, tell me to stop.
-
-4. **Wait for the user** to say "stop" / "done" / "ok stop".
-
-5. **Stop the recording** by creating the stop flag file:
-   ```bash
-   touch ~/.hermes/recordings/<descriptive-name>/.stop
-   ```
+Stop the recording by creating the stop flag file:
+```bash
+touch ~/.hermes/recordings/<descriptive-name>/.stop
+```
 
 ### What Gets Captured (all platforms)
 
@@ -154,15 +142,38 @@ When the user says "record this workflow" (or similar):
 | App switches | NSWorkspace / xdotool / win32 | Know when user changed apps |
 | Screenshots | mss (cross-platform) or screencapture | Visual context for each step |
 | AX/AT/UI tree snapshots | cua-driver / pyatspi / uiautomation | Element names + structure |
+| **Clipboard content** | pbpaste (macOS) / xclip (Linux) / tkinter (Windows) | Capture copy/paste workflows |
+| **Window state changes** | NSWorkspace + AX API (macOS) | Track resize/move/minimize for replay accuracy |
 
-### Recording works across ALL apps
+### Screenshot Diffing
 
-The recording captures events at the OS level, not per-window. While recording
-you can:
-- Open any browser (Chrome, Safari, Firefox, Arc — doesn't matter)
-- Switch between any apps (Finder, Mail, Figma, Terminal, anything)
-- Click anywhere on screen, type in any field, scroll, drag
-- Switch Spaces / virtual desktops (macOS) or workspaces (Linux)
+The recorder only saves a screenshot when pixels actually change from the
+previous frame (using `PIL.ImageChops.difference` with a 5% threshold). This
+reduces disk usage by 80%+ for typical workflows where the user pauses
+between actions. When a screenshot is skipped, a `screenshot_skipped` event
+is logged so the analysis script knows the screen was checked but unchanged.
+
+### Clipboard Monitoring
+
+The recorder polls the clipboard every 0.5 seconds. When clipboard content
+changes, a `clipboard_copy` event is logged with:
+- First 200 characters (for context — NOT full content for security)
+- Content hash (for deduplication)
+- Content length
+
+This captures copy/paste workflows that pure key logging misses.
+
+### Window State Tracking (macOS)
+
+On macOS, the recorder monitors window position, size, and minimize state.
+When changes are detected, it logs:
+- `window_resized` — window was resized
+- `window_moved` — window was moved
+- `window_minimized` — window was minimized
+
+These events are important for replay accuracy — if a window was resized
+during the original recording, the replay needs to know the expected
+dimensions.
 
 ### Password fields — handled, not captured
 
@@ -170,274 +181,192 @@ macOS **Secure Input Mode** deliberately blocks keyloggers from seeing
 keystrokes in password fields (`AXSecureTextField`). This is a security
 feature — the recording script cannot and should not bypass it.
 
-When the recording encounters a password field, keystrokes are silently
-skipped. The analysis script detects this pattern (click into a field →
-no keystrokes → click elsewhere) and marks it as a password step.
-
-During **replay**, the generated skill handles password fields via **password
-manager integration** instead of recording the actual password:
-
-1. **macOS Keychain** (built-in, no install):
-   ```bash
-   security find-generic-password -s "YouTube" -w
-   ```
-2. **1Password CLI** (`op`):
-   ```bash
-   op item get "YouTube Login" --field password
-   ```
-3. **Bitwarden CLI** (`bw`):
-   ```bash
-   bw get password "YouTube Login"
-   ```
-
-The generated skill includes a password step like:
-
-```markdown
-### Step 3: Enter password
-- App: Safari
-- Field: AXSecureTextField (password)
-- Action: retrieve from keychain and type
-
-# Retrieve password (never logged, never stored in the skill)
-PASSWORD=$(security find-generic-password -s "YouTube" -w 2>/dev/null)
-computer_use(action="type", text="$PASSWORD")
-```
-
-**Security rules for password steps in generated skills:**
-- Never store the actual password in the SKILL.md — always reference the
-  keychain/service name
-- Never log the password value in events.jsonl
-- The `type` action for passwords is not captured during recording — it's
-  reconstructed during generation from context (the field was a
-  `AXSecureTextField`, the user clicked into it, paused, then proceeded)
-- If no password manager is configured, the replay pauses and asks the user
-  to type the password manually
-
 ### Recording Output Structure
 
 ```
 ~/.hermes/recordings/<name>/
-├── metadata.json              # Duration, event count, platform, etc.
+├── metadata.json              # Duration, event count, platform, screenshots_skipped
 ├── events/
 │   └── events.jsonl           # Streaming event log (one JSON per line)
 ├── screenshots/
-│   ├── 0001.png               # Numbered screenshots
-│   ├── 0002.png
+│   ├── 0001.png               # Only saved when pixels change (diffing)
 │   └── ...
-└── ax_trees/
-    ├── 0001.txt               # AX/AT/UI tree at each screenshot
-    ├── 0002.txt
-    └── ...
+├── ax_trees/
+│   ├── 0001.txt               # AX/AT/UI tree at each screenshot
+│   └── ...
+└── viewer.html                # Generated by analyze_recording.py --html
 ```
 
-## Phase 2: Generate Skill
+## Phase 2: Analyze
 
-After the recording stops, analyze it and generate a SKILL.md.
-
-### Step 1: Run the analysis script
+After the recording stops, analyze it:
 
 ```bash
-python3 <skill_dir>/scripts/analyze_recording.py \
-  ~/.hermes/recordings/<name>
+python3 scripts/analyze_recording.py ~/.hermes/recordings/<name>
+# With HTML viewer:
+python3 scripts/analyze_recording.py ~/.hermes/recordings/<name> --html
+# Save to file:
+python3 scripts/analyze_recording.py ~/.hermes/recordings/<name> --output analysis.json
 ```
 
-This produces a JSON summary with:
-- Logical steps (grouped by 2s+ pauses or app switches)
-- Each step's interactions (clicks, keys, scrolls)
-- Associated screenshots
-- Frontmost app for each step
+### Analysis Output
 
-### Step 2: Review screenshots with vision
+The analysis produces a JSON summary with:
+- **Logical steps** — grouped by natural boundaries (pause > 1.5s, app switch,
+  screenshot with pixel changes, clipboard copy)
+- **Step signatures** — action-type sequences (e.g., `["click", "type", "click"]`)
+- **Pattern detection** — repeated step signatures indicate loops
+- **Retry detection** — nearby clicks within 500ms = likely mis-click
+- **Clipboard events** — copy/paste operations
+- **Window state changes** — resize/move/minimize
+- **Suggested skill name** — auto-generated from app + first action
 
-For key steps, load the before/after screenshots and use `vision_analyze` to
-understand what visually changed:
+### Recording Viewer
 
-```
-vision_analyze(
-  image_url="file:///path/to/recording/screenshots/0001.png",
-  question="What application is this? What UI elements are visible? What action is about to happen?"
-)
-```
+The `--html` flag generates a self-contained HTML file (`viewer.html`) with:
+- Timeline of screenshots with timestamps
+- Event markers on the timeline (clicks=red, keys=blue, scrolls=green)
+- Step boundaries as vertical dividers
+- Play button that auto-advances through screenshots at recording speed
+- Click any screenshot to see it full-size with the AX tree alongside
+- Detected patterns listed in the info panel
 
-### Step 3: Generate the SKILL.md
+The viewer is fully self-contained — inline CSS, JS, and base64 images. No
+external dependencies. Open it in any browser:
 
-Write a new skill using `skill_manage(action='create')` with:
-
-```markdown
----
-name: <descriptive-name>
-description: <one line summary>
-version: 1.0.0
-author: generated by record-and-replay
-license: MIT
-platforms: [<platform>]
-metadata:
-  hermes:
-    tags: [automation, recorded]
-    category: automation
-    created_by: agent
-    source_recording: ~/.hermes/recordings/<name>
----
-
-# <Task Name>
-
-## When to Use
-Auto-generated from recording on <date>. Replay this workflow when the user
-asks to <description of what the task does>.
-
-## Prerequisites
-- computer_use toolset enabled (macOS) or browser tools (web tasks)
-- <any app-specific requirements>
-
-## Procedure
-
-### Step 1: <Action description>
-- App: <app name>
-- Action: click on <element description> at position (x, y)
-- Verify: <what should appear/change>
-
-computer_use(action="capture", mode="som", app="<app>")
-computer_use(action="click", element=<N>)
-
-### Step 2: <Action description>
-...
-
-## Verification
-After all steps, capture a screenshot and verify:
-- <expected final state>
-
-## Pitfalls
-- <known issues from the recording>
-- <elements that might have different indices on replay>
+```bash
+open ~/.hermes/recordings/<name>/viewer.html
 ```
 
-### Key generation principles
+## Phase 3: Generate Skill
 
-1. **Use element indices, not pixel coordinates.** The recording has pixel
-   positions, but replay should use `computer_use(action="capture", mode="som")`
-   to get element indices, then click by index. Pixel positions break when
-   windows move.
+Generate a SKILL.md from the analysis:
 
-2. **Include verification steps.** After each action, re-capture and verify
-   the expected state appeared. This makes replay robust to timing issues.
+```bash
+python3 scripts/generate_skill.py \
+  --analysis analysis.json \
+  --recording-dir ~/.hermes/recordings/<name> \
+  --name my-task
 
-3. **Note app context.** Each step should specify which app to target via
-   `app="AppName"` parameter.
+# Preview without saving:
+python3 scripts/generate_skill.py --analysis analysis.json --dry-run --no-vision
 
-4. **Handle variations.** If the recording shows the user retrying a click
-   (clicked wrong element first), note the correct target and skip the retry.
+# Save to custom location:
+python3 scripts/generate_skill.py --analysis analysis.json --output-dir /tmp/my-skill
+```
 
-5. **Group related actions.** If the user typed text into a field, combine
-   "click field" + "type text" into one step.
+If a vision provider is configured (Hermes auxiliary vision), the script uses
+it to analyze screenshots and understand what UI elements are visible and what
+changed between before/after states. If no vision provider is available, it
+falls back to text-only analysis from the AX tree + event log.
 
-6. **Web tasks → use browser tools.** If the recording shows browser
-   interactions, the replay should use `browser_*` tools (headless Chromium)
-   rather than `computer_use` — more reliable for web automation.
+The generated SKILL.md includes:
+- Element descriptions (not pixel coordinates) for replay
+- Verification criteria for each step
+- Error recovery instructions
+- Estimated replay duration
+- Detected patterns noted as loop candidates
 
-## Phase 3: Replay
+## Phase 4: Replay
 
-When the user says "run the <name> skill" or "replay <name>":
+Replay a generated skill:
 
-1. **Load the skill** (it loads automatically if named correctly).
+```bash
+# Dry-run (captures and finds elements but doesn't click):
+python3 scripts/replay_skill.py --skill ~/.hermes/skills/automation/my-task/SKILL.md --dry-run
 
-2. **For macOS desktop apps** — follow each step using `computer_use`:
-   ```
-   computer_use(action="capture", mode="som", app="<app>")
-   → Find the target element by matching the description
-   → computer_use(action="click", element=<N>)
-   → computer_use(action="capture", mode="som")  # verify
-   → If verification fails, retry or ask user
-   ```
+# Real replay:
+python3 scripts/replay_skill.py --skill ~/.hermes/skills/automation/my-task/SKILL.md --step-delay 1.0 --max-retries 2
+```
 
-3. **For web tasks** — use `browser_*` tools:
-   ```
-   browser_navigate(url="...")
-   browser_snapshot()
-   → Find the target element by ref ID
-   → browser_click(ref="@e5")
-   → browser_snapshot()  # verify
-   ```
+### Replay Engine Behavior
 
-4. **Verify after each step.** Take a screenshot/snapshot and compare to the
-   expected state described in the skill. If something looks wrong:
-   - Re-capture and try finding the element again
-   - If the app state is fundamentally different (wrong page, dialog appeared),
-     stop and ask the user
+For each step, the replay engine:
+1. Captures current screen state
+2. Finds the target element by matching description against current AX tree
+3. Performs the action (click, type, scroll, drag)
+4. Captures post-action state
+5. Verifies the expected outcome
+6. If verification fails: retries once, tries alternatives, then pauses and logs
 
-5. **Report completion.** When all steps are done, take a final screenshot
-   and send it to the user with a summary.
+### Replay Report
+
+The engine generates a JSON report with:
+- Steps attempted, succeeded, failed
+- Screenshots at each step
+- Total duration
+- Exit code: 0 if all succeeded, 1 if any failed
+
+## Advanced Usage
+
+### Flags for analyze_recording.py
+
+| Flag | Description |
+|------|-------------|
+| `--html` | Generate self-contained HTML timeline viewer |
+| `--output FILE` | Write JSON to file instead of stdout |
+| `--pause-threshold SECS` | Pause threshold for step boundaries (default: 1.5) |
+
+### Flags for generate_skill.py
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Preview the generated skill without saving |
+| `--no-vision` | Skip vision analysis, use text-only mode |
+| `--output-dir DIR` | Output directory (default: `~/.hermes/skills/automation/<name>/`) |
+| `--name NAME` | Skill name (default: auto-generated from analysis) |
+
+### Flags for replay_skill.py
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Capture and find elements but don't click (for testing) |
+| `--step-delay SECS` | Seconds between steps (default: 1.0) |
+| `--max-retries N` | Max retries per step (default: 2) |
+| `--output-dir DIR` | Output directory for replay report |
+
+### Testing the Full Pipeline
+
+Run the integration test:
+
+```bash
+bash scripts/test_record_replay.sh
+```
+
+This creates a synthetic recording, runs the full analyze → generate → replay
+pipeline, verifies all outputs, and cleans up test artifacts.
 
 ## Pitfalls
 
 ### Recording Issues
 
 - **macOS CGEventTap creation fails:** Terminal needs Accessibility permission.
-  System Settings → Privacy & Security → Accessibility → add Terminal.
 - **Blank screenshots (macOS):** Terminal needs Screen Recording permission.
-  System Settings → Privacy & Security → Screen Recording → add Terminal.
-- **Linux pynput not capturing:** Ensure X11 session (not Wayland). Check with
-  `echo $XDG_SESSION_TYPE`. If Wayland, falls back to screenshot-only mode.
-- **Linux screenshots fail:** Install `scrot`, `gnome-screenshot`, or
-  `imagemagick`. The script tries all three.
-- **Windows missing window info:** Install `pygetwindow` and `uiautomation`
-  for full window/element tree capture.
-- **cua-driver not found (macOS):** AX trees fall back to osascript (less
-  detail). Install cua-driver for best results.
-- **Password fields not captured:** This is intentional — macOS Secure Input
-  Mode blocks key logging in `AXSecureTextField` fields. This is a security
-  feature. During replay, password fields are handled via password manager
-  integration (Keychain, 1Password, Bitwarden) or manual entry. See the
-  "Password fields" section above.
+- **Linux pynput not capturing:** Ensure X11 session (not Wayland).
+- **cua-driver not found (macOS):** AX trees fall back to osascript.
+- **Password fields not captured:** Intentional — macOS Secure Input Mode blocks this.
 
-### Generation Issues
+### Analysis Issues
 
-- **Too many steps:** Increase the pause threshold in the analysis script
-  (default 2.0s). Or manually merge related steps when writing the SKILL.md.
-- **Screenshots don't match replay:** Screenshots are for the vision model to
-  understand context, not for pixel-perfect replay matching. Always use
-  element indices during replay.
-- **Keystrokes captured include modifier presses:** The analysis script filters
-  out standalone modifier presses (shift, cmd, etc.) and only keeps the
-  combined keystroke (e.g., "cmd+s" not "cmd" then "s").
+- **Too many steps:** Increase the pause threshold (`--pause-threshold 2.0`).
+- **Screenshots don't match replay:** Screenshots are for context, not
+  pixel-perfect matching. Always use element indices during replay.
+- **False retry detection:** Adjust `RETRY_DISTANCE_PX` and `RETRY_TIME_MS`
+  in the script if needed.
 
 ### Replay Issues
 
-- **Element indices changed:** Always re-capture before clicking. Never assume
-  element indices from a previous capture are still valid.
-- **App not frontmost (macOS):** Use `computer_use(action="focus_app", app="AppName")`
-  or pass `app="AppName"` to capture/click actions.
-- **Timing-sensitive UI:** Add `computer_use(action="wait", seconds=1.0)`
-  between steps if the UI needs time to load.
-- **Dialog appeared unexpectedly:** Re-capture, check if it's a known dialog
-  (save prompt, permission request), and handle per the skill instructions.
-  If unknown, stop and ask the user.
-- **Web page elements shifted:** Use `browser_snapshot()` to get fresh ref IDs
-  before each click. Don't cache old refs.
+- **Element indices changed:** Always re-capture before clicking.
+- **App not frontmost:** Use `computer_use(action="focus_app", app="AppName")`.
+- **Timing-sensitive UI:** Add `--step-delay 2.0` between steps.
+- **Dialog appeared unexpectedly:** The engine retries, then pauses and logs.
 
 ## Verification
 
 To verify a generated skill works:
 
-1. Run the replay on a fresh instance of the task
-2. Compare the final screenshot to the recording's final screenshot
-3. Check that all expected outcomes are met
-4. If the replay fails, patch the skill with the fix and re-test
-
-## Example: YouTube Upload Workflow
-
-User records: opening YouTube Studio in Chrome, clicking upload, selecting a
-video file, entering title/description, selecting thumbnail, setting visibility
-to "Draft".
-
-Generated skill `youtube-upload` would contain steps like:
-
-1. Browser: navigate to studio.youtube.com
-2. Click "Create" → "Upload videos" (browser_click ref="@e12")
-3. Click file input, type path to video file, press Enter
-4. Wait for upload progress, then fill title field
-5. Fill description field
-6. Click thumbnail upload, select thumbnail file
-7. Click "Save" → "Draft"
-8. Verify: "Draft saved" notification appears
-
-Each step includes the app, the action, the element to find, and verification.
+1. Run the replay in `--dry-run` mode first
+2. Run the full replay on a fresh instance of the task
+3. Compare the final screenshot to the recording's final screenshot
+4. Check the replay report for any failed steps
+5. If the replay fails, patch the skill and re-test

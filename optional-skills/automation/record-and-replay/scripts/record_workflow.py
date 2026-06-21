@@ -51,6 +51,7 @@ Event types captured (all platforms):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -125,6 +126,17 @@ try:
     MSS_AVAILABLE = True
 except ImportError:
     MSS_AVAILABLE = False
+
+# PIL/Pillow — used for screenshot diffing
+try:
+    from PIL import Image, ImageChops
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+# Screenshot diffing threshold — fraction of pixels that must differ
+# to consider the screen "changed" (0.05 = 5% of pixels)
+SCREENSHOT_DIFF_THRESHOLD = 0.05
 
 
 # ── Modifier flag decoding (macOS) ───────────────────────────────────────────
@@ -444,6 +456,8 @@ class RecordingState:
         self.recording = True
         self.events_lock = threading.Lock()
         self._events_fh = None
+        self._last_screenshot_img = None  # PIL Image for diff comparison
+        self._screenshot_skipped_count = 0
 
     def setup(self):
         for d in [self.screenshot_dir, self.ax_dir, self.events_dir]:
@@ -468,15 +482,62 @@ class RecordingState:
         ax_ok = capture_ax_tree(ax_path, app_info.get("name"))
         mouse_x, mouse_y = get_mouse_location()
 
-        self.log_event({
-            "type": "snapshot",
-            "screenshot": f"screenshots/{num:04d}.png" if shot_ok else None,
-            "ax_tree": f"ax_trees/{num:04d}.txt" if ax_ok else None,
-            "frontmost_app": app_info,
-            "mouse_position": [mouse_x, mouse_y],
-            "screenshot_number": num,
-        })
-        self.screenshot_count = num
+        # Screenshot diffing — skip if screen hasn't changed
+        screenshot_saved = shot_ok
+        if shot_ok and PIL_AVAILABLE:
+            try:
+                current_img = Image.open(shot_path)
+                if self._last_screenshot_img is not None:
+                    # Compare with previous screenshot
+                    diff = ImageChops.difference(current_img, self._last_screenshot_img)
+                    # Count non-zero pixels
+                    bbox = diff.getbbox()
+                    if bbox is None:
+                        # Images are identical
+                        os.unlink(shot_path)
+                        screenshot_saved = False
+                        self._screenshot_skipped_count += 1
+                    else:
+                        # Check what fraction of pixels changed
+                        # Convert to grayscale for faster comparison
+                        diff_gray = diff.convert("L")
+                        histogram = diff_gray.histogram()
+                        total_pixels = current_img.width * current_img.height
+                        changed_pixels = total_pixels - histogram[0]
+                        change_ratio = changed_pixels / total_pixels
+                        if change_ratio < SCREENSHOT_DIFF_THRESHOLD:
+                            # Not enough change — skip this screenshot
+                            os.unlink(shot_path)
+                            screenshot_saved = False
+                            self._screenshot_skipped_count += 1
+
+                if screenshot_saved:
+                    self._last_screenshot_img = current_img
+            except Exception:
+                # If diffing fails, keep the screenshot
+                pass
+
+        if not screenshot_saved:
+            # Log skipped event but still log app/mouse info
+            self.log_event({
+                "type": "screenshot_skipped",
+                "reason": "no_change" if PIL_AVAILABLE else "capture_failed",
+                "frontmost_app": app_info,
+                "mouse_position": [mouse_x, mouse_y],
+                "screenshot_number": num,
+            })
+            # Don't increment screenshot_count for skipped screenshots
+            # so numbering stays consistent with actual files
+        else:
+            self.log_event({
+                "type": "snapshot",
+                "screenshot": f"screenshots/{num:04d}.png",
+                "ax_tree": f"ax_trees/{num:04d}.txt" if ax_ok else None,
+                "frontmost_app": app_info,
+                "mouse_position": [mouse_x, mouse_y],
+                "screenshot_number": num,
+            })
+            self.screenshot_count = num
 
         current_app = app_info.get("name", "")
         if self.last_app and current_app != self.last_app:
@@ -491,11 +552,12 @@ class RecordingState:
         if self._events_fh:
             self._events_fh.close()
         metadata = {
-            "version": "1.0.0",
+            "version": "1.1.0",
             "created_at": datetime.now().isoformat(),
             "duration_seconds": time.time() - self.start_time,
             "event_count": self.event_count,
             "screenshot_count": self.screenshot_count,
+            "screenshots_skipped": self._screenshot_skipped_count,
             "interval": self.interval,
             "platform": PLATFORM,
         }
@@ -620,6 +682,14 @@ def run_macos_recording(state: RecordingState):
     # Snapshot thread
     snap_thread = threading.Thread(target=snapshot_loop, args=(state,), daemon=True)
     snap_thread.start()
+
+    # Clipboard monitoring thread
+    clip_thread = threading.Thread(target=clipboard_monitor, args=(state,), daemon=True)
+    clip_thread.start()
+
+    # Window state monitoring thread (macOS only)
+    win_thread = threading.Thread(target=window_state_monitor, args=(state,), daemon=True)
+    win_thread.start()
 
     # Stop watcher thread
     stop_flag = state.output_dir / ".stop"
@@ -795,6 +865,9 @@ def run_pynput_recording(state: RecordingState):
     # Snapshot thread
     snap_thread = threading.Thread(target=snapshot_loop, args=(state,), daemon=True)
 
+    # Clipboard monitoring thread
+    clip_thread = threading.Thread(target=clipboard_monitor, args=(state,), daemon=True)
+
     # Stop watcher
     stop_flag = state.output_dir / ".stop"
 
@@ -824,6 +897,7 @@ def run_pynput_recording(state: RecordingState):
     mouse_listener.start()
     keyboard_listener.start()
     snap_thread.start()
+    clip_thread.start()
     stop_thread.start()
 
     print(f"🔴 Recording started ({PLATFORM} / pynput)", file=sys.stderr)
@@ -852,6 +926,163 @@ def snapshot_loop(state: RecordingState):
     while state.recording:
         state.capture_snapshot()
         time.sleep(state.interval)
+
+
+# ── Clipboard monitoring ────────────────────────────────────────────────────
+
+def get_clipboard_content() -> str:
+    """Get clipboard content (cross-platform)."""
+    if IS_MACOS:
+        try:
+            result = subprocess.run(
+                ["pbpaste"], capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0:
+                return result.stdout
+        except Exception:
+            pass
+    elif IS_LINUX:
+        for cmd in [["xclip", "-o", "-selection", "clipboard"],
+                     ["xsel", "-o", "-b"]]:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                if result.returncode == 0:
+                    return result.stdout
+            except (FileNotFoundError, Exception):
+                continue
+    elif IS_WINDOWS:
+        try:
+            import tkinter
+            root = tkinter.Tk()
+            root.withdraw()
+            content = root.clipboard_get()
+            root.destroy()
+            return content
+        except Exception:
+            pass
+    return ""
+
+
+def clipboard_monitor(state: RecordingState):
+    """Background thread that monitors clipboard for changes."""
+    last_hash = None
+    while state.recording:
+        content = get_clipboard_content()
+        if content:
+            content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
+            if content_hash != last_hash:
+                last_hash = content_hash
+                # Store first 200 chars for context, full hash for dedup
+                preview = content[:200].replace("\n", "\\n").replace("\r", "")
+                state.log_event({
+                    "type": "clipboard_copy",
+                    "preview": preview,
+                    "content_hash": content_hash,
+                    "content_length": len(content),
+                })
+        time.sleep(0.5)
+
+
+# ── Window state tracking (macOS) ────────────────────────────────────────────
+
+def get_window_state() -> dict:
+    """Get current window state (position, size, minimized) on macOS."""
+    if not IS_MACOS:
+        return {}
+    try:
+        script = (
+            'tell application "System Events"\n'
+            'set frontApp to first application process whose frontmost is true\n'
+            'set appName to name of frontApp\n'
+            'try\n'
+            'set winList to ""\n'
+            'repeat with w in windows of frontApp\n'
+            'set winName to name of w\n'
+            'set winPos to position of w\n'
+            'set winSize to size of w\n'
+            'set winMin to (miniaturized of w) as text\n'
+            'set winList to winList & winName & "|" & (item 1 of winPos) & "," & (item 2 of winPos) & "|" & (item 1 of winSize) & "x" & (item 2 of winSize) & "|" & winMin & "\\n"\n'
+            'end repeat\n'
+            'return appName & "\\n" & winList\n'
+            'on error\n'
+            'return appName & "\\n"\n'
+            'end try\n'
+            'end tell'
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            app_name = lines[0] if lines else "Unknown"
+            windows = []
+            for line in lines[1:]:
+                if "|" in line:
+                    parts = line.split("|")
+                    if len(parts) >= 4:
+                        windows.append({
+                            "name": parts[0],
+                            "position": parts[1],
+                            "size": parts[2],
+                            "minimized": parts[3] == "true",
+                        })
+            return {"app": app_name, "windows": windows}
+    except Exception:
+        pass
+    return {}
+
+
+def window_state_monitor(state: RecordingState):
+    """Background thread that tracks window resize/move/minimize events (macOS)."""
+    if not IS_MACOS:
+        return
+
+    last_state = None
+    while state.recording:
+        current = get_window_state()
+        if current and current.get("windows"):
+            if last_state is None:
+                last_state = current
+                continue
+
+            # Compare window states
+            for i, win in enumerate(current["windows"]):
+                prev_win = last_state["windows"][i] if i < len(last_state["windows"]) else None
+                if prev_win:
+                    # Check for resize
+                    if win["size"] != prev_win["size"]:
+                        state.log_event({
+                            "type": "window_resized",
+                            "window": win["name"],
+                            "app": current.get("app", ""),
+                            "details": {
+                                "old_size": prev_win["size"],
+                                "new_size": win["size"],
+                            },
+                        })
+                    # Check for move
+                    if win["position"] != prev_win["position"]:
+                        state.log_event({
+                            "type": "window_moved",
+                            "window": win["name"],
+                            "app": current.get("app", ""),
+                            "details": {
+                                "old_position": prev_win["position"],
+                                "new_position": win["position"],
+                            },
+                        })
+                    # Check for minimize
+                    if win["minimized"] != prev_win["minimized"]:
+                        if win["minimized"]:
+                            state.log_event({
+                                "type": "window_minimized",
+                                "window": win["name"],
+                                "app": current.get("app", ""),
+                            })
+
+            last_state = current
+        time.sleep(0.5)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

@@ -1,8 +1,8 @@
-HUNK/LINE-LEVEL DIFF COVERAGE (stronger than file-level mapping)
-method: every +/- changed line of `git diff v0.16.0..HEAD -- ./src/` (excl .bak/.project-intel)
-        must appear in the union of {40 feature-PR net diffs} ∪ {34 deferred patches} ∪ {3 fwd-compat patches}
+HUNK/LINE-LEVEL DIFF COVERAGE (post #50457-rescope + opus-context graduation)
+method: every +/- changed line of `git diff v0.16.0..HEAD -- ./src/` must appear in
+        union{41 feature-PR net diffs} ∪ {34 deferred patches} ∪ {3 fwd-compat patches}
 result:
   full src delta changed-lines (+/-) : 11678
-  covered (PR ∪ deferred ∪ fwd-compat): 11678
-  RESIDUAL (uncovered)               : 0
-=> zero residual hunks/lines; every change is attributed to a concrete PR or #50111 patch.
+  covered                            : 11678
+  RESIDUAL                           : 0
+file-level: 139 files, 139 -> feature PRs, 0 deferred-only, 0 UNMAPPED

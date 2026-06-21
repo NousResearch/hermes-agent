@@ -1029,6 +1029,37 @@ def skill_manage(
     if gate_result is not None:
         return gate_result
 
+    history_snapshot_id = None
+    try:
+        from tools.skill_provenance import is_background_review
+
+        if is_background_review() and action in {
+            "create",
+            "edit",
+            "patch",
+            "delete",
+            "write_file",
+            "remove_file",
+        }:
+            from tools.skill_history import snapshot_autonomous_edit
+
+            existing = _find_skill(name)
+            skill_dir = existing["path"] if existing else (
+                _resolve_skill_dir(name, category) if action == "create" else None
+            )
+            history_snapshot_id = snapshot_autonomous_edit(
+                name=name,
+                action=action,
+                skill_dir=skill_dir,
+                details={
+                    "file_path": file_path,
+                    "replace_all": bool(replace_all),
+                    "absorbed_into": absorbed_into,
+                },
+            )
+    except Exception:
+        history_snapshot_id = None
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -1063,6 +1094,21 @@ def skill_manage(
 
     else:
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+
+    if history_snapshot_id:
+        try:
+            from tools.skill_history import record_autonomous_edit
+
+            record_autonomous_edit(
+                name=name,
+                action=action,
+                snapshot_id=history_snapshot_id,
+                result=result,
+            )
+            if result.get("success"):
+                result["history_snapshot"] = history_snapshot_id
+        except Exception:
+            pass
 
     if result.get("success"):
         try:

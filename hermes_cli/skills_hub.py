@@ -1149,6 +1149,46 @@ def do_reset(name: str, restore: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
 
+def do_rollback(
+    name: str,
+    *,
+    snapshot_id: str | None = None,
+    list_only: bool = False,
+    console: Optional[Console] = None,
+) -> None:
+    """List or restore autonomous skill-edit snapshots."""
+    from tools.skill_history import list_skill_history, rollback_skill
+
+    c = console or _console
+    if list_only:
+        rows = list_skill_history(name)
+        if not rows:
+            c.print(f"[yellow]No autonomous-edit snapshots found for '{name}'.[/]")
+            return
+        table = Table(title=f"Autonomous edit snapshots for {name}")
+        table.add_column("Snapshot", style="cyan", overflow="fold")
+        table.add_column("Created", style="dim")
+        table.add_column("Action")
+        table.add_column("Existed", justify="center")
+        for row in rows:
+            table.add_row(
+                str(row.get("id", "")),
+                str(row.get("created_at", "")),
+                str(row.get("action", "")),
+                "yes" if row.get("existed") else "no",
+            )
+        c.print(table)
+        return
+
+    ok, msg, path = rollback_skill(name, snapshot_id=snapshot_id)
+    if ok:
+        c.print(f"[green]✓[/] {msg}")
+        if path is not None:
+            c.print(f"[dim]Restored path:[/] {path}")
+    else:
+        c.print(f"[bold red]Rollback failed:[/] {msg}")
+
+
 def do_list_modified(console: Optional[Console] = None,
                      as_json: bool = False) -> None:
     """List bundled skills the user has edited (which `hermes update` keeps)."""
@@ -1691,6 +1731,12 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "rollback":
+        do_rollback(
+            args.name,
+            snapshot_id=getattr(args, "snapshot_id", None),
+            list_only=getattr(args, "list", False),
+        )
     elif action == "list-modified":
         do_list_modified(as_json=getattr(args, "json", False))
     elif action == "diff":
@@ -1725,7 +1771,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|rollback|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

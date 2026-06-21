@@ -2570,28 +2570,60 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config, merging in-memory CLI_CONFIG with persistent config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    The in-memory ``CLI_CONFIG["delegation"]`` block (populated by CLI/gateway
+    startup) is used as the base. Any key that is missing *or* empty-string
+    in the in-memory block is filled in from the persistent ``config.yaml``
+    (via ``hermes_cli.config.load_config()``). This prevents a partially
+    populated in-memory block -- e.g. ``{"model": "..."}`` with an empty
+    ``base_url`` -- from shadowing a complete on-disk configuration.
+
+    Fixes #50199: previously ``if cfg: return cfg`` returned any non-empty
+    in-memory block without checking whether ``base_url`` was actually set,
+    so subagents silently inherited the parent endpoint instead of using
+    the configured worker URL.
     """
+    # ---- 1. Read in-memory block (best effort) ----
+    in_mem: dict = {}
     try:
         from cli import CLI_CONFIG
 
-        cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
+        in_mem = CLI_CONFIG.get("delegation") or {}
+        if not isinstance(in_mem, dict):
+            in_mem = {}
     except Exception:
-        pass
+        in_mem = {}
+
+    # ---- 2. Read persistent config (best effort) ----
+    on_disk: dict = {}
     try:
         from hermes_cli.config import load_config
 
-        full = load_config()
-        return full.get("delegation") or {}
+        full = load_config() or {}
+        on_disk = full.get("delegation") or {}
+        if not isinstance(on_disk, dict):
+            on_disk = {}
     except Exception:
-        return {}
+        on_disk = {}
+
+    # ---- 3. Merge: in-memory base, on-disk fills empty/missing keys ----
+    # "Empty" means: key absent, None, or whitespace-only string.
+    # Non-empty in-memory values always win (preserves runtime overrides).
+    def _is_empty(v) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, str) and v.strip() == "":
+            return True
+        return False
+
+    merged: dict = dict(on_disk)  # start from on-disk
+    for k, v in in_mem.items():
+        if _is_empty(v):
+            continue
+        merged[k] = v  # in-memory wins
+
+    return merged
 
 
 # ---------------------------------------------------------------------------

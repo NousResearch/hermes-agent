@@ -2841,6 +2841,274 @@ class TestAdapterBehavior(unittest.TestCase):
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
 
+    # ------------------------------------------------------------------
+    # Markdown table → interactive card (schema 2.0) rendering + fallbacks
+    # ------------------------------------------------------------------
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_table_to_interactive_card(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        msg_type, payload = adapter._build_outbound_payload(table)
+
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        elements = card["body"]["elements"]
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("| A | B |", elements[0]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_keeps_non_table_markdown_as_post(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, _ = adapter._build_outbound_payload("可以用 **粗体** 和 *斜体*。")
+        self.assertEqual(msg_type, "post")
+
+        msg_type, payload = adapter._build_outbound_payload("just plain text")
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": "just plain text"})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        table = "结果如下：\n\n| 项目 | 值 |\n|---|---|\n| 收入 | 100 |\n| 支出 | 40 |"
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=table))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        card = json.loads(captured["request"].request_body.content)
+        self.assertEqual(card["schema"], "2.0")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_table_card_falls_back_to_text_when_raise(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                # Interactive card persistently fails (e.g. invalid card schema);
+                # _feishu_send_with_retry exhausts its retries and re-raises, at
+                # which point the send loop falls back to plain text.
+                if request.request_body.msg_type == "interactive":
+                    raise RuntimeError("invalid card schema")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_text_after_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _no_sleep(_delay):
+            return None
+
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct), \
+             patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_no_sleep):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=table))
+
+        self.assertTrue(result.success)
+        # The first card attempt(s) raise; the final call is the text fallback.
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][-1].request_body.msg_type, "text")
+        # The card fallback preserves the raw markdown (does not strip it).
+        self.assertEqual(json.loads(captured["calls"][-1].request_body.content), {"text": table})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_table_card_falls_back_to_text_when_response_unsuccessful(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(success=lambda: False, code=230001, msg="invalid card")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_text_after_card_resp"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=table))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(json.loads(captured["calls"][1].request_body.content), {"text": table})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_table_card_falls_back_to_text(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(success=lambda: False, code=230001, msg="invalid card")
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(chat_id="oc_chat", message_id="om_edit_card", content=table)
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(json.loads(captured["calls"][1].request_body.content), {"text": table})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_oversized_multibyte_table_splits_into_multiple_cards(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from plugins.platforms.feishu import adapter as adapter_mod
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id=f"om_{len(captured['calls'])}"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        # Build a multibyte (CJK) table whose UTF-8 size exceeds the card content
+        # budget but whose character count stays under MAX_MESSAGE_LENGTH (8000),
+        # so the only thing that can split it is the byte-aware chunker (CJK is
+        # 3 bytes/char in UTF-8, so high CJK density gives bytes >> chars).
+        header = "| 列一 | 列二 |\n|---|---|\n"
+        # Dense CJK rows: ~60 CJK + 8 ASCII per row = ~68 chars / ~188 bytes.
+        row = "| " + "甲" * 30 + " | " + "乙" * 30 + " |\n"
+        rows = []
+        big_table = header
+        while len(big_table.encode("utf-8")) <= adapter_mod._CARD_CONTENT_BUDGET_BYTES:
+            rows.append(row)
+            big_table = header + "".join(rows)
+        # Invariant for a genuine multibyte case: under char limit, over byte budget.
+        self.assertLess(len(big_table), adapter.MAX_MESSAGE_LENGTH)
+        self.assertGreater(
+            len(big_table.encode("utf-8")), adapter_mod._CARD_CONTENT_BUDGET_BYTES
+        )
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=big_table))
+
+        self.assertTrue(result.success)
+        # Oversized content must produce more than one outbound message...
+        self.assertGreater(len(captured["calls"]), 1)
+        # ...and every message sent must be within Feishu's 30 KB hard limit,
+        # regardless of whether a given chunk routed to a card, post, or text.
+        for call in captured["calls"]:
+            self.assertLessEqual(
+                len(call.request_body.content.encode("utf-8")),
+                adapter_mod._CARD_JSON_HARD_LIMIT_BYTES,
+            )
+        # The first chunk still carries the table header+separator, so it renders
+        # as an interactive card.
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+
+    def test_chunk_table_markdown_by_bytes_respects_budget(self):
+        from plugins.platforms.feishu import adapter as adapter_mod
+
+        # Each paragraph ~300 bytes; budget 1000 bytes → multiple chunks.
+        paragraphs = ["段落%02d " % i + "内容" * 50 for i in range(10)]
+        content = "\n\n".join(paragraphs)
+        chunks = adapter_mod._chunk_table_markdown_by_bytes(content, budget_bytes=1000)
+
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk.encode("utf-8")), 1000)
+        # No content is lost across the split.
+        self.assertEqual(
+            "".join("".join(chunks).split()),
+            "".join(content.split()),
+        )
+
+    def test_chunk_table_markdown_by_bytes_splits_single_huge_paragraph(self):
+        from plugins.platforms.feishu import adapter as adapter_mod
+
+        # A single paragraph (no blank lines) larger than budget must still split
+        # at line boundaries.
+        lines = ["| 数据%03d | 值 |" % i for i in range(400)]
+        content = "\n".join(lines)
+        self.assertGreater(len(content.encode("utf-8")), 1000)
+        chunks = adapter_mod._chunk_table_markdown_by_bytes(content, budget_bytes=1000)
+
+        self.assertGreater(len(chunks), 1)
+        # Most chunks must be within budget (a single over-budget line is the only
+        # allowed exception, and these lines are small).
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk.encode("utf-8")), 1000)
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestHydrateBotIdentity(unittest.TestCase):

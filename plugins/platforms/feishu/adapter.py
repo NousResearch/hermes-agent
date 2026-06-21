@@ -544,6 +544,112 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Interactive card (schema 2.0) builders for markdown tables
+# ---------------------------------------------------------------------------
+
+# Feishu rejects interactive cards whose serialized JSON exceeds 30 KB. Budget
+# the *content* well below that so the surrounding card JSON (schema, header,
+# element tags) cannot push the serialized payload over the hard limit. The
+# headroom is measured in UTF-8 bytes, not characters, because multibyte (e.g.
+# CJK) table content is the case most likely to blow the byte ceiling while
+# still looking small by character count.
+_CARD_JSON_HARD_LIMIT_BYTES = 30 * 1024
+_CARD_CONTENT_BUDGET_BYTES = 20 * 1024
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Build an interactive card (schema 2.0) payload for markdown with tables.
+
+    Feishu's card markdown element (schema 2.0) renders table syntax, while the
+    post-type ``md`` element does not. The content is wrapped in a minimal card
+    so tables display with proper styling.
+
+    Callers are responsible for keeping ``content`` within
+    :data:`_CARD_CONTENT_BUDGET_BYTES` (see :func:`_chunk_table_markdown_by_bytes`)
+    so the serialized card stays under Feishu's 30 KB ceiling. The interactive
+    send/edit paths fall back to plain text if a card is still rejected.
+    """
+    card = {
+        "schema": "2.0",
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+        "header": {
+            "title": {"tag": "plain_text", "content": " "},
+            "template": "indigo",
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _table_card_payload_fits(content: str) -> bool:
+    """Return True if a single card built from ``content`` is within the hard limit."""
+    payload = _build_table_card_payload(content)
+    return len(payload.encode("utf-8")) <= _CARD_JSON_HARD_LIMIT_BYTES
+
+
+def _chunk_table_markdown_by_bytes(
+    content: str, budget_bytes: int = _CARD_CONTENT_BUDGET_BYTES
+) -> List[str]:
+    """Split table-bearing markdown into chunks whose UTF-8 size fits one card.
+
+    Splits at paragraph boundaries first (blank lines), then at line boundaries
+    for any single paragraph that is itself over budget (e.g. a very wide table).
+    A line that still exceeds the budget on its own is emitted as its own chunk;
+    the interactive send path will fall back to plain text if Feishu rejects the
+    oversized card. This guarantees every returned chunk has been measured in
+    bytes, so multibyte content cannot silently exceed the card ceiling.
+    """
+    if not content:
+        return [content]
+
+    def _byte_len(text: str) -> int:
+        return len(text.encode("utf-8"))
+
+    def _flush(buffer: List[str], chunks: List[str]) -> None:
+        if buffer:
+            chunks.append("\n\n".join(buffer))
+            buffer.clear()
+
+    chunks: List[str] = []
+    buffer: List[str] = []
+    buffer_bytes = 0
+    separator_bytes = 2  # "\n\n" joining paragraphs
+
+    for paragraph in re.split(r"\n{2,}", content):
+        para_bytes = _byte_len(paragraph)
+        # A single paragraph larger than the budget must be broken down further.
+        if para_bytes > budget_bytes:
+            _flush(buffer, chunks)
+            buffer_bytes = 0
+            line_buffer: List[str] = []
+            line_buffer_bytes = 0
+            for line in paragraph.split("\n"):
+                line_bytes = _byte_len(line)
+                if line_buffer and line_buffer_bytes + 1 + line_bytes > budget_bytes:
+                    chunks.append("\n".join(line_buffer))
+                    line_buffer = []
+                    line_buffer_bytes = 0
+                line_buffer.append(line)
+                line_buffer_bytes += line_bytes + (1 if line_buffer_bytes else 0)
+            if line_buffer:
+                chunks.append("\n".join(line_buffer))
+            continue
+
+        projected = buffer_bytes + (separator_bytes if buffer else 0) + para_bytes
+        if buffer and projected > budget_bytes:
+            _flush(buffer, chunks)
+            buffer_bytes = 0
+        buffer.append(paragraph)
+        buffer_bytes += para_bytes + (separator_bytes if buffer_bytes else 0)
+
+    _flush(buffer, chunks)
+    return chunks or [content]
+
+
+# ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
 
@@ -1788,45 +1894,104 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
-                try:
-                    response = await self._feishu_send_with_retry(
+                # Table-bearing chunks render via interactive cards, which have
+                # a 30 KB serialized-JSON ceiling. The 8000-char truncation above
+                # is character-based, so a multibyte table can still exceed the
+                # byte limit — re-split such chunks by UTF-8 size so each card
+                # stays within bounds and gets sent as its own message.
+                if _MARKDOWN_TABLE_RE.search(chunk):
+                    sub_chunks = _chunk_table_markdown_by_bytes(chunk)
+                else:
+                    sub_chunks = [chunk]
+
+                for sub_chunk in sub_chunks:
+                    msg_type, payload = self._build_outbound_payload(sub_chunk)
+                    response = await self._send_chunk_with_fallback(
                         chat_id=chat_id,
                         msg_type=msg_type,
                         payload=payload,
+                        chunk=sub_chunk,
                         reply_to=reply_to,
                         metadata=metadata,
                     )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                last_response = response
+                    last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_chunk_with_fallback(
+        self,
+        *,
+        chat_id: str,
+        msg_type: str,
+        payload: str,
+        chunk: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Any:
+        """Send one chunk, falling back to plain text if a rich type is rejected.
+
+        ``interactive`` (table card) and ``post`` (markdown) payloads can both be
+        rejected by Feishu — at raise time or via an unsuccessful response. In
+        either case we resend as plain text so the user still receives the
+        content rather than a blank or dropped message.
+        """
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type=msg_type,
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            if msg_type == "interactive":
+                logger.warning(
+                    "[Feishu] Interactive card send failed; falling back to plain text: %s", exc
+                )
+                return await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="text",
+                    payload=json.dumps({"text": chunk}, ensure_ascii=False),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                return await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="text",
+                    payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            raise
+
+        if msg_type == "interactive" and not self._response_succeeded(response):
+            logger.warning("[Feishu] Interactive card rejected by API response; falling back to plain text")
+            return await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": chunk}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        if (
+            msg_type == "post"
+            and not self._response_succeeded(response)
+            and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+        ):
+            logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+            return await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return response
 
     async def edit_message(
         self,
@@ -1847,7 +2012,16 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+            if not result.success and msg_type == "interactive":
+                logger.warning("[Feishu] Interactive card update rejected by API; falling back to plain text")
+                fallback_body = self._build_update_message_body(
+                    msg_type="text",
+                    content=json.dumps({"text": content}, ensure_ascii=False),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
+            elif not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
@@ -4376,10 +4550,9 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Use an interactive card (schema 2.0), which supports markdown tables.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_table_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

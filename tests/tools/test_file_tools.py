@@ -64,6 +64,46 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    @patch("tools.file_tools._get_file_ops")
+    def test_oversized_read_returns_preview_not_error(self, mock_get, mock_max):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "x" * 3000
+        result_obj.to_dict.return_value = {
+            "content": result_obj.content,
+            "total_lines": 1,
+            "file_size": 3000,
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/long.txt"))
+        assert "error" not in result
+        assert result["oversized"] is True
+        assert result["content_returned"] is True
+        assert "read_file truncated oversized output" in result["content"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_browser_export_values_are_force_redacted(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = '{"name":"session","value":"super-secret-cookie-value"}\n.example.com\tTRUE\t/\tFALSE\t0\tsid\tplain-cookie-value'
+        result_obj.to_dict.return_value = {
+            "content": result_obj.content,
+            "total_lines": 2,
+            "file_size": len(result_obj.content),
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/LocalStorage_export.json"))
+        assert "super-secret-cookie-value" not in result["content"]
+        assert "plain-cookie-value" not in result["content"]
+        assert result["content"].count("[REDACTED]") >= 2
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")

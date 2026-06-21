@@ -172,7 +172,7 @@ class TestCharacterCountGuard(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops")
     @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
     def test_oversized_read_rejected(self, _mock_limit, mock_ops):
-        """A read that returns >max chars is rejected."""
+        """An oversized read returns a bounded safe preview with guidance."""
         big_content = "x" * (_DEFAULT_MAX_READ_CHARS + 1)
         mock_ops.return_value = _make_fake_ops(
             content=big_content,
@@ -180,9 +180,13 @@ class TestCharacterCountGuard(unittest.TestCase):
             file_size=len(big_content) + 100,  # bigger than content
         )
         result = json.loads(read_file_tool("/tmp/huge.txt", task_id="big"))
-        self.assertIn("error", result)
-        self.assertIn("safety limit", result["error"])
-        self.assertIn("offset and limit", result["error"])
+        self.assertNotIn("error", result)
+        self.assertTrue(result.get("oversized"))
+        self.assertTrue(result.get("truncated"))
+        self.assertTrue(result.get("content_returned"))
+        self.assertEqual(result.get("original_content_chars"), len(big_content))
+        self.assertIn("safety limit", result.get("_warning", ""))
+        self.assertIn("offset and limit", result.get("_warning", ""))
         self.assertIn("total_lines", result)
 
     @patch("tools.file_tools._get_file_ops")
@@ -646,12 +650,15 @@ class TestConfigOverride(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 50})
     def test_custom_config_lowers_limit(self, _mock_cfg, mock_ops):
-        """A config value of 50 should reject reads over 50 chars."""
+        """A config value of 50 should truncate oversized previews at 50 chars."""
         mock_ops.return_value = _make_fake_ops(content="x" * 60, file_size=60)
         result = json.loads(read_file_tool("/tmp/cfgtest.txt", task_id="cfg1"))
-        self.assertIn("error", result)
-        self.assertIn("safety limit", result["error"])
-        self.assertIn("50", result["error"])  # should show the configured limit
+        self.assertNotIn("error", result)
+        self.assertTrue(result.get("oversized"))
+        self.assertTrue(result.get("truncated"))
+        self.assertEqual(result.get("max_chars"), 50)
+        self.assertIn("safety limit", result.get("_warning", ""))
+        self.assertIn("50", result.get("_warning", ""))  # should show the configured limit
 
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 500_000})

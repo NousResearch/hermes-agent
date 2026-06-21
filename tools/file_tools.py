@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -61,6 +62,66 @@ def _get_max_read_chars() -> int:
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
+_OVERSIZED_READ_PREVIEW_CHARS = 8_000
+
+# Browser exports and storage dumps commonly place opaque cookie/localStorage
+# values under generic keys like "value", which the global code-file redactor
+# intentionally skips to avoid false positives in source code.  File reads for
+# these dump names are never source-code reads, so force a narrower extra pass.
+_BROWSER_EXPORT_NAME_RE = re.compile(
+    r"(?:cookie|localstorage|sessionstorage|conversationdb|indexeddb|browser[-_]?storage|^general[_-])",
+    re.IGNORECASE,
+)
+_BROWSER_EXPORT_JSON_VALUE_RE = re.compile(
+    r'("(?:value|cookie|cookies|localStorage|sessionStorage|auth|authorization)"\s*:\s*")([^"\\]*(?:\\.[^"\\]*)*)(")',
+    re.IGNORECASE,
+)
+
+
+def _looks_like_sensitive_browser_export(path: str) -> bool:
+    """Return True for browser cookie/storage/conversation export filenames."""
+    try:
+        return bool(_BROWSER_EXPORT_NAME_RE.search(Path(path).name))
+    except Exception:
+        return False
+
+
+def _redact_cookie_tsv_lines(content: str) -> str:
+    """Redact Netscape/browser-cookie TSV value columns in text exports."""
+    redacted_lines = []
+    for line in content.splitlines(keepends=True):
+        newline = ""
+        body = line
+        if line.endswith("\r\n"):
+            body, newline = line[:-2], "\r\n"
+        elif line.endswith("\n"):
+            body, newline = line[:-1], "\n"
+        elif line.endswith("\r"):
+            body, newline = line[:-1], "\r"
+
+        parts = body.split("\t")
+        # Netscape cookie rows have at least 7 columns; the final column is the
+        # cookie value.  Preserve metadata while removing the secret payload.
+        if len(parts) >= 7 and ("." in parts[0] or parts[0].startswith("http")):
+            parts[-1] = "[REDACTED]"
+            body = "\t".join(parts)
+        redacted_lines.append(body + newline)
+    return "".join(redacted_lines)
+
+
+def _redact_read_content(path: str, content: str) -> str:
+    """Redact read_file content, with stricter handling for browser exports."""
+    if not content:
+        return content
+    if _looks_like_sensitive_browser_export(path):
+        content = redact_sensitive_text(content, force=True, code_file=False)
+        content = _BROWSER_EXPORT_JSON_VALUE_RE.sub(
+            lambda m: f"{m.group(1)}[REDACTED]{m.group(3)}",
+            content,
+        )
+        return _redact_cookie_tsv_lines(content)
+    return redact_sensitive_text(content, code_file=True)
+
 
 # ---------------------------------------------------------------------------
 # Device path blocklist — reading these hangs the process (infinite output
@@ -932,34 +993,46 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 
-        # ── Character-count guard ─────────────────────────────────────
-        # We're model-agnostic so we can't count tokens; characters are
-        # the best proxy we have.  If the read produced an unreasonable
-        # amount of content, reject it and tell the model to narrow down.
-        # Note: we check the formatted content (with line-number prefixes),
-        # not the raw file size, because that's what actually enters context.
-        # Check BEFORE redaction to avoid expensive regex on huge content.
+        # ── Redact secrets before size handling ───────────────────────
+        # Browser cookie/localStorage exports often have few very long lines;
+        # if we reject before redaction the UI shows a generic [error] and the
+        # user gets no safe preview.  Redact first, then return a bounded
+        # preview for oversized reads.
+        if result.content:
+            result.content = _redact_read_content(path, result.content)
+            result_dict["content"] = result.content
+
         content_len = len(result.content or "")
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
         if content_len > max_chars:
             total_lines = result_dict.get("total_lines", "unknown")
-            return json.dumps({
-                "error": (
+            preview_chars = max(1_000, min(max_chars - 1_000, _OVERSIZED_READ_PREVIEW_CHARS))
+            preview = (result.content or "")[:preview_chars].rstrip()
+            omitted = max(0, content_len - len(preview))
+            result_dict.update({
+                "content": (
+                    f"{preview}\n\n"
+                    f"[read_file truncated oversized output: omitted {omitted:,} "
+                    f"characters after a safe redacted preview. Use offset and "
+                    f"limit to read a narrower range.]"
+                ),
+                "oversized": True,
+                "truncated": True,
+                "content_returned": True,
+                "original_content_chars": content_len,
+                "max_chars": max_chars,
+                "suggested_offset": offset,
+                "suggested_limit": min(limit, 100),
+                "_warning": (
                     f"Read produced {content_len:,} characters which exceeds "
-                    f"the safety limit ({max_chars:,} chars). "
-                    "Use offset and limit to read a smaller range. "
+                    f"the safety limit ({max_chars:,} chars). Returned a safe "
+                    "redacted preview instead of failing the tool call. Use "
+                    "offset and limit for the exact section you need. "
                     f"The file has {total_lines} lines total."
                 ),
-                "path": path,
-                "total_lines": total_lines,
-                "file_size": file_size,
-            }, ensure_ascii=False)
-
-        # ── Redact secrets (after guard check to skip oversized content) ──
-        if result.content:
-            result.content = redact_sensitive_text(result.content, code_file=True)
-            result_dict["content"] = result.content
+            })
+            return json.dumps(result_dict, ensure_ascii=False)
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.

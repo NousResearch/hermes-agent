@@ -510,6 +510,32 @@ def get_all_skills_dirs() -> List[Path]:
 # ── Condition extraction ──────────────────────────────────────────────────
 
 
+def _normalize_condition_list(value: Any) -> List[str]:
+    """Coerce a frontmatter condition value into a list of tool/toolset names.
+
+    Frontmatter may declare a condition as a scalar
+    (``requires_tools: web_search``) or a list
+    (``requires_tools: [web_search]``). Mirror the ``platforms`` handling and
+    accept both — a bare string becomes a single-element list. Without this,
+    downstream iteration in ``_skill_should_show`` walks the *characters* of a
+    scalar string, silently mis-gating the skill (a ``requires_*`` skill is
+    hidden even when its tool is present; a ``fallback_for_*`` skill is shown
+    even when the primary tool is present).
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    elif not isinstance(value, (list, tuple)):
+        return []
+    out: List[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter."""
     metadata = frontmatter.get("metadata")
@@ -520,10 +546,10 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     if not isinstance(hermes, dict):
         hermes = {}
     return {
-        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
-        "requires_toolsets": hermes.get("requires_toolsets", []),
-        "fallback_for_tools": hermes.get("fallback_for_tools", []),
-        "requires_tools": hermes.get("requires_tools", []),
+        "fallback_for_toolsets": _normalize_condition_list(hermes.get("fallback_for_toolsets")),
+        "requires_toolsets": _normalize_condition_list(hermes.get("requires_toolsets")),
+        "fallback_for_tools": _normalize_condition_list(hermes.get("fallback_for_tools")),
+        "requires_tools": _normalize_condition_list(hermes.get("requires_tools")),
     }
 
 

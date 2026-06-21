@@ -69,6 +69,63 @@ def test_metadata_missing_entirely():
     }
 
 
+def test_scalar_condition_coerced_to_single_element_list():
+    """A scalar condition value must become a one-element list, not be iterated
+    per-character. Mirrors how ``platforms`` already coerces str -> [str]."""
+    frontmatter = {
+        "metadata": {
+            "hermes": {
+                "requires_tools": "web_search",
+                "fallback_for_toolsets": "coding",
+            }
+        }
+    }
+    result = extract_skill_conditions(frontmatter)
+    assert result["requires_tools"] == ["web_search"]
+    assert result["fallback_for_toolsets"] == ["coding"]
+    assert result["requires_toolsets"] == []
+    assert result["fallback_for_tools"] == []
+
+
+def test_condition_list_entries_are_stringified_and_stripped():
+    """List entries are coerced to trimmed strings; blanks are dropped."""
+    frontmatter = {
+        "metadata": {
+            "hermes": {
+                "requires_tools": ["  web_search  ", "", "patch"],
+            }
+        }
+    }
+    result = extract_skill_conditions(frontmatter)
+    assert result["requires_tools"] == ["web_search", "patch"]
+
+
+def test_scalar_requires_tools_does_not_hide_skill_when_tool_present():
+    """End-to-end: a scalar ``requires_tools`` must gate on the whole tool name.
+
+    Before coercion, ``_skill_should_show`` iterated the characters of the
+    string ``"web_search"`` and hid the skill even when ``web_search`` was
+    available; a fallback skill was likewise shown even when its primary tool
+    existed."""
+    from agent.prompt_builder import _skill_should_show
+
+    requires = extract_skill_conditions(
+        {"metadata": {"hermes": {"requires_tools": "web_search"}}}
+    )
+    # web_search IS available -> the skill should be shown.
+    assert _skill_should_show(requires, {"web_search"}, set()) is True
+    # web_search is NOT available -> the skill should be hidden.
+    assert _skill_should_show(requires, {"patch"}, set()) is False
+
+    fallback = extract_skill_conditions(
+        {"metadata": {"hermes": {"fallback_for_tools": "terminal"}}}
+    )
+    # terminal IS available -> the fallback skill should be hidden.
+    assert _skill_should_show(fallback, {"terminal"}, set()) is False
+    # terminal is NOT available -> the fallback skill should be shown.
+    assert _skill_should_show(fallback, {"patch"}, set()) is True
+
+
 def test_iter_skill_index_files_prunes_dependency_dirs(tmp_path):
     real = tmp_path / "real-skill"
     real.mkdir()

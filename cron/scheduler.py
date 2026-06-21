@@ -210,6 +210,56 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
+# Threaded cron delivery: platforms whose adapters support posting a summary
+# parent message and the full report in its thread (via metadata thread_id).
+THREADED_DELIVERY_PLATFORMS = frozenset({"slack"})
+
+# Accepted summary-marker prefixes on the first paragraph of a cron report.
+_SUMMARY_MARKERS = ("tl;dr:", "tldr:", "summary:")
+
+
+def _split_summary(content: str) -> tuple[str, Optional[str]]:
+    """Split a cron report into (summary, detail) for threaded delivery.
+
+    The summary is the first paragraph (up to the first blank line); a
+    leading TL;DR:/TLDR:/Summary: marker is stripped from it.  When there is
+    no second paragraph, returns ``(content.strip(), None)`` (no marker
+    stripping) so the caller delivers flat exactly as before; empty input
+    is returned as-is.
+    """
+    text = (content or "").strip()
+    if not text:
+        return (content or "", None)
+    parts = re.split(r"\n\s*\n", text, maxsplit=1)
+    first = parts[0].strip()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if not rest:
+        return (text, None)
+    lowered = first.lower()
+    for marker in _SUMMARY_MARKERS:
+        if lowered.startswith(marker):
+            first = first[len(marker):].strip()
+            break
+    if not first:
+        return (text, None)
+    return (first, rest)
+
+
+def _threaded_delivery_enabled(job: dict) -> bool:
+    """True when this job should use summary-parent + thread-detail delivery.
+
+    Off by default (``cron.threaded_delivery`` config), with a per-job
+    ``"thread": false`` opt-out.  Any config error means off — threading is
+    best-effort and must never block a delivery.
+    """
+    if job.get("thread") is False:
+        return False
+    try:
+        return bool(load_config().get("cron", {}).get("threaded_delivery", False))
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -710,6 +760,72 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _send_threaded_via_adapter(
+    adapter,
+    chat_id: str,
+    parent_text: str,
+    detail_text: str,
+    media_files: list,
+    metadata: dict | None,
+    loop,
+    job: dict,
+    platform=None,
+) -> bool:
+    """Post parent_text, then detail_text into its thread, via a live adapter.
+
+    Returns True only when both messages were posted.  Any failure returns
+    False so the caller falls back to the flat single-send path — the parent
+    may then remain as a stray summary, which is preferable to losing the
+    report body.  When ``metadata`` already carries a thread_id (job targets
+    an existing thread), both messages go to that thread instead of creating
+    a new parent.
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    def _run(coro):
+        future = safe_schedule_threadsafe(coro, loop)
+        if future is None:
+            return None
+        try:
+            return future.result(timeout=60)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    parent_result = _run(adapter.send(chat_id, parent_text, metadata=metadata))
+    if not parent_result or not getattr(parent_result, "success", False):
+        logger.debug(
+            "Job '%s': threaded parent send failed; falling back to flat",
+            job.get("id", "?"),
+        )
+        return False
+    parent_ts = getattr(parent_result, "message_id", None)
+    if not parent_ts:
+        logger.debug(
+            "Job '%s': threaded parent send returned no message_id; falling back to flat",
+            job.get("id", "?"),
+        )
+        return False
+
+    thread_meta = dict(metadata or {})
+    thread_meta.setdefault("thread_id", parent_ts)
+
+    detail_result = _run(adapter.send(chat_id, detail_text, metadata=thread_meta))
+    if not detail_result or not getattr(detail_result, "success", False):
+        logger.warning(
+            "Job '%s': thread detail send failed (%s); falling back to flat",
+            job.get("id", "?"), getattr(detail_result, "error", "no result"),
+        )
+        return False
+
+    if media_files:
+        _send_media_via_adapter(
+            adapter, chat_id, media_files, thread_meta, loop, job,
+            platform=platform,
+        )
+    return True
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -732,9 +848,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
+    from gateway.platforms.base import BasePlatformAdapter
+
+    # Extract MEDIA: tags first so attachments are forwarded as files, not raw
+    # text, and so the summary/detail split never sees a MEDIA: line.
+    media_files, cleaned_content = BasePlatformAdapter.extract_media(content)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
     # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response:
+    # false in config.yaml for clean output.
     wrap_response = True
     try:
         user_cfg = load_config()
@@ -742,23 +865,34 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
+    task_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    manage_note = (
+        f"To stop or manage this job, send me a new message "
+        f"(e.g. \"stop reminder {task_name}\")."
+    )
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
+        cleaned_delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{cleaned_content}\n\n"
+            f"{manage_note}"
         )
     else:
-        delivery_content = content
+        cleaned_delivery_content = cleaned_content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
-    from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Threaded delivery texts: compact parent, full detail (footer moves to
+    # the thread).  detail_text is None for reports too short to split.
+    summary, detail = _split_summary(cleaned_content)
+    if detail:
+        if wrap_response:
+            parent_text = f"\U0001F4CB *{task_name}* — {summary}"
+            detail_text = f"{detail}\n\n(job_id: {job_id})\n{manage_note}"
+        else:
+            parent_text, detail_text = summary, detail
+    else:
+        parent_text, detail_text = None, None
 
     try:
         config = load_gateway_config()
@@ -817,7 +951,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
-                if text_to_send:
+                sent_threaded = False
+                if (
+                    text_to_send
+                    and detail_text
+                    and platform_name.lower() in THREADED_DELIVERY_PLATFORMS
+                    and _threaded_delivery_enabled(job)
+                ):
+                    try:
+                        sent_threaded = _send_threaded_via_adapter(
+                            runtime_adapter, chat_id, parent_text, detail_text,
+                            media_files, send_metadata, loop, job,
+                            platform=platform,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Job '%s': threaded delivery to %s:%s failed (%s); "
+                            "falling back to flat",
+                            job["id"], platform_name, chat_id, e,
+                        )
+                if text_to_send and not sent_threaded:
                     from agent.async_utils import safe_schedule_threadsafe
                     future = safe_schedule_threadsafe(
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
@@ -861,7 +1014,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             delivery_errors.append(msg)
 
                 # Send extracted media files as native attachments via the live adapter
-                if adapter_ok and media_files:
+                if adapter_ok and media_files and not sent_threaded:
                     _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
@@ -873,7 +1026,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
                 if adapter_ok:
-                    logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via live adapter%s",
+                        job["id"], platform_name, chat_id,
+                        " (threaded)" if sent_threaded else "",
+                    )
                     delivered = True
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"

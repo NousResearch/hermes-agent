@@ -1208,10 +1208,15 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         logger.info("vision_analyze: native fast path")
         return _vision_analyze_native(image_url, question)
 
-    # Legacy path: aux LLM describes the image and we return its text.
+    # Legacy path: aux LLM describes the image and we return its text. Ask for a verbatim
+    # transcription of all text FIRST (a plain "describe" prompt tends to summarize and drop
+    # details like an address or fine print on dense images), then the description and answer.
     full_prompt = (
-        "Fully describe and explain everything about this image, then answer the "
-        f"following question:\n\n{question}"
+        "First, transcribe ALL text visible in the image VERBATIM — every line, exactly as "
+        "written, including titles, dates, times, locations/addresses, prices, labels, and fine "
+        "print; do not summarize or omit any text, even small or low-contrast text near the edges "
+        "or bottom. Then fully describe the rest of the image and answer the following "
+        f"question:\n\n{question}"
     )
     model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return vision_analyze_tool(image_url, full_prompt, model)

@@ -4321,9 +4321,11 @@ class AIAgent:
             "tool": "tool result",
         }.get(role, "user")
         analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, UI, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+            "First, transcribe ALL text visible in the image VERBATIM — every line, exactly as "
+            "written, including titles, dates, times, locations/addresses, prices, labels, and "
+            "fine print. Do not summarize, paraphrase, or omit any text, even small or low-contrast "
+            "text near the edges or bottom. Then describe the non-text visual content: layout, "
+            "objects, people, colors, UI, charts, and any other notable detail."
         )
 
         vision_source = str(image_url or "")
@@ -4356,6 +4358,16 @@ class AIAgent:
         if vision_source and not str(image_url or "").startswith("data:"):
             note += (
                 f"\n[If you need a closer look, use vision_analyze with image_url: {vision_source}]"
+            )
+        else:
+            # The image was provided inline (no addressable path/URL). Say so explicitly, so the
+            # model doesn't invent a file path or MEDIA handle for vision_analyze — a common
+            # hallucination that fails with "Invalid image source". The transcription above is all
+            # it has to work with.
+            note += (
+                "\n[This image was provided inline and has no file path or URL to re-read. The "
+                "transcription above is the complete extraction — do not call vision_analyze with a "
+                "guessed path; if a needed detail is missing, ask the user.]"
             )
 
         self._anthropic_image_fallback_cache[cache_key] = note

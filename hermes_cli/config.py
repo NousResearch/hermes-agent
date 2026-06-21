@@ -916,11 +916,14 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
-        # Tool-use enforcement: injects system prompt guidance that tells the
-        # model to actually call tools instead of describing intended actions.
-        # Values: "auto" (default — applies to gpt/codex models), true/false
-        # (force on/off for all models), or a list of model-name substrings
-        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        # Tool-use enforcement: controls prompt injection AND whether tools are
+        # sent in API requests.
+        # Values: "auto" (default — injects guidance for known gpt/codex models,
+        # sends tools normally), true/always/yes/on (always inject + send tools),
+        # false/never/no/off (suppress guidance AND omit tools from API requests
+        # — needed for models that reject the tools parameter, e.g. deepseek-r1),
+        # or a list of model-name substrings to match (e.g. ["gpt", "codex",
+        # "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping

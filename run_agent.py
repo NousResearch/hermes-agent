@@ -4834,6 +4834,20 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    def _tools_for_api(self):
+        """Return self.tools unless tool_use_enforcement is explicitly disabled.
+
+        When enforcement is set to false/never/no/off, tools are omitted from
+        API requests entirely — needed for models that reject the tools
+        parameter (e.g. deepseek-r1 via Ollama).
+        """
+        _enforce = getattr(self, "_tool_use_enforcement", "auto")
+        if _enforce is False or (
+            isinstance(_enforce, str) and _enforce.lower() in ("false", "never", "no", "off")
+        ):
+            return None
+        return self.tools
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
         from agent.chat_completion_helpers import build_api_kwargs

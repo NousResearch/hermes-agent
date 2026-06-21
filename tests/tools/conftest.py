@@ -20,6 +20,7 @@ def register_all_web_providers():
     test classes that need the registry populated for dispatch checks.
     """
     from agent.web_search_registry import register_provider, _reset_for_tests
+    from plugins.web.brave_llm_context.provider import BraveLLMContextWebSearchProvider
     from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
     from plugins.web.ddgs.provider import DDGSWebSearchProvider
     from plugins.web.exa.provider import ExaWebSearchProvider
@@ -32,6 +33,7 @@ def register_all_web_providers():
     _reset_for_tests()
     for cls in (
         BraveFreeWebSearchProvider,
+        BraveLLMContextWebSearchProvider,
         DDGSWebSearchProvider,
         ExaWebSearchProvider,
         FirecrawlWebSearchProvider,

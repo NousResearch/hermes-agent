@@ -1,0 +1,9 @@
+name: web-brave-llm-context
+version: 1.0.0
+description: "Brave Search LLM Context — search-only results from Brave's LLM context endpoint. Requires BRAVE_SEARCH_API_KEY."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - brave-llm-context
+requires_env:
+  - BRAVE_SEARCH_API_KEY

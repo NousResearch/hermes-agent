@@ -12,7 +12,7 @@ Architecture:
     SCM → pythonw.exe _hermes_gateway_service.py
                 │
                 ├── SvcDoRun() → background thread: asyncio.run(start_gateway())
-                ├── SvcStop()  → write planned-stop marker + signal stop_event
+                ├── SvcStop()  → write planned-stop marker + graceful wait
                 └── RecoveryActions: quadratic backoff restart on failure
 """
 
@@ -50,8 +50,26 @@ SERVICE_DESCRIPTION = (
 _RECOVERY_DELAYS_MS = [1000, 2000, 4000, 9000, 16000, 25000, 36000, 49000, 64000]
 _RECOVERY_RESET_PERIOD_S = 60
 
-# Track gateway exit status for RecoveryActions semantics (Blocker 4)
+# Graceful shutdown timeout for gateway thread (HIGH 1)
+_GRACEFUL_SHUTDOWN_TIMEOUT_S = 30
+
+# Track gateway exit status for RecoveryActions semantics
 _gateway_exit_code = 0
+
+
+def _resolve_exit_code(exc_code: object) -> int:
+    """Map SystemExit.code to an integer exit code.
+
+    SystemExit(None)       => 0  (no explicit code, treat as success)
+    SystemExit(0)          => 0  (explicit success)
+    SystemExit(int)        => that int
+    SystemExit(non-int)    => 1  (string or other object)
+    """
+    if exc_code is None:
+        return 0
+    if isinstance(exc_code, int):
+        return exc_code
+    return 1
 
 
 class HermesGatewayService(win32serviceutil.ServiceFramework):
@@ -73,10 +91,12 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         # SCM expects this within 30 seconds. MCP discovery blocks 120s.
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
 
-        # Start gateway in background daemon thread (R-03)
+        # Start gateway in background thread (R-03)
+        # NOTE: NOT daemon=True — we need the thread to stay alive for
+        # graceful shutdown in SvcStop (HIGH 1).
         self._gateway_thread = threading.Thread(
             target=self._run_gateway,
-            daemon=True,
+            daemon=False,
         )
         self._gateway_thread.start()
 
@@ -84,10 +104,8 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         self._stop_event.wait()
 
         # If gateway crashed (non-zero exit), report SERVICE_STOPPED with
-        # non-zero exit code so SCM triggers RecoveryActions (Blocker 4)
+        # non-zero exit code so SCM triggers RecoveryActions
         if _gateway_exit_code != 0:
-            # Report SERVICE_STOPPED with failure exit code
-            # SCM will see this as a failure and trigger RecoveryActions
             self.ReportServiceStatus(
                 win32service.SERVICE_STOPPED,
                 win32service.NO_ERROR,
@@ -108,9 +126,11 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
             # Normal exit
             _gateway_exit_code = 0
         except SystemExit as exc:
-            # sys.exit() with non-zero code = failure
-            _gateway_exit_code = exc.code if exc.code else 1
-            logging.warning("Gateway exited with code %s", _gateway_exit_code)
+            _gateway_exit_code = _resolve_exit_code(exc.code)
+            if _gateway_exit_code != 0:
+                logging.warning(
+                    "Gateway exited with non-zero code %s", _gateway_exit_code
+                )
         except Exception as exc:
             # Unhandled exception = failure
             _gateway_exit_code = 1
@@ -120,18 +140,56 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
             self._stop_event.set()
 
     def SvcStop(self):
-        """Called by SCM to stop the service."""
-        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        """Called by SCM to stop the service.
 
-        # Write planned-stop marker (self-contained, no unstable imports)
-        # This reuses the same mechanism as `hermes gateway stop` on Windows
+        Implements graceful shutdown (HIGH 1):
+        1. Report SERVICE_STOP_PENDING
+        2. Write planned-stop marker so gateway knows this is a planned stop
+        3. Wait for gateway thread to exit gracefully (up to _GRACEFUL_SHUTDOWN_TIMEOUT_S)
+        4. Periodically report STOP_PENDING to prevent SCM timeout
+        5. Report SERVICE_STOPPED
+        """
+        self.ReportServiceStatus(
+            win32service.SERVICE_STOP_PENDING,
+            waitHint=(_GRACEFUL_SHUTDOWN_TIMEOUT_S + 5) * 1000,
+        )
+
+        # Write planned-stop marker
         try:
             self._write_planned_stop_marker()
         except Exception as exc:
             logging.warning("Failed to write planned-stop marker: %s", exc)
 
-        # Signal SvcDoRun to return
+        # Signal SvcDoRun to return (unblocks _stop_event.wait())
         self._stop_event.set()
+
+        # Graceful wait for gateway thread to finish (HIGH 1)
+        if self._gateway_thread is not None and self._gateway_thread.is_alive():
+            deadline = _GRACEFUL_SHUTDOWN_TIMEOUT_S
+            elapsed = 0
+            poll_interval = 2  # seconds
+            while elapsed < deadline:
+                self._gateway_thread.join(timeout=poll_interval)
+                if not self._gateway_thread.is_alive():
+                    logging.info(
+                        "Gateway thread exited gracefully after %ds", elapsed
+                    )
+                    break
+                elapsed += poll_interval
+                # Keep reporting STOP_PENDING to prevent SCM timeout (30s default)
+                remaining = max(1, deadline - elapsed)
+                self.ReportServiceStatus(
+                    win32service.SERVICE_STOP_PENDING,
+                    waitHint=remaining * 1000,
+                )
+            else:
+                logging.warning(
+                    "Gateway thread did not exit within %ds, proceeding with stop",
+                    _GRACEFUL_SHUTDOWN_TIMEOUT_S,
+                )
+
+        # Final: report stopped
+        self.ReportServiceStatus(win32service.SERVICE_STOPPED)
 
     def _write_planned_stop_marker(self):
         """Write planned-stop marker file (self-contained implementation).
@@ -139,12 +197,14 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         This is a simplified version of gateway.status.write_planned_stop_marker
         that doesn't require importing gateway.status (which may not be
         available in the SCM service environment).
+
+        Parent directory is created if it doesn't exist (HIGH 2).
         """
         import json
         import ctypes
         from datetime import datetime, timezone
 
-        # Get HERMES_HOME from environment or default
+        # Get HERMES_HOME from environment or resolve default
         hermes_home = os.environ.get("HERMES_HOME")
         if not hermes_home:
             # Try to resolve from user profile
@@ -155,7 +215,10 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
                 # Fallback to user home
                 hermes_home = os.path.join(os.path.expanduser("~"), ".hermes")
 
-        marker_path = Path(hermes_home) / ".gateway-planned-stop.json"
+        marker_dir = Path(hermes_home)
+        # Ensure parent directory exists (HIGH 2)
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker_path = marker_dir / ".gateway-planned-stop.json"
 
         # Get current process ID
         pid = ctypes.windll.kernel32.GetCurrentProcessId()

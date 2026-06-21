@@ -25,6 +25,7 @@ from hermes_cli.tools_config import (
     _visible_providers,
     tools_command,
 )
+from toolsets import TOOLSETS
 
 
 def test_agent_disabled_toolsets_suppresses_across_platforms():
@@ -92,11 +93,22 @@ def test_configurable_toolsets_include_context_engine():
 
 
 def test_configurable_toolsets_include_agentcyber_entries_default_off():
-    keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    descriptions = {ts_key: description for ts_key, _, description in CONFIGURABLE_TOOLSETS}
+    keys = set(descriptions)
     assert "cyber" in keys
     assert "live_usb" in keys
     assert "cyber" in _DEFAULT_OFF_TOOLSETS
     assert "live_usb" in _DEFAULT_OFF_TOOLSETS
+
+    configurator_description = descriptions["live_usb"].lower()
+    registry_description = TOOLSETS["live_usb"]["description"].lower()
+    for description in (configurator_description, registry_description):
+        assert "status/list" in description
+        assert "build/write/provision" in description
+        assert "root" in description
+        assert "operator approval" in description
+        assert "removable" in description
+    assert "metadata" in registry_description
 
 
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():

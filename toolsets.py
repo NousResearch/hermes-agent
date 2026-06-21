@@ -343,10 +343,9 @@ TOOLSETS = {
 
     "live_usb": {
         "description": (
-            "Live USB builder and provisioner: build a bootable Hermes AgentCyber "
-            "ISO, write it to a USB drive, and inject pre-configured credentials "
-            "so the gateway starts automatically on first boot. Requires Linux host "
-            "with debootstrap for build; write/provision require root."
+            "Live USB builder/provisioner: status/list are safe; "
+            "build/write/provision require root + exact operator approval, "
+            "and write/provision require verified removable Linux block-device metadata."
         ),
         "tools": ["live_usb"],
         "includes": [],

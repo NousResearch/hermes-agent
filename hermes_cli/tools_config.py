@@ -78,7 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("cyber",           "🛡️  AgentCyber Operations",   "threat intel, IOC extraction, vuln triage, IR, scoped scanning"),
-    ("live_usb",        "💽 AgentCyber Live USB",      "build/provision/write the AgentCyber live USB"),
+    ("live_usb",        "💽 AgentCyber Live USB",      "status/list safe; build/write/provision require root + operator approval; removable USB for write/provision"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]

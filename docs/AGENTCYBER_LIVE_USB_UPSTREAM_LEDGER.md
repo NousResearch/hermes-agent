@@ -352,3 +352,49 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If this guarded branch is merged and no new Live USB gaps are found, treat future runs as verification/no-op lanes.
+
+### 2026-06-21T21:59:52Z — verify upstream and align Live USB toolset safety wording
+
+**Commands / status**
+
+- `git status --short --branch`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` with a clean worktree.
+- `git fetch upstream main --prune && git fetch origin main --prune && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune`: all fetched cleanly with no upstream advancement this run.
+- Drift after fetch: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `78`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `216`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- Starting HEAD/local and remote sync branch: `4172efe1c133`; upstream main: `6f0ecf37dad0`; origin main: `480559a7edeb`; origin sync branch: `4172efe1c133`.
+
+**Changed files**
+
+- `toolsets.py`: updated the `live_usb` registry description to state that `status/list` are safe, `build/write/provision` require root plus exact operator approval, and `write/provision` require verified removable Linux block-device metadata.
+- `hermes_cli/tools_config.py`: updated the `live_usb` configurator/UI description to mention safe `status/list`, gated `build/write/provision`, root plus operator approval, and removable USB requirements for write/provision.
+- `tests/hermes_cli/test_tools_config.py`: added invariant-style checks that AgentCyber `cyber`/`live_usb` stay default-off and that both configurator and registry descriptions include the Live USB safety gates without snapshotting full text.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- `uv run --frozen python -m pytest tests/hermes_cli/test_tools_config.py -q -o addopts= --tb=short` -> `98 passed, 8 warnings in 13.34s`.
+- `uv run --frozen python -m ruff check toolsets.py hermes_cli/tools_config.py tests/hermes_cli/test_tools_config.py` -> `All checks passed!`.
+- `uv run --frozen python -m pytest tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py -q -o addopts= --tb=short` -> `161 passed, 8 warnings in 16.72s`.
+- `scripts/run_tests.sh tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py` -> `161 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: true` only because this lane had uncommitted repo-local changes, and secret fields reported as booleans/presence only.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- `git diff --check && git diff --cached --check` -> passed with no output.
+- Subagent spec review: `PASS`.
+- Subagent quality review: `APPROVED`; no critical, important, or minor issues.
+
+**Blockers / boundaries**
+
+- No upstream drift was present, so no upstream merge was needed this run.
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- This entry will be included in the scoped Live USB clarity commit. After that push, use one bounded ledger-only follow-up to record the new commit SHA, remote-tip verification, and final drift/status, then stop rather than amending the ledger again solely to mention the ledger-only commit.
+
+**Next lane**
+
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If this guarded branch is merged and no new Live USB gaps are found, treat future runs as verification/no-op lanes.

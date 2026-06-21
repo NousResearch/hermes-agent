@@ -6692,14 +6692,50 @@ def set_config_value(key: str, value: str):
     # inline navigation here silently overwrote lists with dicts.
 
     # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    if isinstance(value, str):
+        # Detect list-shaped values before the bool/int/float heuristics
+        # run. Without this, `hermes config set skills.disabled
+        # '["a","b"]'` was written as a quoted YAML string literal
+        # (`disabled: '["a","b"]'`) instead of a real list, so the
+        # disabled set silently contained one 28-char string instead
+        # of the two intended names. The previous worker triage
+        # (file `2026-06-11-specialized-workforce-audit.md` / worker
+        # report) named this regression; the fix is two short gates
+        # below.
+        #
+        # Gate 1: a JSON array literal (bracketed, double-quoted).
+        #   `["agency/foo", "agency/bar"]` → list of two strings.
+        #   Tolerates surrounding whitespace.
+        # Gate 2: a plain comma-separated scalar. We only split when
+        #   the value has no JSON punctuation, so a value like
+        #   `/a/b,c/d` stays a string. The trade-off: a scalar that
+        #   contains a literal comma and no JSON punctuation gets
+        #   split. Acceptable — the JSON-array gate (1) covers the
+        #   common case for the few config keys that take strings
+        #   with literal commas.
+        if value.startswith("[") and value.endswith("]"):
+            import json as _json
+            try:
+                _parsed = _json.loads(value)
+            except (ValueError, TypeError):
+                _parsed = None
+            if isinstance(_parsed, list):
+                value = _parsed
+        elif (
+            "," in value
+            and not any(c in value for c in "[]{}\":\\'")
+        ):
+            value = [v for v in (s.strip() for s in value.split(",")) if v]
+
+    if isinstance(value, str):
+        if value.lower() in {"true", "yes", "on"}:
+            value = True
+        elif value.lower() in {"false", "no", "off"}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace(".", "", 1).isdigit():
+            value = float(value)
 
     _set_nested(user_config, key, value)
     

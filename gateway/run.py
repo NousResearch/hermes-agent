@@ -7167,6 +7167,236 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _handle_agent_doctor_command(self, event: MessageEvent) -> str:
+        """Show read-only health for configured external-agent lanes."""
+        import json
+
+        from gateway.orchestrator.doctor import run_doctor
+
+        raw_args = (event.get_command_args() or "").strip().lower()
+        report = run_doctor()
+        if raw_args in {"json", "--json"}:
+            payload = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+            return f"```json\n{payload}\n```"
+
+        lines = ["Agent doctor (read-only)"]
+        for agent in report.agents:
+            parts = [
+                f"- `{agent.name}`: {agent.status}",
+                f"kind={agent.kind}",
+            ]
+            if agent.version:
+                parts.append(f"version={agent.version}")
+            if agent.path:
+                parts.append(f"path={agent.path}")
+            if agent.sandbox:
+                sandbox = agent.sandbox
+                parts.append(f"sandbox={sandbox.status}")
+                if sandbox.detail:
+                    parts.append(f"detail={sandbox.detail}")
+            if getattr(agent, "execution_mode", None):
+                parts.append(f"execution={agent.execution_mode}")
+            if getattr(agent, "external_isolation", None):
+                parts.append(f"external_isolation={agent.external_isolation.status}")
+            if agent.notes:
+                parts.append(f"notes={'; '.join(agent.notes)}")
+            lines.append(" · ".join(parts))
+        lines.append("")
+        lines.append("No model calls, no tmux changes, no service restart.")
+        return "\n".join(lines)
+
+    async def _handle_parallel_review_command(self, event: MessageEvent) -> str:
+        """Plan a parallel review without invoking external agent models."""
+        if event.source.platform != Platform.DISCORD:
+            return "`/parallel_review` is currently available only on Discord."
+
+        import json
+        import shlex
+        from datetime import datetime
+        from pathlib import Path
+
+        from hermes_constants import get_hermes_home
+        from gateway.orchestrator.doctor import run_doctor
+        from gateway.orchestrator.executors import FakeLaneExecutor
+        from gateway.orchestrator.lanes import LaneRequest, LaneStatus
+        from gateway.orchestrator.redaction import redact_text
+        from gateway.orchestrator.runner import run_lanes
+
+        def _new_run_dir() -> Path:
+            root = get_hermes_home() / "orchestrator" / "runs"
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            candidate = root / stamp
+            suffix = 2
+            while candidate.exists():
+                candidate = root / f"{stamp}-{suffix}"
+                suffix += 1
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+
+        def _source_payload() -> dict[str, str | None]:
+            source = event.source
+            platform = getattr(source.platform, "value", str(source.platform))
+            return {
+                "platform": platform,
+                "chat_id": source.chat_id,
+                "chat_type": source.chat_type,
+                "user_id": source.user_id,
+            }
+
+        raw_args = (event.get_command_args() or "").strip()
+        usage = (
+            "사용법: `/parallel_review dryrun [--save] <요청>`\n"
+            "현재는 dry-run만 지원합니다. 실제 agent/model 호출은 아직 비활성화되어 있습니다."
+        )
+        if not raw_args:
+            return usage
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError:
+            parts = raw_args.split()
+        if not parts or parts[0].lower() != "dryrun":
+            return usage
+
+        save_requested = False
+        request_tokens: list[str] = []
+        for token in parts[1:]:
+            if token == "--save":
+                save_requested = True
+                continue
+            request_tokens.append(token)
+        request = " ".join(request_tokens).strip()
+        if not request:
+            return usage
+        safe_request = redact_text(request)
+
+        report = run_doctor()
+
+        def _agent_is_runnable(agent: object) -> bool:
+            return getattr(agent, "status", None) == "available" or getattr(agent, "execution_mode", None) == "external-isolated"
+
+        degraded_agents = {agent.name for agent in report.agents if not _agent_is_runnable(agent)}
+        requests = [
+            LaneRequest(
+                lane_id=f"{agent.name}-review",
+                agent=agent.name,
+                prompt=safe_request,
+                metadata={
+                    "mode": "dryrun",
+                    "doctor_status": agent.status,
+                    "execution_mode": getattr(agent, "execution_mode", None),
+                },
+            )
+            for agent in report.agents
+        ]
+        programmed = {
+            req.lane_id: LaneStatus.SUCCEEDED
+            for req in requests
+            if req.agent not in degraded_agents
+        }
+        external_isolation_agents = sorted(
+            agent.name
+            for agent in report.agents
+            if getattr(agent, "execution_mode", None) == "external-isolated"
+        )
+        run_dir = _new_run_dir() if save_requested else None
+        results = run_lanes(
+            requests,
+            executor=FakeLaneExecutor(programmed),
+            max_workers=max(1, min(4, len(requests))),
+            degraded_agents=degraded_agents,
+            log_dir=(run_dir / "lanes") if run_dir else None,
+        )
+        results_by_agent = {result.agent: result for result in results}
+
+        lines = [
+            "Parallel review dry-run",
+            "",
+            f"Request: {safe_request}",
+            "",
+            "Doctor:",
+        ]
+        for agent in report.agents:
+            doctor_line = f"- `{agent.name}`: {agent.status}"
+            if agent.sandbox:
+                doctor_line += f" · sandbox={agent.sandbox.status}"
+            if getattr(agent, "execution_mode", None):
+                doctor_line += f" · execution={agent.execution_mode}"
+            if getattr(agent, "external_isolation", None):
+                doctor_line += f" · external_isolation={agent.external_isolation.status}"
+            if agent.notes:
+                doctor_line += f" · {'; '.join(agent.notes)}"
+            lines.append(doctor_line)
+
+        lines.extend(["", "Planned lanes:"])
+        for agent in report.agents:
+            lane_id = f"{agent.name}-review"
+            result = results_by_agent.get(agent.name)
+            if result and result.status is LaneStatus.SKIPPED:
+                reason = "agent degraded"
+                if agent.sandbox and agent.sandbox.status == "degraded":
+                    reason = "sandbox degraded"
+                elif agent.status != "available":
+                    reason = agent.status
+                lines.append(f"- `{lane_id}`: skipped · {reason}")
+                continue
+            suffix = ""
+            if getattr(agent, "execution_mode", None) == "external-isolated":
+                suffix = " · external isolation"
+            if agent.name == "ccm":
+                suffix += " · sensitive output suppressed"
+            lines.append(f"- `{lane_id}`: would run{suffix}")
+
+        lines.extend([
+            "",
+            "No model calls were made.",
+        ])
+        if run_dir:
+            lines.append(f"Artifacts saved: `{run_dir}`")
+        else:
+            lines.append("No files were changed.")
+        lines.append("No tmux sessions were created.")
+
+        if run_dir:
+            request_payload = {
+                "command": "parallel_review",
+                "mode": "dryrun",
+                "request": safe_request,
+                "source": _source_payload(),
+                "saved_at": datetime.now().isoformat(timespec="seconds"),
+                "model_calls": 0,
+                "tmux_sessions_created": 0,
+            }
+            planned_payload = {
+                "lanes": [
+                    {
+                        "lane_id": req.lane_id,
+                        "agent": req.agent,
+                        "prompt": req.prompt,
+                        "effort": req.effort,
+                        "timeout_s": req.timeout_s,
+                        "metadata": req.metadata,
+                    }
+                    for req in requests
+                ],
+                "degraded_agents": sorted(degraded_agents),
+                "external_isolation_agents": external_isolation_agents,
+                "results": [result.to_dict() for result in results],
+            }
+            (run_dir / "request.json").write_text(
+                json.dumps(request_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "doctor.json").write_text(
+                json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "planned_lanes.json").write_text(
+                json.dumps(planned_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return "\n".join(lines)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -7654,9 +7884,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
 
-            # /agents (/tasks alias) should be query-only and never interrupt.
+            # /agents (/tasks alias), /agent_doctor, and /parallel_review dryrun
+            # are query-only and never interrupt.
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "agent_doctor":
+                return await self._handle_agent_doctor_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "parallel_review":
+                return await self._handle_parallel_review_command(event)
 
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
@@ -7985,6 +8220,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
+
+        if canonical == "agent_doctor":
+            return await self._handle_agent_doctor_command(event)
+
+        if canonical == "parallel_review":
+            return await self._handle_parallel_review_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)

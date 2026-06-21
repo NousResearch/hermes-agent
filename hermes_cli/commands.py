@@ -55,6 +55,7 @@ class CommandDef:
     cli_only: bool = False             # only available in CLI
     gateway_only: bool = False         # only available in gateway/messaging
     gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
+    gateway_platforms: tuple[str, ...] = ()  # optional platform allowlist for gateway surfaces (e.g. ("discord",))
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
+    CommandDef("agent_doctor", "Show read-only external agent lane health", "Info",
+               args_hint="[json]", gateway_only=True),
+    CommandDef("parallel_review", "Plan a safe parallel agent review without model calls", "Info",
+               args_hint="dryrun [--save] <request>", gateway_only=True, gateway_platforms=("discord",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
@@ -350,7 +355,9 @@ def is_gateway_known_command(name: str | None) -> bool:
 # should_bypass_active_session below).
 ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
     {
+        "agent_doctor",
         "agents",
+        "parallel_review",
         "approve",
         "background",
         "commands",
@@ -421,14 +428,25 @@ def _resolve_config_gates() -> set[str]:
     return result
 
 
-def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:
+def _is_gateway_available(
+    cmd: CommandDef,
+    config_overrides: set[str] | None = None,
+    platform: str | None = None,
+) -> bool:
     """Check if *cmd* should appear in gateway surfaces (help, menus, mappings).
 
     Unconditionally available when ``cli_only`` is False.  When ``cli_only``
     is True but ``gateway_config_gate`` is set, the command is available only
     when the config value is truthy.  Pass *config_overrides* (from
     ``_resolve_config_gates()``) to avoid re-reading config for every command.
+
+    ``gateway_platforms`` narrows a command to one or more concrete gateway
+    surfaces.  Platform-neutral calls exclude platform-scoped commands so a
+    Discord-only command cannot consume Telegram/Slack menu slots.
     """
+    if cmd.gateway_platforms:
+        if platform is None or platform not in cmd.gateway_platforms:
+            return False
     if not cmd.cli_only:
         return True
     if cmd.gateway_config_gate:
@@ -510,7 +528,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
+        if not _is_gateway_available(cmd, overrides, platform="telegram"):
             continue
         # Built-in arg-taking commands are included — their handlers show
         # usage text when invoked without arguments, and hiding them from
@@ -1123,7 +1141,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     _alias_to_cmd = {
         alias: cmd
         for cmd in COMMAND_REGISTRY
-        if _is_gateway_available(cmd, overrides)
+        if _is_gateway_available(cmd, overrides, platform="slack")
         for alias in cmd.aliases
     }
     for alias in _SLACK_PRIORITY_ALIASES:
@@ -1133,13 +1151,13 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
+        if not _is_gateway_available(cmd, overrides, platform="slack"):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
     # Second pass: aliases.
     for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
+        if not _is_gateway_available(cmd, overrides, platform="slack"):
             continue
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation
@@ -1192,7 +1210,7 @@ def slack_subcommand_map() -> dict[str, str]:
     overrides = _resolve_config_gates()
     mapping: dict[str, str] = {}
     for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
+        if not _is_gateway_available(cmd, overrides, platform="slack"):
             continue
         mapping[cmd.name] = f"/{cmd.name}"
         for alias in cmd.aliases:

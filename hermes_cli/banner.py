@@ -552,7 +552,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: Optional[int] = None,
+                         disabled_toolsets: Optional[List[str]] = None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -564,6 +565,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
+        disabled_toolsets: Toolset names explicitly removed from the active session.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     from rich.panel import Panel
@@ -573,8 +575,52 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
+    disabled_toolsets = disabled_toolsets or []
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
+
+    enabled_scope = {str(ts) for ts in enabled_toolsets if ts}
+    disabled_scope = {str(ts) for ts in disabled_toolsets if ts}
+
+    def _scope_names(toolset_name: str) -> set:
+        """Return aliases that may refer to the same toolset in config/UI."""
+        if not toolset_name:
+            return {"unknown"}
+        display_name = _display_toolset_name(toolset_name)
+        names = {toolset_name, display_name}
+        if display_name and display_name != "unknown":
+            names.add(f"{display_name}_tools")
+        return names
+
+    def _item_matches_scope(item: dict, scope: set) -> bool:
+        if not scope:
+            return False
+        item_names = set()
+        for key in ("id", "name"):
+            value = item.get(key)
+            if value:
+                item_names.update(_scope_names(str(value)))
+        return bool(item_names.intersection(scope))
+
+    def _toolset_matches_scope(toolset_name: str, scope: set) -> bool:
+        return bool(scope and _scope_names(toolset_name).intersection(scope))
+
+    if disabled_scope:
+        unavailable_toolsets = [
+            item for item in unavailable_toolsets
+            if not _item_matches_scope(item, disabled_scope)
+        ]
+
+    show_all_unavailable = (
+        not enabled_scope
+        or "all" in enabled_scope
+        or "*" in enabled_scope
+    )
+    if not show_all_unavailable:
+        unavailable_toolsets = [
+            item for item in unavailable_toolsets
+            if _item_matches_scope(item, enabled_scope)
+        ]
     disabled_tools = set()
     # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
     # homeassistant) — they show as unavailable at banner time because the
@@ -628,7 +674,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     for tool in tools:
         tool_name = tool["function"]["name"]
-        toolset = _display_toolset_name(get_toolset_for_tool(tool_name) or "other")
+        raw_toolset = get_toolset_for_tool(tool_name) or "other"
+        if _toolset_matches_scope(raw_toolset, disabled_scope):
+            continue
+        toolset = _display_toolset_name(raw_toolset)
         toolsets_dict.setdefault(toolset, []).append(tool_name)
 
     for item in unavailable_toolsets:

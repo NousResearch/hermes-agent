@@ -70,6 +70,55 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "web_tools:" not in output
 
 
+def test_build_welcome_banner_honors_active_toolset_scope():
+    """Startup banner should not resurrect disabled/unconfigured toolsets."""
+    with (
+        patch.object(
+            model_tools,
+            "check_tool_availability",
+            return_value=(
+                ["web", "file"],
+                [
+                    {"name": "browser-cdp", "tools": ["browser_cdp", "browser_dialog"]},
+                    {"name": "homeassistant", "tools": ["ha_call_service"]},
+                ],
+            ),
+        ),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+    ):
+        console = Console(
+            record=True, force_terminal=False, color_system=None, width=160
+        )
+        banner.build_welcome_banner(
+            console=console,
+            model="anthropic/test-model",
+            cwd="/tmp/project",
+            tools=[
+                {"function": {"name": "web_search"}},
+                {"function": {"name": "read_file"}},
+                {"function": {"name": "computer_use"}},
+            ],
+            enabled_toolsets=["web", "file", "computer_use", "browser-cdp"],
+            disabled_toolsets=["computer_use", "browser-cdp"],
+            get_toolset_for_tool=lambda name: {
+                "web_search": "web",
+                "read_file": "file",
+                "computer_use": "computer_use",
+            }.get(name),
+        )
+
+    output = console.export_text()
+    assert "web:" in output
+    assert "file:" in output
+    assert "computer_use" not in output
+    assert "browser-cdp:" not in output
+    assert "browser_cdp" not in output
+    assert "browser_dialog" not in output
+    assert "homeassistant" not in output
+
+
 def test_build_welcome_banner_title_is_hyperlinked_to_release():
     """Panel title (version label) is wrapped in an OSC-8 hyperlink to the GitHub release."""
     import io

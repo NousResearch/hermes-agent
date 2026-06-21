@@ -953,3 +953,42 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+class TestReadEventsRaisesOnSilentClose:
+    """Regression: _read_events must raise when the websocket is closed
+    without a CLOSE-typed message. Otherwise _listen_loop's success path
+    resets backoff_idx and spins at 100% CPU instead of backing off."""
+
+    def _make_adapter(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        return WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "b", "secret": "s"})
+        )
+
+    @pytest.mark.asyncio
+    async def test_raises_when_ws_is_none(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = None
+
+        with pytest.raises(RuntimeError, match="not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_raises_when_ws_closed_without_close_message(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = MagicMock(closed=True)
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_does_not_raise_when_not_running(self):
+        adapter = self._make_adapter()
+        adapter._running = False
+        adapter._ws = MagicMock(closed=True)
+
+        await adapter._read_events()

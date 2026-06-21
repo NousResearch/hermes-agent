@@ -373,6 +373,12 @@ class WeComAdapter(BasePlatformAdapter):
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
 
+        # Loop exited without a CLOSE-typed message (ws went None/closed
+        # between iterations). Must raise — otherwise _listen_loop treats
+        # this as success, resets backoff_idx, and spins at 100% CPU.
+        if self._running:
+            raise RuntimeError("WeCom websocket closed (no message)")
+
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""
         try:

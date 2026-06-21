@@ -363,6 +363,39 @@ class TestRenderCommandTtsTemplate:
 # ---------------------------------------------------------------------------
 
 class TestRunCommandTts:
+    def test_reads_process_output_in_large_chunks(self):
+        read_sizes: dict[str, list[int]] = {"stdout": [], "stderr": []}
+
+        class FakeStream:
+            def __init__(self, name: str, chunks: list[str]):
+                self.name = name
+                self.chunks = chunks
+
+            def read(self, size: int) -> str:
+                read_sizes[self.name].append(size)
+                if self.chunks:
+                    return self.chunks.pop(0)
+                return ""
+
+        class FakeProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.returncode = 0
+                self.stdout = FakeStream("stdout", ["done"])
+                self.stderr = FakeStream("stderr", ["tick"])
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        with patch("tools.tts_tool.subprocess.Popen", return_value=FakeProcess()):
+            result = _run_command_tts("fake tts", timeout=0.25)
+
+        assert result.returncode == 0
+        assert result.stdout == "done"
+        assert result.stderr == "tick"
+        assert read_sizes["stdout"][0] == 65536
+        assert read_sizes["stderr"][0] == 65536
+
     def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
         script = tmp_path / "progress_then_exit.py"
         script.write_text(
@@ -403,6 +436,7 @@ class TestRunCommandTts:
             )
 
         assert "starting tier 1" in (excinfo.value.stderr or "")
+        assert isinstance(excinfo.value.__cause__, subprocess.TimeoutExpired)
 
 
 # ---------------------------------------------------------------------------

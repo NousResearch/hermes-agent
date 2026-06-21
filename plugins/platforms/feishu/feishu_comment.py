@@ -979,8 +979,9 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
     user_config = _load_gateway_config()
     model = _resolve_gateway_model(user_config)
 
-    from gateway.run import _resolve_runtime_agent_kwargs
+    from gateway.run import _consume_runtime_model, _resolve_runtime_agent_kwargs
     runtime_kwargs = _resolve_runtime_agent_kwargs()
+    model, runtime_kwargs = _consume_runtime_model(model, runtime_kwargs)
 
     # Fall back to provider's default model if none configured
     if not model and runtime_kwargs.get("provider"):

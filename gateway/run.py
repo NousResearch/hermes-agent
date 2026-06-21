@@ -1790,7 +1790,44 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        "model": runtime.get("model"),
+        "name": runtime.get("name"),
     }
+
+
+def _consume_runtime_model(model: str, runtime_kwargs: dict) -> tuple[str, dict]:
+    """Apply and remove a runtime-provider model from agent kwargs.
+
+    Runtime provider resolution may supply an explicit model in addition to
+    credentials. AIAgent still receives ``model`` as a separate constructor
+    argument, so callers must consume this handoff key instead of forwarding it
+    through ``**runtime_kwargs`` where it would collide with ``model=...``.
+
+    Precedence mirrors the canonical CLI path
+    (``hermes_cli/cli_agent_setup_mixin.py``) and the delegation path
+    (``tools/delegate_tool.py``): an explicit ``model.default`` WINS over the
+    provider's ``model`` field. The runtime model is only applied when the
+    configured model is empty or is just the provider slug / display name
+    (i.e. the user never picked a real model), so the gateway does not silently
+    diverge from the CLI for a user who set ``model.default`` (#48061 review).
+    """
+    runtime_model = runtime_kwargs.pop("model", None)
+    provider_slug = runtime_kwargs.get("provider")
+    provider_name = runtime_kwargs.pop("name", None)
+    if runtime_model and isinstance(runtime_model, str):
+        should_use_runtime_model = (
+            not model
+            or model == provider_slug
+            or model == provider_name
+        )
+        if should_use_runtime_model:
+            logger.info(
+                "Runtime provider supplied model (config model empty/provider-name): %s -> %s",
+                model,
+                runtime_model,
+            )
+            model = runtime_model
+    return model, runtime_kwargs
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -3358,14 +3395,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
-            logger.info(
-                "Runtime provider supplied explicit model override: %s -> %s",
-                model,
-                runtime_model,
-            )
-            model = runtime_model
+        model, runtime_kwargs = _consume_runtime_model(model, runtime_kwargs)
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs

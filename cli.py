@@ -5276,6 +5276,88 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"{_DIM}Failed to open external editor: {exc}{_RST}")
             return False
 
+    async def _pick_path_with_yazi(self, buffer=None) -> bool:
+        """Open yazi and insert the selected path(s) into the active input buffer."""
+        app = getattr(self, "_app", None)
+        if not app:
+            _cprint(f"{_DIM}Yazi path picker is only available inside the interactive CLI.{_RST}")
+            return False
+        if self._command_running:
+            _cprint(f"{_DIM}Wait for the current command to finish before opening yazi.{_RST}")
+            return False
+        if self._sudo_state or self._secret_state or self._approval_state or getattr(self, "_slash_confirm_state", None) or self._clarify_state:
+            _cprint(f"{_DIM}Finish the active prompt before opening yazi.{_RST}")
+            return False
+
+        target_buffer = buffer or getattr(app, "current_buffer", None)
+        if target_buffer is None:
+            _cprint(f"{_DIM}No active input buffer is available for yazi path insertion.{_RST}")
+            return False
+
+        yazi_bin = shutil.which("yazi")
+        if not yazi_bin:
+            _cprint(f"{_DIM}yazi is not installed or not on PATH.{_RST}")
+            return False
+
+        def _run_yazi() -> list[str]:
+            import subprocess
+
+            fd, chooser_path = tempfile.mkstemp(prefix="hermes-yazi-choice-", text=True)
+            os.close(fd)
+            try:
+                # yazi writes one selected path per line to --chooser-file.
+                # Empty file means the user cancelled or selected nothing.
+                subprocess.run([yazi_bin, "--chooser-file", chooser_path], check=False)
+                try:
+                    with open(chooser_path, "r", encoding="utf-8") as f:
+                        return [line.strip() for line in f if line.strip()]
+                except OSError:
+                    return []
+            finally:
+                try:
+                    os.unlink(chooser_path)
+                except OSError:
+                    pass
+
+        try:
+            from prompt_toolkit.application import run_in_terminal
+
+            was_visible = self._status_bar_visible
+            self._status_bar_visible = False
+            app.invalidate()
+            try:
+                selected_paths = await run_in_terminal(_run_yazi)
+            finally:
+                self._status_bar_visible = was_visible
+                app.invalidate()
+        except Exception as exc:
+            _cprint(f"{_DIM}Failed to open yazi: {exc}{_RST}")
+            return False
+
+        if not selected_paths:
+            return False
+
+        # Insert at the cursor, with light spacing so paths don't run into words.
+        insert_text = " ".join(selected_paths)
+        try:
+            before = target_buffer.document.text_before_cursor
+            after = target_buffer.document.text_after_cursor
+        except Exception:
+            before = getattr(target_buffer, "text", "")
+            after = ""
+        if before and not before[-1].isspace():
+            insert_text = " " + insert_text
+        if after and not after[0].isspace():
+            insert_text = insert_text + " "
+
+        try:
+            target_buffer.insert_text(insert_text)
+            app.invalidate()
+            return True
+        except Exception as exc:
+            _cprint(f"{_DIM}Failed to insert yazi selection: {exc}{_RST}")
+            return False
+
 
 
     def _install_tool_callbacks(self) -> None:
@@ -12270,6 +12352,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def handle_open_in_editor(event):
             """Ctrl+G (or Alt+G in VSCode/Cursor) opens the current draft in an external editor."""
             cli_ref._open_external_editor(event.current_buffer)
+
+        # Ctrl+Y opens yazi and inserts selected path(s) at the current cursor.
+        # Alt+Y is a fallback for terminals/IDEs that intercept Ctrl chords.
+        _yazi_filter = Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+        )
+
+        @kb.add('c-y', filter=_yazi_filter)
+        @kb.add('escape', 'y', filter=_yazi_filter)
+        def handle_yazi_path_picker(event):
+            """Ctrl+Y (or Alt+Y) opens yazi and inserts selected path(s)."""
+            event.app.create_background_task(cli_ref._pick_path_with_yazi(event.current_buffer))
 
         @kb.add('tab', eager=True)
         def handle_tab(event):

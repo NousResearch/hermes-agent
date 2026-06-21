@@ -60,6 +60,7 @@ TIPS = [
     "Tab accepts auto-suggestion ghost text or autocompletes slash commands.",
     "Type a new message while the agent is working to interrupt and redirect it.",
     "Alt+V pastes an image from your clipboard into the conversation.",
+    "Ctrl+Y opens yazi to pick file paths into the input buffer when yazi is installed. Alt+Y is the fallback.",
     "Pasting 5+ lines auto-saves to a file and inserts a compact reference instead.",
 
     # --- CLI Flags ---

@@ -2223,8 +2223,8 @@ def delegate_task(
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
             # Per-task model/provider override top-level creds
-            task_model = t.get("model") or creds["model"]
-            task_provider = t.get("provider") or creds["provider"]
+            task_model = t.get("model") or model or creds["model"]
+            task_provider = t.get("provider") or provider or creds["provider"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],

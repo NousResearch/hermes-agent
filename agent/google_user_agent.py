@@ -101,7 +101,7 @@ def _gemini_cli_version() -> str:
     cache_path = _VERSION_CACHE_PATH
     try:
         if cache_path.is_file():
-            data = json.loads(cache_path.read_text())
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
             ver = str(data.get("version") or "").lstrip("v").strip()
             ts = float(data.get("fetched_at") or 0)
             if ver and now - ts < _VERSION_CACHE_TTL:
@@ -129,7 +129,8 @@ def _gemini_cli_version() -> str:
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(
-                    json.dumps({"version": ver, "fetched_at": now})
+                    json.dumps({"version": ver, "fetched_at": now}),
+                    encoding="utf-8",
                 )
             except Exception as exc:
                 logger.debug("gemini-cli version cache write failed: %s", exc)
@@ -337,7 +338,7 @@ def _fetch_cached_version(
 
     try:
         if cache_path.is_file():
-            data = json.loads(cache_path.read_text())
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
             ver = str(data.get("version") or "").lstrip("v").strip()
             ts = float(data.get("fetched_at") or 0)
             if ver and now - ts < _VERSION_CACHE_TTL:
@@ -353,7 +354,8 @@ def _fetch_cached_version(
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(
-                    json.dumps({"version": ver, "fetched_at": now})
+                    json.dumps({"version": ver, "fetched_at": now}),
+                    encoding="utf-8",
                 )
             except Exception as exc:
                 logger.debug("%s version cache write failed: %s", label, exc)

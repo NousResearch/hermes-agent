@@ -229,6 +229,36 @@ class TestResolveProvider:
         assert resolve_provider("github-copilot-acp") == "copilot-acp"
         assert resolve_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_alias_dashscope(self):
+        # Regression: "dashscope" was missing from auth.py's local
+        # _PROVIDER_ALIASES, causing "Unknown provider" when used as
+        # model.provider in config.yaml.
+        assert resolve_provider("dashscope") == "alibaba"
+
+    def test_alias_aliyun(self):
+        assert resolve_provider("aliyun") == "alibaba"
+
+    def test_alias_qwen(self):
+        assert resolve_provider("qwen") == "alibaba"
+
+    def test_alias_deep_seek(self):
+        assert resolve_provider("deep-seek") == "deepseek"
+
+    def test_alias_nim(self):
+        assert resolve_provider("nim") == "nvidia"
+
+    def test_alias_nvidia_nim(self):
+        assert resolve_provider("nvidia-nim") == "nvidia"
+
+    def test_alias_build_nvidia(self):
+        assert resolve_provider("build-nvidia") == "nvidia"
+
+    def test_alias_nemotron(self):
+        assert resolve_provider("nemotron") == "nvidia"
+
+    def test_alias_novita_ai(self):
+        assert resolve_provider("novita-ai") == "novita"
+
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
 

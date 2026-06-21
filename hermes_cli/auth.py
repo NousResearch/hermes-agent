@@ -1524,6 +1524,16 @@ def resolve_provider(
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
+        # ── aliases synced from hermes_cli.models._PROVIDER_ALIASES ──
+        # These were missing, causing resolve_provider() to reject common
+        # aliases like "dashscope", "qwen", "aws", "nim" with "Unknown
+        # provider" when used as model.provider in config.yaml.
+        "dashscope": "alibaba", "aliyun": "alibaba",
+        "qwen": "alibaba", "alibaba-cloud": "alibaba",
+        "deep-seek": "deepseek",
+        "nim": "nvidia", "nvidia-nim": "nvidia",
+        "build-nvidia": "nvidia", "nemotron": "nvidia",
+        "novita-ai": "novita", "novitaai": "novita",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",

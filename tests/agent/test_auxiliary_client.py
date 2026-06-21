@@ -28,6 +28,8 @@ from agent.auxiliary_client import (
     _try_payment_fallback,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
+    _nous_api_key,
+    _try_nous,
     _CodexCompletionsAdapter,
 )
 
@@ -3942,3 +3944,105 @@ class TestAuxiliaryMaxTokensParam:
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
+
+
+class TestNousApiKeyAcceptance:
+    """Regression tests for #47950.
+
+    The Portal issues plain ``sk-`` API keys that the inference API accepts
+    as bearer tokens.  ``_nous_api_key()`` and the credential-pool
+    ``runtime_api_key`` must accept them instead of rejecting them as
+    non-JWT (``access_token_not_jwt``).
+    """
+
+    USABLE_JWT = _jwt_with_claims({
+        "scope": "nous.invoke",
+        "exp": int(time.time()) + 3600,
+    })
+
+    def test_nous_api_key_accepts_sk_prefixed_agent_key(self):
+        """A stored ``agent_key`` that is a plain Portal API key is returned."""
+        provider = {
+            "agent_key": "sk-nous-test-1234567890abcdef",
+            "scope": "nous.invoke",
+        }
+        assert _nous_api_key(provider) == "sk-nous-test-1234567890abcdef"
+
+    def test_nous_api_key_accepts_sk_prefixed_access_token(self):
+        """A stored ``access_token`` that is a plain Portal API key is returned."""
+        provider = {
+            "access_token": "sk-nous-test-1234567890abcdef",
+            "scope": "nous.invoke",
+        }
+        assert _nous_api_key(provider) == "sk-nous-test-1234567890abcdef"
+
+    def test_nous_api_key_prefers_agent_key_over_access_token_when_both_sk(self):
+        """``agent_key`` is checked before ``access_token``."""
+        provider = {
+            "agent_key": "sk-agent-key-aaaaaaaaaaaa",
+            "access_token": "sk-access-tok-bbbbbbbbbbbb",
+        }
+        assert _nous_api_key(provider) == "sk-agent-key-aaaaaaaaaaaa"
+
+    def test_nous_api_key_still_accepts_valid_jwt(self):
+        """JWT validation path is unchanged by the ``sk-`` short-circuit."""
+        provider = {
+            "agent_key": self.USABLE_JWT,
+            "scope": "nous.invoke",
+        }
+        assert _nous_api_key(provider) == self.USABLE_JWT
+
+    def test_nous_api_key_rejects_non_jwt_non_sk_token(self):
+        """Tokens that are neither ``sk-`` nor valid JWTs are rejected."""
+        provider = {
+            "agent_key": "not-a-jwt-and-not-sk",
+            "access_token": "also-bogous",
+            "scope": "nous.invoke",
+        }
+        assert _nous_api_key(provider) == ""
+
+    def test_nous_api_key_skips_empty_and_non_string(self):
+        """Empty / non-string token slots are skipped, not crashed on."""
+        assert _nous_api_key({}) == ""
+        assert _nous_api_key({"agent_key": "", "access_token": None}) == ""
+
+    def test_nous_api_key_sk_strips_whitespace(self):
+        """A whitespace-padded ``sk-`` key is returned stripped."""
+        provider = {"agent_key": "  sk-nous-test-1234567890abcdef  "}
+        assert _nous_api_key(provider) == "sk-nous-test-1234567890abcdef"
+
+
+class TestNousTryAcceptsSkKey:
+    """``_try_nous`` returns a usable client when only an ``sk-`` key is stored.
+
+    Mirrors the real fallback path: ``_resolve_nous_runtime_api`` returns
+    ``None`` (runtime JWT refresh unavailable), so ``_try_nous`` falls back
+    to ``_nous_api_key`` against the stored auth state.
+    """
+
+    def test_try_nous_returns_client_with_sk_key(self, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", "/tmp/hermes-test-sk-key-47950")
+        nous_auth = {
+            "agent_key": "sk-nous-test-1234567890abcdef",
+            "inference_base_url": "https://inference-api.nousresearch.com/v1",
+            "scope": "nous.invoke",
+        }
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=nous_auth),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None),
+            patch("agent.auxiliary_client._mark_provider_unhealthy") as _mark,
+            patch("agent.auxiliary_client.nous_rate_limit_remaining",
+                  create=True, return_value=None),
+        ):
+            # Avoid the recommended-model Portal lookup.
+            patch("hermes_cli.models.get_nous_recommended_aux_model",
+                  create=True, return_value="").start()
+            try:
+                client, model = _try_nous()
+            finally:
+                patch.stopall()
+        assert client is not None, "_try_nous should return a client for an sk- key"
+        assert client.api_key == "sk-nous-test-1234567890abcdef"
+        assert "inference-api.nousresearch.com" in str(client.base_url)
+        _mark.assert_not_called()
+

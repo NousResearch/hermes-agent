@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh issue *)",
+      "Bash(python -m pytest tests/run_agent/test_post_response_hooks.py -v)",
+      "Bash(python -m pytest tests/run_agent/test_run_agent.py -v --timeout=60)",
+      "Bash(python -m pytest tests/run_agent/test_run_agent.py -v)",
+      "Bash(git -C /c/Users/Lenovo/hermes-agent stash)",
+      "Bash(python -m pytest tests/run_agent/test_run_agent.py::TestConcurrentToolExecution::test_blocked_memory_tool_does_not_reset_counter -v)",
+      "Bash(git -C /c/Users/Lenovo/hermes-agent stash pop)",
+      "Bash(git checkout *)",
+      "Bash(git push *)"
+    ]
+  }
+}

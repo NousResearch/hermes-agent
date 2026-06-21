@@ -1316,6 +1316,48 @@ def test_nous_runtime_api_key_rejects_opaque_agent_key():
     assert entry.runtime_api_key == ""
 
 
+def test_nous_runtime_api_key_accepts_sk_prefixed_agent_key():
+    """Regression for #47950: Portal ``sk-`` API keys are valid bearer tokens."""
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential(
+        provider="nous",
+        id="nous-sk-key",
+        label="api-key",
+        auth_type="api_key",
+        priority=0,
+        source="device_code",
+        access_token="sk-nous-test-1234567890abcdef",
+        agent_key="sk-nous-test-1234567890abcdef",
+        agent_key_expires_at=datetime.fromtimestamp(
+            time.time() + 3600,
+            tz=timezone.utc,
+        ).isoformat(),
+        extra={"scope": "inference:invoke"},
+    )
+
+    assert entry.runtime_api_key == "sk-nous-test-1234567890abcdef"
+
+
+def test_nous_runtime_api_key_accepts_sk_access_token_when_agent_key_absent():
+    """``sk-`` key stored only in ``access_token`` is also accepted (#47950)."""
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential(
+        provider="nous",
+        id="nous-sk-access",
+        label="api-key",
+        auth_type="api_key",
+        priority=0,
+        source="device_code",
+        access_token="sk-nous-access-tok-abcdef",
+        agent_key=None,
+        extra={"scope": "inference:invoke"},
+    )
+
+    assert entry.runtime_api_key == "sk-nous-access-tok-abcdef"
+
+
 def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))

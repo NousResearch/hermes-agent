@@ -203,7 +203,9 @@ class PooledCredential:
     def runtime_api_key(self) -> str:
         if self.provider == "nous":
             # Nous stores the runtime inference credential in agent_key for
-            # compatibility. It must be a NAS invoke JWT.
+            # compatibility.  It is normally a NAS invoke JWT, but the Portal
+            # also issues plain ``sk-`` API keys (see Portal API docs) which
+            # the inference API accepts as bearer tokens; accept both.
             for token, expires_at in (
                 (self.agent_key, self.agent_key_expires_at),
                 (self.access_token, self.expires_at),
@@ -211,10 +213,13 @@ class PooledCredential:
                 if (
                     isinstance(token, str)
                     and token.strip()
-                    and auth_mod._nous_invoke_jwt_is_usable(
-                        token,
-                        scope=getattr(self, "scope", None),
-                        expires_at=expires_at,
+                    and (
+                        token.startswith("sk-")
+                        or auth_mod._nous_invoke_jwt_is_usable(
+                            token,
+                            scope=getattr(self, "scope", None),
+                            expires_at=expires_at,
+                        )
                     )
                 ):
                     return token.strip()

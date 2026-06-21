@@ -1276,7 +1276,13 @@ def _read_nous_auth() -> Optional[dict]:
 
 
 def _nous_api_key(provider: dict) -> str:
-    """Extract a usable Nous inference JWT from stored auth state."""
+    """Extract a usable Nous inference credential from stored auth state.
+
+    Accepts both JWT tokens (minted by the Portal OAuth device-code flow)
+    and plain API keys (``sk-`` prefixed, generated on the Portal).  The
+    inference API treats both as valid bearer tokens; see the Portal API
+    docs (Option 1: "Using API keys & account credits").
+    """
     from hermes_cli.auth import _nous_invoke_jwt_is_usable
 
     for token_key, expiry_key in (
@@ -1286,6 +1292,10 @@ def _nous_api_key(provider: dict) -> str:
         token = provider.get(token_key)
         if not isinstance(token, str) or not token.strip():
             continue
+        # Plain Portal API keys (sk-...) are valid bearer tokens per the
+        # Portal API docs — accept them without JWT validation.
+        if token.startswith("sk-"):
+            return token
         if _nous_invoke_jwt_is_usable(
             token,
             scope=provider.get("scope"),

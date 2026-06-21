@@ -1,0 +1,29 @@
+diff --git a/agent/transports/chat_completions.py b/agent/transports/chat_completions.py
+index 0c17e309a..54dd02e5a 100644
+--- a/agent/transports/chat_completions.py
++++ b/agent/transports/chat_completions.py
+@@ -53,7 +53,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) ->
+     if normalized_model.startswith("gemini-2.5-"):
+         return thinking_config
+ 
+-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
++    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+         effort = "medium"
+ 
+     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
+@@ -63,13 +63,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) ->
+         if "flash" in normalized_model:
+             if effort in {"minimal", "low"}:
+                 thinking_config["thinkingLevel"] = "low"
+-            elif effort in {"high", "xhigh"}:
++            elif effort in {"high", "xhigh", "max"}:
+                 thinking_config["thinkingLevel"] = "high"
+             else:
+                 thinking_config["thinkingLevel"] = "medium"
+         elif "pro" in normalized_model:
+             thinking_config["thinkingLevel"] = (
+-                "high" if effort in {"high", "xhigh"} else "low"
++                "high" if effort in {"high", "xhigh", "max"} else "low"
+             )
+ 
+     return thinking_config

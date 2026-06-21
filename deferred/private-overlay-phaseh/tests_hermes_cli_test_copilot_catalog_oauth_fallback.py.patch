@@ -1,0 +1,228 @@
+diff --git a/tests/hermes_cli/test_copilot_catalog_oauth_fallback.py b/tests/hermes_cli/test_copilot_catalog_oauth_fallback.py
+index be383b231..5d5fe2017 100644
+--- a/tests/hermes_cli/test_copilot_catalog_oauth_fallback.py
++++ b/tests/hermes_cli/test_copilot_catalog_oauth_fallback.py
+@@ -16,142 +16,102 @@ from hermes_cli.models import _resolve_copilot_catalog_api_key
+ 
+ 
+ class TestCopilotCatalogApiKeyResolution:
+-    def test_env_var_token_wins_over_pool(self):
++    def test_env_var_token_wins_over_pool(self, monkeypatch):
+         """Env-resolved token still short-circuits the pool fallback."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": "env-token"},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-        ) as mock_pool:
+-            assert _resolve_copilot_catalog_api_key() == "env-token"
+-            mock_pool.assert_not_called()
+-
+-    def test_falls_back_to_pool_oauth_token(self):
+-        """Empty env → walk credential_pool.copilot[] for an OAuth access_token."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[{"access_token": "gho_abc123"}],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            return_value=("tid_exchanged_xyz", 1234567890.0),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
+-
+-    def test_falls_back_when_env_resolution_raises(self):
+-        """Env path raising an exception still falls through to the pool."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            side_effect=RuntimeError("auth.json corrupt"),
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[{"access_token": "gho_xyz"}],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            return_value=("tid_exchanged_xyz", 1234567890.0),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
++        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_env_token")
++        monkeypatch.delenv("GH_TOKEN", raising=False)
++        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+ 
+-    def test_skips_classic_pat_in_pool(self):
+-        """Classic PATs (``ghp_…``) are unsupported by the Copilot API — skip them."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[{"access_token": "ghp_classic_pat"}],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
++        with patch("hermes_cli.auth.read_credential_pool") as mock_pool, patch(
++            "hermes_cli.copilot_auth._try_gh_cli_token"
++        ) as mock_gh, patch(
++            "hermes_cli.copilot_auth.exchange_copilot_token"
+         ) as mock_exchange:
+-            assert _resolve_copilot_catalog_api_key() == ""
+-            mock_exchange.assert_not_called()
++            assert _resolve_copilot_catalog_api_key() == "gho_env_token"
+ 
+-    def test_skips_invalid_pool_entries_until_first_exchangeable(self):
+-        """Non-dict entries and entries without an ``access_token`` are skipped."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[
+-                "not-a-dict",
+-                {"label": "no-token-here"},
+-                {"access_token": ""},
+-                {"access_token": "gho_first_real_token"},
+-                {"access_token": "gho_should_not_reach"},
+-            ],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            return_value=("tid_from_first", 1234567890.0),
+-        ) as mock_exchange:
+-            assert _resolve_copilot_catalog_api_key() == "tid_from_first"
+-            mock_exchange.assert_called_once_with("gho_first_real_token")
++        mock_pool.assert_not_called()
++        mock_gh.assert_not_called()
++        mock_exchange.assert_not_called()
+ 
+-    def test_skips_pool_entry_that_fails_to_exchange(self):
+-        """If the first entry won't exchange, try the next — an unsupported pool[0]
+-        must not wedge a later valid entry (Copilot review #16868 finding)."""
+-        attempts: list[str] = []
++    def test_d08_pool_audit_records_skipped_invalid_entries_and_gh_fallback(
++        self, monkeypatch
++    ):
++        """D-08: skipped invalid pool entries must remain visible in the audit."""
++        from hermes_cli.copilot_auth import resolve_copilot_identity_audit
+ 
+-        def fake_exchange(raw_token: str):
+-            attempts.append(raw_token)
+-            if raw_token == "gho_unsupported_account":
+-                raise ValueError("Copilot token exchange failed: HTTP 401")
+-            return ("tid_from_second", 1234567890.0)
++        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
++        monkeypatch.delenv("GH_TOKEN", raising=False)
++        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
++
++        pool_entries = [
++            "not-a-dict",
++            {"label": "no-token-here"},
++            {"access_token": ""},
++            {"access_token": "ghp_classic_pat"},
++        ]
+ 
+         with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+             "hermes_cli.auth.read_credential_pool",
+-            return_value=[
+-                {"access_token": "gho_unsupported_account"},
+-                {"access_token": "gho_valid_token"},
+-            ],
++            return_value=pool_entries,
+         ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            side_effect=fake_exchange,
++            "hermes_cli.copilot_auth._try_gh_cli_token",
++            return_value="gho_from_cli",
+         ):
+-            assert _resolve_copilot_catalog_api_key() == "tid_from_second"
+-            assert attempts == ["gho_unsupported_account", "gho_valid_token"]
++            audit = resolve_copilot_identity_audit(
++                include_credential_pool=True,
++                exchange_pool_tokens=True,
++            )
++            resolved = _resolve_copilot_catalog_api_key()
++
++        assert audit.token == "gho_from_cli"
++        assert audit.source == "gh auth token"
++        assert audit.source_kind == "gh_auth"
++        assert [skip.source for skip in audit.skipped_sources] == [
++            "credential_pool:copilot[0]",
++            "credential_pool:copilot[1]",
++            "credential_pool:copilot[2]",
++            "credential_pool:copilot[3]",
++        ]
++        assert any(
++            "Non-dict credential pool entry" in skip.reason
++            for skip in audit.skipped_sources
++        )
++        assert any(
++            "Missing access_token" in skip.reason
++            for skip in audit.skipped_sources
++        )
++        assert any(
++            "Classic Personal Access Tokens" in skip.reason
++            for skip in audit.skipped_sources
++        )
++        assert resolved == "gho_from_cli"
++
++    def test_d09_pool_token_wins_before_gh_auth(self, monkeypatch):
++        """D-09: the shared identity helper should prefer the pool before gh auth."""
++        from hermes_cli.copilot_auth import resolve_copilot_identity_audit
++
++        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
++        monkeypatch.delenv("GH_TOKEN", raising=False)
++        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+ 
+-    def test_all_pool_entries_fail_exchange_returns_empty(self):
+-        """All exchanges fail → return "" so the caller falls back to curated."""
+         with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+             "hermes_cli.auth.read_credential_pool",
+-            return_value=[
+-                {"access_token": "gho_expired_a"},
+-                {"access_token": "gho_expired_b"},
+-            ],
++            return_value=[{"access_token": "gho_pool_token"}],
+         ), patch(
+             "hermes_cli.copilot_auth.exchange_copilot_token",
+-            side_effect=ValueError("Copilot token exchange failed"),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == ""
+-
+-    def test_returns_empty_string_when_no_credentials_anywhere(self):
+-        """No env, no pool → empty string (caller falls back to curated list)."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
++            return_value=("tid_from_pool", 1234567890.0),
+         ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[],
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == ""
++            "hermes_cli.copilot_auth._try_gh_cli_token",
++            return_value="gho_from_cli",
++        ) as mock_gh:
++            audit = resolve_copilot_identity_audit(
++                include_credential_pool=True,
++                exchange_pool_tokens=True,
++            )
++            resolved = _resolve_copilot_catalog_api_key()
+ 
+-    def test_pool_failure_returns_empty_string(self):
+-        """If the pool read itself raises, swallow and return ""."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            side_effect=RuntimeError("auth.json locked"),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == ""
++        assert audit.token == "tid_from_pool"
++        assert audit.source == "credential_pool:copilot[0]"
++        assert audit.source_kind == "credential_pool"
++        assert resolved == "tid_from_pool"
++        mock_gh.assert_not_called()

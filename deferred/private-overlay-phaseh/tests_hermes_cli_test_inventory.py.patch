@@ -1,0 +1,78 @@
+diff --git a/tests/hermes_cli/test_inventory.py b/tests/hermes_cli/test_inventory.py
+index 1b24ba6bd..bd2d9539f 100644
+--- a/tests/hermes_cli/test_inventory.py
++++ b/tests/hermes_cli/test_inventory.py
+@@ -173,6 +173,73 @@ def test_build_models_payload_does_not_call_provider_model_ids():
+     mock_pm.assert_not_called()
+ 
+ 
++def test_build_models_payload_passes_through_copilot_inventory_snapshot():
++    rows = [
++        {
++            "slug": "copilot",
++            "name": "GitHub Copilot",
++            "models": ["gpt-4.1"],
++            "total_models": 1,
++            "is_current": True,
++            "is_user_defined": False,
++            "source": "built-in",
++        },
++    ]
++    snapshot = {
++        "source": "githubcopilot/models",
++        "captured_at": 1234.5,
++        "model_ids": ["gpt-4.1"],
++        "models": {
++            "gpt-4.1": {
++                "id": "gpt-4.1",
++                "first_seen": 1234.5,
++                "last_seen": 1234.5,
++                "raw_aliases": ["gpt-4.1", "openai/gpt-4.1-mini"],
++                "sources": [
++                    {
++                        "source": "githubcopilot/models",
++                        "captured_at": 1234.5,
++                        "first_seen": 1234.5,
++                        "last_seen": 1234.5,
++                        "raw_aliases": ["gpt-4.1", "openai/gpt-4.1-mini"],
++                        "google": False,
++                        "gemini": False,
++                        "chat_capable": True,
++                        "picker_enabled": True,
++                    }
++                ],
++                "coverage": {
++                    "google": False,
++                    "gemini": False,
++                    "per_source": {
++                        "githubcopilot/models": {"google": False, "gemini": False}
++                    },
++                },
++                "chat_capable": True,
++                "picker_enabled": True,
++            }
++        },
++        "raw_evidence": [],
++        "freshness": {
++            "state": "stale",
++            "checked_at": 2234.5,
++            "source": "githubcopilot/models",
++            "raw_count": 0,
++            "model_count": 1,
++            "has_last_known_good": True,
++            "used_last_known_good": True,
++        },
++    }
++    ctx = _empty_ctx(provider="copilot", model="gpt-4.1")
++    with _list_auth_returning(rows), \
++         patch("hermes_cli.inventory.cached_copilot_inventory_snapshot", return_value=snapshot):
++        payload = build_models_payload(ctx)
++
++    assert set(payload.keys()) == {"providers", "model", "provider", "copilot_inventory"}
++    assert payload["copilot_inventory"] == snapshot
++    assert payload["copilot_inventory"]["freshness"]["state"] == "stale"
++
++
+ def test_include_unconfigured_appends_canonical_skeletons():
+     """include_unconfigured=True adds CANONICAL_PROVIDERS rows that
+     list_authenticated_providers didn't emit. Skeleton rows have empty

@@ -1,0 +1,45 @@
+diff --git a/tests/hermes_cli/test_model_switch_copilot_api_mode.py b/tests/hermes_cli/test_model_switch_copilot_api_mode.py
+index 0248d827a..ddddac27e 100644
+--- a/tests/hermes_cli/test_model_switch_copilot_api_mode.py
++++ b/tests/hermes_cli/test_model_switch_copilot_api_mode.py
+@@ -56,7 +56,12 @@ def _run_copilot_switch(
+ 
+ 
+ def test_same_provider_copilot_switch_recomputes_api_mode():
+-    """GPT-5 → Claude on copilot: api_mode must flip to chat_completions."""
++    """GPT-5 → Claude on copilot: api_mode must flip to anthropic_messages.
++
++    Candidate hardcodes claude-* on Copilot to anthropic_messages
++    (hermes_cli/models.py:3461) per probe-verified routing — opus-4.x +
++    sonnet-4.6 hit /v1/messages on Copilot's bearer-auth endpoint.
++    """
+     result = _run_copilot_switch(
+         raw_input="claude-opus-4.6",
+         current_provider="copilot",
+@@ -66,11 +71,15 @@ def test_same_provider_copilot_switch_recomputes_api_mode():
+     assert result.success, f"switch_model failed: {result.error_message}"
+     assert result.new_model == "claude-opus-4.6"
+     assert result.target_provider == "copilot"
+-    assert result.api_mode == "chat_completions"
++    assert result.api_mode == "anthropic_messages"
+ 
+ 
+ def test_explicit_copilot_switch_uses_selected_model_api_mode():
+-    """Cross-provider switch to copilot: api_mode from new model, not stale runtime."""
++    """Cross-provider switch to copilot: api_mode from new model, not stale runtime.
++
++    See test_same_provider_copilot_switch_recomputes_api_mode for the
++    claude-*=anthropic_messages contract on Copilot.
++    """
+     result = _run_copilot_switch(
+         raw_input="claude-opus-4.6",
+         current_provider="openrouter",
+@@ -81,7 +90,7 @@ def test_explicit_copilot_switch_uses_selected_model_api_mode():
+     assert result.success, f"switch_model failed: {result.error_message}"
+     assert result.new_model == "claude-opus-4.6"
+     assert result.target_provider == "github-copilot"
+-    assert result.api_mode == "chat_completions"
++    assert result.api_mode == "anthropic_messages"
+ 
+ 
+ def test_copilot_gpt5_keeps_codex_responses():

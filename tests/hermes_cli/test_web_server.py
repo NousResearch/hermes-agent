@@ -1927,6 +1927,56 @@ class TestWebServerEndpoints:
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_profiles_sessions_dedupes_symlinked_state_db(self):
+        """A profile whose state.db is a symlink to the canonical DB must not
+        cause its rows to be scanned/counted twice. Main-linked profiles (e.g.
+        the gsd-* worker fleet) symlink state.db back to the workspace DB; the
+        aggregator dedupes by physical inode so profile=all stays O(distinct DBs)
+        and ``total`` is not inflated N times for N aliases."""
+        import pytest
+
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        # One real row in the default (canonical) DB.
+        default_db = SessionDB()
+        try:
+            default_db.create_session(session_id="shared-row", source="cli")
+            default_db.append_message(session_id="shared-row", role="user", content="hi")
+        finally:
+            default_db.close()
+
+        # A second profile whose state.db is a SYMLINK to the canonical DB.
+        canonical = profiles_mod.get_profile_dir("default") / "state.db"
+        alias_home = profiles_mod.get_profile_dir("worker-alias")
+        alias_home.mkdir(parents=True, exist_ok=True)
+        alias_db = alias_home / "state.db"
+        if alias_db.exists() or alias_db.is_symlink():
+            alias_db.unlink()
+        # Guard symlink creation: native Windows without the developer/elevated
+        # privilege (and some restricted filesystems) raise OSError or
+        # NotImplementedError from Path.symlink_to(). Skip gracefully there,
+        # mirroring the repo's _symlink_file_or_skip helper in test_backup.py.
+        # On POSIX (this CI box) the guard is a no-op and the full inode-dedupe
+        # regression below still runs and asserts.
+        try:
+            alias_db.symlink_to(canonical)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        resp = self.client.get("/api/profiles/sessions?profile=all&limit=20&min_messages=0")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # The shared session appears exactly ONCE, not once per aliasing profile.
+        shared = [s for s in data["sessions"] if s["id"] == "shared-row"]
+        assert len(shared) == 1, f"shared row double-counted: {len(shared)} copies"
+        # And it is tagged to the REAL owner (default), not the symlink alias,
+        # because real-DB owners are scanned before symlink aliases.
+        assert shared[0]["profile"] == "default"
+        # Total must not be inflated by the duplicate physical DB.
+        assert data["total"] == 1
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""

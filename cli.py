@@ -12501,32 +12501,136 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             """Down arrow: browse history when on last line, else move cursor down."""
             event.app.current_buffer.auto_down(count=event.arg)
 
-        # --- PageUp / PageDown: scroll the input box to review long pastes ---
-        # The TextArea is capped at a few visible rows, and for a single long
+        # --- Input box scrolling for long pasted / dictated text ---
+        # The TextArea is capped at a few visible rows.  For a single long
         # wrapped line (e.g. a Wispr Flow dictation blob with no newlines)
         # Up/Down jump straight to shell history, leaving no way to scroll to
-        # the top.  PageUp/PageDown move the cursor by ~one viewport of content
-        # so prompt_toolkit's cursor-following scroll reveals the rest.  The
-        # movement stays inside the buffer and never browses history.
-        def _scroll_input_page(event, direction):
-            buf = event.app.current_buffer
-            text = buf.text
-            if not text:
-                return
+        # the top.  Two mechanisms are provided:
+        #
+        #   • Ctrl+Up / Ctrl+Down — line-by-line scroll.  These key sequences
+        #     are not intercepted by terminal emulators (unlike PageUp/PageDown
+        #     which Ghostty, iTerm2, and others consume for scrollback).
+        #
+        #   • PageUp / PageDown — page-by-page scroll.  Works on terminals that
+        #     pass these keys through to the application.
+        #
+        # Both work by directly setting the prompt_toolkit Window's sub-line
+        # scroll offset (``vertical_scroll_2`` for wrapped lines,
+        # ``vertical_scroll`` for multi-line) and positioning the cursor inside
+        # the new viewport so the render pass doesn't override the offset.
+
+        def _get_input_scroll_params(event):
+            """Return (columns, visible_height, prompt_width) for scroll math."""
             try:
                 columns = event.app.output.get_size().columns
             except Exception:
                 columns = shutil.get_terminal_size((80, 24)).columns
             prompt_text = self._get_tui_prompt_text()
             visible_height = _estimate_tui_input_height(
-                buf.document.lines, prompt_text, columns
+                event.app.current_buffer.document.lines, prompt_text, columns
             )
-            target = _compute_input_page_cursor(
-                text, buf.cursor_position, direction, visible_height, columns
-            )
-            if target != buf.cursor_position:
-                buf.cursor_position = target
-                event.app.invalidate()
+            try:
+                from prompt_toolkit.utils import get_cwidth
+                prompt_width = max(0, get_cwidth(prompt_text or ""))
+            except Exception:
+                prompt_width = len(prompt_text or "")
+            return columns, visible_height, prompt_width
+
+        def _scroll_input_page(event, direction):
+            """Scroll the input box by one page to review long text."""
+            buf = event.app.current_buffer
+            text = buf.text
+            if not text:
+                return
+            window = input_area.window
+            columns, visible_height, prompt_width = _get_input_scroll_params(event)
+
+            if '\n' not in text:
+                # --- Single (possibly wrapped) line ---
+                # Use vertical_scroll_2 (sub-line scroll within the wrapped line).
+                try:
+                    from prompt_toolkit.utils import get_cwidth
+                    total_width = get_cwidth(text) + prompt_width
+                except Exception:
+                    total_width = len(text) + prompt_width
+                total_visual = max(1, -(-total_width // max(1, columns)))
+                if total_visual <= visible_height:
+                    return
+                max_scroll = total_visual - visible_height
+                current_scroll = getattr(window, 'vertical_scroll_2', 0) or 0
+                if direction < 0:
+                    new_scroll = max(0, current_scroll - visible_height)
+                else:
+                    new_scroll = min(max_scroll, current_scroll + visible_height)
+                if new_scroll == current_scroll:
+                    return
+                # Place cursor inside the new viewport so the render preserves
+                # our scroll offset.  Visual row (new_scroll + 1) maps to a
+                # character position that keeps the cursor visible but not at
+                # the very edge.
+                first_row_cols = max(1, columns - prompt_width)
+                if new_scroll == 0:
+                    target = min(len(text), first_row_cols)
+                else:
+                    target = min(len(text), first_row_cols + (new_scroll - 1) * columns)
+                buf.cursor_position = max(0, target)
+                window.vertical_scroll_2 = new_scroll
+            else:
+                # --- Multi-line text ---
+                # Move cursor by visible_height logical lines; the window
+                # scrolls to follow.  Also set vertical_scroll directly for a
+                # full-page jump rather than the minimum-scroll-to-cursor.
+                lines = text.split('\n')
+                total_lines = len(lines)
+                if total_lines <= visible_height:
+                    return
+                current_row = buf.document.cursor_position_row
+                if direction < 0:
+                    target_row = max(0, current_row - visible_height)
+                else:
+                    target_row = min(total_lines - 1, current_row + visible_height)
+                if target_row == current_row:
+                    return
+                buf.cursor_position = buf.document.translate_row_col_to_index(target_row, 0)
+                current_scroll = getattr(window, 'vertical_scroll', 0) or 0
+                if direction < 0:
+                    window.vertical_scroll = max(0, current_scroll - visible_height)
+                else:
+                    window.vertical_scroll = current_scroll + visible_height
+
+            event.app.invalidate()
+
+        def _scroll_input_line(event, direction):
+            """Scroll the input box by one line for fine-grained review."""
+            buf = event.app.current_buffer
+            if not buf.text:
+                return
+            if '\n' in buf.text:
+                if direction < 0:
+                    buf.cursor_up(count=1)
+                else:
+                    buf.cursor_down(count=1)
+            else:
+                # Single wrapped line: move cursor by ~one visual row of
+                # characters.  The window scrolls to follow the cursor.
+                columns, _, prompt_width = _get_input_scroll_params(event)
+                first_row_cols = max(1, columns - prompt_width)
+                pos = buf.cursor_position
+                if direction < 0:
+                    if pos <= first_row_cols:
+                        buf.cursor_position = 0
+                    else:
+                        offset = pos - first_row_cols
+                        prev_row = max(0, (offset - 1) // columns)
+                        buf.cursor_position = first_row_cols + prev_row * columns
+                else:
+                    if pos < first_row_cols:
+                        buf.cursor_position = min(len(buf.text), first_row_cols)
+                    else:
+                        offset = pos - first_row_cols
+                        next_row = offset // columns + 1
+                        buf.cursor_position = min(len(buf.text), first_row_cols + next_row * columns)
+            event.app.invalidate()
 
         @kb.add('pageup', filter=_normal_input)
         def input_page_up(event):
@@ -12537,6 +12641,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def input_page_down(event):
             """PageDown: scroll the input box down one page to review long text."""
             _scroll_input_page(event, +1)
+
+        @kb.add('c-up', filter=_normal_input)
+        def input_line_up(event):
+            """Ctrl+Up: scroll the input box up one line (works in Ghostty)."""
+            _scroll_input_line(event, -1)
+
+        @kb.add('c-down', filter=_normal_input)
+        def input_line_down(event):
+            """Ctrl+Down: scroll the input box down one line (works in Ghostty)."""
+            _scroll_input_line(event, +1)
 
         @kb.add('c-l')
         def handle_ctrl_l(event):

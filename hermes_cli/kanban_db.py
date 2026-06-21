@@ -6758,6 +6758,84 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _skill_resolves_for_home(hermes_home: Optional[str], skill_name: str) -> bool:
+    """True if ``skill_name`` would resolve under ``hermes_home``/skills/.
+
+    Mirrors the bare-name resolution used by ``tools.skills_tool.skill_view``
+    for the common cases (top-level skill directory, recursive match by
+    directory name, and frontmatter ``name:`` match in any ``SKILL.md``).
+    Plugin namespaced skills (``plugin:skill``) are skipped here — the
+    dispatcher's ``--skills`` flag doesn't accept that syntax, and a
+    legitimate plugin skill would be loaded via the profile's plugin config,
+    not the per-task preload list.
+
+    This is the same gate ``_kanban_worker_skill_available`` applies to the
+    built-in ``kanban-worker`` skill; the same failure mode (worker exits
+    immediately with ``ValueError: Unknown skill(s)``) hits per-task skills
+    when a task author references a skill that the dispatcher's profile
+    doesn't ship. Without this check, a single bad skill in ``task.skills``
+    crashes the worker before the agent loop starts.
+    """
+    name = (skill_name or "").strip()
+    if not name:
+        return False
+    # Plugin namespaced skills aren't valid `--skills` values today.
+    if ":" in name:
+        return False
+    # Absolute paths and traversal aren't legal `--skills` values either.
+    if name.startswith(("/", "~", ".")):
+        return False
+
+    from pathlib import Path as _Path
+
+    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    skills_root = base / "skills"
+    if not skills_root.is_dir():
+        return False
+
+    # Strategy 1: direct top-level directory match — the canonical case.
+    if (skills_root / name / "SKILL.md").is_file():
+        return True
+    # Strategy 2: categorized form `<category>/<skill>` — also common since
+    # profile-scoped skills often nest under a category dir (e.g. devops/,
+    # note-taking/).
+    if (skills_root / name.replace("-", "/") / "SKILL.md").is_file():
+        return True
+    # Strategy 3: recursive by directory name — catches arbitrarily nested
+    # skills called by their leaf name.
+    try:
+        for skill_md in skills_root.rglob(f"{name}/SKILL.md"):
+            if skill_md.is_file():
+                return True
+    except OSError:
+        pass
+    # Strategy 4: frontmatter `name:` match in any SKILL.md — matches
+    # ``skill_view``'s strategy-2 fallback so callers that use the
+    # frontmatter name (which may differ from the directory name) resolve.
+    try:
+        from agent.skill_utils import iter_skill_index_files as _iter
+    except Exception:
+        _iter = None
+    if _iter is not None:
+        try:
+            for skill_md in _iter(skills_root, "SKILL.md"):
+                if not skill_md.is_file():
+                    continue
+                try:
+                    from tools.skills_tool import _parse_frontmatter as _pfm
+                except Exception:
+                    continue
+                try:
+                    fm = _pfm(skill_md.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if fm.get("name") == name:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     """True if the bundled ``kanban-worker`` skill resolves for the home the
     spawned worker will run under.
@@ -6772,25 +6850,7 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
     omitting the flag only drops the supplementary pattern library.
     """
-    from pathlib import Path as _Path
-
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
+    return _skill_resolves_for_home(hermes_home, "kanban-worker")
 
 
 def _worker_terminal_timeout_env(
@@ -6950,10 +7010,33 @@ def _default_spawn(
     # quoting ambiguity if a skill name ever contains unusual chars.
     # Dedupe against the built-in so we don't double-load kanban-worker
     # if a task author asks for it explicitly.
+    #
+    # Filter against the worker's resolved skills tree — a per-task skill
+    # that doesn't exist under the worker's profile-scoped HERMES_HOME
+    # would crash the worker at CLI startup with
+    # ``ValueError: Unknown skill(s)`` from ``build_preloaded_skills_prompt``,
+    # before the agent loop ever runs. The dispatcher's worker_logs_dir
+    # would record the failure as ``Error: Unknown skill(s): ...`` followed
+    # by exit code 1, and the dispatcher's reap loop would record the
+    # task as ``crashed`` even though the task spec was perfectly valid —
+    # only the worker's environment was missing the skill. Same gating
+    # pattern as the built-in ``kanban-worker`` flag above.
     if task.skills:
+        worker_home = env.get("HERMES_HOME")
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
+            if not sk or sk == "kanban-worker":
+                continue
+            if not _skill_resolves_for_home(worker_home, sk):
+                _log.warning(
+                    "kanban spawn: dropping per-task skill %r for task %s — "
+                    "not found under worker HERMES_HOME %r. The worker will "
+                    "still run, but the skill's instructions won't be "
+                    "preloaded. Update the task's skills list, or install "
+                    "the skill into the dispatching profile's skills/.",
+                    sk, task.id, worker_home,
+                )
+                continue
+            cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     cmd.extend([

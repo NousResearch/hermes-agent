@@ -56,6 +56,45 @@ class TestMatrixExecApprovalReactions:
         assert "!approve session" in text
         assert "!approve always" not in text
         assert "approve permanently" not in text
+        assert adapter._send_reaction.await_count == 2
+        emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
+        assert emojis == ["✅", "❌"]
+
+    @pytest.mark.asyncio
+    async def test_always_reaction_is_rejected_when_permanent_approval_disallowed(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+
+        adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
+        adapter._user_id = "@bot:example.org"
+        adapter._send_invalid_reaction_feedback = AsyncMock()
+        adapter._approval_prompts_by_event["$target"] = _MatrixApprovalPrompt(
+            session_key="sess-1",
+            chat_id="!room:example.org",
+            message_id="$target",
+            allow_permanent=False,
+        )
+        adapter._approval_prompt_by_session["sess-1"] = "$target"
+
+        content = {"m.relates_to": {"event_id": "$target", "key": "♾️"}}
+        event = types.SimpleNamespace(
+            sender="@liizfq:liizfq.top",
+            event_id="$react1",
+            room_id="!room:example.org",
+            content=content,
+        )
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._on_reaction(event)
+
+        mock_resolve.assert_not_called()
+        adapter._send_invalid_reaction_feedback.assert_awaited_once_with(
+            "!room:example.org",
+            "$target",
+            "Permanent approval is not available for this prompt.",
+        )
+        assert "$target" in adapter._approval_prompts_by_event
+        assert adapter._approval_prompt_by_session["sess-1"] == "$target"
 
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):

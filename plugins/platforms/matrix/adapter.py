@@ -311,6 +311,7 @@ class _MatrixApprovalPrompt:
         resolved: bool = False,
         requester_user_id: str | None = None,
         expires_at: float | None = None,
+        allow_permanent: bool = True,
     ):
         self.session_key = session_key
         self.chat_id = chat_id
@@ -318,6 +319,7 @@ class _MatrixApprovalPrompt:
         self.resolved = resolved
         self.requester_user_id = requester_user_id
         self.expires_at = expires_at
+        self.allow_permanent = allow_permanent
         self.bot_reaction_events: dict[str, str] = {}  # emoji -> event_id
 
 
@@ -1942,6 +1944,7 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=result.message_id,
             requester_user_id=requester_user_id,
             expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+            allow_permanent=allow_permanent,
         )
         old_event = self._approval_prompt_by_session.get(session_key)
         if old_event:
@@ -1949,7 +1952,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
-        for emoji in ("✅", "♾️", "❌"):
+        approval_reactions = ("✅", "♾️", "❌") if allow_permanent else ("✅", "❌")
+        for emoji in approval_reactions:
             try:
                 reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)
                 # Save the bot's reaction event_id for later cleanup
@@ -3081,6 +3085,13 @@ class MatrixAdapter(BasePlatformAdapter):
                         room_id,
                         reacts_to,
                         "That reaction is not valid for this approval prompt.",
+                    )
+                    return
+                if choice == "always" and not prompt.allow_permanent:
+                    await self._send_invalid_reaction_feedback(
+                        room_id,
+                        reacts_to,
+                        "Permanent approval is not available for this prompt.",
                     )
                     return
                 try:

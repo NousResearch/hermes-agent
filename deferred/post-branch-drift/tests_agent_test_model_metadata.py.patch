@@ -1,0 +1,38 @@
+diff --git a/tests/agent/test_model_metadata.py b/tests/agent/test_model_metadata.py
+index 0eab4dcff..b0319ad67 100644
+--- a/tests/agent/test_model_metadata.py
++++ b/tests/agent/test_model_metadata.py
+@@ -245,7 +245,9 @@ class TestCodexOAuthContextLength:
+ 
+         expected = {
+             "gpt-5.5": 272_000,
+-            "gpt-5.4": 272_000,
++            # gpt-5.4 is empirically ~900K on the Codex backend (the /models
++            # endpoint under-reports it as 272K); the empirical override wins.
++            "gpt-5.4": 900_000,
+             "gpt-5.4-mini": 272_000,
+             "gpt-5.3-codex": 272_000,
+             "gpt-5.3-codex-spark": 128_000,
+@@ -270,7 +272,9 @@ class TestCodexOAuthContextLength:
+ 
+     def test_live_probe_overrides_fallback(self):
+         """When a token is provided, the live /models probe is preferred
+-        and its context_window drives the result."""
++        and its context_window drives the result — EXCEPT for slugs with an
++        empirical override (gpt-5.4), where the verified ~900K backend cap
++        takes precedence over the under-reported /models value."""
+         from agent.model_metadata import get_model_context_length
+ 
+         fake_response = MagicMock()
+@@ -297,8 +301,10 @@ class TestCodexOAuthContextLength:
+                 api_key="fake-token",
+                 provider="openai-codex",
+             )
++        # gpt-5.5: no empirical override → live probe value wins.
+         assert ctx_55 == 300_000
+-        assert ctx_54 == 400_000
++        # gpt-5.4: empirical override (900K) wins over the live /models value.
++        assert ctx_54 == 900_000
+ 
+     def test_probe_failure_falls_back_to_hardcoded(self):
+         """If the probe fails (non-200 / network error), we still return

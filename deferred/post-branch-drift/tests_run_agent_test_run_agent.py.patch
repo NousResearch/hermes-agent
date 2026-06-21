@@ -1,0 +1,20 @@
+diff --git a/tests/run_agent/test_run_agent.py b/tests/run_agent/test_run_agent.py
+index 0000000..0000001 100644
+--- a/tests/run_agent/test_run_agent.py
++++ b/tests/run_agent/test_run_agent.py
+@@ -3683,8 +3683,8 @@ class TestRunConversation:
+             result = agent.run_conversation("read all macos skills and access requirements")
+ 
+-        # PR #50078 targets v0.17.0, whose refusal handler funnels through
+-        # _content_policy_blocked_result (error startswith "content_policy_blocked:",
+-        # no "refused" key). The LOCAL v0.16.0-based overlay still carries the
+-        # OLDER inline refusal handler (agent/conversation_loop.py returns
+-        # {"refused": True, "error": "Model refused the request (stop_reason=refusal)"}),
+-        # so the overlay's two assertions below are the as-of-branch-cut version
+-        # that PR #50078 SUPERSEDES on the v0.17.0 base. Pull this patch only if
+-        # re-applying the overlay's older-handler test verbatim; otherwise use
+-        # the PR #50078 version (already aligned to the v0.17.0 handler).
++        # OVERLAY (v0.16.0-base) ONLY — older inline refusal handler shape.
++        # Superseded by PR #50078 on the v0.17.0 base (content_policy_blocked).
+         assert result.get("refused") is True
+         assert "refus" in result["error"].lower()

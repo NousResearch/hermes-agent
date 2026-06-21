@@ -522,6 +522,57 @@ class TestBuildSkillsSystemPrompt:
         assert "imessage" in result
         assert "Send iMessages" in result
 
+    def test_environment_gated_skill_hidden_via_snapshot_fast_path(
+        self, monkeypatch, tmp_path
+    ):
+        """Environment relevance must hold on the snapshot fast path too.
+
+        Regression: the cold scan filters out environment-incompatible skills
+        but still writes every entry to the shared disk snapshot. The snapshot
+        fast path re-applied the platform gate but not the environment gate, so
+        a kanban-only skill (``environments: [kanban]``) leaked into the index
+        of a non-kanban session as soon as the fast path took over. This test
+        forces the fast path (clears only the in-process cache, keeps the
+        snapshot) and asserts the skill stays hidden.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Force every known environment to read as inactive, deterministically,
+        # without touching config.yaml or process env vars.
+        monkeypatch.setattr(
+            "agent.skill_utils._ENV_DETECT_CACHE",
+            {"kanban": False, "docker": False, "s6": False},
+        )
+
+        skills_dir = tmp_path / "skills" / "ops"
+
+        kanban_skill = skills_dir / "kanban-worker"
+        kanban_skill.mkdir(parents=True)
+        (kanban_skill / "SKILL.md").write_text(
+            "---\nname: kanban-worker\ndescription: Drive the kanban board\n"
+            "environments: [kanban]\n---\n"
+        )
+
+        uni_skill = skills_dir / "web-search"
+        uni_skill.mkdir()
+        (uni_skill / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web\n---\n"
+        )
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        # First build: cold path (no snapshot) — writes the snapshot.
+        cold = build_skills_system_prompt()
+        assert "web-search" in cold
+        assert "kanban-worker" not in cold
+
+        # Drop only the in-process LRU cache so the next call is served from the
+        # disk snapshot (the fast path), keeping the snapshot on disk.
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+
+        warm = build_skills_system_prompt()
+        assert "web-search" in warm
+        assert "kanban-worker" not in warm
+
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

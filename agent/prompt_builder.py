@@ -1082,7 +1082,11 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+# v2: snapshot entries gained an ``environments`` field so the fast path can
+# re-apply the environment relevance gate. Bumping the version invalidates v1
+# snapshots that predate the field (they would otherwise be treated as having
+# no environment tags and leak environment-gated skills).
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1170,12 +1174,22 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    # Persist the environment relevance tags too. Both ``platforms`` and
+    # ``environments`` are runtime-dependent offer-time filters that must be
+    # re-evaluated on every snapshot read (the snapshot is a single shared
+    # file reused across sessions/processes whose environment differs), so the
+    # raw tags — not a baked-in boolean — have to survive into the snapshot.
+    environments = frontmatter.get("environments") or []
+    if isinstance(environments, str):
+        environments = [environments]
+
     return {
         "skill_name": skill_name,
         "category": category,
         "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
+        "environments": [str(e).strip() for e in environments if str(e).strip()],
         "conditions": extract_skill_conditions(frontmatter),
     }
 
@@ -1313,6 +1327,16 @@ def build_skills_system_prompt(
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
             if not skill_matches_platform({"platforms": platforms}):
+                continue
+            # Re-apply the environment relevance gate that the cold path runs
+            # via _parse_skill_file. Environment-incompatible skills are still
+            # written to the snapshot (the cold path appends every entry before
+            # its is_compatible check), so without this an environment-only
+            # skill — e.g. a kanban-only skill tagged ``environments: [kanban]``
+            # — would leak into the index of a non-kanban session the moment the
+            # snapshot fast path takes over from the cold scan.
+            environments = entry.get("environments") or []
+            if not skill_matches_environment({"environments": environments}):
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue

@@ -38,20 +38,96 @@ Wire protocol
         "extra":           {...}   # event-specific kwargs
     }
 
-The ``extra`` object carries the event-specific kwargs.  ``_serialize_payload``
-keeps only the top-level keys above and folds everything else into ``extra``,
-so the useful per-event fields live one level down.  Common keys by event:
+The ``extra`` object carries the event-specific kwargs.
+:func:`_serialize_payload` promotes only the four keys in
+``_TOP_LEVEL_PAYLOAD_KEYS`` (``tool_name``, ``args`` → ``tool_input``,
+``session_id``, ``parent_session_id``) to the top level and folds **every
+other kwarg** the emit site passed into ``extra``.  So the useful per-event
+fields live one level down — read them under ``extra``, not at the top level.
 
-==================  ============================================================
-Event               ``extra`` keys
-==================  ============================================================
-``post_tool_call``  ``result``, ``status``, ``error_type``, ``error_message``,
-                    ``duration_ms``
-``subagent_stop``   ``child_session_id``, ``child_role``, ``child_summary``,
-                    ``child_status`` (top-level ``session_id`` is the *parent*)
-``on_session_end``  ``completed``, ``interrupted``
-``on_session_start``  ``model``, ``platform``
-==================  ============================================================
+False-friend traps
+~~~~~~~~~~~~~~~~~~~
+* For ``subagent_start`` and ``subagent_stop`` the emit sites pass
+  ``parent_session_id`` (not ``session_id``).  ``_serialize_payload`` resolves
+  the top-level ``session_id`` as ``session_id or parent_session_id``, so on
+  these two events **top-level** ``session_id`` is the *parent* session.  The
+  *child* id is ``extra.child_session_id`` — reading the child id at the top
+  level silently returns the parent.
+* Because the fold is "everything that is not a top-level key", a kwarg you
+  expect at the top level (e.g. ``task_id``, ``turn_id``, ``duration_ms``)
+  lives under ``extra``.  When in doubt, look in ``extra`` first.
+
+Per-event ``extra`` keys (derived from the actual emit kwargs)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The lifecycle events below build a stdin payload with a populated ``extra``.
+Each entry lists the **source file** that emits it and the **full** set of
+``extra`` keys passed there.  ``tool_name`` and ``tool_input`` (from ``args``)
+are always promoted to the top level and so are omitted from the lists.
+
+``pre_tool_call`` — ``hermes_cli/plugins.py`` (``get_pre_tool_call_block_message``)
+    * ``task_id`` — id of the originating delegate task (``""`` if none)
+    * ``tool_call_id`` — id of this specific tool call
+    * ``turn_id`` — id of the agent turn that issued the call
+    * ``api_request_id`` — id of the LLM request that produced the call
+    * ``middleware_trace`` — list of tool-request middleware step dicts
+
+``post_tool_call`` — ``model_tools.py`` (``_emit_post_tool_call_hook``)
+    * ``result`` — the tool's raw result (usually a JSON string)
+    * ``status`` — ``"ok"`` or ``"error"`` (derived from the result when not
+      supplied by the caller)
+    * ``error_type`` — exception/category name when ``status == "error"``
+    * ``error_message`` — human-readable error detail when erroring
+    * ``duration_ms`` — tool execution time in milliseconds
+    * ``task_id`` — originating delegate task id (``""`` if none)
+    * ``tool_call_id`` — id of this tool call
+    * ``turn_id`` — id of the agent turn
+    * ``api_request_id`` — id of the LLM request that produced the call
+    * ``middleware_trace`` — list of tool-result middleware step dicts
+
+``on_session_start`` — ``agent/conversation_loop.py``
+    * ``model`` — model id the session was opened with
+    * ``platform`` — surface label (``"cli"``, ``"tui"``, gateway name, …;
+      ``""`` when unknown)
+
+``on_session_end`` — ``agent/turn_finalizer.py`` (also ``cli.py`` on
+interrupt / shutdown)
+    * ``task_id`` — id of the task being finalised
+    * ``turn_id`` — id of the final turn
+    * ``completed`` — ``bool``; the session finished normally
+    * ``interrupted`` — ``bool``; the session was interrupted
+    * ``model`` — model id
+    * ``platform`` — surface label
+    * ``api_request_id`` — *interrupt path only* (``cli.py``): id of the
+      in-flight LLM request when the user interrupted
+    * ``reason`` — *shutdown safety-net only* (``cli.py``): e.g. ``"shutdown"``
+
+``subagent_start`` — ``tools/delegate_tool.py`` (fired when a child agent is
+spawned)
+    * ``parent_turn_id`` — turn id on the parent that requested the spawn
+    * ``parent_subagent_id`` — subagent id of the spawning parent (``None`` at
+      the top level of a tree)
+    * ``child_session_id`` — the child's session id (top-level ``session_id``
+      is the *parent*; see traps above)
+    * ``child_subagent_id`` — the child's subagent id
+    * ``child_role`` — the role the child was spawned as
+    * ``child_goal`` — the goal/prompt the child was given
+
+``subagent_stop`` — ``tools/delegate_tool.py`` (fired once per child when it
+finishes)
+    * ``parent_turn_id`` — turn id on the parent
+    * ``child_session_id`` — the child's session id (top-level ``session_id``
+      is the *parent*; see traps above)
+    * ``child_role`` — the role the child ran as
+    * ``child_summary`` — the child's final summary text
+    * ``child_status`` — terminal status of the child run
+    * ``duration_ms`` — child wall-clock duration in milliseconds
+
+Other events in ``VALID_HOOKS`` (e.g. ``pre_llm_call``, ``post_llm_call``,
+``pre_api_request``, ``post_api_request``, ``api_request_error``,
+``transform_*``, ``on_session_finalize``, ``on_session_reset``,
+``pre_gateway_dispatch``, ``pre_approval_request``, ``post_approval_response``)
+also dispatch to shell hooks, but their payloads carry different shapes and are
+out of scope for this tool/session-lifecycle reference.
 
 **stdout** (JSON, optional — anything else is ignored)::
 

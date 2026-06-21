@@ -1,7 +1,10 @@
 """Unit tests for the live USB tool (no root, no actual USB required)."""
 from __future__ import annotations
 
+from typing import Any
+
 import json
+import logging
 import sys
 import types
 
@@ -18,6 +21,69 @@ from tools.cyber_live_usb import _handle  # noqa: E402
 
 
 class TestLiveUsbTool:
+    def test_run_redacts_secret_flags_from_log_but_preserves_command(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_subprocess_run(cmd: list[str], **kwargs) -> types.SimpleNamespace:  # noqa: ANN003
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        raw_cmd = [
+            "bash",
+            "provision.sh",
+            "--telegram-token",
+            "telegram-secret-token",
+            "--model-key=model-secret-key",
+            "--config",
+            "/tmp/config",
+        ]
+        original_cmd = list(raw_cmd)
+        monkeypatch.setattr(live_usb.subprocess, "run", fake_subprocess_run)
+        caplog.set_level(logging.INFO, logger=live_usb.logger.name)
+
+        result = live_usb._run(raw_cmd, timeout=12)
+
+        assert result["rc"] == 0
+        assert raw_cmd == original_cmd
+        assert captured["cmd"] == original_cmd
+        assert "telegram-secret-token" in " ".join(captured["cmd"])
+        assert "model-secret-key" in " ".join(captured["cmd"])
+        assert captured["kwargs"]["timeout"] == 12
+        assert "telegram-secret-token" not in caplog.text
+        assert "model-secret-key" not in caplog.text
+        assert "--telegram-token <redacted>" in caplog.text
+        assert "--model-key=<redacted>" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("raw_cmd", "expected"),
+        [
+            (["cmd", "--telegram-token", "sensitive-value"], ["cmd", "--telegram-token", "<redacted>"]),
+            (["cmd", "--telegram-token=sensitive-value"], ["cmd", "--telegram-token=<redacted>"]),
+            (["cmd", "--model-key", "sensitive-value"], ["cmd", "--model-key", "<redacted>"]),
+            (["cmd", "--model-key=sensitive-value"], ["cmd", "--model-key=<redacted>"]),
+            (["cmd", "--operator-approval", "sensitive-value"], ["cmd", "--operator-approval", "<redacted>"]),
+            (["cmd", "--operator-approval=sensitive-value"], ["cmd", "--operator-approval=<redacted>"]),
+            (["cmd", "--approval-token", "sensitive-value"], ["cmd", "--approval-token", "<redacted>"]),
+            (["cmd", "--approval-token=sensitive-value"], ["cmd", "--approval-token=<redacted>"]),
+            (["cmd", "--live-usb-approval", "sensitive-value"], ["cmd", "--live-usb-approval", "<redacted>"]),
+            (["cmd", "--live-usb-approval=sensitive-value"], ["cmd", "--live-usb-approval=<redacted>"]),
+            (["cmd", "--telegram-token"], ["cmd", "--telegram-token"]),
+            (["cmd", "--model-key="], ["cmd", "--model-key=<redacted>"]),
+        ],
+    )
+    def test_redacted_command_handles_approval_aliases_and_edge_cases(
+        self,
+        raw_cmd: list[str],
+        expected: list[str],
+    ) -> None:
+        assert live_usb._redacted_command_for_log(raw_cmd) == expected
+        assert "sensitive-value" not in " ".join(live_usb._redacted_command_for_log(raw_cmd))
+
     def test_status_returns_scripts_dir(self) -> None:
         out = json.loads(_handle({"action": "status"}))
         assert "scripts_dir" in out

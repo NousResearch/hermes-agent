@@ -142,3 +142,52 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review the pushed guarded sync branch and merge it into AgentCyber main when approved; do not force-push.
 - After the pushed branch is reviewed/merged into AgentCyber main, future cron runs should be verification/no-op unless upstream drifts again or a new focused Live USB gap is found.
+
+### 2026-06-21T20:38:29Z — sync upstream and redact Live USB command logs
+
+**Commands / status**
+
+- `git status --short --branch`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` with a clean worktree.
+- `git fetch upstream main --prune && git fetch origin main --prune`: upstream advanced from `8e4d2fd23` to `f72690825`; origin fetched cleanly.
+- Drift after fetch: `HEAD..upstream/main` -> `6`; `upstream/main..HEAD` -> `66`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `184`.
+- `git merge --no-ff upstream/main`: merged cleanly with the `ort` strategy; merge commit before local Live USB work was `7254ba30a`.
+- Post-merge preservation review confirmed the required AgentCyber/Live USB files still exist, are tracked, and were not touched by the upstream merge: `tools/cyber_live_usb.py`, `tests/cyber/test_live_usb_tool.py`, `scripts/agentcyber`, this ledger, `docs/AGENTCYBER_STANDALONE_RUNBOOK.md`, and `live-usb/{build_iso.sh,write_usb.sh,provision.sh}`.
+
+**Changed files**
+
+- Upstream merge changed 14 upstream Hermes files, including desktop/bootstrap updater files, gateway stream handling/tests, `hermes_cli/main.py`, `tests/hermes_cli/test_tui_npm_install.py`, `tests/hermes_cli/test_update_zip_atomic_replace.py`, and kanban dashboard dist/tests.
+- `tools/cyber_live_usb.py`: added `_redacted_command_for_log()` and routed `_run()` command logging through it so `--telegram-token`, `--model-key`, and live-USB/operator approval token flag values are redacted in logs while the original command still goes to `subprocess.run()`.
+- `tests/cyber/test_live_usb_tool.py`: added regression tests proving raw command arguments are preserved for execution, secrets are absent from logs, redaction markers appear, and separate plus `--flag=value` forms are covered for each sensitive flag.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- `uv run --frozen python -m pytest tests/cyber/test_live_usb_tool.py -q -o addopts= --tb=short` -> `26 passed in 0.46s`.
+- `uv run --frozen python -m ruff check tools/cyber_live_usb.py tests/cyber/test_live_usb_tool.py` -> `All checks passed!`.
+- `scripts/run_tests.sh tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/hermes_cli/test_tools_config.py tests/gateway/test_stream_consumer.py tests/hermes_cli/test_tui_npm_install.py tests/hermes_cli/test_update_zip_atomic_replace.py tests/plugins/test_kanban_dashboard_plugin.py` -> `359 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` summary -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, `local_runtime_health_ok: true`.
+- `scripts/agentcyber hermes tools list | grep -Ei 'cyber|live_usb'` -> `cyber` enabled and `live_usb` disabled.
+- `python scripts/check-windows-footguns.py --all` -> `No Windows footguns found (686 file(s) scanned)`.
+- `git diff --check && git diff --cached --check` -> passed with no output.
+- Subagent upstream preservation review: `PASS`.
+- Subagent redaction spec re-review after coverage fixes: `PASS`.
+- Subagent redaction quality review: `APPROVED`; only a future malformed-input hardening idea was noted as non-blocking.
+- Post-verification drift before commit/push: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `67`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `7`.
+
+**Blockers / boundaries**
+
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- Pending at this checkpoint; commit and remote verification will be recorded below after this entry is committed and pushed.
+
+**Next lane**
+
+- Push the updated guarded sync branch if the focused gates remain clean; do not force-push.
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger before taking a new implementation lane.

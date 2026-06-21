@@ -35,6 +35,34 @@ logger = logging.getLogger(__name__)
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "live-usb"
 _APPROVAL_ENV_VAR = "HERMES_AGENTCYBER_LIVE_USB_APPROVAL"
 _APPROVAL_ARG_KEYS = ("operator_approval", "approval_token", "live_usb_approval")
+_SECRET_CLI_FLAGS = frozenset({
+    "--telegram-token",
+    "--model-key",
+    "--operator-approval",
+    "--approval-token",
+    "--live-usb-approval",
+})
+_REDACTED_ARG = "<redacted>"
+
+
+def _redacted_command_for_log(cmd: list[str]) -> list[str]:
+    """Return a copy of ``cmd`` with sensitive flag values redacted for logs."""
+    redacted: list[str] = []
+    redact_next = False
+    for part in cmd:
+        if redact_next:
+            redacted.append(_REDACTED_ARG)
+            redact_next = False
+            continue
+
+        flag, sep, _value = part.partition("=")
+        if flag in _SECRET_CLI_FLAGS:
+            redacted.append(f"{flag}={_REDACTED_ARG}" if sep else part)
+            redact_next = not sep
+            continue
+
+        redacted.append(part)
+    return redacted
 
 
 def _running_as_root() -> bool:
@@ -52,7 +80,7 @@ def _script(name: str) -> str:
 
 def _run(cmd: list[str], timeout: int = 300) -> dict:
     """Run a command, stream output to logger, return {rc, stdout, stderr}."""
-    logger.info("live_usb: running %s", " ".join(cmd))
+    logger.info("live_usb: running %s", " ".join(_redacted_command_for_log(cmd)))
     try:
         result = subprocess.run(
             cmd,

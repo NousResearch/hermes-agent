@@ -2511,6 +2511,15 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Per-chat context injection map.  Path to a JSON file mapping
+        # chat_id strings to context text that is prepended to every
+        # inbound message from that chat.  External tools can update the
+        # file without a gateway restart — the gateway reloads when the
+        # file's mtime changes.  An inline dict is also accepted for
+        # static setups.  Example JSON:
+        #   {"telegram:123456": "This chat is bound to dev-session A.",
+        #    "discord:789": "Customer X — always respond formally."}
+        "channel_context_map": "",
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

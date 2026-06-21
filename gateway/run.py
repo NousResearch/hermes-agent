@@ -2118,6 +2118,60 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+# --- channel_context_map: per-chat context injection -----------------------
+# Module-level cache for the JSON file-backed channel context map.
+# Keyed by (file_path, mtime) so the file is re-read only when it changes.
+_channel_context_map_cache: tuple[float, dict[str, str]] = (0.0, {})
+
+
+def _load_channel_context_map() -> dict[str, str]:
+    """Load the per-chat context map from config.
+
+    Supports two shapes in ``gateway.channel_context_map``:
+    - A **file path** (string) pointing to a JSON file mapping chat_id →
+      context text.  The file is re-read only when its mtime changes.
+    - An **inline dict** for static setups.
+
+    Returns ``{}`` when the key is absent, empty, or on any read error.
+    """
+    global _channel_context_map_cache
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        raw = _load_full_config().get("gateway", {}).get("channel_context_map", "")
+    except Exception:
+        return {}
+
+    if not raw:
+        return {}
+
+    # Inline dict — no file I/O.
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if v}
+
+    # File path — load with mtime cache.
+    if not isinstance(raw, str):
+        return {}
+    path = Path(raw).expanduser()
+    try:
+        st = path.stat()
+    except OSError:
+        return {}
+    cached_mtime, cached_map = _channel_context_map_cache
+    if st.st_mtime == cached_mtime:
+        return cached_map
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        result = {str(k): str(v) for k, v in data.items() if v}
+    except Exception:
+        logger.debug("Failed to load channel_context_map from %s", path)
+        return {}
+    _channel_context_map_cache = (st.st_mtime, result)
+    return result
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -8395,6 +8449,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.
+        # Also inject per-chat context from the channel_context_map config
+        # (adapter context takes precedence; config context is appended).
+        _cc_map = _load_channel_context_map()
+        if _cc_map:
+            _config_ctx = _cc_map.get(source.chat_id, "")
+            if _config_ctx:
+                _existing = getattr(event, "channel_context", None) or ""
+                event.channel_context = (
+                    f"{_existing}\n\n{_config_ctx}" if _existing else _config_ctx
+                )
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 

@@ -1,0 +1,10 @@
+PER-PR v0.17.0 (2bd1977d) re-applicability — 39 feature PRs, net-diff apply check
+=================================================================================
+37 CLEAN + 2 --3way (#50056, #50073 — both with forward-compat/<n>-on-v0.17.0
+branches linked from their PR descriptions) + 0 CONFLICT.
+
+CLEAN: 48024 48057 48065 48069 48101 49184 49449 49644 49915 49916 49917 50021
+       50022 50031 50032 50033 50038 50039 50040 50041 50042 50045 50046 50047
+       50048 50049 50053 50054 50055 50064 50066 50068 50078 50080 50086 50146 50155
+--3way: 50056 50073   (forward-compat branches published + linked)
+CONFLICT: (none)

@@ -67,3 +67,17 @@ cd <repo root, on the overlay HEAD>
 ./reconciliation/reconcile_campaign.sh fork    # fork = your fork remote name
 # expect: RESULT: PASS — 0 unaccounted
 ```
+
+## UPDATE: CMX now has a dedicated PR (#50155)
+
+The CMX grounding-enforcement seam (the `enforce_response` hook in
+conversation_loop) — previously in the `cmx/` deferred category — is now its own
+dedicated draft PR **#50155** `feat(context-engine): post-response grounding-
+enforcement hook` (built on origin/main, 6 tests, ruff clean, applies clean onto
+v0.17.0). So CMX "lives in a separate PR," satisfying the goal for that category.
+
+What remains in the `cmx/` deferred category is only
+`test_cmx_hermes_engine_schemas_are_bare`, which hardcodes the PRIVATE path
+`/mnt/devvm/.../hermes-cmx/src/cmx/hermes_engine.py` and therefore cannot be
+public — it stays deferred (it guards the private cmx engine source, which is a
+separate repo).

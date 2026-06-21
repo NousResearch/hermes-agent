@@ -131,7 +131,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
+        "aiohttp==3.14.1",  # bumped from 3.13.4 to fix GHSA-4fvr-rgm6-gqmc/63hw-fmq6-xxg2/g3cq-j2xw-wf74/hg6j-4rv6-33pg/hpj7-wq8m-9hgp/jg22-mg44-37j8/xcgm-r5h9-7989
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
@@ -156,7 +156,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"),
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -177,8 +177,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "starlette>=1.3.1,<2",  # CVE-2026-48710 (BadHost) fixed in 1.0.1; GHSA-82w8-qh3p-5jfq (form limit bypass) fixed in 1.3.1; GHSA-x746-7m8f-x49c (method dispatch) fixed in 1.1.0 — keep lazy-install in sync with pyproject [web]
+        "python-multipart==0.0.30",  # FastAPI UploadFile/Form for streaming uploads (NS-501); GHSA-5rvq-cxj2-64vf/pp6c-gr5w-3c5g/wp53-j4wj-2cfg/mj87-hwqh-73pj
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback

@@ -171,8 +171,20 @@ class ProcessRegistry:
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
         # Track sessions whose completion was already consumed by the agent
-        # via wait/poll/log.  Drain loops skip notifications for these.
+        # via wait/log.  Drain loops AND gateway/tui watchers skip notifications
+        # for these — a blocking wait() or a full read_log() means the agent
+        # has the output in hand and is acting on it this turn.
         self._completion_consumed: set = set()
+
+        # Track sessions the agent merely *observed* exited via poll().  poll()
+        # is a read-only status check, so it does NOT mark _completion_consumed
+        # (that would let a status check suppress the gateway/tui watcher's
+        # autonomous delivery turn — #10156).  But on the CLI the poll result
+        # is returned inline in the same turn, so the idle/post-turn drain must
+        # still skip the queued completion to avoid a duplicate [SYSTEM: ...]
+        # injection (the bug #8228 originally fixed).  drain_notifications()
+        # consults this set; the gateway/tui watchers deliberately do NOT.
+        self._poll_observed: set = set()
 
         # Global watch-match circuit breaker — across all sessions.
         # Prevents sibling processes from collectively flooding the user even
@@ -911,11 +923,25 @@ class ProcessRegistry:
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
 
+    def _drain_should_skip(self, session_id: str) -> bool:
+        """Whether the CLI drain should skip a completion event for this session.
+
+        Skips when the agent has either truly consumed the output (wait/log →
+        ``_completion_consumed``) or observed the exit inline via poll()
+        (``_poll_observed``).  In both cases the CLI agent already has the
+        result this turn, so injecting a [SYSTEM: ...] completion would be a
+        duplicate (#8228).  The gateway/tui watchers do NOT use this — they
+        check only ``is_completion_consumed`` so a read-only poll never
+        suppresses their autonomous delivery turn (#10156).
+        """
+        return session_id in self._completion_consumed or session_id in self._poll_observed
+
     def drain_notifications(self) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
-        Skips completion events that were already consumed via wait/poll/log.
+        Skips completion events the agent already consumed via wait/log or
+        observed inline via poll() (see ``_drain_should_skip``).
         """
         results = []
         while not self.completion_queue.empty():
@@ -924,7 +950,7 @@ class ProcessRegistry:
             except Exception:
                 break
             _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self.is_completion_consumed(_evt_sid):
+            if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
                 continue
             text = format_process_notification(evt)
             if text:
@@ -1043,6 +1069,12 @@ class ProcessRegistry:
             # represent actual output consumption and do mark it. Marking
             # consumed here would let a status check silently suppress the
             # notify_on_complete watcher's autonomous delivery turn (#10156).
+            #
+            # We DO record it in _poll_observed so the CLI's inline drain still
+            # dedups (the agent already saw the exit in this turn's poll result)
+            # without affecting the gateway/tui watchers, which only consult
+            # _completion_consumed.
+            self._poll_observed.add(session_id)
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"
@@ -1398,6 +1430,7 @@ class ProcessRegistry:
         for sid in expired:
             del self._finished[sid]
             self._completion_consumed.discard(sid)
+            self._poll_observed.discard(sid)
 
         # If still over limit, remove oldest finished
         total = len(self._running) + len(self._finished)
@@ -1405,14 +1438,19 @@ class ProcessRegistry:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
             self._completion_consumed.discard(oldest_id)
+            self._poll_observed.discard(oldest_id)
 
-        # Drop any _completion_consumed entries whose sessions are no longer
-        # tracked at all — belt-and-suspenders against module-lifetime growth
-        # on process-registry lookup paths that don't reach the dict prunes.
+        # Drop any _completion_consumed / _poll_observed entries whose sessions
+        # are no longer tracked at all — belt-and-suspenders against
+        # module-lifetime growth on registry lookup paths that don't reach the
+        # dict prunes.
         tracked = self._running.keys() | self._finished.keys()
         stale = self._completion_consumed - tracked
         if stale:
             self._completion_consumed -= stale
+        stale_polls = self._poll_observed - tracked
+        if stale_polls:
+            self._poll_observed -= stale_polls
 
     # ----- Checkpoint (crash recovery) -----
 

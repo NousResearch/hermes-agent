@@ -23,7 +23,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error
+from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -1519,7 +1519,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
+            # Compression is atomic: protect the in-flight summary call from a
+            # mid-turn gateway interrupt. Without this, an incoming user message
+            # aborts the summary and compression falls back to a degraded static
+            # marker, losing the real handoff (#23975). Re-entrant: a main-model
+            # retry (_generate_summary recursion) re-enters harmlessly.
+            with aux_interrupt_protection():
+                response = call_llm(**call_kwargs)
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):

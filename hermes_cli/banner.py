@@ -192,8 +192,49 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _current_git_branch(repo_dir: Path) -> Optional[str]:
+    """Return the current git branch, if HEAD is on a branch."""
+    return _git_stdout(["branch", "--show-current"], cwd=repo_dir)
+
+
+def _current_exact_tag(repo_dir: Path) -> Optional[str]:
+    """Return the exact tag for HEAD, if the checkout is on a release tag."""
+    return _git_stdout(["describe", "--tags", "--exact-match", "HEAD"], cwd=repo_dir)
+
+
+def _git_update_cache_key(repo_dir: Optional[Path]) -> Optional[str]:
+    """Return a cache key that changes across branch, tag, and commit changes."""
+    if repo_dir is None:
+        return None
+
+    head = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+    branch = _current_git_branch(repo_dir)
+    tag = _current_exact_tag(repo_dir)
+
+    if tag:
+        return f"tag:{tag}:{head}"
+    if branch:
+        return f"branch:{branch}:{head}"
+    if head:
+        return f"detached:{head}"
+
+    return None
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
+
+    # Release-tag checkouts are intentionally behind main.
+    # Do not show the generic banner because it is confusing.
+    if _current_exact_tag(repo_dir):
+        return None
+
+    # Feature branches may be behind main by design.
+    # Avoid showing a generic update warning in `hermes version`.
+    current_branch = _current_git_branch(repo_dir)
+    if current_branch != "main":
+        return None
+
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
@@ -202,22 +243,26 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
             cwd=str(repo_dir),
         )
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        pass
 
     try:
         result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
         pass
+
     return None
 
 
@@ -277,6 +322,12 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir_for_cache = None
+    git_cache_key = None
+
+    if not embedded_rev:
+        repo_dir_for_cache = _resolve_repo_dir()
+        git_cache_key = _git_update_cache_key(repo_dir_for_cache)
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
@@ -310,6 +361,7 @@ def check_for_updates() -> Optional[int]:
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
+                and cached.get("git") == git_cache_key
             ):
                 return cached.get("behind")
     except Exception:
@@ -331,7 +383,15 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "rev": embedded_rev,
+                    "ver": VERSION,
+                    "git": git_cache_key,
+                }
+            )
         )
     except Exception:
         pass

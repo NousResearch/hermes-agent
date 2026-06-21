@@ -7900,6 +7900,42 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _current_git_branch(git_cmd: list[str], cwd: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            git_cmd + ["branch", "--show-current"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    branch = (result.stdout or "").strip()
+    return branch or None
+
+
+def _current_git_exact_tag(git_cmd: list[str], cwd: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            git_cmd + ["describe", "--tags", "--exact-match", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    tag = (result.stdout or "").strip()
+    return tag or None
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -8026,10 +8062,28 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print("✓ Already up to date.")
     else:
         commits_word = "commit" if behind == 1 else "commits"
-        print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
+        current_tag = _current_git_exact_tag(git_cmd, PROJECT_ROOT)
+        current_branch = _current_git_branch(git_cmd, PROJECT_ROOT)
+
         from hermes_cli.config import recommended_update_command
 
-        print(f"  Run '{recommended_update_command()}' to install.")
+        if current_tag:
+            print(f"⚕ Current checkout is release tag {current_tag}.")
+            print(f"  {compare_branch} has {behind} newer {commits_word} than this tag.")
+            print(
+                f"  Run '{recommended_update_command()}' only if you want to switch "
+                f"from the release tag to latest {branch}."
+            )
+        elif current_branch and current_branch != branch:
+            print(f"⚕ Current branch is '{current_branch}'.")
+            print(f"  {compare_branch} has {behind} newer {commits_word}.")
+            print(
+                f"  Run '{recommended_update_command()}' only if you want to switch "
+                f"to latest {branch}."
+            )
+        else:
+            print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
+            print(f"  Run '{recommended_update_command()}' to install.")
 
 
 def _ensure_fhs_path_guard() -> None:

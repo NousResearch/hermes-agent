@@ -562,43 +562,17 @@ class GatewayStreamConsumer:
                             self._fallback_prefix = ""
                         continue
 
-                    # Existing message: edit it with the first chunk, then
-                    # start a new message for the overflow remainder.
-                    while (
-                        _len_fn(self._accumulated) > _safe_limit
-                        and self._message_id is not None
-                        and self._edit_supported
-                    ):
-                        _cp_budget = _custom_unit_to_cp(
-                            self._accumulated, _safe_limit, _len_fn,
-                        )
-                        split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
-                        chunk = self._accumulated[:split_at]
-                        # finalize=True so the adapter applies platform-specific
-                        # rich-text markup (e.g. Telegram MarkdownV2). This
-                        # sealed chunk will never be edited again — _message_id
-                        # is reset to None right below — so it must receive its
-                        # final formatting pass now, or early split messages
-                        # render raw markdown while only the last chunk renders.
-                        # is_turn_final=False: this is the first of several split
-                        # messages, NOT the turn-final answer, so the fresh-final
-                        # path (opt-in fresh_final_after_seconds) must not mark
-                        # the turn delivered on it (#29346 semantics).
-                        ok = await self._send_or_edit(
-                            chunk, finalize=True, is_turn_final=False,
-                        )
-                        if self._fallback_final_send or not ok:
-                            # Edit failed (or backed off due to flood control)
-                            # while attempting to split an oversized message.
-                            # Keep the full accumulated text intact so the
-                            # fallback final-send path can deliver the remaining
-                            # continuation without dropping content.
-                            break
-                        self._accumulated = self._accumulated[split_at:].lstrip("\n")
-                        self._message_id = None
-                        self._last_sent_text = ""
+                    # REMOVED: Manual overflow split loop (lines 529-563).
+                    # This caused double-splitting: stream consumer split at one
+                    # boundary, then adapter.split (in _edit_overflow_split) split
+                    # again at a different boundary due to MarkdownV2 escaping
+                    # overhead. Result: content vanished between the two split points.
+                    #
+                    # Fix: Let adapter.edit_message() handle overflow via its
+                    # existing _edit_overflow_split() logic. It uses the same
+                    # truncate_message() helper as the non-streaming path and
+                    # correctly accounts for formatting overhead.
+                    pass
 
                     display_text = self._accumulated
                     if not got_done and not got_segment_break and commentary_text is None:
@@ -852,7 +826,7 @@ class GatewayStreamConsumer:
     async def _send_fallback_final(self, text: str) -> None:
         """Send the final continuation after streaming edits stop working.
 
-        Retries each chunk once on flood-control failures with a short delay.
+        Retries on flood-control failures with a short delay.
         """
         final_text = self._clean_for_display(text)
         continuation = self._continuation_text(final_text)
@@ -895,96 +869,75 @@ class GatewayStreamConsumer:
                 self._final_content_delivered = True
                 return
 
-        raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _len_fn: "Callable[[str], int]" = (
-            self.adapter.message_len_fn
-            if isinstance(self.adapter, _BasePlatformAdapter)
-            else len
-        )
-        safe_limit = max(500, raw_limit - 100)
-        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
-
-        stale_message_id = self._message_id  # partial message to clean up
-        last_message_id: Optional[str] = None
-        last_successful_chunk = ""
-        sent_any_chunk = False
-        for chunk in chunks:
-            # Try sending with one retry on flood-control errors.
-            result = None
-            for attempt in range(2):
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=chunk,
-                    metadata=self._metadata_for_send(final=True),
+        # FIX: Don't pre-split with _split_text_chunks (manual logic that
+        # double-splits with adapter.truncate_message). Instead, call
+        # adapter.send() ONCE with the full continuation — the adapter's
+        # send() method calls truncate_message() internally with the correct
+        # formatting-aware logic. This ensures single, coordinated splitting.
+        #
+        # Uses upstream's _metadata_for_send for Mattermost/Telegram
+        # metadata correctness. We still retry on flood control per the
+        # original logic.
+        result = None
+        for attempt in range(2):
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=continuation,
+                metadata=self._metadata_for_send(final=True),
+            )
+            if result.success:
+                break
+            if attempt == 0 and self._is_flood_error(result):
+                logger.debug(
+                    "Flood control on fallback send, retrying in 3s"
                 )
-                if result.success:
-                    break
-                if attempt == 0 and self._is_flood_error(result):
-                    logger.debug(
-                        "Flood control on fallback send, retrying in 3s"
-                    )
-                    await asyncio.sleep(3.0)
-                else:
-                    break  # non-flood error or second attempt failed
+                await asyncio.sleep(3.0)
+            else:
+                break  # non-flood error or second attempt failed
 
-            if not result or not result.success:
-                if sent_any_chunk:
-                    # Some continuation text already reached the user, but not
-                    # the full response. Do NOT set _final_response_sent — the
-                    # base gateway final-send path should still deliver the
-                    # complete response so the user gets the full answer.
-                    # Suppress only _already_sent to avoid a duplicate send
-                    # of the same partial content.
-                    self._already_sent = True
-                    self._message_id = last_message_id
-                    self._last_sent_text = last_successful_chunk
-                    self._fallback_prefix = ""
-                    return
-                # No fallback chunk reached the user — allow the normal gateway
-                # final-send path to try one more time.
-                self._already_sent = False
-                self._message_id = None
-                self._last_sent_text = ""
-                self._fallback_prefix = ""
-                return
-            sent_any_chunk = True
-            last_successful_chunk = chunk
-            last_message_id = result.message_id or last_message_id
-            # Each fallback chunk is a fresh platform message — notify
-            # so any stale tool-progress bubble gets closed off.
-            self._notify_new_message()
+        if not result or not result.success:
+            # Fallback send failed — allow the normal gateway final-send
+            # path to try one more time.
+            self._already_sent = False
+            self._message_id = None
+            self._last_sent_text = ""
+            self._fallback_prefix = ""
+            return
+
+        # Successful fallback send. The adapter may have split the
+        # continuation into multiple messages (result.continuation_message_ids).
+        # Use the last message ID for subsequent tracking.
+        self._notify_new_message()
 
         # Remove the frozen partial message so the user only sees the
-        # complete fallback response.  ONLY safe when the fallback re-sent
-        # the FULL final text (continuation == final_text).  When the
-        # prefix-based dedup above sent only the missing TAIL, the partial
-        # message IS the head of the answer — deleting it leaves the user
-        # with only the last part of the response (the "Gemini sent only
-        # the second half" symptom).  Best-effort — if the platform doesn't
-        # implement ``delete_message``, the delete fails (flood control still
-        # active, bot lacks permission, message too old to delete), the
-        # partial remains but at least the full answer was delivered.
+        # final continuation.  Only attempt deletion if we had a real
+        # message ID and the content changed (i.e. not a duplicate edit).
         if (
-            stale_message_id
-            and stale_message_id != last_message_id
-            and not self._fallback_preserve_partial_messages
+            self._message_id
+            and self._message_id != "stale"
             and continuation == final_text
         ):
             delete_fn = getattr(self.adapter, "delete_message", None)
             if delete_fn is not None:
                 try:
-                    await delete_fn(self.chat_id, stale_message_id)
+                    await delete_fn(self.chat_id, self._message_id)
                 except Exception as e:
                     logger.debug(
                         "Fallback partial cleanup failed (%s): %s",
-                        stale_message_id, e,
+                        self._message_id, e,
                     )
 
+        # Track the last message ID from the adapter's result
+        last_message_id = (
+            result.continuation_message_ids[-1]
+            if getattr(result, "continuation_message_ids", None)
+            else result.message_id
+        )
         self._message_id = last_message_id
         self._already_sent = True
         self._final_response_sent = True
         self._final_content_delivered = True
-        self._last_sent_text = chunks[-1]
+        self._last_sent_text = continuation
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
 

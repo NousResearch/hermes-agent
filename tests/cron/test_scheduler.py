@@ -788,6 +788,98 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
+    def test_live_ntfy_explicit_target_uses_chat_id_as_publish_topic(self):
+        """Cron live-adapter ntfy delivery should honor explicit topics."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        ntfy = Platform("ntfy")
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {ntfy: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "ntfy-explicit",
+            "deliver": "ntfy:alerts-channel",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello ntfy",
+                adapters={ntfy: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        adapter.send.assert_called_once_with(
+            "alerts-channel",
+            "Hello ntfy",
+            metadata={"publish_topic": "alerts-channel"},
+        )
+
+    def test_live_ntfy_home_target_uses_home_channel_as_publish_topic(self, monkeypatch):
+        """Cron live-adapter ntfy home delivery should match standalone routing."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        monkeypatch.setenv("NTFY_HOME_CHANNEL", "ops-home")
+
+        ntfy = Platform("ntfy")
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {ntfy: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "ntfy-home",
+            "deliver": "ntfy",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Home hello",
+                adapters={ntfy: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        adapter.send.assert_called_once_with(
+            "ops-home",
+            "Home hello",
+            metadata={"publish_topic": "ops-home"},
+        )
+
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform

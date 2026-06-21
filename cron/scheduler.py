@@ -710,6 +710,20 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _live_delivery_metadata(
+    platform_name: str,
+    chat_id: str,
+    thread_id: Optional[str],
+) -> Optional[dict]:
+    """Metadata needed to make live adapter delivery match standalone delivery."""
+    metadata = {}
+    if thread_id:
+        metadata["thread_id"] = thread_id
+    if platform_name.lower() == "ntfy" and chat_id:
+        metadata["publish_topic"] = chat_id
+    return metadata or None
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -812,7 +826,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivered = False
         target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = _live_delivery_metadata(platform_name, chat_id, thread_id)
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()

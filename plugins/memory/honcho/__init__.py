@@ -191,6 +191,15 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
+    _CACHE_BUSTING_KEYS = (
+        "honcho.peer_name",
+        "honcho.ai_peer",
+        "honcho.pin_peer_name",
+        "honcho.runtime_peer_prefix",
+        "honcho.user_peer_aliases",
+    )
+    _CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+
     def __init__(self):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
@@ -248,6 +257,45 @@ class HonchoMemoryProvider(MemoryProvider):
             return cfg.enabled and bool(cfg.api_key or cfg.base_url)
         except Exception:
             return False
+
+    @classmethod
+    def _empty_cache_busting_signature(cls) -> dict[str, Any]:
+        return {key: None for key in cls._CACHE_BUSTING_KEYS}
+
+    def cache_busting_signature(self) -> dict[str, Any]:
+        """Return Honcho identity config that should bust cached agents.
+
+        ``HonchoSessionManager`` freezes peer identity mapping at provider
+        initialization time.  Gateway cache keys therefore need to change when
+        the active ``honcho.json`` identity fields change, but core gateway
+        code should not know the Honcho config shape.
+        """
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+
+            path = resolve_config_path()
+            try:
+                mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = None
+            memo_key = (str(path), mtime_ns)
+            cached = self.__class__._CACHE_BUSTING_MEMO.get(memo_key)
+            if cached is not None:
+                return dict(cached)
+
+            hcfg = HonchoClientConfig.from_global_config(config_path=path)
+            aliases = hcfg.user_peer_aliases or {}
+            values = {
+                "honcho.peer_name": hcfg.peer_name,
+                "honcho.ai_peer": hcfg.ai_peer,
+                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
+                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
+                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
+            }
+            self.__class__._CACHE_BUSTING_MEMO = {memo_key: values}
+            return dict(values)
+        except Exception:
+            return self._empty_cache_busting_signature()
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/honcho.json (Honcho SDK native format)."""

@@ -26,6 +26,7 @@ Optional hooks (override to opt in):
   on_session_end(messages)               — end-of-session extraction
   on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
   on_pre_compress(messages) -> str       — extract before context compression
+  cache_busting_signature() -> dict | None — values that invalidate cached agents
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
 """
@@ -152,6 +153,16 @@ class MemoryProvider(ABC):
         """Clean shutdown — flush queues, close connections."""
 
     # -- Optional hooks (override to opt in) ---------------------------------
+
+    def cache_busting_signature(self) -> Optional[Dict[str, Any]]:
+        """Return provider-specific values that should invalidate cached agents.
+
+        Gateway agents are cached across messages.  Providers that freeze
+        external config at initialization time can return a small, stable dict
+        of config-derived values here so cache keys change when those values do.
+        The default is no provider-specific cache busting.
+        """
+        return None
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Called at the start of each turn with the user message.

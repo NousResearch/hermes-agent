@@ -833,48 +833,54 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
 
 
 def _format_edges(skill_name: str) -> str:
-    """Query edges and term associations for a node and return formatted string."""
+    """Query and format graph edges only."""
     try:
         conn = _ensure_graph()
-        parts = []
-
-        # 1. Graph edges (skill-to-skill relationships)
         rows = conn.execute(
             """SELECT source, target, rel_type, properties FROM skill_edges
                WHERE source = ? OR target = ?
                ORDER BY rel_type, source""",
             (skill_name, skill_name),
         ).fetchall()
-        if rows:
-            seen: set[tuple[str, str, str]] = set()
-            edge_lines = ["", "  Graph edges:"]
-            for src, tgt, rel, props in rows:
-                key = (src, tgt, rel)
-                if key in seen:
-                    continue
-                seen.add(key)
-                direction = f"    {src} ──({rel})──> {tgt}"
-                reason = ""
-                if isinstance(props, str) and props:
-                    import json as _j
-                    try:
-                        p = _j.loads(props)
-                        reason = p.get("reason", "")
-                    except Exception:
-                        reason = props[:40]
-                elif isinstance(props, dict):
-                    reason = props.get("reason", "")
-                if reason:
-                    edge_lines.append(f"{direction:55s} {reason[:50]}")
-                else:
-                    edge_lines.append(direction)
-            parts.append("\n".join(edge_lines))
+        if not rows:
+            return ""
+        seen: set[tuple[str, str, str]] = set()
+        parts = []
+        for src, tgt, rel, props in rows:
+            key = (src, tgt, rel)
+            if key in seen:
+                continue
+            seen.add(key)
+            arrow = f"  {src} ──({rel})──> {tgt}"
+            reason = ""
+            if isinstance(props, str) and props:
+                import json as _j
+                try:
+                    reason = _j.loads(props).get("reason", "")
+                except Exception:
+                    reason = props[:40]
+            elif isinstance(props, dict):
+                reason = props.get("reason", "")
+            if reason:
+                parts.append(f"{arrow:55s} {reason[:50]}")
+            else:
+                parts.append(arrow)
+        return "Edges:\n" + "\n".join(parts) + "\n"
+    except Exception:
+        return ""
 
-        # 2. Term associations with stats
-        # Skill's own terms — query stats inline
+
+def _format_terms(skill_name: str) -> str:
+    """Query and format term associations with inline stats."""
+    try:
+        conn = _ensure_graph()
+        parts = []
+
+        # Skill's own terms
         terms = conn.execute(
             "SELECT t.term, t.strength, t.source, "
-            "COALESCE(s.search_count,0) AS sc, COALESCE(s.load_count,0) AS lc, COALESCE(s.success_count,0) AS suc "
+            "COALESCE(s.search_count,0) AS sc, COALESCE(s.load_count,0) AS lc, "
+            "COALESCE(s.success_count,0) AS suc "
             "FROM skill_terms t "
             "LEFT JOIN skill_term_stats s ON t.skill_name = s.skill_name AND t.term = s.term "
             "WHERE t.skill_name = ? ORDER BY t.strength DESC, t.source",
@@ -885,23 +891,24 @@ def _format_edges(skill_name: str) -> str:
             for t in terms:
                 stats = f"s={t['sc']}/l={t['lc']}/ok={t['suc']}"
                 term_lines.append(
-                    f"    {skill_name} ──({t['source']})──> {t['term']}  [strength={t['strength']}, {stats}]"
+                    f"    {skill_name} ──({t['source']})──> {t['term']}  [{stats}]"
                 )
             parts.append("\n".join(term_lines))
 
-        # Skills that have this term (reverse lookup)
-        skills_with_term = conn.execute(
+        # Reverse lookup
+        rev = conn.execute(
             "SELECT t.skill_name, t.strength, t.source, "
-            "COALESCE(s.search_count,0) AS sc, COALESCE(s.load_count,0) AS lc, COALESCE(s.success_count,0) AS suc "
+            "COALESCE(s.search_count,0) AS sc, COALESCE(s.load_count,0) AS lc, "
+            "COALESCE(s.success_count,0) AS suc "
             "FROM skill_terms t "
             "LEFT JOIN skill_term_stats s ON t.skill_name = s.skill_name AND t.term = s.term "
             "WHERE t.term = ? ORDER BY t.strength DESC",
             (skill_name,),
         ).fetchall()
-        if skills_with_term:
+        if rev:
             rev_lines = ["", "  Skills with this term:"]
-            for sn, s, src, sc, lc, suc in skills_with_term:
-                rev_lines.append(f"    {sn:40s} ──({src})──> {skill_name}  [strength={s}, s={sc}/l={lc}/ok={suc}]")
+            for sn, s, src, sc, lc, suc in rev:
+                rev_lines.append(f"    {sn:40s} ──({src})──> {skill_name}  [s={sc}/l={lc}/ok={suc}]")
             parts.append("\n".join(rev_lines))
 
         return "\n".join(parts) if parts else ""
@@ -941,10 +948,10 @@ def _handle_slash_command(args: str) -> str | None:
         except Exception as e:
             return f"Load failed: {e}"
 
-    elif subcmd in ("show", "detail", "info"):
-        """Show skill metadata, edges, and term associations."""
+    elif subcmd == "show":
+        """Show skill metadata and term associations."""
         if not rest:
-            return "Usage: /skill-graph show|detail|info <skill-name>"
+            return "Usage: /skill-graph show <skill-name>"
         try:
             conn = _ensure_graph()
             node = conn.execute(
@@ -952,14 +959,45 @@ def _handle_slash_command(args: str) -> str | None:
                 (rest,),
             ).fetchone()
             if not node:
-                return f"Not found: {rest}  (try /sg list to see available skills)"
+                return f"Not found: {rest}  (try /sg list)"
             return "\n".join([
                 f"Node: {node['name']}",
                 f"  Category:    {node['category'] or ''}",
                 f"  Description: {node['description'] or ''}",
                 f"  Tags:        {node['tags'] or ''}",
                 f"  Path:        {node['file_path'] or ''}",
-            ]) + _format_edges(rest)
+            ]) + _format_terms(rest)
+        except Exception as e:
+            return f"Show failed: {e}"
+
+    elif subcmd in ("relations", "rels"):
+        """Show graph edges with counts and boost."""
+        if not rest:
+            return "Usage: /skill-graph relations <skill-name>"
+        try:
+            return _format_edges(rest)
+        except Exception as e:
+            return f"Relations failed: {e}"
+
+    elif subcmd in ("detail", "info"):
+        """Show all info: metadata + edges + terms."""
+        if not rest:
+            return "Usage: /skill-graph detail|info <skill-name>"
+        try:
+            conn = _ensure_graph()
+            node = conn.execute(
+                "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE name = ?",
+                (rest,),
+            ).fetchone()
+            if not node:
+                return f"Not found: {rest}  (try /sg list)"
+            return "\n".join([
+                f"Node: {node['name']}",
+                f"  Category:    {node['category'] or ''}",
+                f"  Description: {node['description'] or ''}",
+                f"  Tags:        {node['tags'] or ''}",
+                f"  Path:        {node['file_path'] or ''}",
+            ]) + _format_edges(rest) + _format_terms(rest)
         except Exception as e:
             return f"Show failed: {e}"
 
@@ -1102,7 +1140,9 @@ def _handle_slash_command(args: str) -> str | None:
             "Subcommands:\n"
             "  /skill-graph search <query>   Search skills by intent\n"
             "  /skill-graph load <name>      Load skill content (for agent use)\n"
-            "  /skill-graph show|detail <name> Show metadata, edges, and terms\n"
+            "  /skill-graph show <name>      Show metadata and terms with stats\n"
+            "  /skill-graph relations|rels <name> Show graph edges\n"
+            "  /skill-graph detail|info <name> Show all metadata, edges, and terms\n"
             "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
             "  /skill-graph list             List all skills in graph\n"
             "  /skill-graph config           Show configuration (paths, DB)\n"

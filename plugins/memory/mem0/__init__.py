@@ -279,13 +279,25 @@ SEARCH_SCHEMA = {
 CONCLUDE_SCHEMA = {
     "name": "mem0_conclude",
     "description": (
-        "Store a durable fact about the user. Stored verbatim (no LLM extraction). "
-        "Use for explicit preferences, corrections, or decisions."
+        "Deliberately store ONE durable fact about the user or their stable environment, "
+        "verbatim (no LLM extraction). This is the PRIMARY way memories get saved — auto-capture "
+        "is off, so a fact is only remembered across sessions if you call this. Save proactively "
+        "the moment you learn something durable; do not wait to be asked.\n"
+        "SAVE when you learn: a preference or taste; a standing decision or directive; a correction "
+        "to something previously believed; an account / device / service / credential pointer "
+        "(not the secret itself); durable environment or topology (hosts, IPs, paths, tools, how "
+        "things are wired); a long-lived plan, goal, or constraint. One fact per call; phrase it as "
+        "a standalone declarative fact that will still make sense months from now.\n"
+        "Do NOT save: work-narration or what you did this turn (built, ran, tested, committed, "
+        "pushed, deployed, verified, reviewed); status / progress / ETA / cost / token counts; "
+        "PR / issue / commit / SHA / phase-done / task-state; transient state that will be stale in "
+        "a week; anything already obvious from a stable doc. When in doubt between a durable user "
+        "fact and session exhaust, save the fact and skip the exhaust."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "conclusion": {"type": "string", "description": "The fact to store."},
+            "conclusion": {"type": "string", "description": "The single durable fact to store, as a standalone declarative sentence."},
         },
         "required": ["conclusion"],
     },
@@ -600,8 +612,12 @@ class Mem0MemoryProvider(MemoryProvider):
         return (
             "# Mem0 Memory\n"
             f"Active. User: {self._user_id}.\n"
-            "Use mem0_search to find memories, mem0_conclude to store facts, "
-            "mem0_profile for a full overview."
+            "Recall with mem0_search; mem0_profile for an overview. Auto-capture is OFF, so "
+            "memories persist across sessions ONLY when you deliberately save them with "
+            "mem0_conclude. When you learn something durable about the user or their environment "
+            "— a preference, a standing decision or correction, an account/device/topology fact, a "
+            "long-lived plan or constraint — save it with mem0_conclude in that turn, proactively, "
+            "without being asked. Do NOT save work-narration, status, or transient state."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:

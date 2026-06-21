@@ -551,9 +551,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
-    p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
+    p_block.add_argument("reason", nargs="*",
+                         help="Reason (also appended as a comment)")
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
+
+    p_review = sub.add_parser(
+        "request-review",
+        help="Submit a running task for review (running → review)",
+    )
+    p_review.add_argument("task_id")
+    p_review.add_argument("--reviewer", default=None,
+                          help="Profile to assign as reviewer (default: same assignee)")
+    p_review.add_argument("--summary", default=None,
+                          help="Structured handoff for the reviewer")
+    p_review.add_argument("--metadata", default=None,
+                          help='JSON dict of structured facts (e.g. \'{"changed_files": [...]\')')
+    p_review.add_argument("reason", nargs="*",
+                          help="Optional short note for the event log")
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -939,6 +954,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "request-review": _cmd_request_review,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
@@ -1958,6 +1974,42 @@ def _cmd_block(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_request_review(args: argparse.Namespace) -> int:
+    """Submit a running task for review (running → review)."""
+    summary = getattr(args, "summary", None)
+    reviewer = getattr(args, "reviewer", None)
+    raw_meta = getattr(args, "metadata", None)
+    reason = " ".join(args.reason).strip() if args.reason else None
+    metadata = None
+    if raw_meta:
+        try:
+            metadata = json.loads(raw_meta)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    with kb.connect_closing() as conn:
+        ok = kb.request_review(
+            conn,
+            args.task_id,
+            reviewer=reviewer,
+            summary=summary,
+            metadata=metadata,
+            reason=reason,
+            expected_run_id=_worker_run_id_for(args.task_id),
+        )
+    if not ok:
+        print(
+            f"cannot submit {args.task_id} for review "
+            f"(unknown id, not running, or already terminal)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Submitted {args.task_id} for review")
+    return 0
+
+
 def _cmd_schedule(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
@@ -2403,7 +2455,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in ("triage", "todo", "scheduled", "ready", "running", "review", "blocked", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")

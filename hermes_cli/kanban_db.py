@@ -4127,6 +4127,224 @@ def edit_completed_task_result(
     return True
 
 
+def request_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reviewer: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Transition ``running -> review`` so the dispatcher can spawn a reviewer.
+
+    Closes the implementer's current run with outcome ``review_requested``
+    and releases the claim lock so the dispatcher can pick it up for the
+    review phase.  If ``reviewer`` is provided and differs from the current
+    assignee, the task is reassigned to that profile and the original
+    implementer is recorded in the event payload for the reject path
+    (reviewer can route changes back to the implementer without a manual
+    reassignment lookup).
+
+    ``summary`` and ``metadata`` follow the same semantics as
+    :func:`complete_task` — structured handoff for the reviewer agent.
+    ``reason`` is a short free-form note forwarded to the event payload
+    (kept separate from ``summary`` so dashboards can show it without
+    parsing the handoff).
+    """
+    now = int(time.time())
+
+    # Capture the implementer before any reassignment so we can record
+    # it for the reject path.
+    row = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    implementer = row["assignee"]
+
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'review',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                       """ + (", assignee = ?" if reviewer else "") + """
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """,
+                (reviewer, task_id) if reviewer else (task_id,),
+            )
+        else:
+            base_sql = """
+                UPDATE tasks
+                   SET status       = 'review',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                """
+            if reviewer:
+                base_sql += ", assignee = ?"
+            base_sql += """
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                   AND current_run_id = ?
+                """
+            cur = conn.execute(
+                base_sql,
+                (reviewer, task_id, int(expected_run_id))
+                if reviewer
+                else (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn, task_id,
+            outcome="review_requested", status="review",
+            summary=summary if summary is not None else reason,
+            metadata=metadata,
+        )
+        if run_id is None and (summary or metadata or reason):
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="review_requested",
+                summary=summary if summary is not None else reason,
+                metadata=metadata,
+            )
+        event_payload: dict = {
+            "reason": reason,
+            "summary": (summary or "")[:400] or None,
+        }
+        if reviewer and reviewer != implementer:
+            event_payload["reviewer"] = reviewer
+            event_payload["implementer"] = implementer
+        _append_event(
+            conn, task_id, "review_requested",
+            event_payload,
+            run_id=run_id,
+        )
+    return True
+
+
+def request_changes(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    expected_run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str]]:
+    """Transition ``running → ready`` after a reviewer rejects the work.
+
+    Looks up the most recent ``review_requested`` event to find the
+    original implementer and reassigns the task back to them.  Closes
+    the reviewer's run with outcome ``changes_requested`` and emits a
+    ``changes_requested`` event carrying the reviewer's reason.
+
+    Returns ``(True, implementer)`` on success and ``(False, reason)``
+    on failure (task not running, no prior review, etc.).
+    """
+    # Find the implementer from the most recent review_requested event.
+    ev_row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not ev_row:
+        return False, "no prior review_requested event for this task"
+
+    implementer: Optional[str] = None
+    try:
+        payload = json.loads(ev_row["payload"]) if ev_row["payload"] else {}
+        implementer = payload.get("implementer")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    with write_txn(conn):
+        # Transition running → ready.  Reassign to the implementer if
+        # we found one; otherwise keep the current assignee (same-profile
+        # self-review case).
+        if implementer:
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           assignee     = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                    """,
+                    (implementer, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           assignee     = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                       AND current_run_id = ?
+                    """,
+                    (implementer, task_id, int(expected_run_id)),
+                )
+        else:
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                    """,
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status = 'running'
+                       AND current_run_id = ?
+                    """,
+                    (task_id, int(expected_run_id)),
+                )
+        if cur.rowcount != 1:
+            return False, "task is not running (or run_id mismatch)"
+
+        # Close the reviewer's run.
+        run_id = _end_run(
+            conn, task_id,
+            outcome="changes_requested", status="ready",
+            summary=reason,
+        )
+        _append_event(
+            conn, task_id, "changes_requested",
+            {"reason": reason, "implementer": implementer},
+            run_id=run_id,
+        )
+    # Wipe the failure counter so the respawned implementer starts fresh.
+    _clear_failure_counter(conn, task_id)
+    return True, implementer
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6710,12 +6928,26 @@ def dispatch_once(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load sdlc-review skill for review agents.  The
-        # _default_spawn function already auto-loads kanban-worker, and
-        # appends task.skills via --skills.  Setting task.skills here
-        # means the review agent gets both kanban-worker (lifecycle)
-        # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
+        # Load the review skill for review agents. The _default_spawn
+        # function already auto-loads kanban-worker, and appends
+        # task.skills via --skills. The review skill is configurable
+        # via ``kanban.review_skill`` (default: ``sdlc-review``). If
+        # the configured skill does not exist on this install, we
+        # still dispatch — the KANBAN_GUIDANCE lifecycle instructions
+        # are sufficient for basic approve/reject, and the operator
+        # can install the skill later.
+        review_skill = "sdlc-review"
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config().get("kanban") or {}
+            _rs = (_cfg.get("review_skill") or "").strip()
+            if _rs:
+                review_skill = _rs
+        except Exception:
+            pass
+        claimed.skills = [review_skill] if _kanban_worker_skill_available(
+            os.environ.get("HERMES_HOME")
+        ) else []
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect

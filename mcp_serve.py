@@ -349,7 +349,10 @@ class EventBridge:
         Uses mtime checks on sessions.json and state.db to skip work
         when nothing has changed — makes 200ms polling essentially free.
         """
-        # Check if sessions.json has changed (mtime check is ~1μs)
+        # Check if sessions.json has changed (mtime check is ~1μs).
+        # Capture the previously-seen mtime *before* refreshing the cache so the
+        # skip guard below can still tell whether sessions.json changed this tick.
+        prev_sessions_json_mtime = self._sessions_json_mtime
         sessions_file = _get_sessions_dir() / "sessions.json"
         try:
             sj_mtime = sessions_file.stat().st_mtime if sessions_file.exists() else 0.0
@@ -372,7 +375,16 @@ class EventBridge:
         except OSError:
             db_mtime = 0.0
 
-        if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
+        # Skip only when NEITHER file changed since the last poll. Comparing
+        # against ``prev_sessions_json_mtime`` (not the freshly-stored
+        # ``self._sessions_json_mtime``) is essential: the latter was just set to
+        # ``sj_mtime`` above, so using it would make the sessions.json term
+        # always true and collapse the guard to a db-only check. That would
+        # discard a tick where only sessions.json changed — e.g. a brand-new
+        # conversation registered after its first message already landed in
+        # state.db on an earlier tick — and the new chat's messages would never
+        # be emitted until state.db happened to change again.
+        if db_mtime == self._state_db_mtime and sj_mtime == prev_sessions_json_mtime:
             return  # Nothing changed since last poll — skip entirely
 
         self._state_db_mtime = db_mtime

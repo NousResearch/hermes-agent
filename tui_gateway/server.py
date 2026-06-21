@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -9079,6 +9080,96 @@ _FUZZY_FALLBACK_EXCLUDES = frozenset(
 _fuzzy_cache_lock = threading.Lock()
 _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 
+# Symbol index for `@symbol:` completion. Cached per-root with a longer TTL than
+# the file list (symbol scans are heavier). Each entry: (name, kind, relpath).
+_SYMBOL_CACHE_TTL_S = 15.0
+_SYMBOL_MAX_FILES = 4000
+_SYMBOL_MAX_RESULTS = 4000
+_symbol_cache_lock = threading.Lock()
+_symbol_cache: dict[str, tuple[float, list[tuple[str, str, str]]]] = {}
+
+# Language-agnostic-ish symbol patterns: definitions of functions / classes /
+# types / methods across common languages. Regex-based (no parser dependency) —
+# a pragmatic mini-ctags. Each pattern's group(1) is the symbol name.
+_SYMBOL_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    # Python
+    ("def", re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)")),
+    ("class", re.compile(r"^\s*class\s+([A-Za-z_]\w*)")),
+    # JS / TS — function decls, classes, exported const arrow fns, TS types
+    ("func", re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)")),
+    ("class", re.compile(r"^\s*(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)")),
+    ("const", re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>")),
+    ("type", re.compile(r"^\s*(?:export\s+)?(?:type|interface)\s+([A-Za-z_$][\w$]*)")),
+    # Go
+    ("func", re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)")),
+    ("type", re.compile(r"^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)")),
+    # Rust
+    ("fn", re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)")),
+    ("struct", re.compile(r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z_]\w*)")),
+    # Ruby
+    ("def", re.compile(r"^\s*def\s+([A-Za-z_]\w*[!?=]?)")),
+    # Java / C# / C++ — best-effort method/type signatures
+    ("type", re.compile(r"^\s*(?:public|private|protected|internal)?\s*(?:static\s+)?(?:final\s+)?(?:class|interface|enum|struct)\s+([A-Za-z_]\w*)")),
+)
+
+_SYMBOL_EXTS = {
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".go", ".rs", ".rb", ".java", ".cs", ".cc", ".cpp", ".cxx",
+    ".h", ".hpp", ".c", ".kt", ".swift", ".php", ".scala",
+}
+
+
+def _scan_symbols(root: str) -> list[tuple[str, str, str]]:
+    """Return ``(name, kind, relpath)`` symbol definitions across the repo.
+
+    Regex-based, bounded, cached per-root. Reuses ``_list_repo_files`` for the
+    file set (so it honours git ignore + the workspace scope), reads only files
+    with a known source extension, and stops at ``_SYMBOL_MAX_RESULTS``.
+    """
+    now = time.monotonic()
+    with _symbol_cache_lock:
+        cached = _symbol_cache.get(root)
+        if cached and now - cached[0] < _SYMBOL_CACHE_TTL_S:
+            return cached[1]
+
+    out: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    files = [f for f in _list_repo_files(root) if os.path.splitext(f)[1].lower() in _SYMBOL_EXTS]
+
+    for rel in files[:_SYMBOL_MAX_FILES]:
+        if len(out) >= _SYMBOL_MAX_RESULTS:
+            break
+        abs_path = os.path.join(root, rel)
+        try:
+            # Bound per-file work: skip very large files, cap lines scanned.
+            if os.path.getsize(abs_path) > 1_500_000:
+                continue
+            with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
+                for i, line in enumerate(fh):
+                    if i > 6000:
+                        break
+                    if len(line) > 400:
+                        continue
+                    for kind, pattern in _SYMBOL_PATTERNS:
+                        m = pattern.match(line)
+                        if m:
+                            name = m.group(1)
+                            key = (name, rel)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            out.append((name, kind, rel))
+                            break
+                    if len(out) >= _SYMBOL_MAX_RESULTS:
+                        break
+        except (OSError, ValueError):
+            continue
+
+    with _symbol_cache_lock:
+        _symbol_cache[root] = (now, out)
+
+    return out
+
 
 def _list_repo_files(root: str) -> list[str]:
     """Return file paths relative to ``root``.
@@ -9243,9 +9334,45 @@ def _(rid, params: dict) -> dict:
                 {"text": "@staged", "display": "@staged", "meta": "staged diff"},
                 {"text": "@file:", "display": "@file:", "meta": "attach file"},
                 {"text": "@folder:", "display": "@folder:", "meta": "attach folder"},
+                {"text": "@symbol:", "display": "@symbol:", "meta": "jump to a symbol"},
                 {"text": "@url:", "display": "@url:", "meta": "fetch url"},
                 {"text": "@git:", "display": "@git:", "meta": "git log"},
             ]
+            return _ok(rid, {"items": items})
+
+        # `@symbol:` — fuzzy search over a regex-scanned symbol index. Picking an
+        # item inserts a `@file:` ref to the symbol's file, so the agent gets the
+        # right file context (reusing the existing ref-resolution path) while the
+        # popover shows symbol names + their location.
+        if is_context and query in {"symbol", "symbols"}:
+            sym_query = ""
+            is_symbol = True
+        elif is_context and query.startswith(("symbol:", "symbols:")):
+            _, _, sym_query = query.partition(":")
+            is_symbol = True
+        else:
+            is_symbol = False
+            sym_query = ""
+
+        if is_symbol:
+            ranked_syms: list[tuple[tuple[int, int], str, str, str]] = []
+            for name, kind, rel in _scan_symbols(root):
+                rank = _fuzzy_basename_rank(name, sym_query.strip())
+                if rank is None:
+                    continue
+                ranked_syms.append((rank, name, kind, rel))
+
+            ranked_syms.sort(key=lambda r: (r[0], len(r[1]), r[1]))
+            for _rank, name, kind, rel in ranked_syms[:50]:
+                items.append(
+                    {
+                        # Insert a @file ref so the agent loads the file; the
+                        # display shows the symbol name + kind + location.
+                        "text": f"@file:{_format_ref_value(rel)}",
+                        "display": name,
+                        "meta": f"{kind} · {rel}",
+                    }
+                )
             return _ok(rid, {"items": items})
 
         # Accept both `@folder:path` and the bare `@folder` form so the user

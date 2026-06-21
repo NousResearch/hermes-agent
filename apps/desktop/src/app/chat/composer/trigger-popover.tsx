@@ -16,6 +16,7 @@ const AT_ICON_BY_TYPE: Record<string, string> = {
   image: 'file-media',
   simple: 'symbol-misc',
   staged: 'diff-added',
+  symbol: 'symbol-method',
   tool: 'tools',
   url: 'globe'
 }

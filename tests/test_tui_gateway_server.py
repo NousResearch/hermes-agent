@@ -7890,3 +7890,85 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+def _init_symbol_repo(tmp_path):
+    """A small multi-language repo for symbol-scan tests."""
+    root = tmp_path / "symrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    (root / "mod.py").write_text(
+        "def alpha_fn():\n    pass\n\nclass BetaClass:\n    def gamma_method(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    (root / "app.ts").write_text(
+        "export function deltaFn() {}\n"
+        "export const epsilonArrow = () => 1\n"
+        "export class ZetaClass {}\n"
+        "export interface EtaShape { x: number }\n",
+        encoding="utf-8",
+    )
+    (root / "lib.go").write_text(
+        "package lib\n\nfunc ThetaFunc() {}\n\ntype IotaStruct struct {}\n",
+        encoding="utf-8",
+    )
+    # Stage so git ls-files sees them.
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    return str(root)
+
+
+def test_scan_symbols_extracts_multilang_definitions(tmp_path):
+    root = _init_symbol_repo(tmp_path)
+    server._symbol_cache.clear()
+
+    syms = server._scan_symbols(root)
+    by_name = {name: (kind, rel) for name, kind, rel in syms}
+
+    # Python
+    assert "alpha_fn" in by_name and by_name["alpha_fn"][1] == "mod.py"
+    assert "BetaClass" in by_name
+    assert "gamma_method" in by_name
+    # TypeScript
+    assert "deltaFn" in by_name and by_name["deltaFn"][1] == "app.ts"
+    assert "epsilonArrow" in by_name
+    assert "ZetaClass" in by_name
+    assert "EtaShape" in by_name
+    # Go
+    assert "ThetaFunc" in by_name and by_name["ThetaFunc"][1] == "lib.go"
+    assert "IotaStruct" in by_name
+
+
+def test_scan_symbols_is_cached(tmp_path):
+    root = _init_symbol_repo(tmp_path)
+    server._symbol_cache.clear()
+
+    first = server._scan_symbols(root)
+    # A second call within the TTL returns the same cached list object.
+    second = server._scan_symbols(root)
+    assert first is second
+
+
+def test_complete_path_symbol_query_returns_file_refs(tmp_path):
+    root = _init_symbol_repo(tmp_path)
+    server._symbol_cache.clear()
+
+    with patch.object(server, "_completion_cwd", return_value=root):
+        res = server._methods["complete.path"]("r-sym", {"word": "@symbol:Beta", "cwd": root})
+
+    items = res["result"]["items"]
+    # The fuzzy query 'Beta' should surface BetaClass, inserting a @file ref.
+    betas = [it for it in items if it.get("display") == "BetaClass"]
+    assert betas, f"BetaClass not found in {[i.get('display') for i in items]}"
+    assert betas[0]["text"].startswith("@file:")
+    assert "mod.py" in betas[0]["text"]
+    assert "class" in betas[0]["meta"]
+
+
+def test_complete_path_empty_at_lists_symbol_starter(tmp_path):
+    root = _init_symbol_repo(tmp_path)
+    with patch.object(server, "_completion_cwd", return_value=root):
+        res = server._methods["complete.path"]("r-at", {"word": "@", "cwd": root})
+
+    texts = {it["text"] for it in res["result"]["items"]}
+    assert "@symbol:" in texts
+

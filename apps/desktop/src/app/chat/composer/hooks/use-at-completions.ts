@@ -6,12 +6,13 @@ import type { HermesGateway } from '@/hermes'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
-const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
-const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
+const KIND_RE = /^@(file|folder|url|image|tool|git|symbol):(.*)$/
+const REF_STARTERS = new Set(['file', 'folder', 'symbol', 'url', 'image', 'tool', 'git'])
 
 const STARTER_META: Record<string, string> = {
   file: 'Attach a file reference',
   folder: 'Attach a folder reference',
+  symbol: 'Jump to a symbol',
   url: 'Attach a URL reference',
   image: 'Attach an image reference',
   tool: 'Attach a tool reference',

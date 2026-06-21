@@ -1048,6 +1048,16 @@ class TelegramAdapter(BasePlatformAdapter):
         r"int|prod|sqrt|lim|infty|begin\{(?:equation|align|matrix|cases)\}))",
         re.IGNORECASE | re.DOTALL,
     )
+    _RICH_CJK_RE = re.compile(
+        "["
+        "\u3040-\u30ff"  # Hiragana, Katakana
+        "\u3400-\u4dbf"  # CJK Extension A
+        "\u4e00-\u9fff"  # CJK Unified Ideographs
+        "\uac00-\ud7af"  # Hangul syllables
+        "\uf900-\ufaff"  # CJK Compatibility Ideographs
+        "\U00020000-\U000323af"  # CJK extensions and compatibility supplement
+        "]"
+    )
 
     def _has_telegram_desktop_details_math_crash_shape(self, content: str) -> bool:
         """Return True for rich-message details+math content that crashes TDesktop.
@@ -1064,6 +1074,16 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._RICH_MATH_IN_DETAILS_RE.search(details_block):
                 return True
         return False
+
+    def _has_telegram_desktop_cjk_rich_garble_shape(self, content: str) -> bool:
+        """Return True for CJK content that current TDesktop rich drafts garble.
+
+        Telegram Mac/Desktop Bot API 10.1 rich-message rendering currently
+        leaves overlapping draft/overlay glyph artifacts for CJK text (#47653).
+        The legacy MarkdownV2 path renders the same text cleanly, so skip rich
+        delivery up front until affected clients age out.
+        """
+        return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
         """Return True for markdown constructs that the legacy path degrades.
@@ -1103,6 +1123,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and content.strip()
             and self._needs_rich_rendering(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
+            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
@@ -1424,6 +1445,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and content
             and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
+            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

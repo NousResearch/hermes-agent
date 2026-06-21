@@ -24,6 +24,8 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 # Content exercising rich-only constructs: a heading, a real Markdown table,
 # and a task list. Pipes / brackets must survive untouched into the payload.
 RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- [x] table renders"
+CJK_RICH_CONTENT = "## 持仓\n\n| 项目 | 状态 |\n|---|---|\n| 早盘 | 正常 |"
+ASTRAL_CJK_RICH_CONTENT = "## Rare Han\n\n| glyph | status |\n|---|---|\n| \U00030000 | ok |"
 DANGEROUS_DETAILS_MATH = (
     "<details><summary>Complex proof</summary>\n\n"
     "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n"
@@ -160,6 +162,28 @@ async def test_math_outside_details_still_uses_rich_send():
 
 
 @pytest.mark.asyncio
+async def test_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", ASTRAL_CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_rich_messages_opt_out_uses_legacy_send_path():
     adapter = _make_adapter(extra={"rich_messages": False})
 
@@ -281,13 +305,15 @@ async def test_oversized_content_skips_rich_and_chunks():
 async def test_rich_limit_is_characters_not_bytes():
     """Telegram's rich limit is UTF-8 characters, not encoded bytes."""
     adapter = _make_adapter()
-    # Rich-eligible (table) so the content takes the rich path; the CJK body
-    # is 20k chars / 60k UTF-8 bytes — over the byte count, under the char cap.
-    cjk = "| a | b |\n|---|---|\n" + "测" * 20000  # 20k chars, ~60k UTF-8 bytes
-    assert len(cjk.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
-    assert len(cjk) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+    # Rich-eligible (table) so the content takes the rich path; the accented
+    # body is 20k chars / 40k UTF-8 bytes — over the byte count, under the
+    # character cap. CJK is intentionally avoided here because affected
+    # Telegram Desktop clients render CJK rich drafts incorrectly.
+    accented = "| a | b |\n|---|---|\n" + "é" * 20000
+    assert len(accented.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
+    assert len(accented) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
 
-    result = await adapter.send("12345", cjk)
+    result = await adapter.send("12345", accented)
 
     assert result.success is True
     bot = adapter._bot
@@ -529,6 +555,18 @@ async def test_rich_draft_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
+async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft("12345", draft_id=7, content=CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_rich_draft_capability_failure_falls_back_and_latches_off():
     adapter = _make_adapter()
     adapter._bot.do_api_request = AsyncMock(side_effect=BadRequest("Method not found"))
@@ -671,6 +709,19 @@ async def test_finalize_edit_plain_content_stays_legacy():
     assert result.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.edit_message_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_cjk_rich_content_stays_legacy_to_avoid_tdesktop_garble():
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", CJK_RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -9,4 +9,3 @@ platforms:
   - macos
 provides_cli:
   - hermes-gpt
-

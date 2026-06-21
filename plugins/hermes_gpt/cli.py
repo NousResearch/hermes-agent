@@ -64,4 +64,3 @@ def _server_argv(args: Any) -> list[str]:
     if getattr(args, "unsafe_remote_ack", False):
         argv.append(server.UNSAFE_REMOTE_ACK)
     return argv
-

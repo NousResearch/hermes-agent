@@ -123,7 +123,7 @@ That's the whole manifest. Every field except `name` has a sensible default.
 ### Step 3 — Create a `.gitignore` before the first commit
 
 :::warning
-Do this **before** running `git init` or `git add`. If you have already chatted with the profile, run setup, or otherwise used it, the directory now contains files you must not ship: `.env`, `auth.json`, `memories/`, `sessions/`, `state.db*`, `logs/`, and more. 
+Do this **before** running `git init` or `git add`. If you have already chatted with the profile, run setup, or otherwise used it, the directory now contains files you must not ship: `.env`, `auth.json`, `memories/`, `sessions/`, `state.db*`, `logs/`, and more.
 :::
 
 Create `~/.hermes/profiles/research-bot/.gitignore` with at minimum:
@@ -201,7 +201,7 @@ git push -u origin main --tags
 The repo is now a distribution. Anyone with access can install it.
 
 :::note
-The installer will additionally strip the [hard-excluded paths](#whats-not-in-a-distribution-ever) even if an author somehow ships them — but that only protects installers, not the author. 
+The installer will additionally strip the [hard-excluded paths](#whats-not-in-a-distribution-ever) even if an author somehow ships them — but that only protects installers, not the author.
 :::
 
 ### Step 5 — Tag versioned releases

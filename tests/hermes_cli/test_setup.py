@@ -493,4 +493,3 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
 # _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
-

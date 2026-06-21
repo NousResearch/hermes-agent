@@ -2276,20 +2276,28 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                created_payload = {
+                    "assignee": assignee,
+                    "status": task_status,
+                    "parents": list(parents),
+                    "tenant": tenant,
+                    "branch_name": branch_name,
+                    "skills": list(skills_list) if skills_list else None,
+                    "goal_mode": bool(goal_mode) or None,
+                }
                 _append_event(
                     conn,
                     task_id,
                     "created",
-                    {
-                        "assignee": assignee,
-                        "status": task_status,
-                        "parents": list(parents),
-                        "tenant": tenant,
-                        "branch_name": branch_name,
-                        "skills": list(skills_list) if skills_list else None,
-                        "goal_mode": bool(goal_mode) or None,
-                    },
+                    created_payload,
                 )
+            _emit_kanban_hook_event(
+                conn,
+                "task:created",
+                task_id,
+                new_status=task_status,
+                extra=created_payload,
+            )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2729,6 +2737,91 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+
+
+def _connection_db_path(conn: sqlite3.Connection) -> Optional[Path]:
+    """Return the resolved on-disk path for ``conn``'s main database."""
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return None
+    for row in rows:
+        name = row[1] if not isinstance(row, sqlite3.Row) else row["name"]
+        if name != "main":
+            continue
+        raw_path = row[2] if not isinstance(row, sqlite3.Row) else row["file"]
+        if not raw_path:
+            return None
+        try:
+            return Path(str(raw_path)).resolve()
+        except OSError:
+            return Path(str(raw_path))
+    return None
+
+
+def _infer_board_for_connection(conn: sqlite3.Connection) -> Optional[str]:
+    """Best-effort board slug for a live connection.
+
+    ``sqlite3.Connection`` does not carry arbitrary metadata, so infer the board
+    by matching the connection's database path against known kanban board paths.
+    Returns ``None`` when the path does not correspond to a named board (e.g. a
+    bespoke test DB opened via explicit ``db_path=...``).
+    """
+    db_path = _connection_db_path(conn)
+    if db_path is None:
+        return None
+
+    candidates: list[str] = []
+    current = get_current_board()
+    if current:
+        candidates.append(current)
+    candidates.append(DEFAULT_BOARD)
+    for meta in list_boards(include_archived=True):
+        slug = str(meta.get("slug") or "").strip()
+        if slug and slug not in candidates:
+            candidates.append(slug)
+
+    seen: set[str] = set()
+    for slug in candidates:
+        if slug in seen:
+            continue
+        seen.add(slug)
+        try:
+            if kanban_db_path(board=slug).resolve() == db_path:
+                return slug
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _emit_kanban_hook_event(
+    conn: sqlite3.Connection,
+    event_type: str,
+    task_id: str,
+    *,
+    previous_status: Optional[str] = None,
+    new_status: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> None:
+    """Fire a best-effort kanban hook event after the DB mutation commits."""
+    context: dict[str, Any] = {"task_id": task_id}
+    board = _infer_board_for_connection(conn)
+    if board is not None:
+        context["board"] = board
+    if previous_status is not None:
+        context["previous_status"] = previous_status
+    if new_status is not None:
+        context["new_status"] = new_status
+    if extra:
+        for key, value in extra.items():
+            if value is not None:
+                context[key] = value
+    try:
+        from kanban_hooks import emit_kanban_event
+
+        emit_kanban_event(event_type, context)
+    except Exception:
+        _log.exception("failed to emit kanban hook %s for task %s", event_type, task_id)
 
 
 def _end_run(
@@ -3644,7 +3737,12 @@ def complete_task(
     else:
         verified_cards = []
 
+    previous_status: Optional[str] = None
+    completed_payload: dict = {}
+    ev_summary = ""
     with write_txn(conn):
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        previous_status = row["status"] if row else None
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -3701,7 +3799,7 @@ def complete_task(
         # full summary stays on the run row.
         ev_summary = (summary if summary is not None else result) or ""
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
-        completed_payload: dict = {
+        completed_payload = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
@@ -3726,6 +3824,14 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+    _emit_kanban_hook_event(
+        conn,
+        "task:completed",
+        task_id,
+        previous_status=previous_status,
+        new_status="done",
+        extra=completed_payload,
+    )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -4135,7 +4241,10 @@ def block_task(
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
+    previous_status: Optional[str] = None
     with write_txn(conn):
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        previous_status = row["status"] if row else None
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4179,7 +4288,15 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
-        return True
+    _emit_kanban_hook_event(
+        conn,
+        "task:blocked",
+        task_id,
+        previous_status=previous_status,
+        new_status="blocked",
+        extra={"reason": reason},
+    )
+    return True
 
 
 
@@ -4264,11 +4381,15 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     state) holds for the rest of this function's lifetime.
     """
     now = int(time.time())
+    previous_status: Optional[str] = None
+    emitted_status: Optional[str] = None
     with write_txn(conn):
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
         ).fetchone()
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        previous_status = row["status"] if row else None
         if stale and stale["current_run_id"]:
             conn.execute(
                 """
@@ -4306,7 +4427,15 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
-        return True
+        emitted_status = new_status
+    _emit_kanban_hook_event(
+        conn,
+        "task:unblocked",
+        task_id,
+        previous_status=previous_status,
+        new_status=emitted_status,
+    )
+    return True
 
 
 def specify_triage_task(

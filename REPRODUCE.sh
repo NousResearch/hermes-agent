@@ -18,6 +18,9 @@ SRC="${1:-/mnt/devvm/custom/hermes/src}"
 V016=3c231eb3979ab9c57d5cd6d02f1d577a3b718b43       # v0.16.0
 V017=2bd1977d8fad185c9b4be47884f7e87f1add0ce3       # v0.17.0
 MAIN_REF=origin/main                                 # PR base
+# directory of THIS script (the #50111 checkout) — where the deferred/*.patch set lives.
+# Captured BEFORE we cd into $SRC so deferred-by-design files can be credited.
+DEFDIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 cd "$SRC" || { echo "checkout not found: $SRC"; exit 1; }
 GH="env -u GITHUB_TOKEN -u GH_TOKEN gh"
 
@@ -30,11 +33,22 @@ $GH pr list --repo NousResearch/hermes-agent --author arminanton --state open --
     [ "$n" = "50111" ] && continue                   # exclude deferred-tracker
     $GH pr view "$n" --repo NousResearch/hermes-agent --json files -q '.files[].path' 2>/dev/null
   done | sort -u > /tmp/rep_prunion.txt
-echo "src delta files     : $(wc -l < /tmp/rep_src.txt)"
-echo "feature-PR file union: $(wc -l < /tmp/rep_prunion.txt)"
-echo "ORPHANS (MUST be 0) : $(comm -23 /tmp/rep_src.txt /tmp/rep_prunion.txt | wc -l)"
-comm -23 /tmp/rep_src.txt /tmp/rep_prunion.txt | sed 's/^/   ORPHAN: /'
-echo "COVERED             : $(comm -12 /tmp/rep_src.txt /tmp/rep_prunion.txt | wc -l) / $(wc -l < /tmp/rep_src.txt)"
+# deferred-tracker (#50111) coverage: each deferred/**/<flat>.patch encodes a real
+# src path with '/' flattened to '_'. Recover the real paths from the committed delta
+# so deferred-by-design files are credited (NOT counted as orphans).
+: > /tmp/rep_deferred.txt
+for p in "$DEFDIR"/deferred/*/*.patch; do
+  [ -e "$p" ] || continue
+  flat=$(basename "$p" .patch)                       # e.g. tests_agent_test_x.py
+  awk -v f="$flat" '{k=$0; gsub(/\//,"_",k); if (k==f) print $0}' /tmp/rep_src.txt
+done | sort -u > /tmp/rep_deferred.txt
+cat /tmp/rep_prunion.txt /tmp/rep_deferred.txt | sort -u > /tmp/rep_union_all.txt
+echo "src delta files       : $(wc -l < /tmp/rep_src.txt)"
+echo "feature-PR file union  : $(wc -l < /tmp/rep_prunion.txt)"
+echo "deferred-tracker (#50111): $(wc -l < /tmp/rep_deferred.txt)"
+echo "UNMAPPED (MUST be 0)  : $(comm -23 /tmp/rep_src.txt /tmp/rep_union_all.txt | wc -l)"
+comm -23 /tmp/rep_src.txt /tmp/rep_union_all.txt | sed 's/^/   UNMAPPED: /'
+echo "COVERED (PR+deferred) : $(comm -12 /tmp/rep_src.txt /tmp/rep_union_all.txt | wc -l) / $(wc -l < /tmp/rep_src.txt)"
 
 echo "============ 2. CLEAN-CHECKOUT reproduction (committed state only) ============"
 WT=/tmp/rep_clean_$$

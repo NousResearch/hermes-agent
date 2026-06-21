@@ -12,6 +12,10 @@ def _make_adapter(
     require_mention=None,
     free_response_chats=None,
     free_response_topics=None,
+    require_mention_chats=None,
+    strict_mention_chats=None,
+    free_response_users=None,
+    strict_mention_users=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
     ignored_threads=None,
@@ -33,6 +37,14 @@ def _make_adapter(
         extra["free_response_chats"] = free_response_chats
     if free_response_topics is not None:
         extra["free_response_topics"] = free_response_topics
+    if require_mention_chats is not None:
+        extra["require_mention_chats"] = require_mention_chats
+    if strict_mention_chats is not None:
+        extra["strict_mention_chats"] = strict_mention_chats
+    if free_response_users is not None:
+        extra["free_response_users"] = free_response_users
+    if strict_mention_users is not None:
+        extra["strict_mention_users"] = strict_mention_users
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
@@ -157,6 +169,126 @@ def test_group_messages_can_be_opened_via_config():
     adapter = _make_adapter(require_mention=False)
 
     assert adapter._should_process_message(_group_message("hello everyone")) is True
+
+
+def test_free_response_users_bypass_group_mention_requirement():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_users=["222"],
+    )
+
+    assert adapter._should_process_message(_group_message("message from regular user", from_user_id=111)) is False
+    assert adapter._should_process_message(_group_message("message from free response user", from_user_id=222)) is True
+
+
+def test_require_mention_chats_apply_mention_gate_to_one_chat():
+    adapter = _make_adapter(
+        require_mention=False,
+        require_mention_chats=["-200"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("ordinary message in open chat", chat_id=-100)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("ordinary message in mention-gated chat", chat_id=-200)
+    ) is False
+
+    text = "@hermes_bot direct request"
+    assert adapter._should_process_message(
+        _group_message(text, chat_id=-200, entities=[_mention_entity(text)])
+    ) is True
+
+
+def test_strict_mention_chats_reject_reply_and_pattern_fallbacks():
+    adapter = _make_adapter(
+        require_mention=False,
+        strict_mention_chats=["-200"],
+        mention_patterns=[r"\bbot\b"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("ordinary message in open chat", chat_id=-100)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("loose bot wake word", chat_id=-200)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("reply in strict chat", chat_id=-200, reply_to_bot=True)
+    ) is False
+
+    text = "@hermes_bot direct request"
+    assert adapter._should_process_message(
+        _group_message(text, chat_id=-200, entities=[_mention_entity(text)])
+    ) is True
+
+
+def test_unmentioned_group_messages_can_be_observed_for_require_mention_chat():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            require_mention_chats=["-100"],
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=1002,
+            message=_group_message("side chatter"),
+            effective_message=None,
+        )
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        assert store.messages[0][1]["content"] == "[Alice Example|111]\nside chatter"
+
+    asyncio.run(_run())
+
+
+def test_strict_mention_users_do_not_wake_on_reply_or_pattern():
+    adapter = _make_adapter(
+        require_mention=True,
+        strict_mention_users=["222"],
+        mention_patterns=[r"\bbot\b"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("loose bot wake word", from_user_id=222)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("reply in an operator conversation", from_user_id=222, reply_to_bot=True)
+    ) is False
+
+    text = "@hermes_bot please handle this"
+    assert adapter._should_process_message(
+        _group_message(text, from_user_id=222, entities=[_mention_entity(text)])
+    ) is True
+
+
+def test_free_response_and_strict_mention_users_allow_two_profile_group_routing():
+    """Profile 2 can answer user 2 while user 1 talks normally in the same group."""
+    profile_2_bot = _make_adapter(
+        require_mention=True,
+        free_response_users=["222"],
+        strict_mention_users=["111"],
+        bot_username="profile2_bot",
+    )
+
+    assert profile_2_bot._should_process_message(
+        _group_message("user 1 talking to user 2", from_user_id=111)
+    ) is False
+    assert profile_2_bot._should_process_message(
+        _group_message("user 2 asks profile 2 normally", from_user_id=222)
+    ) is True
+
+    text = "@profile2_bot user 1 explicitly asks profile 2"
+    assert profile_2_bot._should_process_message(
+        _group_message(text, from_user_id=111, entities=[_mention_entity(text, "@profile2_bot")])
+    ) is True
 
 
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
@@ -803,6 +935,14 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
         "    - \"-123\"\n"
+        "  require_mention_chats:\n"
+        "    - \"-200\"\n"
+        "  strict_mention_chats:\n"
+        "    - \"-300\"\n"
+        "  free_response_users:\n"
+        "    - \"222\"\n"
+        "  strict_mention_users:\n"
+        "    - \"111\"\n"
         "  allowed_chats:\n"
         "    - \"-100\"\n"
         "  group_allowed_chats:\n"
@@ -855,6 +995,12 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
     # files, so asserting it via os.environ stays deterministic.
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+    assert tg_cfg.extra.get("require_mention_chats") == ["-200"]
+    assert tg_cfg.extra.get("strict_mention_chats") == ["-300"]
+    assert tg_cfg.extra.get("free_response_users") == ["222"]
+    assert tg_cfg.extra.get("strict_mention_users") == ["111"]
+    assert tg_cfg.extra.get("exclusive_bot_mentions") is True
+    assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):

@@ -532,12 +532,16 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - **Privacy mode** determines what messages the bot can see (see [Step 3](#step-3-privacy-mode-critical-for-groups))
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
 - You can keep the bot from responding to ordinary group chatter with `telegram.require_mention: true`
+- Use `telegram.require_mention_chats` to apply mention gating to specific chat IDs without changing the default for every Telegram group this profile can see.
+- Use `telegram.strict_mention_chats` when a specific chat must require explicit `@botusername` mentions; replies to the bot and `mention_patterns` do not wake the bot in those chats.
 - With `telegram.require_mention: true`, group messages are accepted when they are:
   - replies to one of the bot's messages
   - `@botusername` mentions
   - `/command@botusername` (Telegram's bot-menu command form that includes the bot name)
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
+- Use `telegram.free_response_users` to let specific Telegram user IDs bypass `telegram.require_mention` while everyone else still needs a trigger.
+- Use `telegram.strict_mention_users` for operator/user IDs that must explicitly `@botusername` this bot; replies to the bot and `mention_patterns` do not wake the bot for those users.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
@@ -557,6 +561,22 @@ telegram:
 With this setup, a group message like `@research_bot @ops_bot summarize this` is processed by `research_bot` and `ops_bot` only. Other Hermes bots in the group stay silent, even if the message is a reply to one of their earlier messages or would otherwise match a shared wake word.
 
 Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.
+
+For a two-profile group where profile 1 should be able to talk normally without waking profile 2, while user 2 can talk to profile 2 naturally, configure profile 2 like this:
+
+```yaml
+telegram:
+  require_mention: true
+  exclusive_bot_mentions: true
+  # Alternative: keep require_mention false globally and use
+  # require_mention_chats / strict_mention_chats for only selected chat IDs.
+  free_response_users:
+    - "222222222"   # user 2 can use profile 2 conversationally
+  strict_mention_users:
+    - "111111111"   # user 1 must explicitly @mention profile 2
+```
+
+Run profile 1 as a separate Telegram bot/profile with its own token. If profile 1 should also stay quiet in that group, keep `require_mention: true` on profile 1 as well.
 
 To operate several profiles, run the gateway command once per profile. For example:
 

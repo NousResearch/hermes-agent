@@ -360,6 +360,46 @@ class TestLoadConfigParseFailure:
             assert capsys.readouterr().err == ""
 
 
+    def test_duplicate_top_level_keys_warn(self, tmp_path, caplog, capsys):
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_DUPLICATE_KEYS_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "cron:\n"
+                "  script_timeout_seconds: 600\n"
+                "cron:\n"
+                "  wrap_response: false\n",
+                encoding="utf-8",
+            )
+
+            import logging
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                config = load_config()
+
+            assert config["cron"]["wrap_response"] is False
+            assert any("Duplicate keys detected" in rec.message and "cron" in rec.message for rec in caplog.records)
+            assert "Duplicate keys detected" in capsys.readouterr().err
+
+    def test_duplicate_nested_keys_warn_with_path(self, tmp_path, capsys):
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_DUPLICATE_KEYS_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "agent:\n"
+                "  max_turns: 10\n"
+                "  max_turns: 12\n",
+                encoding="utf-8",
+            )
+
+            config = load_config()
+
+            assert config["agent"]["max_turns"] == 12
+            err = capsys.readouterr().err
+            assert "agent.max_turns" in err
+
+
 class TestEmptyConfigSections:
     """Empty section keys (``terminal:`` with no value) parse as YAML None
     and must not replace the default dict for that section (#58277)."""
@@ -382,8 +422,10 @@ class TestEmptyConfigSections:
         key remains an override (unchanged behavior)."""
         from hermes_cli.config import _deep_merge
 
-        merged = _deep_merge({"scalar": 5, "section": {"a": 1}},
-                             {"scalar": None, "section": None})
+        merged = _deep_merge(
+            {"scalar": 5, "section": {"a": 1}},
+            {"scalar": None, "section": None},
+        )
         assert merged["scalar"] is None
         assert merged["section"] == {"a": 1}
 
@@ -1926,5 +1968,4 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
 

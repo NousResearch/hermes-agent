@@ -2988,10 +2988,42 @@ async def get_profiles_sessions(
     profile_totals: Dict[str, int] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
-    for name, home in targets:
+    # Dedupe targets that point at the SAME physical state.db. Main-linked
+    # profiles (e.g. the gsd-* worker fleet) symlink their state.db back to the
+    # canonical workspace DB, so a naive loop opens and scans that one large file
+    # once per profile -- on a host with N such links the cost is O(N) full
+    # scans of the same rows for zero new data, which pushes the sidebar's
+    # session-list request past the desktop's connect timeout. Resolving each
+    # db_path to its real inode and scanning each distinct DB exactly once makes
+    # profile=all O(distinct DBs) instead of O(profiles), and prevents the same
+    # rows being counted N times into ``total``/``profile_totals``.
+    #
+    # Order so a profile owning a REAL state.db file is scanned before any
+    # profile that merely symlinks to it -- that way the shared canonical DB is
+    # claimed (and its rows tagged) under its real owner (e.g. "default") rather
+    # than an arbitrary symlink alias.
+    def _is_symlink_db(home: Path) -> bool:
+        try:
+            return (Path(home) / "state.db").is_symlink()
+        except Exception:
+            return False
+
+    ordered_targets = sorted(targets, key=lambda t: _is_symlink_db(t[1]))
+    seen_db_keys: set = set()
+    for name, home in ordered_targets:
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
+        try:
+            real = db_path.resolve()
+            stat = real.stat()
+            db_key = (stat.st_dev, stat.st_ino)
+        except Exception:
+            db_key = str(db_path)
+        if db_key in seen_db_keys:
+            # Already scanned this physical DB under another profile name.
+            continue
+        seen_db_keys.add(db_key)
         try:
             # Read-only: this loop runs on every sidebar refresh, so it must
             # never DDL/write-lock another profile's live DB (see SessionDB

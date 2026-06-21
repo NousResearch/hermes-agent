@@ -766,7 +766,7 @@ def run_doctor(args):
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
             soul_path.write_text(
-                "# Hermes Agent Persona\n\n"
+                "# 元话 Agent Persona\n\n"
                 "<!-- Edit this file to customize how Hermes communicates. -->\n\n"
                 "You are Hermes, a helpful AI assistant.\n",
                 encoding="utf-8",

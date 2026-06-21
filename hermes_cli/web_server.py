@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -67,7 +68,7 @@ except ImportError:
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
-app = FastAPI(title="Hermes Agent", version=__version__)
+app = FastAPI(title="元话 Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -3244,6 +3245,10 @@ class ProfileSoulUpdate(BaseModel):
     content: str
 
 
+class ProfileSwitch(BaseModel):
+    profile: str = "default"
+
+
 def _profile_attr(info, name: str, default: Any = None) -> Any:
     try:
         return getattr(info, name)
@@ -3360,6 +3365,70 @@ async def create_profile_endpoint(body: ProfileCreate):
         _log.exception("POST /api/profiles failed")
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "name": body.name, "path": str(path)}
+
+
+@app.get("/api/profiles/active")
+async def get_active_profile_endpoint():
+    from hermes_cli import profiles as profiles_mod
+
+    return {"current": profiles_mod.get_active_profile()}
+
+
+@app.post("/api/profiles/switch")
+async def switch_profile_endpoint(body: ProfileSwitch):
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        profiles_mod.set_active_profile(body.profile)
+        return {"ok": True, "current": profiles_mod.get_active_profile()}
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/profiles/sessions")
+async def get_profile_sessions(
+    limit: int = 20,
+    offset: int = 0,
+    min_messages: int = 0,
+    profile: str = "all",
+):
+    if profile not in ("all", "default", ""):
+        _resolve_profile_dir(profile)
+
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            min_message_count = max(0, min_messages)
+            sessions = db.list_sessions_rich(
+                limit=limit,
+                offset=offset,
+                min_message_count=min_message_count,
+            )
+            total = db.session_count(min_message_count=min_message_count)
+            now = time.time()
+            for s in sessions:
+                s["profile"] = "default"
+                s["is_default_profile"] = True
+                s["is_active"] = (
+                    s.get("ended_at") is None
+                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                )
+            return {
+                "sessions": sessions,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "profile_totals": {"default": total},
+            }
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/profiles/sessions failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/profiles/{name}/setup-command")
@@ -5037,6 +5106,14 @@ def start_server(
             "authentication. Only use on trusted networks.", host,
         )
 
+    # Desktop launches with port=0 and waits for a machine-readable stdout line.
+    # This local installer build predates that contract, so reserve an ephemeral
+    # port here and announce it before handing control to uvicorn.
+    if port == 0:
+        with socket.socket(socket.AF_INET6 if host == "::1" else socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((host, 0))
+            port = sock.getsockname()[1]
+
     # Record the bound host so host_header_middleware can validate incoming
     # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
     # bound_port is also stashed so /api/pty can build the back-WS URL the
@@ -5053,5 +5130,6 @@ def start_server(
 
         threading.Thread(target=_open, daemon=True).start()
 
-    print(f"  Hermes Web UI → http://{host}:{port}")
+    print(f"HERMES_DASHBOARD_READY port={port}", flush=True)
+    print(f"  Hermes Web UI → http://{host}:{port}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning")

@@ -59,7 +59,7 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
   },
   {
     test: msg => /method not allowed/i.test(msg),
-    summarize: () => 'The desktop backend does not support that audio endpoint yet. Restart Hermes Desktop.'
+    summarize: () => 'The desktop backend does not support that audio endpoint yet. Restart 元话 Agent Desktop.'
   },
   {
     test: msg => /microphone permission/i.test(msg),

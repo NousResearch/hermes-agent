@@ -84,7 +84,7 @@ interface SectionSearchEntry {
 
 const NAVIGATION_SEARCH_ENTRIES: readonly NavigationSearchEntry[] = [
   { id: 'nav-new-chat', route: NEW_CHAT_ROUTE, title: 'New chat', detail: 'Start a fresh session' },
-  { id: 'nav-settings', route: SETTINGS_ROUTE, title: 'Settings', detail: 'Configure Hermes desktop' },
+  { id: 'nav-settings', route: SETTINGS_ROUTE, title: 'Settings', detail: 'Configure 元话 Agent Desktop' },
   { id: 'nav-skills', route: SKILLS_ROUTE, title: 'Skills', detail: 'Enable and inspect skills' },
   { id: 'nav-messaging', route: MESSAGING_ROUTE, title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
   { id: 'nav-artifacts', route: ARTIFACTS_ROUTE, title: 'Artifacts', detail: 'Browse generated outputs' }

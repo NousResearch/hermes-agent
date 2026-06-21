@@ -242,7 +242,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
-    DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX = "元话 Agent\n────────────\n"
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"

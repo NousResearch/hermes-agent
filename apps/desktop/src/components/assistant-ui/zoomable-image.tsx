@@ -84,10 +84,10 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           notify({
             kind: 'info',
             title: 'Download started',
-            message: 'Restart Hermes Desktop to use Save Image.'
+            message: 'Restart 元话 Agent Desktop to use Save Image.'
           })
         } catch (fallbackError) {
-          notifyError(fallbackError, 'Restart Hermes Desktop to save images')
+          notifyError(fallbackError, 'Restart 元话 Agent Desktop to save images')
         }
 
         return

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "name": "hermes-agent",
-  "display_name": "Hermes Agent",
-  "description": "AI agent by Nous Research with 90+ tools, persistent memory, and multi-platform support",
+  "display_name": "元话 Agent",
+  "description": "metakina-agent Digital Investment Banking Agent OS for data rooms, financial analysis, diligence coordination, compliance review, and audit trails",
   "icon": "icon.svg",
   "distribution": {
     "type": "command",

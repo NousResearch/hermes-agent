@@ -843,6 +843,86 @@ def test_detect_crashed_workers_grace_period_env_override(
         assert tid in kb.detect_crashed_workers(conn)
 
 
+def test_detect_crashed_workers_trusts_fresh_current_run_heartbeat_on_pid_miss(
+    kanban_home, monkeypatch,
+):
+    """Fresh current-run heartbeat beats host-local PID mismatch.
+
+    This covers Docker / PID-namespace disagreement: the dispatcher may not see
+    the child PID, but the worker is still proving liveness through the shared
+    Kanban DB. Reclaiming in that state would spawn a duplicate live run.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_HEARTBEAT_FRESH_SECONDS", "120")
+
+    now = 3_000_000.0
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="pid namespace mismatch", assignee="a")
+        claimed = kb.claim_task(conn, tid, claimer=f"{host}:w")
+        assert claimed is not None and claimed.current_run_id is not None
+        kb._set_worker_pid(conn, tid, 424242)
+        assert kb.heartbeat_worker(conn, tid, expected_run_id=claimed.current_run_id)
+
+        # Past launch grace, PID probe says dead, but heartbeat is fresh.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 90)
+        assert kb.detect_crashed_workers(conn) == []
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert task.current_run_id == claimed.current_run_id
+
+        # Once the heartbeat is no longer fresh, PID death is authoritative.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 300)
+        assert kb.detect_crashed_workers(conn) == [tid]
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+
+
+def test_stale_run_completion_cannot_overwrite_new_current_run(kanban_home):
+    """A duplicate/stale worker finishing late must not corrupt newer run state."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stale duplicate completion", assignee="a")
+        first = kb.claim_task(conn, tid, claimer="host:first")
+        assert first is not None and first.current_run_id is not None
+        first_run = int(first.current_run_id)
+
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='ready', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL, current_run_id=NULL "
+                "WHERE id=?",
+                (tid,),
+            )
+        second = kb.claim_task(conn, tid, claimer="host:second")
+        assert second is not None and second.current_run_id is not None
+        second_run = int(second.current_run_id)
+        assert second_run != first_run
+
+        assert kb.complete_task(
+            conn, tid, result="late stale result", expected_run_id=first_run,
+        ) is False
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert task.current_run_id == second_run
+        assert task.result is None
+
+        assert kb.complete_task(
+            conn, tid, result="current result", expected_run_id=second_run,
+        ) is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "done"
+        assert task.result == "current result"
+
+
 def test_resolve_crash_grace_seconds_handles_bad_env(monkeypatch):
     """Bad env values fall back to DEFAULT_CRASH_GRACE_SECONDS."""
     import hermes_cli.kanban_db as _kb

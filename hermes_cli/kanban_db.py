@@ -163,6 +163,15 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
 # during the launch window.
 DEFAULT_CRASH_GRACE_SECONDS = 30
 
+# If a host-local PID probe says a running worker is gone, but the current
+# run has emitted a heartbeat within this window, treat the PID result as
+# advisory and defer crash reclaim. This protects Docker / PID-namespace and
+# host/container source-authority mismatches where the dispatcher cannot see
+# the child PID even though the worker is actively heartbeating through the
+# shared Kanban DB. The heartbeat-staleness paths remain the authority for
+# reclaiming workers that stop making progress.
+DEFAULT_CRASH_HEARTBEAT_FRESH_SECONDS = 2 * 60
+
 
 # Sentinel exit code a kanban worker uses to signal "I bailed because the
 # provider rate-limited / exhausted quota, not because the task failed."
@@ -192,6 +201,27 @@ def _resolve_crash_grace_seconds() -> int:
         if parsed >= 0:
             return parsed
     return DEFAULT_CRASH_GRACE_SECONDS
+
+
+def _resolve_crash_heartbeat_fresh_seconds() -> int:
+    """Return the heartbeat freshness window for PID-mismatch crash deferral.
+
+    A positive heartbeat window makes ``detect_crashed_workers`` trust a fresh
+    ``current_run_id`` heartbeat over a host-local PID miss. This is deliberately
+    much shorter than the stale-heartbeat reclaim threshold: it covers PID
+    namespace / launch telemetry disagreement without masking workers that stop
+    making progress. Set ``HERMES_KANBAN_CRASH_HEARTBEAT_FRESH_SECONDS=0`` in
+    tests or unusual deployments to restore PID-only crash detection.
+    """
+    raw = os.environ.get("HERMES_KANBAN_CRASH_HEARTBEAT_FRESH_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_CRASH_HEARTBEAT_FRESH_SECONDS
 
 
 def _resolve_rate_limit_cooldown_seconds() -> int:
@@ -5793,7 +5823,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, "
+            "       last_heartbeat_at, current_run_id "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -5811,6 +5843,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if time.time() - started_at < grace:
                     continue
             if _pid_alive(row["worker_pid"]):
+                continue
+
+            heartbeat_window = _resolve_crash_heartbeat_fresh_seconds()
+            last_hb = row["last_heartbeat_at"]
+            if (
+                heartbeat_window > 0
+                and row["current_run_id"] is not None
+                and last_hb is not None
+                and time.time() - int(last_hb) <= heartbeat_window
+            ):
+                # PID visibility is advisory when the active run is still
+                # writing fresh heartbeats through the board DB. This is the
+                # host/container PID-namespace case: reclaiming here would
+                # create a duplicate live run beside a healthy worker.
                 continue
 
             pid = int(row["worker_pid"])

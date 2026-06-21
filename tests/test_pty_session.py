@@ -160,3 +160,23 @@ async def test_new_key_at_capacity_raises_when_none_reapable():
     with pytest.raises(RegistryFull):
         await reg.attach_or_spawn("b", spawn=lambda: FakeBridge([]))
     await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_reaper_loop_invokes_reap(monkeypatch):
+    from hermes_cli.pty_session import run_reaper
+    reg = make_registry()
+    calls = {"n": 0}
+
+    async def fake_reap(now=None):
+        calls["n"] += 1
+
+    monkeypatch.setattr(reg, "reap_idle", fake_reap)
+    task = asyncio.create_task(run_reaper(reg, interval=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert calls["n"] >= 2

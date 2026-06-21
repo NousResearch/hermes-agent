@@ -3640,7 +3640,7 @@ class TestRunConversation:
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
-            reasoning_content="reasoning only",
+            reasoning_content="reasoning only content from model",
         )
         prefill = [
             {"role": "user", "content": "old question"},
@@ -3662,7 +3662,7 @@ class TestRunConversation:
         # Reasoning text is surfaced as the response instead of "(empty)"
         # when the model returns reasoning_content with empty content.
         assert result["final_response"] != "(empty)"
-        assert result["final_response"] == "reasoning only"
+        assert result["final_response"] == "reasoning only content from model"
         assert result["turn_exit_reason"] == "empty_response_exhausted"
         assert result["api_calls"] == 7  # 1 original + 3 prefill + 3 retries
 

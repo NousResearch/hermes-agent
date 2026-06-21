@@ -4310,6 +4310,7 @@ def run_conversation(
                     # the user with no visible output at all.
                     if reasoning_text:
                         assistant_msg["content"] = reasoning_text
+                        final_response = reasoning_text
                         # No sentinel — the reasoning becomes the response.
                     else:
                         assistant_msg["content"] = "(empty)"

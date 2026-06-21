@@ -62,6 +62,56 @@ def check_wecom_callback_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE and DEFUSEDXML_AVAILABLE
 
 
+# Query-string params the WeCom callback handshake/callbacks carry that must
+# never reach agent.log: the msg_signature HMAC, the encrypted echostr (URL
+# verification), and the timestamp/nonce that complete the signature tuple.
+_SENSITIVE_QUERY_KEYS = frozenset({"msg_signature", "echostr", "timestamp", "nonce"})
+
+
+def _redact_request_target(raw_path_qs: str) -> str:
+    """Return the request target with sensitive query params redacted.
+
+    Keeps the path and any non-sensitive params intact for observability, but
+    replaces the value of every key in ``_SENSITIVE_QUERY_KEYS`` with
+    ``REDACTED`` so the msg_signature/echostr never land in access logs.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    parts = urlsplit(raw_path_qs)
+    if not parts.query:
+        return raw_path_qs
+    redacted = [
+        (key, "REDACTED" if key.lower() in _SENSITIVE_QUERY_KEYS else value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit(parts._replace(query=urlencode(redacted)))
+
+
+def _build_redacting_access_logger():
+    """Build an aiohttp access-logger class that redacts sensitive query params.
+
+    Returns ``None`` when aiohttp is unavailable. Keeps access logging enabled
+    (so traffic/latency/``/health`` visibility is preserved) while ensuring the
+    msg_signature/echostr query values are never written verbatim to agent.log.
+    """
+    if not AIOHTTP_AVAILABLE:
+        return None
+    from aiohttp.abc import AbstractAccessLogger
+
+    class _RedactingAccessLogger(AbstractAccessLogger):
+        def log(self, request, response, time):  # noqa: A002 - aiohttp signature
+            self.logger.info(
+                '%s %s %s %s %.6fs',
+                request.method,
+                _redact_request_target(request.path_qs),
+                getattr(response, "status", "-"),
+                getattr(response, "body_length", "-"),
+                time,
+            )
+
+    return _RedactingAccessLogger
+
+
 class WecomCallbackAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
@@ -137,12 +187,16 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             self._app.router.add_get(self._path, self._handle_verify)
             self._app.router.add_post(self._path, self._handle_callback)
             # The WeCom URL-verification handshake and every inbound callback
-            # carry the `msg_signature` HMAC (and `echostr`) in the request
-            # *query string*. aiohttp's default access logger would write that
-            # full request target to agent.log verbatim. Disable the access log
-            # so the signature is never persisted (mirrors the BlueBubbles
-            # webhook fix in 514f5020c).
-            self._runner = web.AppRunner(self._app, access_log=None)
+            # carry the `msg_signature` HMAC (and `echostr`/`timestamp`/`nonce`)
+            # in the request *query string*. aiohttp's default access logger
+            # would write that full request target to agent.log verbatim. Use a
+            # redacting access logger that keeps request logging (traffic /
+            # latency / `/health` visibility) but replaces those sensitive query
+            # values with `REDACTED` so they are never persisted.
+            access_logger_class = _build_redacting_access_logger()
+            self._runner = web.AppRunner(
+                self._app, access_log_class=access_logger_class
+            )
             await self._runner.setup()
             self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()

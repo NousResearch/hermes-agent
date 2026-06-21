@@ -309,18 +309,72 @@ class TestWecomCallbackPollLoop:
         assert calls == ["test"]
 
 
-class TestWecomCallbackAccessLogDisabled:
+class TestWecomCallbackAccessLogRedaction:
     """The WeCom URL-verification handshake and inbound callbacks carry the
-    ``msg_signature`` HMAC (and ``echostr``) in the request *query string*
-    (see ``_handle_verify`` / ``_handle_callback``). aiohttp's default access
-    logger would write that full request target to agent.log verbatim, leaking
-    the signature. ``connect()`` must build the AppRunner with
-    ``access_log=None`` so it is never persisted -- mirroring the BlueBubbles
-    webhook fix in 514f5020c.
+    ``msg_signature`` HMAC (plus ``echostr``/``timestamp``/``nonce``) in the
+    request *query string* (see ``_handle_verify`` / ``_handle_callback``).
+    aiohttp's default access logger would write that full request target to
+    agent.log verbatim, leaking the signature. ``connect()`` must install a
+    redacting access-log class that keeps request logging (so ``/health`` and
+    traffic stay observable) while replacing the sensitive query values with
+    ``REDACTED`` -- it must NOT disable access logging wholesale.
     """
 
+    def test_redact_request_target_redacts_sensitive_query_params(self):
+        from gateway.platforms.wecom_callback import _redact_request_target
+
+        target = (
+            "/wecom/callback?msg_signature=abc123&timestamp=1700000000"
+            "&nonce=xyz&echostr=secret-blob&foo=keep"
+        )
+        redacted = _redact_request_target(target)
+
+        # sensitive values gone
+        assert "abc123" not in redacted
+        assert "secret-blob" not in redacted
+        assert "1700000000" not in redacted
+        assert "xyz" not in redacted
+        assert redacted.count("REDACTED") == 4
+        # path and non-sensitive params preserved for observability
+        assert redacted.startswith("/wecom/callback?")
+        assert "foo=keep" in redacted
+
+    def test_redact_request_target_leaves_plain_path_untouched(self):
+        from gateway.platforms.wecom_callback import _redact_request_target
+
+        assert _redact_request_target("/health") == "/health"
+
+    def test_redacting_access_logger_logs_redacted_target(self, caplog):
+        import logging
+
+        from gateway.platforms.wecom_callback import _build_redacting_access_logger
+
+        logger_class = _build_redacting_access_logger()
+        assert logger_class is not None
+
+        captured_logger = logging.getLogger("wecom.test.access")
+
+        class _Req:
+            method = "POST"
+            path_qs = "/wecom/callback?msg_signature=topsecret&foo=keep"
+
+        class _Resp:
+            status = 200
+            body_length = 12
+
+        access_logger = logger_class(captured_logger, log_format="")
+        with caplog.at_level(logging.INFO, logger="wecom.test.access"):
+            access_logger.log(_Req(), _Resp(), 0.001)
+
+        record_text = "\n".join(r.getMessage() for r in caplog.records)
+        # the signature value must never be persisted; the path stays for ops
+        assert "topsecret" not in record_text
+        assert "REDACTED" in record_text
+        assert "/wecom/callback" in record_text
+        assert "foo=keep" in record_text
+
     @pytest.mark.asyncio
-    async def test_connect_disables_aiohttp_access_log(self, monkeypatch):
+    async def test_connect_installs_redacting_access_log_class(self, monkeypatch):
         from gateway.platforms import wecom_callback as mod
 
         captured: dict = {}
@@ -392,10 +446,16 @@ class TestWecomCallbackAccessLogDisabled:
         await adapter.disconnect()
 
         assert result is True
-        assert "access_log" in captured["kwargs"], (
-            "AppRunner must be constructed with an explicit access_log kwarg"
+        assert "access_log_class" in captured["kwargs"], (
+            "AppRunner must be constructed with an explicit access_log_class "
+            "so request logging stays enabled with redaction"
         )
-        assert captured["kwargs"]["access_log"] is None, (
-            "WeCom callback AppRunner must set access_log=None so the "
-            "msg_signature query string is never written to agent.log"
-        )
+        access_log_class = captured["kwargs"]["access_log_class"]
+        # The installed class must be a real aiohttp access logger (logging is
+        # NOT disabled) and must redact the sensitive query params.
+        from aiohttp.abc import AbstractAccessLogger
+
+        assert access_log_class is not None
+        assert issubclass(access_log_class, AbstractAccessLogger)
+        # access_log must NOT be set to None — that would kill /health logging.
+        assert captured["kwargs"].get("access_log", "default") is not None

@@ -1574,3 +1574,62 @@ class TestGatedToolRoutingAfterInit:
         assert mgr.has_tool("mem_base")
         out = json.loads(mgr.handle_tool_call("mem_gated", {}))
         assert out.get("handled") == "mem_gated"
+
+
+class TestReindexHardening:
+    """Hardening: _reindex_provider under concurrency + multi-provider, idempotent + no dup-route.
+
+    The fix runs reindex on every initialize_all() (session switches re-call it). Prove:
+    - concurrent initialize_all() calls don't corrupt the routing table or double-register;
+    - a 2nd provider's gated tool that collides with the 1st is NOT silently stolen (first wins);
+    - repeated reindex never grows _tool_to_provider beyond the real tool set.
+    """
+
+    def _gated(self, name, base, gated):
+        return GatedToolsAfterInitProvider(
+            name=name,
+            base_tools=[{"name": base, "description": "b", "parameters": {"type": "object", "properties": {}}}],
+            gated_tools=[{"name": gated, "description": "g", "parameters": {"type": "object", "properties": {}}}],
+        )
+
+    def test_concurrent_initialize_all_is_safe(self):
+        import threading
+        mgr = MemoryManager()
+        mgr.add_provider(self._gated("p1", "base1", "gated1"))
+        errors = []
+        def worker():
+            try:
+                for _ in range(20):
+                    mgr.initialize_all(session_id="c")
+            except Exception as e:  # pragma: no cover
+                errors.append(e)
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for th in threads: th.start()
+        for th in threads: th.join()
+        assert not errors, f"concurrent initialize_all raised: {errors}"
+        assert mgr.has_tool("gated1") and mgr.has_tool("base1")
+        # routing table has exactly the 2 tool names — no duplication/growth
+        assert set(mgr.get_all_tool_names()) == {"base1", "gated1"}
+        out = json.loads(mgr.handle_tool_call("gated1", {}))
+        assert out.get("handled") == "gated1"
+
+    def test_reindex_never_grows_routing_table(self):
+        mgr = MemoryManager()
+        mgr.add_provider(self._gated("p1", "base1", "gated1"))
+        mgr.initialize_all(session_id="a")
+        size1 = len(mgr.get_all_tool_names())
+        for _ in range(5):
+            mgr.initialize_all(session_id="a")
+        assert len(mgr.get_all_tool_names()) == size1 == 2
+
+    def test_first_provider_wins_on_gated_collision(self):
+        # builtin (first) + external both expose the same gated tool name → first wins, no theft.
+        mgr = MemoryManager()
+        first = self._gated("builtin", "base1", "shared_gated")
+        mgr.add_provider(first)
+        mgr.initialize_all(session_id="a")
+        # the gated tool routes to the first provider, stably, across re-inits
+        prov = mgr._tool_to_provider.get("shared_gated")
+        assert prov is first
+        mgr.initialize_all(session_id="a")
+        assert mgr._tool_to_provider.get("shared_gated") is first

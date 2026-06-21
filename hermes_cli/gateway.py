@@ -6051,7 +6051,7 @@ def _cmd_install(args):
                 elevated_handoff=getattr(args, 'elevated_handoff', False),
             )
         else:
-            # Default: try Service first, fallback to Scheduled Task
+            # Default: Scheduled Task (defers to Windows Service if already registered)
             _gw_windows().install(
                 force=force,
                 start_now=getattr(args, 'start_now', None),

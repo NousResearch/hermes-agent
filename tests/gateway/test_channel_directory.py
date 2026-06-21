@@ -13,6 +13,7 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _apply_channel_aliases,
+    _build_discord,
     _build_from_sessions,
     _build_slack,
 )
@@ -279,6 +280,74 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+
+
+class TestBuildDiscord:
+    def _write_sessions(self, tmp_path, sessions_data):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps(sessions_data))
+
+    def test_discord_directory_uses_active_threads_not_stale_session_threads(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "stale_thread": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "222",
+                    "thread_id": "222",
+                    "chat_name": "dh Studio / #비서실",
+                    "chat_topic": "old topic",
+                },
+                "chat_type": "thread",
+            },
+            "dm": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "999",
+                    "chat_name": "Alice",
+                },
+                "chat_type": "dm",
+            },
+            "duplicate_channel_session": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "111",
+                    "chat_name": "general",
+                },
+                "chat_type": "channel",
+            },
+        })
+
+        parent = SimpleNamespace(id=111, name="general")
+        guild = SimpleNamespace(
+            name="Server1",
+            text_channels=[parent],
+            forum_channels=[],
+            threads=[SimpleNamespace(id=333, name="active topic", parent_id=111, parent=parent)],
+        )
+        adapter = SimpleNamespace(_client=SimpleNamespace(guilds=[guild]))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_discord(adapter)
+
+        by_id = {entry["id"]: entry for entry in entries}
+        assert "111" in by_id
+        assert by_id["111"]["type"] == "channel"
+
+        assert "111:333" in by_id
+        assert by_id["111:333"] == {
+            "id": "111:333",
+            "thread_id": "333",
+            "parent_id": "111",
+            "name": "general / active topic",
+            "guild": "Server1",
+            "type": "thread",
+        }
+
+        assert "222:222" not in by_id
+        assert "999" in by_id
+        assert by_id["999"]["type"] == "dm"
+        assert [entry["id"] for entry in entries].count("111") == 1
 
 
 class TestFormatDirectoryForDisplay:

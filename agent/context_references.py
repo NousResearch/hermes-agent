@@ -18,6 +18,16 @@ REFERENCE_PATTERN = re.compile(
     rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
 TRAILING_PUNCTUATION = ",.;!?"
+
+# Discord URL patterns: matches discord.com/channels/{guild}/{channel}[/{message}]
+# Also matches "discord.gg/{invite}" (invite links) for server info.
+_DISCORD_URL_RE = re.compile(
+    r"https?://(?:(?:www\.)?discord(?:app)?\.com|discord\.gg)/"
+    r"(?:channels/(?P<guild>\d+)(?:/(?P<channel>\d+)(?:/(?P<message>\d+))?)?"
+    r"|(?:chapters?/)?(?P<invite>[^/?#\s]+))",
+    re.IGNORECASE,
+)
+_DISCORD_API_BASE = "https://discord.com/api/v10"
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = (
@@ -223,6 +233,12 @@ async def _expand_reference(
             count = max(1, min(int(ref.target or "1"), 10))
             return _expand_git_reference(ref, cwd, ["log", f"-{count}", "-p"], f"git log -{count} -p")
         if ref.kind == "url":
+            # Discord URLs bypass web extraction and use the bot token directly.
+            if _is_discord_url(ref.target):
+                content = await _fetch_discord_content(ref.target)
+                if not content:
+                    return f"{ref.raw}: no content extracted", None
+                return None, f"💬 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
             content = await _fetch_url_content(ref.target, url_fetcher=url_fetcher)
             if not content:
                 return f"{ref.raw}: no content extracted", None
@@ -332,6 +348,151 @@ async def _default_url_fetcher(url: str) -> str:
         return ""
     doc = docs[0]
     return str(doc.get("content") or doc.get("raw_content") or "").strip()
+
+
+# ------------------------------------------------------------------
+# Discord URL detection + content fetcher
+# ------------------------------------------------------------------
+
+def _is_discord_url(url: str) -> bool:
+    """Return True when url matches a Discord message/channel/server link."""
+    return _DISCORD_URL_RE.match(url.strip()) is not None
+
+
+def _get_discord_bot_token() -> str | None:
+    """Resolve the Discord bot token from environment."""
+    import os as _os
+    return _os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
+
+
+async def _fetch_discord_content(url: str) -> str:
+    """Fetch content from a Discord URL using the bot token.
+
+    Supports three shapes:
+      /channels/{guild}/{channel}/{message}  → single message + surrounding context
+      /channels/{guild}/{channel}              → recent messages in channel/thread
+      /invite/{code} or /chapters/{code}      → guild info via invite code
+
+    Falls back to a plain text summary when permissions are insufficient.
+    """
+    import urllib.request
+    import urllib.parse
+
+    token = _get_discord_bot_token()
+    if not token:
+        return "[Discord] DISCORD_BOT_TOKEN not set — cannot read messages."
+
+    # Parse the URL
+    parsed = _DISCORD_URL_RE.match(url.strip())
+    if not parsed:
+        return f"[Discord] Unrecognised URL format: {url}"
+
+    guild_id = parsed.group("guild")
+    channel_id = parsed.group("channel")
+    message_id = parsed.group("message")
+    invite_code = parsed.group("invite")
+
+    async def _api(path: str, params: dict | None = None) -> dict | None:
+        base = _DISCORD_API_BASE + path
+        if params:
+            base += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(
+            base,
+            headers={
+                "Authorization": f"Bot {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "Hermes-Agent/1.0",
+            },
+        )
+        try:
+            def _request() -> dict | None:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status == 204:
+                        return None
+                    import json as _json
+                    return _json.loads(resp.read().decode("utf-8"))
+
+            return await asyncio.to_thread(_request)
+        except Exception:
+            return None
+
+    def _fmt_msg(m: dict) -> str:
+        author = m.get("author", {})
+        name = author.get("global_name") or author.get("username", "?")
+        bot = " [bot]" if author.get("bot") else ""
+        content = m.get("content", "")
+        ts = m.get("timestamp", "")[:19]
+        attachments = m.get("attachments", [])
+        att_text = ""
+        if attachments:
+            att_text = " [+{} attachment(s)]".format(len(attachments))
+        return f"[{ts}] {name}{bot}: {content}{att_text}"
+
+    # 1) Single message — fetch the message + a few around it
+    if guild_id and channel_id and message_id:
+        msg = await _api(f"/channels/{channel_id}/messages/{message_id}")
+        if msg:
+            lines = [f"=== Discord Message ==="]
+            lines.append(f"Author: {msg.get('author',{}).get('global_name') or msg.get('author',{}).get('username','?')} (ID: {msg.get('author',{}).get('id','?')})")
+            lines.append(f"Timestamp: {msg.get('timestamp','?')}")
+            lines.append(f"Content:\n{msg.get('content','(no text)')}")
+            embeds = msg.get("embeds", [])
+            if embeds:
+                for e in embeds[:3]:
+                    if e.get("title"):
+                        lines.append(f"[Embed] {e['title']}")
+                    if e.get("description"):
+                        lines.append(f"[Embed desc] {e['description'][:200]}")
+            # Fetch 2 messages before and after for context
+            before_msgs = await _api(f"/channels/{channel_id}/messages", {"limit": 3, "before": message_id})
+            after_msgs = await _api(f"/channels/{channel_id}/messages", {"limit": 3, "after": message_id})
+            if before_msgs:
+                lines.append("\n--- Earlier messages ---")
+                for m in reversed(before_msgs):
+                    lines.append(_fmt_msg(m))
+            if after_msgs:
+                lines.append("\n--- Later messages ---")
+                for m in after_msgs:
+                    lines.append(_fmt_msg(m))
+            return "\n".join(lines)
+        else:
+            # Try channel info as fallback
+            ch = await _api(f"/channels/{channel_id}")
+            if ch:
+                return f"[Discord] Cannot read message {message_id} (may lack permissions). Channel: {ch.get('name','?')} ({ch.get('type','?')})"
+            return f"[Discord] Cannot read message {message_id} and channel info unavailable."
+
+    # 2) Channel/thread — fetch recent messages
+    if guild_id and channel_id:
+        msgs = await _api(f"/channels/{channel_id}/messages", {"limit": 20})
+        if msgs:
+            lines = [f"=== Discord Channel/Thread (last {len(msgs)} messages) ==="]
+            for m in reversed(msgs):
+                lines.append(_fmt_msg(m))
+            return "\n".join(lines)
+        else:
+            ch = await _api(f"/channels/{channel_id}")
+            if ch:
+                return f"[Discord] Cannot read messages in {ch.get('name','?')} (may lack permissions or channel is inaccessible)."
+            return "[Discord] Cannot read channel messages."
+
+    # 3) Invite link — resolve guild info
+    if invite_code:
+        guild = await _api(f"/invites/{invite_code}", {"with_counts": "true"})
+        if guild:
+            lines = [
+                f"=== Discord Server via Invite ===",
+                f"Name: {guild.get('name', '?')}",
+                f"ID: {guild.get('id', '?')}",
+                f"Description: {guild.get('description', '(none)')}",
+                f"Members: {guild.get('approximate_member_count', '?')}",
+                f"Online: {guild.get('approximate_presence_count', '?')}",
+                f"Icon: {guild.get('icon', '(none)')}",
+            ]
+            return "\n".join(lines)
+        return f"[Discord] Cannot resolve invite code: {invite_code}"
+
+    return f"[Discord] URL parsed but no handler for this shape: {url}"
 
 
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:

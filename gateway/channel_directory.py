@@ -164,8 +164,17 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:
-    """Enumerate all text channels and forum channels the Discord bot can see."""
+    """Enumerate Discord channels plus currently active threads.
+
+    Discord guild enumeration gives us authoritative text/forum channels and
+    active thread cache.  Session history is still useful for DMs/group DMs, but
+    old thread sessions should not be surfaced as send targets forever: archived
+    or stale threads make ``send_message(action='list')`` noisy and can resolve
+    to destinations that are no longer active.
+    """
     channels = []
+    seen_ids = set()
+    parent_names: Dict[str, str] = {}
     client = getattr(adapter, "_client", None)
     if not client:
         return channels
@@ -175,10 +184,19 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     except ImportError:
         return channels
 
+    def add(entry: Dict[str, str]) -> None:
+        entry_id = entry.get("id")
+        if not entry_id or entry_id in seen_ids:
+            return
+        channels.append(entry)
+        seen_ids.add(entry_id)
+
     for guild in client.guilds:
         for ch in guild.text_channels:
-            channels.append({
-                "id": str(ch.id),
+            channel_id = str(ch.id)
+            parent_names[channel_id] = ch.name
+            add({
+                "id": channel_id,
                 "name": ch.name,
                 "guild": guild.name,
                 "type": "channel",
@@ -186,17 +204,51 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         # Forum channels (type 15) — creating a message auto-spawns a thread post.
         forums = getattr(guild, "forum_channels", None) or []
         for ch in forums:
-            channels.append({
-                "id": str(ch.id),
+            channel_id = str(ch.id)
+            parent_names[channel_id] = ch.name
+            add({
+                "id": channel_id,
                 "name": ch.name,
                 "guild": guild.name,
                 "type": "forum",
             })
-        # Also include DM-capable users we've interacted with is not
-        # feasible via guild enumeration; those come from sessions.
 
-    # Merge any DMs from session history
-    channels.extend(_build_from_sessions("discord"))
+        # Active Discord threads are addressable by thread id, but the tool
+        # target format uses parent_id:thread_id so callers keep topic context.
+        threads = getattr(guild, "threads", None) or []
+        for thread in threads:
+            thread_id = str(getattr(thread, "id", "") or "")
+            parent_id = getattr(thread, "parent_id", None)
+            parent = getattr(thread, "parent", None)
+            if parent_id is None and parent is not None:
+                parent_id = getattr(parent, "id", None)
+            if not thread_id or parent_id is None:
+                continue
+            parent_id = str(parent_id)
+            parent_name = None
+            if parent is not None:
+                parent_name = getattr(parent, "name", None)
+            parent_name = parent_name or parent_names.get(parent_id)
+            thread_name = getattr(thread, "name", None) or thread_id
+            display_name = f"{parent_name} / {thread_name}" if parent_name else thread_name
+            add({
+                "id": f"{parent_id}:{thread_id}",
+                "thread_id": thread_id,
+                "parent_id": parent_id,
+                "name": display_name,
+                "guild": guild.name,
+                "type": "thread",
+            })
+
+    # Guild APIs cannot enumerate DMs/group DMs.  Preserve only those
+    # session-derived direct contacts; skip stale session threads and duplicate
+    # guild channels that are already covered by authoritative enumeration.
+    for entry in _build_from_sessions("discord"):
+        if entry.get("thread_id"):
+            continue
+        if entry.get("type") not in {"dm", "group"}:
+            continue
+        add(entry)
     return channels
 
 

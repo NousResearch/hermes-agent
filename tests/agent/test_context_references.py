@@ -268,6 +268,43 @@ async def test_async_url_expansion_uses_fetcher(sample_repo: Path):
     assert result.injected_tokens > 0
 
 
+@pytest.mark.asyncio
+async def test_discord_url_expansion_uses_discord_fetcher(sample_repo: Path, monkeypatch):
+    import agent.context_references as context_refs
+
+    called: dict[str, str] = {}
+
+    async def fake_discord_fetch(url: str) -> str:
+        called["url"] = url
+        return "=== Discord Message ===\nAuthor: Alice\nContent:\nship it"
+
+    async def forbidden_web_fetch(_url: str) -> str:  # pragma: no cover - must not be called
+        raise AssertionError("Discord URLs must bypass generic web extraction")
+
+    monkeypatch.setattr(context_refs, "_fetch_discord_content", fake_discord_fetch)
+
+    result = await context_refs.preprocess_context_references_async(
+        "Use @url:https://discord.com/channels/1/2/3",
+        cwd=sample_repo,
+        context_length=100_000,
+        url_fetcher=forbidden_web_fetch,
+    )
+
+    assert result.expanded
+    assert called["url"] == "https://discord.com/channels/1/2/3"
+    assert "Discord Message" in result.message
+    assert "ship it" in result.message
+
+
+def test_discord_url_detection_is_scoped():
+    from agent.context_references import _is_discord_url
+
+    assert _is_discord_url("https://discord.com/channels/1/2/3")
+    assert _is_discord_url("https://discordapp.com/channels/1/2")
+    assert _is_discord_url("https://discord.gg/example")
+    assert not _is_discord_url("https://example.com/discord.com/channels/1/2/3")
+
+
 def test_sync_url_expansion_uses_async_fetcher(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 

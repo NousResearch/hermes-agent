@@ -36,6 +36,7 @@ from typing import Any, Optional
 from agent.redact import redact_sensitive_text
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
+from hermes_cli.goals import judge_goal
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +476,23 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error(f"kanban_list: {e}")
 
 
+
+def _goal_judge_available() -> bool:
+    """True when an auxiliary client is configured for the goal judge.
+    
+    judge_goal is fail-open: when no auxiliary model can be reached it
+    returns a "continue" verdict. The completion gate must not treat that
+    as a rejection, or an unconfigured/degraded auxiliary would wedge
+    every goal_mode worker.
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception:
+        return False
+    return client is not None and bool(model)
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -567,6 +585,28 @@ def _handle_complete(args: dict, **kw) -> str:
         kb, conn = _connect(board=board)
         try:
             try:
+                # Goal-mode pre-completion judge gate (Issue #38367).
+                # Prevent workers from bypassing the auxiliary judge by
+                # calling kanban_complete before acceptance criteria are met.
+                task = kb.get_task(conn, tid)
+                if task and task.goal_mode and _goal_judge_available():
+                    try:
+                        verdict, reason, _ = judge_goal(
+                            f"{task.title}\n{task.body or ''}", summary or ""
+                        )
+                        if verdict != "done":
+                            return tool_error(
+                                f"Goal completion rejected by judge: {reason}. "
+                                f"The task is in goal_mode — you must satisfy "
+                                f"the acceptance criteria before completing. "
+                                f"Continue working or create child tasks."
+                            )
+                    except Exception as judge_exc:
+                        logger.warning(
+                            "goal judge check failed, allowing completion: %s",
+                            judge_exc,
+                        )
+                
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,

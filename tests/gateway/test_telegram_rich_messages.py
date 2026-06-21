@@ -959,3 +959,20 @@ async def test_rich_reply_native_blocks_support_mappingproxy_like_api_kwargs(mon
         MessageType.TEXT,
     )
     assert event.reply_to_text == "Status\n- done"
+
+
+@pytest.mark.asyncio
+async def test_try_edit_rich_records_streamed_final_for_reply_recovery(monkeypatch, tmp_path):
+    """A streamed final finalized via editMessageText must be indexed too.
+
+    The native rich echo covers most replies, but messages that predate the
+    bot's first rich send have no echo — so editMessageText must mirror the
+    fresh-send index the same way _try_send_rich does.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway import rich_sent_store
+
+    adapter = _make_adapter()
+    result = await adapter._try_edit_rich("12345", "5724", "Готово. Основной бот живой.")
+    assert result is not None and result.success
+    assert rich_sent_store.lookup("12345", "5724") == "Готово. Основной бот живой."

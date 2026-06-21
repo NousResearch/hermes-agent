@@ -57,7 +57,14 @@ type SessionPreviewRegistry = Record<string, SessionPreviewRecord[]>
 export interface FilePreviewTab {
   id: `file:${string}`
   target: PreviewTarget
+  /** Artifact build status - set when the agent is writing an HTML file. */
+  artifactStatus?: 'building' | 'done'
+  /** Timestamp (ms) of the last write_file/patch targeting this file. */
+  lastEditedAt?: number
 }
+
+/** Max time before a 'building' artifact is considered idle. */
+export const ARTIFACT_BUILD_TIMEOUT_MS = 10_000
 
 const REGISTRY_STORAGE_KEY = 'hermes.desktop.sessionPreviews.v1'
 const TABS_STORAGE_KEY = 'hermes.desktop.filePreviewTabs.v1'
@@ -523,6 +530,76 @@ export function clearSessionPreviewRegistry() {
 
 export function requestPreviewReload() {
   $previewReloadRequest.set($previewReloadRequest.get() + 1)
+}
+
+/**
+ * Open (or update) a file-preview tab for an artifact being built.
+ * Unlike the preview rail which shows explicit-link and tool-result targets,
+ * artifact tabs go directly to the right rail's file tab list so the user
+ * sees the HTML rendered even while the agent is still writing it.
+ *
+ * Preview targets are opened in 'preview' render mode (webview) rather than
+ * 'source' mode, because the user wants to see the rendered HTML — not the
+ * raw source — as the agent builds it.
+ */
+export function openArtifactTab(target: PreviewTarget) {
+  const id = `file:${target.url}` as `file:${string}`
+  const current = $filePreviewTabs.get()
+  const index = current.findIndex(tab => tab.id === id)
+  const tab: FilePreviewTab = {
+    id,
+    target: { ...target, renderMode: 'preview' },
+    artifactStatus: 'building',
+    lastEditedAt: Date.now()
+  }
+  $filePreviewTabs.set(
+    index === -1
+      ? [...current, tab]
+      : current.map((item, i) => (i === index ? tab : item))
+  )
+  selectRightRailTab(id)
+}
+
+/** Mark a specific artifact tab as 'building' with current timestamp. */
+export function touchArtifactTab(url: string) {
+  const current = $filePreviewTabs.get()
+  const id = `file:${url}` as `file:${string}`
+  const next = current.map(tab =>
+    tab.id === id
+      ? { ...tab, artifactStatus: 'building' as const, lastEditedAt: Date.now() }
+      : tab
+  )
+  if (next !== current) {
+    $filePreviewTabs.set(next)
+  }
+}
+
+/** Mark all 'building' artifact tabs as 'done'. */
+export function finishAllBuildingArtifactTabs() {
+  const current = $filePreviewTabs.get()
+  const next = current.map(tab =>
+    tab.artifactStatus === 'building'
+      ? { ...tab, artifactStatus: 'done' as const, lastEditedAt: Date.now() }
+      : tab
+  )
+  if (next !== current) {
+    $filePreviewTabs.set(next)
+  }
+}
+
+/** Decay 'building' to 'done' for artifacts not touched within timeout. */
+export function decayArtifactStatus() {
+  const current = $filePreviewTabs.get()
+  const now = Date.now()
+  const next = current.map(tab => {
+    if (tab.artifactStatus === 'building' && tab.lastEditedAt && now - tab.lastEditedAt > ARTIFACT_BUILD_TIMEOUT_MS) {
+      return { ...tab, artifactStatus: 'done' as const }
+    }
+    return tab
+  })
+  if (next !== current) {
+    $filePreviewTabs.set(next)
+  }
 }
 
 export function beginPreviewServerRestart(taskId: string, url: string) {

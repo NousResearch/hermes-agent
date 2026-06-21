@@ -14,7 +14,7 @@ import {
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { AlertTriangle, ChevronLeft, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -105,6 +105,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
+  // Narrow widths (phones) render this as a master-detail: list, then the tapped
+  // platform's config full-screen. Desktop keeps both panes (this flag is inert).
+  const [mobileDetail, setMobileDetail] = useState(false)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
@@ -269,13 +272,20 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         <PageLoader label={m.loading} />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto p-2">
+          {/* On phones (≤47.5rem) this behaves as a master-detail: the platform
+              list fills the screen, and tapping one swaps to its config full-screen
+              with a Back button. The max-[47.5rem] classes only apply at narrow
+              widths — desktop keeps both panes side by side. */}
+          <aside className={cn('min-h-0 overflow-y-auto p-2', mobileDetail && 'max-[47.5rem]:hidden')}>
             <ul className="space-y-1">
               {visiblePlatforms.map(platform => (
                 <li key={platform.id}>
                   <PlatformRow
                     active={selected?.id === platform.id}
-                    onSelect={() => setSelectedId(platform.id)}
+                    onSelect={() => {
+                      setSelectedId(platform.id)
+                      setMobileDetail(true)
+                    }}
                     platform={platform}
                   />
                 </li>
@@ -283,25 +293,36 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
             </ul>
           </aside>
 
-          <main className="min-h-0 overflow-hidden">
+          <main className={cn('min-h-0 overflow-hidden', !mobileDetail && 'max-[47.5rem]:hidden')}>
             {selected && (
-              <PlatformDetail
-                edits={edits[selected.id] || {}}
-                onClear={key => void handleClear(selected, key)}
-                onEdit={(key, value) =>
-                  setEdits(current => ({
-                    ...current,
-                    [selected.id]: {
-                      ...(current[selected.id] || {}),
-                      [key]: value
+              <div className="flex h-full min-h-0 flex-col">
+                <button
+                  className="hidden shrink-0 items-center gap-1 px-3 py-2 text-sm font-medium text-(--ui-text-secondary) hover:text-foreground max-[47.5rem]:flex"
+                  onClick={() => setMobileDetail(false)}
+                  type="button"
+                >
+                  <ChevronLeft className="size-4" /> {t.common.back}
+                </button>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <PlatformDetail
+                    edits={edits[selected.id] || {}}
+                    onClear={key => void handleClear(selected, key)}
+                    onEdit={(key, value) =>
+                      setEdits(current => ({
+                        ...current,
+                        [selected.id]: {
+                          ...(current[selected.id] || {}),
+                          [key]: value
+                        }
+                      }))
                     }
-                  }))
-                }
-                onSave={() => void handleSave(selected)}
-                onToggle={enabled => void handleToggle(selected, enabled)}
-                platform={selected}
-                saving={saving}
-              />
+                    onSave={() => void handleSave(selected)}
+                    onToggle={enabled => void handleToggle(selected, enabled)}
+                    platform={selected}
+                    saving={saving}
+                  />
+                </div>
+              </div>
             )}
           </main>
         </div>

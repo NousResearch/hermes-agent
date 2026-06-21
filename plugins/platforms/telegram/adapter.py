@@ -31,6 +31,7 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        MessageReactionHandler,
         ContextTypes,
         filters,
     )
@@ -49,6 +50,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -121,6 +123,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global MessageReactionHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -140,6 +143,7 @@ def check_telegram_requirements() -> bool:
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
+            MessageReactionHandler as _MRH,
             ContextTypes as _CT, filters as _filters,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
@@ -156,6 +160,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    MessageReactionHandler = _MRH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -2909,7 +2914,25 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+
+            # Capture emoji reactions placed on bot messages (feedback loop).
+            # Gated behind HERMES_TELEGRAM_REACTION_CAPTURE so the update
+            # subscription + DB writes only happen when the operator opts in.
+            # MessageReactionHandler requires allowed_updates to include
+            # MESSAGE_REACTION — which Update.ALL_TYPES (used by start_polling
+            # below) already does.
+            if self._reaction_capture_enabled():
+                try:
+                    self._app.add_handler(
+                        MessageReactionHandler(self._handle_message_reaction)
+                    )
+                    logger.info("[%s] Telegram reaction capture enabled", self.name)
+                except Exception as _react_err:
+                    logger.warning(
+                        "[%s] Failed to register reaction handler: %s",
+                        self.name, _react_err,
+                    )
+
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
             # fallback-IP chain can't block startup indefinitely.
@@ -8274,6 +8297,194 @@ class TelegramAdapter(BasePlatformAdapter):
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
             )
 
+    # ── Message reactions (user feedback capture) ─────────────────────────
+    #
+    # Distinct from the processing-lifecycle reactions above (which the *bot*
+    # sets on the *user's* message).  Here we capture reactions the *user*
+    # places on the *bot's* messages — likes/dislikes/❤️/💩 — and persist them
+    # for the weekly feedback review.  Opt-in via env so neither the update
+    # subscription nor the DB writes happen unless explicitly enabled.
+
+    @staticmethod
+    def _reaction_capture_enabled() -> bool:
+        """Whether to capture user reactions on bot messages (feedback loop).
+
+        Off by default. Enable with HERMES_TELEGRAM_REACTION_CAPTURE in a
+        truthy value (1/true/yes/on).
+        """
+        return os.getenv("HERMES_TELEGRAM_REACTION_CAPTURE", "false").lower() in {
+            "1", "true", "yes", "on",
+        }
+
+    def _session_db(self):
+        """Best-effort handle to the shared SessionDB (via the session store)."""
+        store = getattr(self, "_session_store", None)
+        return getattr(store, "_db", None) if store is not None else None
+
+    def _resolve_session_id_for_key(self, session_key: str) -> Optional[str]:
+        """Map a gateway session_key → current Hermes session_id, if known."""
+        store = getattr(self, "_session_store", None)
+        if store is None or not session_key:
+            return None
+        try:
+            store._ensure_loaded()
+            entry = store._entries.get(session_key)
+            return getattr(entry, "session_id", None) if entry else None
+        except Exception:
+            return None
+
+    def _on_final_response_sent(self, event, session_key, result, text_content) -> None:
+        """Index an outbound bot message → session so reactions can correlate.
+
+        Overrides the base no-op. Only active when reaction capture is on.
+        Writes are best-effort and must not disrupt message delivery.
+        """
+        if not self._reaction_capture_enabled():
+            return
+        db = self._session_db()
+        if db is None:
+            return
+        message_id = getattr(result, "message_id", None) if result else None
+        if not (getattr(result, "success", False) and message_id):
+            return
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        if not chat_id:
+            return
+        thread_id = getattr(getattr(event, "source", None), "thread_id", None)
+        session_id = self._resolve_session_id_for_key(session_key)
+        try:
+            db.record_telegram_outbound_message(
+                chat_id=str(chat_id),
+                message_id=str(message_id),
+                thread_id=str(thread_id) if thread_id is not None else None,
+                session_id=session_id,
+                snippet=text_content,
+            )
+        except Exception as exc:
+            logger.debug("[%s] record_telegram_outbound_message failed: %s", self.name, exc)
+
+    @staticmethod
+    def _diff_reactions(old_list, new_list) -> tuple:
+        """Compute (added, removed) reaction descriptors between two snapshots.
+
+        Each descriptor is ``(kind, value)`` where kind ∈ {"emoji",
+        "custom_emoji", "paid"} and value is the unicode emoji, custom emoji
+        id, or the literal "paid".  Telegram sends full before/after lists on
+        every ``message_reaction`` update, so the delta tells us what the user
+        just added or removed.
+        """
+        def _key(reaction) -> Optional[tuple]:
+            rtype = getattr(reaction, "type", None)
+            emoji = getattr(reaction, "emoji", None)
+            if emoji:
+                return ("emoji", emoji)
+            custom_id = getattr(reaction, "custom_emoji_id", None)
+            if custom_id:
+                return ("custom_emoji", str(custom_id))
+            if rtype == "paid":
+                return ("paid", "paid")
+            # Unknown reaction shape — fall back to its string repr so we at
+            # least record that *something* was placed.
+            if rtype:
+                return (str(rtype), str(rtype))
+            return None
+
+        old_keys = [k for k in (_key(r) for r in (old_list or [])) if k]
+        new_keys = [k for k in (_key(r) for r in (new_list or [])) if k]
+        old_set = set(old_keys)
+        new_set = set(new_keys)
+        added = [k for k in new_keys if k not in old_set]
+        removed = [k for k in old_keys if k not in new_set]
+        return added, removed
+
+    async def _handle_message_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Persist emoji reactions the user placed/removed on bot messages.
+
+        Telegram delivers a ``message_reaction`` update (PTB
+        ``MessageReactionUpdated``) carrying old/new reaction lists, the
+        chat + message id, and the actor.  We diff the lists, correlate the
+        message id back to the bot's outbound index (session + snippet), and
+        append one row per added/removed reaction.
+        """
+        if not self._reaction_capture_enabled():
+            return
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            return
+        db = self._session_db()
+        if db is None:
+            return
+        try:
+            chat = getattr(mr, "chat", None)
+            chat_id = getattr(chat, "id", None)
+            message_id = getattr(mr, "message_id", None)
+            if chat_id is None or message_id is None:
+                return
+
+            # Only capture reactions on messages WE sent. If the message id is
+            # not in our outbound index, skip — the user reacted to their own
+            # message or someone else's, which isn't feedback on Hermes.
+            indexed = db.lookup_telegram_outbound_message(
+                chat_id=str(chat_id), message_id=str(message_id)
+            )
+            if indexed is None:
+                logger.debug(
+                    "[%s] reaction on non-bot message %s/%s — skipping",
+                    self.name, chat_id, message_id,
+                )
+                return
+
+            actor = getattr(mr, "user", None)
+            user_id = getattr(actor, "id", None)
+            user_name = None
+            if actor is not None:
+                user_name = (
+                    getattr(actor, "username", None)
+                    or getattr(actor, "full_name", None)
+                    or getattr(actor, "first_name", None)
+                )
+            thread_id = indexed.get("thread_id")
+
+            added, removed = self._diff_reactions(
+                getattr(mr, "old_reaction", None),
+                getattr(mr, "new_reaction", None),
+            )
+
+            for kind, value in added:
+                db.record_telegram_reaction(
+                    chat_id=str(chat_id),
+                    message_id=str(message_id),
+                    emoji=value,
+                    reaction_kind=kind,
+                    action="add",
+                    thread_id=str(thread_id) if thread_id is not None else None,
+                    user_id=str(user_id) if user_id is not None else None,
+                    user_name=str(user_name) if user_name else None,
+                    session_id=indexed.get("session_id"),
+                    snippet=indexed.get("snippet"),
+                )
+            for kind, value in removed:
+                db.record_telegram_reaction(
+                    chat_id=str(chat_id),
+                    message_id=str(message_id),
+                    emoji=value,
+                    reaction_kind=kind,
+                    action="remove",
+                    thread_id=str(thread_id) if thread_id is not None else None,
+                    user_id=str(user_id) if user_id is not None else None,
+                    user_name=str(user_name) if user_name else None,
+                    session_id=indexed.get("session_id"),
+                    snippet=indexed.get("snippet"),
+                )
+
+            if added or removed:
+                logger.info(
+                    "[%s] Captured Telegram reaction(s) on bot msg %s/%s: +%s -%s",
+                    self.name, chat_id, message_id,
+                    [v for _, v in added], [v for _, v in removed],
+                )
+        except Exception as exc:
+            logger.warning("[%s] Failed to handle message reaction: %s", self.name, exc, exc_info=True)
 
 # ──────────────────────────────────────────────────────────────────────────
 # Plugin migration glue (#41112 / #3823)

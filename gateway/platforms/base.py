@@ -4018,6 +4018,22 @@ class BasePlatformAdapter(ABC):
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 
+    def _on_final_response_sent(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+        result: "SendResult",
+        text_content: str,
+    ) -> None:
+        """Hook called after a final response message is delivered.
+
+        Default is a no-op.  Adapters that support reaction-based feedback
+        (e.g. Telegram) override this to index the outbound platform message
+        id against the Hermes session so a later reaction can be correlated to
+        the assistant text.  Must be cheap/synchronous and never raise — the
+        caller swallows exceptions but should not be relied upon to.
+        """
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
@@ -5010,6 +5026,19 @@ class BasePlatformAdapter(ABC):
                         metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
+
+                    # Index the outbound bot message → session so a later
+                    # reaction can be correlated to what the assistant said.
+                    # No-op on platforms/adapters that don't override the hook.
+                    try:
+                        self._on_final_response_sent(
+                            event, session_key, result, text_content
+                        )
+                    except Exception as _idx_err:
+                        logger.debug(
+                            "[%s] outbound-message indexing failed: %s",
+                            self.name, _idx_err,
+                        )
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

@@ -1948,3 +1948,70 @@ class TestUtf16OverflowDetection:
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
 
+
+class TestSplitTextChunksUtf16Budget:
+    """_split_text_chunks must keep every chunk within the len_fn budget.
+
+    The no-newline fallback used to hard-split at ``limit`` codepoints, but
+    ``limit`` is measured in ``len_fn`` units. With ``utf16_len`` (Telegram),
+    non-BMP characters (emoji = 2 UTF-16 units) made a fallback chunk up to
+    2x the budget, so Telegram rejected the over-long final message.
+    """
+
+    LIMIT = 4000
+
+    def test_emoji_without_newlines_stays_within_utf16_budget(self):
+        from gateway.platforms.base import utf16_len
+
+        text = "😀" * 5000  # 5000 codepoints, 10000 UTF-16 units, no newline
+        chunks = GatewayStreamConsumer._split_text_chunks(
+            text, self.LIMIT, len_fn=utf16_len,
+        )
+        assert all(utf16_len(c) <= self.LIMIT for c in chunks), (
+            [utf16_len(c) for c in chunks]
+        )
+        assert "".join(chunks) == text  # lossless (no newlines to strip)
+
+    def test_emoji_with_newlines_stays_within_utf16_budget(self):
+        from gateway.platforms.base import utf16_len
+
+        text = ("😀" * 100 + "\n") * 60
+        chunks = GatewayStreamConsumer._split_text_chunks(
+            text, self.LIMIT, len_fn=utf16_len,
+        )
+        assert all(utf16_len(c) <= self.LIMIT for c in chunks), (
+            [utf16_len(c) for c in chunks]
+        )
+
+    def test_cjk_bmp_stays_within_utf16_budget(self):
+        from gateway.platforms.base import utf16_len
+
+        # CJK BMP chars are 1 UTF-16 unit each — already fine; guards the
+        # root-cause boundary (only non-BMP diverges from codepoint count).
+        text = "中" * 5000
+        chunks = GatewayStreamConsumer._split_text_chunks(
+            text, self.LIMIT, len_fn=utf16_len,
+        )
+        assert all(utf16_len(c) <= self.LIMIT for c in chunks)
+
+    def test_plain_len_path_unchanged_and_within_budget(self):
+        # Regression guard: with the default len_fn, _cp_budget == limit, so
+        # the plain-codepoint behavior must be unchanged.
+        text = "a" * 5000
+        chunks = GatewayStreamConsumer._split_text_chunks(text, self.LIMIT)
+        assert all(len(c) <= self.LIMIT for c in chunks)
+        assert "".join(chunks) == text
+
+    def test_no_newline_fallback_does_not_drop_text(self):
+        from gateway.platforms.base import utf16_len
+
+        # A single long no-newline emoji run must be fully delivered across
+        # chunks (the bug produced one over-limit chunk that the platform
+        # would then reject, losing the message).
+        text = "🎉" * 3333
+        chunks = GatewayStreamConsumer._split_text_chunks(
+            text, self.LIMIT, len_fn=utf16_len,
+        )
+        assert "".join(chunks) == text
+        assert all(utf16_len(c) <= self.LIMIT for c in chunks)
+

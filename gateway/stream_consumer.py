@@ -842,7 +842,11 @@ class GatewayStreamConsumer:
             _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
             split_at = remaining.rfind("\n", 0, _cp_budget)
             if split_at < limit // 2:
-                split_at = limit
+                # Hard split at the codepoint budget — NOT ``limit``, which is
+                # measured in ``len_fn`` units (e.g. UTF-16 for Telegram). Using
+                # ``limit`` as a codepoint index over-slices non-BMP text (emoji
+                # = 2 UTF-16 units each), producing chunks past the platform cap.
+                split_at = _cp_budget
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:

@@ -1193,7 +1193,25 @@ class GatewaySlashCommandsMixin:
                                     api_mode=result.api_mode,
                                 )
                             except Exception as exc:
-                                logger.warning("Picker model switch failed for cached agent: %s", exc)
+                                # The in-place swap rolled the agent back to the
+                                # OLD working model/client and re-raised.  Abort
+                                # the rest of the commit: do NOT persist the
+                                # failed model to the DB, do NOT set a session
+                                # override pointing at the broken model, and do
+                                # NOT evict the working cached agent.  Otherwise
+                                # the next message rebuilds a dead agent from the
+                                # broken override and the conversation is lost
+                                # (#50163).  A failed switch must be a no-op.
+                                logger.warning(
+                                    "Picker model switch failed for cached agent: %s", exc
+                                )
+                                return t(
+                                    "gateway.model.error_prefix",
+                                    error=(
+                                        f"Model switch to {result.new_model} failed ({exc}); "
+                                        f"staying on {_cur_model}."
+                                    ),
+                                )
 
                         # Persist the new model to the session DB so the
                         # dashboard shows the updated model (#34850).
@@ -1399,7 +1417,20 @@ class GatewaySlashCommandsMixin:
                         api_mode=result.api_mode,
                     )
                 except Exception as exc:
+                    # In-place swap rolled the agent back to the OLD working
+                    # model/client and re-raised.  Abort the commit: skip DB
+                    # persist, session override, cache eviction, and config
+                    # write so a failed switch is a no-op rather than a dead
+                    # conversation (#50163).  Without this early return the
+                    # next message rebuilds a broken agent from the override.
                     logger.warning("In-place model switch failed for cached agent: %s", exc)
+                    return t(
+                        "gateway.model.error_prefix",
+                        error=(
+                            f"Model switch to {result.new_model} failed ({exc}); "
+                            f"staying on {current_model}."
+                        ),
+                    )
 
             # Persist the new model to the session DB so the dashboard
             # shows the updated model (#34850).

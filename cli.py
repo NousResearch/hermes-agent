@@ -6950,6 +6950,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 logger.debug("preflight-compression switch warning failed: %s", exc)
 
         old_model = self.model
+        # Snapshot the CLI-level credential/runtime fields BEFORE mutating them
+        # so a failed in-place agent swap can roll the whole CLI back to the old
+        # working model.  Otherwise the broken credentials staged below leak into
+        # the next turn's resolution even though the agent itself rolled back
+        # (#50163).
+        _cli_snapshot = {
+            "model": self.model,
+            "provider": self.provider,
+            "requested_provider": self.requested_provider,
+            "_explicit_api_key": getattr(self, "_explicit_api_key", None),
+            "_explicit_base_url": getattr(self, "_explicit_base_url", None),
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "api_mode": self.api_mode,
+        }
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
@@ -6975,7 +6990,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     api_mode=result.api_mode,
                 )
             except Exception as exc:
-                _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
+                # The agent rolled itself back to the old working model/client.
+                # Roll the CLI's own staged fields back too and abort the rest
+                # of the commit (note + success print) so a failed switch is a
+                # no-op rather than a dead session (#50163).
+                for _k, _v in _cli_snapshot.items():
+                    setattr(self, _k, _v)
+                _cprint(
+                    f"  ⚠ Model switch to {result.new_model} failed ({exc}); "
+                    f"staying on {old_model}."
+                )
+                return
 
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
@@ -7236,6 +7261,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Update requested_provider so _ensure_runtime_credentials() doesn't
         # overwrite the switch on the next turn (it re-resolves from this).
         old_model = self.model
+        # Snapshot CLI-level fields before mutation so a failed in-place swap
+        # rolls the whole CLI back to the old working model (#50163).
+        _cli_snapshot = {
+            "model": self.model,
+            "provider": self.provider,
+            "requested_provider": self.requested_provider,
+            "_explicit_api_key": getattr(self, "_explicit_api_key", None),
+            "_explicit_base_url": getattr(self, "_explicit_base_url", None),
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "api_mode": self.api_mode,
+        }
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
@@ -7262,7 +7299,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     api_mode=result.api_mode,
                 )
             except Exception as exc:
-                _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
+                # Agent rolled itself back; roll the CLI back too and abort so a
+                # failed switch is a no-op rather than a dead session (#50163).
+                for _k, _v in _cli_snapshot.items():
+                    setattr(self, _k, _v)
+                _cprint(
+                    f"  ⚠ Model switch to {result.new_model} failed ({exc}); "
+                    f"staying on {old_model}."
+                )
+                return
 
         # Store a note to prepend to the next user message so the model
         # knows a switch occurred (avoids injecting system messages mid-history

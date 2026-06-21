@@ -1923,6 +1923,7 @@ def _launch_tui(
     query: Optional[str] = None,
     image: Optional[str] = None,
     worktree: bool = False,
+    no_worktree: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
     max_turns: Optional[int] = None,
@@ -1952,7 +1953,16 @@ def _launch_tui(
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None
-    if worktree:
+    # Resolve worktree decision: default-on via config, explicit-on via
+    # --worktree/-w, opt-out via --no-worktree or ``worktree: false`` in config.
+    _config_wt = True
+    try:
+        from cli import CLI_CONFIG
+        _config_wt = CLI_CONFIG.get("worktree", True)
+    except Exception:
+        pass
+    _want_worktree = (worktree or _config_wt) and not no_worktree
+    if _want_worktree:
         try:
             from cli import (
                 _cleanup_worktree,
@@ -1969,9 +1979,15 @@ def _launch_tui(
             print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
             wt_info = None
         if not wt_info:
-            sys.exit(1)
-        env["HERMES_CWD"] = wt_info["path"]
-        env["TERMINAL_CWD"] = wt_info["path"]
+            if worktree:
+                # Explicitly requested via --worktree/-w but setup failed —
+                # don't silently run without isolation.
+                sys.exit(1)
+            # else: default-on but not in a git repo / setup failed —
+            # continue without a worktree
+        if wt_info:
+            env["HERMES_CWD"] = wt_info["path"]
+            env["TERMINAL_CWD"] = wt_info["path"]
 
     if model:
         env["HERMES_MODEL"] = model
@@ -2301,6 +2317,7 @@ def cmd_chat(args):
             query=getattr(args, "query", None),
             image=getattr(args, "image", None),
             worktree=getattr(args, "worktree", False),
+            no_worktree=getattr(args, "no_worktree", False),
             checkpoints=getattr(args, "checkpoints", False),
             pass_session_id=getattr(args, "pass_session_id", False),
             max_turns=getattr(args, "max_turns", None),
@@ -2322,6 +2339,7 @@ def cmd_chat(args):
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
+        "no_worktree": getattr(args, "no_worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
@@ -11316,6 +11334,7 @@ def _set_chat_arg_defaults(args) -> None:
         ("resume", None),
         ("continue_last", None),
         ("worktree", False),
+        ("no_worktree", False),
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
@@ -12615,6 +12634,7 @@ def main():
             ("toolsets", None),
             ("verbose", None),
             ("worktree", False),
+            ("no_worktree", False),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
@@ -12632,6 +12652,7 @@ def main():
             ("resume", None),
             ("continue_last", None),
             ("worktree", False),
+            ("no_worktree", False),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)

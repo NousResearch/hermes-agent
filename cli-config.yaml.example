@@ -158,12 +158,16 @@ model:
 # =============================================================================
 # Git Worktree Isolation
 # =============================================================================
-# When enabled, each CLI session creates an isolated git worktree so multiple
-# agents can work on the same repo concurrently without file collisions.
-# Equivalent to always passing --worktree / -w on the command line.
+# Worktree isolation is ON by default: each CLI/TUI session in a git repo
+# creates an isolated git worktree so multiple agents can work on the same
+# repo concurrently without file collisions.
 #
-# worktree: true    # Always create a worktree when in a git repo
-# worktree: false   # Default — only create when -w flag is passed
+# To opt out:
+#   - Pass --no-worktree on the command line (per-session)
+#   - Set worktree: false here (permanent)
+#
+# worktree: true    # Default — create a worktree when in a git repo
+# worktree: false   # Disable worktree isolation
 
 # =============================================================================
 # Terminal Tool Configuration

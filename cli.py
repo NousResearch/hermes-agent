@@ -495,6 +495,11 @@ def load_cli_config() -> Dict[str, Any]:
             # shown once per install then latched here.
             "seen": {},
         },
+        # Git worktree isolation is ON by default so multiple agents working
+        # on the same repo get independent working trees.  Set to false in
+        # config.yaml or pass --no-worktree to opt out.  Has no effect
+        # outside a git repository.
+        "worktree": True,
     }
     
     # Track whether the config file explicitly set terminal config.
@@ -14394,6 +14399,7 @@ def main(
     resume: str = None,
     worktree: bool = False,
     w: bool = False,
+    no_worktree: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
@@ -14420,6 +14426,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        no_worktree: Disable worktree isolation even if on by default. Alias: --no-w
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -14459,8 +14466,12 @@ def main(
     if not list_tools and not list_toolsets:
         # ── Git worktree isolation (#652) ──
         # Create an isolated worktree so this agent instance doesn't collide
-        # with other agents working on the same repo.
-        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
+        # with other agents working on the same repo.  On by default; opt out
+        # with --no-worktree or ``worktree: false`` in config.
+        explicit_worktree = worktree or w
+        use_worktree = (
+            explicit_worktree or CLI_CONFIG.get("worktree", True)
+        ) and not no_worktree
         wt_info = None
         if use_worktree:
             # Prune stale worktrees from crashed/killed sessions
@@ -14472,10 +14483,12 @@ def main(
                 _active_worktree = wt_info
                 os.environ["TERMINAL_CWD"] = wt_info["path"]
                 atexit.register(_cleanup_worktree, wt_info)
-            else:
-                # Worktree was explicitly requested but setup failed —
+            elif explicit_worktree:
+                # Explicitly requested via --worktree/-w but setup failed —
                 # don't silently run without isolation.
                 return
+            # else: default-on but not in a git repo / setup failed —
+            # continue without a worktree (no-op outside git repos)
     else:
         wt_info = None
     

@@ -235,6 +235,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "agy-cli": ProviderConfig(
+        id="agy-cli",
+        name="Antigravity CLI (agy)",
+        auth_type="external_process",
+        # Internal marker URL, never sent over HTTP. The agy binary at
+        # ~/.local/bin/agy handles its own OAuth + cloudcode-pa transport.
+        # See agent/agy_cli_client.py + plugins/model-providers/agy-cli/.
+        inference_base_url="agy://antigravity",
+        base_url_env_var="HERMES_AGY_COMMAND",  # actually a command override, not URL
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",

@@ -1,0 +1,5 @@
+name: agy-cli-provider
+kind: model-provider
+version: 1.0.0
+description: Antigravity CLI (agy) — Google's free 8-model agent CLI via subprocess
+author: Nous Research

@@ -894,6 +894,17 @@ export function ChatBar({
       return
     }
 
+    // PageUp/PageDown: prevent the browser's default scroll behaviour from
+    // propagating to the chat-thread viewport.  The composer is a single-line
+    // contentEditable — these keys have no text-editing purpose and letting
+    // them bubble causes the thread to jump and the layout to break (large
+    // blank area, sidebar pushed off-screen).
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault()
+
+      return
+    }
+
     // Plain Backspace right after a directive chip: remove the chip + its
     // auto-inserted trailing space as one unit, so deleting a directive never
     // leaves an orphaned space. (Modified backspaces stay native.)

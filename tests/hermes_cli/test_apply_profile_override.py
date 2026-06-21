@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from hermes_cli.main import _is_valid_profile_id
 
 
 def _run_apply_profile_override(
@@ -36,8 +37,22 @@ def _run_apply_profile_override(
     if active_profile and active_profile != "default":
         (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
 
-    if hermes_profile and hermes_profile != "default":
-        (hermes_root / "profiles" / hermes_profile).mkdir(parents=True, exist_ok=True)
+    # Only pre-create the profile dir for values production would actually
+    # resolve. _apply_profile_override .strip()s HERMES_PROFILE and validates
+    # it against _PROFILE_ID_RE, so whitespace-only / invalid values never
+    # reach a mkdir there. Mirror that here so we don't create directories with
+    # trailing-space or otherwise-invalid names (unsupported on Windows) and so
+    # the test fixture matches production behaviour.
+    if hermes_profile is not None:
+        stripped_profile = hermes_profile.strip()
+        if (
+            stripped_profile
+            and stripped_profile != "default"
+            and _is_valid_profile_id(stripped_profile)
+        ):
+            (hermes_root / "profiles" / stripped_profile).mkdir(
+                parents=True, exist_ok=True
+            )
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     if hermes_home is not None:

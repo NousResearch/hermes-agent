@@ -62,7 +62,20 @@ except ModuleNotFoundError:
     pass
 
 import os
+import re
 import sys
+
+# Profile names must match hermes_cli.profiles._PROFILE_ID_RE so we never hand
+# resolve_profile_env() a value it would reject + sys.exit on. Compiled once at
+# module level and shared by every validation site in _apply_profile_override
+# (both the -p/--profile flag and the HERMES_PROFILE env var) so the two
+# validators can't drift apart.
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _is_valid_profile_id(name: str) -> bool:
+    """Return True if ``name`` is a syntactically valid profile id."""
+    return bool(_PROFILE_ID_RE.match(name))
 
 
 def _set_process_title() -> None:
@@ -431,9 +444,7 @@ def _apply_profile_override() -> None:
     # Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never call
     # resolve_profile_env() with a value it must reject + sys.exit on.
     if profile_name is not None and consume == 2:
-        import re as _re
-
-        if not _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
+        if not _is_valid_profile_id(profile_name):
             profile_name = None
             consume = 0
             profile_index = None
@@ -464,9 +475,7 @@ def _apply_profile_override() -> None:
     if profile_name is None:
         env_profile = os.environ.get("HERMES_PROFILE", "").strip()
         if env_profile and env_profile.casefold() != "default":
-            import re as _re
-
-            if _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", env_profile):
+            if _is_valid_profile_id(env_profile):
                 profile_name = env_profile
                 consume = 0  # don't strip anything from argv
 

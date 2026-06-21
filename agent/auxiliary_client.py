@@ -5121,24 +5121,19 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
-        # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
-        # an explicit cap only risks truncating a summary or 400-ing on providers
-        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
-        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
-        # models reject it entirely with error 1210). Omitting it sidesteps all of
-        # those wire-format quirks at once.
+        # Pass max_tokens unconditionally.  Previously this was gated to
+        # Anthropic-compatible endpoints only, but local OpenAI-compatible
+        # backends (oMLX, llama.cpp, Ollama, LM Studio) interpret an omitted
+        # max_tokens as "use server default" (typically 4096-8192), NOT
+        # "generate until EOS".  This caused compression summaries to fill the
+        # entire server default, hit finish_reason=length, and retry 4+ times
+        # (~18 minutes per compression cycle).  See #50132.
         #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
-        _effective_base = base_url or (
-            _current_custom_base_url() if provider == "custom" else ""
-        )
-        if _is_anthropic_compat_endpoint(provider, _effective_base):
-            kwargs["max_tokens"] = max_tokens
+        # Providers that reject max_tokens outright (ZAI vision, GPT-5-style
+        # models needing max_completion_tokens, GitHub Copilot) are already
+        # handled by the retry logic at lines ~5394-5410, which strips
+        # max_tokens and retries on "unsupported_parameter" errors.
+        kwargs["max_tokens"] = max_tokens
 
     if tools:
         # Defensive dedup: providers like Google Vertex, Azure, and Bedrock

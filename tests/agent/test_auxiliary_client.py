@@ -105,13 +105,13 @@ class TestAuxiliaryMaxTokensParam:
 
 
 class TestBuildCallKwargsMaxTokens:
-    """_build_call_kwargs should not cap output by default (#34530).
+    """_build_call_kwargs should pass max_tokens unconditionally (#50132).
 
-    Most chat-completions providers treat an omitted max_tokens as "use the
-    model max", which is what we want for auxiliary tasks. An explicit cap only
-    risks truncation or a wire-format 400 (GitHub Copilot / GPT-5 reject
-    max_tokens; ZAI vision rejects it entirely). The Anthropic Messages wire is
-    the one exception — max_tokens is a mandatory field there.
+    Previously, max_tokens was only included for Anthropic-compatible
+    endpoints.  Local OpenAI-compatible backends (oMLX, llama.cpp, Ollama)
+    interpret an omitted max_tokens as "use server default" (4096-8192),
+    NOT "generate until EOS", causing compression summaries to never
+    converge.  Providers that reject max_tokens are handled by retry logic.
     """
 
     @pytest.mark.parametrize(
@@ -126,7 +126,7 @@ class TestBuildCallKwargsMaxTokens:
             ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
         ],
     )
-    def test_omits_max_tokens_for_openai_compatible(self, provider, model, base_url):
+    def test_passes_max_tokens_unconditionally(self, provider, model, base_url):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -136,7 +136,7 @@ class TestBuildCallKwargsMaxTokens:
             max_tokens=1234,
             base_url=base_url,
         )
-        assert "max_tokens" not in kwargs
+        assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
 
     @pytest.mark.parametrize(

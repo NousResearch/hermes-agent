@@ -3883,6 +3883,23 @@ def _existing_tool_names() -> List[str]:
     return names
 
 
+def _server_is_connected(server: "MCPServerTask | None") -> bool:
+    """Return True when a cached MCP server entry is still live or recovering.
+
+    ``_servers`` can retain a named ``MCPServerTask`` after its reconnect loop
+    gives up or during an in-flight reconnect window.  Treat an entry with a
+    live ``session`` as connected, and also treat an entry whose background task
+    is still running as self-recovering. Only a dead/absent task should stop
+    blocking fresh startup discovery for a new session.
+    """
+    if server is None:
+        return False
+    if getattr(server, "session", None) is not None:
+        return True
+    task = getattr(server, "_task", None)
+    return bool(task is not None and not task.done())
+
+
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
     """Register tools from an already-connected server into the registry.
 
@@ -4051,7 +4068,10 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if (
+                not _server_is_connected(_servers.get(k))
+                and _parse_boolish(v.get("enabled", True), default=True)
+            )
         }
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
@@ -4156,7 +4176,10 @@ def discover_mcp_tools() -> List[str]:
         new_server_names = [
             name
             for name, cfg in servers.items()
-            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
+            if (
+                not _server_is_connected(_servers.get(name))
+                and _parse_boolish(cfg.get("enabled", True), default=True)
+            )
         ]
 
     tool_names = register_mcp_servers(servers)

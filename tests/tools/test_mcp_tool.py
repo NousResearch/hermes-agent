@@ -3875,6 +3875,71 @@ class TestRegisterMcpServers:
         finally:
             _servers.pop("existing", None)
 
+    def test_reconnects_server_entry_that_exists_but_is_not_connected(self):
+        """A stale server record with ``session is None`` must NOT block a fresh
+        connection attempt for a new session.
+
+        Regression for #50170: after keepalive/reconnect failure, the dead
+        ``MCPServerTask`` can remain parked in ``_servers``.  The old
+        name-only gate treated that as "already connected", so later session
+        startup skipped rediscovery entirely and the session inherited no MCP
+        tools.
+        """
+        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+
+        stale = _make_mock_server("existing", session=None)
+        stale._registered_tool_names = ["mcp_existing_old_tool"]
+        _servers["existing"] = stale
+
+        fake_config = {"existing": {"command": "npx", "args": ["test"]}}
+        calls = []
+
+        async def fake_register(name, cfg):
+            calls.append((name, cfg))
+            fresh = _make_mock_server(name, session=MagicMock())
+            fresh._registered_tool_names = ["mcp_existing_fresh_tool"]
+            _servers[name] = fresh
+            return ["mcp_existing_fresh_tool"]
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_existing_fresh_tool"]):
+                _ensure_mcp_loop()
+                result = register_mcp_servers(fake_config)
+
+            assert calls == [("existing", fake_config["existing"])]
+            assert result == ["mcp_existing_fresh_tool"]
+            assert _servers["existing"].session is not None
+        finally:
+            _servers.pop("existing", None)
+
+    def test_skips_server_that_is_mid_reconnect_with_live_background_task(self):
+        """An in-flight reconnect keeps ownership of the server name.
+
+        ``session`` can legitimately be None during an in-place reconnect. That
+        alone must not trigger a second startup connect while the original
+        ``MCPServerTask`` background loop is still alive and recovering.
+        """
+        from tools.mcp_tool import register_mcp_servers, _servers
+
+        recovering = _make_mock_server("existing", session=None)
+        recovering._registered_tool_names = ["mcp_existing_old_tool"]
+        recovering._task = MagicMock()
+        recovering._task.done.return_value = False
+        _servers["existing"] = recovering
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server") as discover, \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_existing_old_tool"]):
+                result = register_mcp_servers({"existing": {"command": "test"}})
+
+            discover.assert_not_called()
+            assert result == ["mcp_existing_old_tool"]
+        finally:
+            _servers.pop("existing", None)
+
     def test_skips_disabled_servers(self):
         from tools.mcp_tool import register_mcp_servers, _servers
 

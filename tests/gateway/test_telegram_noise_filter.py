@@ -96,6 +96,35 @@ def test_chat_gateways_redact_secret_in_provider_error(platform):
     assert "provider" in sanitized.lower()
 
 
+@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+def test_chat_gateways_redact_secret_in_non_error_body(platform):
+    """Secrets must be redacted even when no provider-error rewrite fires.
+
+    The provider-error case above is rewritten wholesale to a generic
+    category string, so it cannot, on its own, prove the secret-redaction
+    layer works — the rewrite would strip the body regardless. This case
+    feeds ordinary assistant prose that merely *echoes* a bearer token (not
+    a provider-error envelope), so `_redact_gateway_user_facing_secrets` is
+    the only thing standing between the token and the user. Removing the
+    redaction patterns makes this fail (genuine regression guard); the
+    surrounding prose must survive intact.
+    """
+    raw = (
+        "Sure — here is the example request you asked for: "
+        "curl -H 'Authorization: Bearer sk-ABCDEF0123456789abcdef0123' "
+        "https://api.example.com/v1/models"
+    )
+
+    sanitized = _sanitize_gateway_final_response(platform, raw)
+
+    assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
+    assert "sk-ABCDEF" not in sanitized
+    assert "[REDACTED]" in sanitized
+    # Non-secret prose is preserved — redaction is surgical, not a wholesale
+    # rewrite, on bodies that are not provider-error envelopes.
+    assert "here is the example request you asked for" in sanitized
+
+
 def test_plugin_platform_string_suppresses_noise():
     """Unknown/plugin chat platforms fail closed to the chat-filter path."""
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."

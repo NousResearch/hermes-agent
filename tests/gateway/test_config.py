@@ -672,6 +672,46 @@ class TestLoadGatewayConfig:
         )
         assert telegram.extra.get("require_mention") is False
 
+    def test_bridges_feishu_group_rules_from_top_level_config_yaml(self, tmp_path, monkeypatch):
+        """Feishu per-group overrides must survive config loading.
+
+        Regression: the shared-key loop bridged scalar Feishu keys like
+        ``require_mention`` and ``group_allow_admin_from`` but silently dropped
+        ``group_rules``. That made runtime admission fall back to the global
+        mention policy even when config.yaml defined a per-group override.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  require_mention: true\n"
+            "  group_allow_admin_from:\n"
+            "    - \"ou_admin\"\n"
+            "  group_rules:\n"
+            "    oc_free:\n"
+            "      policy: allowlist\n"
+            "      allowlist:\n"
+            "        - \"ou_admin\"\n"
+            "      require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        feishu = config.platforms[Platform.FEISHU]
+        assert feishu.extra.get("require_mention") is True
+        assert feishu.extra.get("group_allow_admin_from") == ["ou_admin"]
+        assert feishu.extra.get("group_rules") == {
+            "oc_free": {
+                "policy": "allowlist",
+                "allowlist": ["ou_admin"],
+                "require_mention": False,
+            }
+        }, "group_rules configured under top-level feishu must be bridged into PlatformConfig.extra"
+
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

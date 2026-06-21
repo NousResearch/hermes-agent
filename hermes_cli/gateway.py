@@ -2412,10 +2412,6 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # checks the correct ~/.hermes/node/bin (not root's ~/hermes when
         # running under sudo).
         path_entries = _build_service_path_dirs(hermes_home=hermes_home)
-        if resolved_node:
-            resolved_node_dir = str(Path(resolved_node).resolve().parent)
-            if resolved_node_dir not in path_entries:
-                path_entries.append(resolved_node_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
@@ -2429,6 +2425,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
+        if resolved_node:
+            # Resolve + remap to the target user's home so we don't
+            # leak the calling user's node path (e.g. root's nvm dir)
+            # into the target user's systemd unit.
+            node_dir = str(Path(resolved_node).resolve().parent)
+            remapped_node_dir = _remap_path_for_user(node_dir, home_dir)
+            if remapped_node_dir not in path_entries:
+                path_entries.append(remapped_node_dir)
         sane_path = ":".join(path_entries)
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}

@@ -147,3 +147,58 @@ class TestRichMessageTableProtection:
         # header/delimiter/data-row newlines stay bare.
         assert "Intro line two  \n| H1 | H2 |" in md
         assert "| a | b |  \nOutro line" in md
+
+
+class TestRichMessageBlockMathProtection:
+    """Hard-break injection must not corrupt block math (rendered natively)."""
+
+    def test_block_math_interior_keeps_bare_newlines(self, adapter):
+        """Newlines inside a $$...$$ display-math span must stay bare — a
+        '  \\n' between the rows of an aligned/cases environment is invalid
+        LaTeX. Block math (`$$`) is one of the constructs that triggers the
+        rich path (_needs_rich_rendering), so it must be protected like the
+        natively-rendered fenced-code and table blocks."""
+        content = (
+            "Solve:\n"
+            "$$\n"
+            "\\begin{aligned}\n"
+            "a &= b \\\\\n"
+            "c &= d\n"
+            "\\end{aligned}\n"
+            "$$\n"
+            "Done"
+        )
+        md = adapter._rich_message_payload(content)["markdown"]
+        # The display-math block is preserved verbatim (no '  \n' injected).
+        assert (
+            "$$\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n$$" in md
+        ), f"block math interior must stay bare, got {md!r}"
+        # Prose around the math still hard-breaks.
+        assert "Solve:  \n$$" in md
+        assert "$$  \nDone" in md
+
+    def test_single_line_block_math_unaffected(self, adapter):
+        """A single-line $$x$$ has no interior newline, so its rendering is
+        unchanged; surrounding prose still hard-breaks."""
+        content = "inline $$x = 1$$ here\nnext"
+        md = adapter._rich_message_payload(content)["markdown"]
+        assert md == "inline $$x = 1$$ here  \nnext"
+
+    def test_stray_dollars_before_code_block_do_not_corrupt_it(self, adapter):
+        """A stray/inline ``$$`` in prose must not pair with a ``$$`` inside a
+        later fenced code block: block math is recognized only outside the
+        protected fenced-code/table regions, so the code block stays verbatim
+        and only the prose around it hard-breaks."""
+        content = "Cost is $$5 today\n```\nx = $$y\nz = $$w\n```\nafter"
+        md = adapter._rich_message_payload(content)["markdown"]
+        # Code block (incl. its literal $$) is untouched.
+        assert "```\nx = $$y\nz = $$w\n```" in md
+        # The stray-$$ prose line before the fence still hard-breaks.
+        assert "Cost is $$5 today  \n```" in md
+
+    def test_currency_lines_hard_break_normally(self, adapter):
+        """Lines that merely contain ``$$`` (currency, not a lone block
+        delimiter) are not treated as block math; they hard-break like prose."""
+        content = "Price $$5\nPlus $$10\nmore"
+        md = adapter._rich_message_payload(content)["markdown"]
+        assert md == "Price $$5  \nPlus $$10  \nmore"

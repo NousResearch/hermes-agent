@@ -369,6 +369,34 @@ _RICH_PROTECTED_REGION_RE = re.compile(
     re.MULTILINE,
 )
 
+# A block-math span ($$...$$ with the delimiters each alone on their own line)
+# also renders natively in the rich path, so a hard break injected between the
+# rows of a multi-line aligned/cases/matrix environment is invalid LaTeX. This
+# is matched only *within prose* — i.e. outside the fenced-code/table regions
+# above — so a stray or inline ``$$`` can never pair across a protected region
+# (which would otherwise let a ``$$`` inside a code block close a span and let
+# the rest of the block receive hard breaks). The line-anchored delimiters also
+# keep inline/currency ``$$`` out: only canonical display-math blocks match.
+_RICH_BLOCK_MATH_RE = re.compile(
+    r'^[ \t]*\$\$[ \t]*\n[\s\S]*?\n[ \t]*\$\$[ \t]*$',
+    re.MULTILINE,
+)
+
+
+def _rich_hard_break_prose(prose: str) -> str:
+    """Inject Markdown hard breaks into a prose run, leaving block-math spans
+    ($$...$$ on their own lines) bare. Called only for prose between the
+    fenced-code/table protected regions, so block math is recognized outside
+    those regions and can never span into one."""
+    out: list[str] = []
+    pos = 0
+    for m in _RICH_BLOCK_MATH_RE.finditer(prose):
+        out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', prose[pos:m.start()]))
+        out.append(m.group(0))  # block math kept verbatim
+        pos = m.end()
+    out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', prose[pos:]))
+    return ''.join(out)
+
 
 def _rich_normalize_linebreaks(text: str) -> str:
     """Convert single ``\\n`` to Markdown hard breaks for the rich-message path.
@@ -379,25 +407,26 @@ def _rich_normalize_linebreaks(text: str) -> str:
     paragraph.  Adding two trailing spaces before each single newline
     forces a hard line break (``<br>``) in the rendered output.
 
-    Paragraph breaks (``\\n\\n``), fenced code blocks, and GFM pipe-table
-    blocks are left untouched: tables render natively in the rich path and a
-    hard break injected into a row separator would corrupt the table.
+    Paragraph breaks (``\\n\\n``), fenced code blocks, GFM pipe-table blocks,
+    and block-math spans (``$$...$$`` on their own lines) are left untouched:
+    all render natively in the rich path, so a hard break injected into a table
+    row separator or a multi-line display-math environment would corrupt it.
+    Fenced code and tables are protected first; block math is recognized only
+    in the prose between them so a stray ``$$`` cannot pair across a fence.
     """
     if not text or '\n' not in text:
         return text
 
     out: list[str] = []
-    # Split off protected regions (fenced code OR table blocks) and only inject
-    # hard breaks in the prose between them. Boundary newlines are handled by
-    # the original single-\n regex, which sees each prose run as a whole string.
+    # Split off the natively-rendered protected regions (fenced code OR table
+    # blocks) and hard-break only the prose between them; block-math protection
+    # is applied inside _rich_hard_break_prose, scoped to that prose.
     pos = 0
     for m in _RICH_PROTECTED_REGION_RE.finditer(text):
-        prose = text[pos:m.start()]
-        out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', prose))
+        out.append(_rich_hard_break_prose(text[pos:m.start()]))
         out.append(m.group(0))  # protected region kept verbatim
         pos = m.end()
-    tail = text[pos:]
-    out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', tail))
+    out.append(_rich_hard_break_prose(text[pos:]))
     return ''.join(out)
 
 

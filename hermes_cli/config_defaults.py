@@ -773,6 +773,17 @@ DEFAULT_CONFIG = {
                                       # (e.g. 6) for tool-schema-heavy sessions where 3
                                       # rounds cannot clear the request estimate.
                                       # Validated >= 1, hard-capped at 10.
+        "chunk_oversized_input": False,  # when a SINGLE message alone exceeds the model
+                                      # window (history compression can't help because it
+                                      # only drops OTHER messages), spill it through the
+                                      # active terminal backend and replace it in-place
+                                      # with a short, backend-readable file reference
+                                      # instead of hard-failing with 413/context_overflow.
+                                      # Default off (opt-in).
+        "never_413": False,           # master override: when True, forces the oversized-
+                                      # input file-reference handling regardless of
+                                      # chunk_oversized_input, so a 413 payload-too-large
+                                      # is never surfaced to the user.
         "proactive_prune_tokens": 0,  # opt-in trigger (tokens) for the deterministic,
                                       # no-LLM tool-result prune, run independently of
                                       # `threshold` above. On large-window models

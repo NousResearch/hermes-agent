@@ -607,16 +607,18 @@ class TrajectoryCompressor:
             return text
         return "[CONTEXT SUMMARY]:" if not text else f"[CONTEXT SUMMARY]: {text}"
     
-    def _generate_summary(self, content: str, metrics: TrajectoryMetrics) -> str:
+    def _generate_summary(self, content: str, metrics: TrajectoryMetrics) -> Optional[str]:
         """
         Generate a summary of the compressed turns using OpenRouter.
-        
+
         Args:
             content: The content to summarize
             metrics: Metrics object to update
-            
+
         Returns:
-            Summary string
+            Summary string, or ``None`` if summarization failed after all
+            retries (the caller must then leave the trajectory uncompressed
+            rather than discard the real turns).
         """
         prompt = f"""Summarize the following agent conversation turns concisely. This summary will replace these turns in the conversation history.
 
@@ -673,19 +675,23 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if attempt < self.config.max_retries - 1:
                     time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
-                    # Fallback: create a basic summary
-                    return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
+                    # All retries exhausted. Signal failure so the caller keeps
+                    # the trajectory verbatim — replacing real tool turns with a
+                    # generic placeholder would corrupt the training signal.
+                    return None
     
-    async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> str:
+    async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> Optional[str]:
         """
         Generate a summary of the compressed turns using OpenRouter (async version).
-        
+
         Args:
             content: The content to summarize
             metrics: Metrics object to update
-            
+
         Returns:
-            Summary string
+            Summary string, or ``None`` if summarization failed after all
+            retries (the caller must then leave the trajectory uncompressed
+            rather than discard the real turns).
         """
         prompt = f"""Summarize the following agent conversation turns concisely. This summary will replace these turns in the conversation history.
 
@@ -742,8 +748,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if attempt < self.config.max_retries - 1:
                     await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
-                    # Fallback: create a basic summary
-                    return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
+                    # All retries exhausted. Signal failure so the caller keeps
+                    # the trajectory verbatim — replacing real tool turns with a
+                    # generic placeholder would corrupt the training signal.
+                    return None
     
     def compress_trajectory(
         self,
@@ -848,7 +856,19 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
         # Generate summary
         summary = self._generate_summary(content_to_summarize, metrics)
-        
+        if summary is None:
+            # Summarization failed after all retries. Keep the trajectory
+            # verbatim instead of overwriting real turns with a placeholder,
+            # which would silently corrupt the training data.
+            self.logger.warning(
+                "Skipping compression: summarization failed after all retries; "
+                "keeping trajectory uncompressed"
+            )
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
         # Build compressed trajectory
         compressed = []
         
@@ -963,7 +983,19 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
         # Generate summary (ASYNC)
         summary = await self._generate_summary_async(content_to_summarize, metrics)
-        
+        if summary is None:
+            # Summarization failed after all retries. Keep the trajectory
+            # verbatim instead of overwriting real turns with a placeholder,
+            # which would silently corrupt the training data.
+            self.logger.warning(
+                "Skipping compression: summarization failed after all retries; "
+                "keeping trajectory uncompressed"
+            )
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
         # Build compressed trajectory
         compressed = []
         

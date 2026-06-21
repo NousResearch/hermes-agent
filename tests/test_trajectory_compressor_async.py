@@ -11,7 +11,7 @@ each asyncio.run() gets a client bound to the current loop.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -131,7 +131,7 @@ async def test_generate_summary_async_kimi_omits_temperature():
     compressor.logger = MagicMock()
     compressor._use_call_llm = False
     async_client = MagicMock()
-    async_client.chat.completions.create = MagicMock(return_value=SimpleNamespace(
+    async_client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
     ))
     compressor._get_async_client = MagicMock(return_value=async_client)
@@ -160,7 +160,7 @@ async def test_generate_summary_async_public_moonshot_kimi_k2_5_omits_temperatur
     compressor.logger = MagicMock()
     compressor._use_call_llm = False
     async_client = MagicMock()
-    async_client.chat.completions.create = MagicMock(return_value=SimpleNamespace(
+    async_client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
     ))
     compressor._get_async_client = MagicMock(return_value=async_client)
@@ -189,7 +189,7 @@ async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_tempera
     compressor.logger = MagicMock()
     compressor._use_call_llm = False
     async_client = MagicMock()
-    async_client.chat.completions.create = MagicMock(return_value=SimpleNamespace(
+    async_client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
     ))
     compressor._get_async_client = MagicMock(return_value=async_client)

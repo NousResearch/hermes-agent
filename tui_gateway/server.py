@@ -7058,8 +7058,14 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
 
-    if shutil.which("pdftoppm") is None:
-        return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
+    _have_pdftoppm = shutil.which("pdftoppm") is not None
+    if not _have_pdftoppm:
+        # Fall back to PyMuPDF (pure-python wheel, no system deps) when
+        # poppler isn't installed — e.g. macOS without Homebrew.
+        try:
+            import fitz  # noqa: F401  (PyMuPDF)
+        except Exception:
+            return _err(rid, 5028, "pdftoppm not installed and PyMuPDF unavailable (install poppler-utils or `pip install pymupdf`)")
 
     raw_path = str(params.get("path", "") or "").strip()
     raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
@@ -7116,22 +7122,35 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4019, f"page range exceeds cap of {_PDF_ATTACH_MAX_PAGES} pages per attach call")
 
         out_prefix = td_path / "page"
-        argv = [
-            "pdftoppm", "-png", "-r", "150",
-            "-f", str(first_page), "-l", str(last_page),
-            str(pdf_path), str(out_prefix),
-        ]
-        try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-        except subprocess.TimeoutExpired:
-            return _err(rid, 5028, "pdftoppm timed out (>120s)")
-        if res.returncode != 0:
-            tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
-            return _err(rid, 5028, "pdftoppm failed: " + " | ".join(tail))
+        if _have_pdftoppm:
+            argv = [
+                "pdftoppm", "-png", "-r", "150",
+                "-f", str(first_page), "-l", str(last_page),
+                str(pdf_path), str(out_prefix),
+            ]
+            try:
+                res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            except subprocess.TimeoutExpired:
+                return _err(rid, 5028, "pdftoppm timed out (>120s)")
+            if res.returncode != 0:
+                tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
+                return _err(rid, 5028, "pdftoppm failed: " + " | ".join(tail))
+        else:
+            # PyMuPDF fallback: render the page range to PNGs using the same
+            # ``page-NNN.png`` naming the glob below expects.
+            try:
+                import fitz
+                doc = fitz.open(str(pdf_path))
+                hi = min(last_page, doc.page_count)
+                for pno in range(first_page, hi + 1):
+                    doc[pno - 1].get_pixmap(dpi=150).save(str(td_path / f"page-{pno:03d}.png"))
+                doc.close()
+            except Exception as exc:
+                return _err(rid, 5028, f"PyMuPDF render failed: {exc}")
 
         rendered = sorted(td_path.glob("page-*.png"))
         if not rendered:
-            return _err(rid, 5028, "pdftoppm produced no pages (corrupt PDF?)")
+            return _err(rid, 5028, "no pages rendered (corrupt PDF?)")
 
         attached_pages = []
         for src in rendered:

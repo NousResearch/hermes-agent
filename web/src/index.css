@@ -104,6 +104,8 @@ html {
   height: 100dvh;
   max-height: 100dvh;
   overflow: hidden;
+  /* Theme-color the page canvas so any viewport gap blends in (not black). */
+  background: var(--background-base, #041c1c);
 }
 
 body {
@@ -112,6 +114,7 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  background: var(--background-base, #041c1c);
 }
 
 code, kbd, pre, samp, .font-mono, .font-mono-ui {
@@ -144,6 +147,31 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
     max-height: none;
     overflow-x: hidden;
     overflow-y: auto;
+  }
+}
+
+/* The app shell fills the viewport. */
+.app-shell-root {
+  height: 100dvh;
+  max-height: 100dvh;
+}
+
+/* Installed PWA (no browser chrome): iOS reports 100dvh short on launch until
+   the first gesture, leaving a bottom gap. 100lvh is the static full-screen
+   height (browser UI retracted), which standalone always has — so it fills the
+   screen immediately with no gap and no manual scroll. */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  html,
+  body,
+  #root {
+    height: 100lvh;
+    min-height: 100lvh;
+    max-height: 100lvh;
+    overflow: hidden;
+  }
+  .app-shell-root {
+    height: 100lvh;
+    max-height: 100lvh;
   }
 }
 

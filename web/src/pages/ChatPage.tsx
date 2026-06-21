@@ -33,6 +33,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import MobileChat from "@/components/MobileChat";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -103,17 +104,21 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
 }
 
 function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
-  if (layoutWidthPx < 1024) return 12;
+  // Phone-first: keep the embedded terminal readable on small screens rather
+  // than shrinking the font to cram in more columns (the Hermes TUI reflows
+  // fine at fewer columns, but 8–9px text is unreadable on a phone). Users
+  // can still pinch-zoom — index.html leaves scaling enabled — but the
+  // default should be legible without it.
+  if (layoutWidthPx < 360) return 12;
+  if (layoutWidthPx < 520) return 13;
+  if (layoutWidthPx < 1024) return 13;
   return 14;
 }
 
 function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
+  // Slightly looser leading on small screens improves readability now that
+  // the font no longer shrinks to fit.
+  return layoutWidthPx < 1024 ? 1.1 : 1.15;
 }
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
@@ -188,6 +193,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? window.matchMedia("(max-width: 1023px)").matches
       : false,
   );
+  // Phone-sized screens get a dedicated native chat UI (MobileChat) instead of
+  // the cramped terminal-in-the-browser. Detected separately from `narrow`
+  // (which also covers tablets, where the terminal is fine).
+  const [isPhone, setIsPhone] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia("(max-width: 640px)").matches
+      : false,
+  );
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? "#000000";
@@ -237,6 +250,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
     const sync = () => setNarrow(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 640px)");
+    const sync = () => setIsPhone(mql.matches);
     sync();
     mql.addEventListener("change", sync);
     return () => mql.removeEventListener("change", sync);
@@ -910,6 +931,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       </>,
       portalRoot,
     );
+
+  // Phone: render the native mobile chat instead of the xterm terminal. The
+  // terminal host div below is never mounted, so the PTY effect bails on its
+  // null host ref and no terminal session is opened. Omitting `profile` lets
+  // the gateway session use the dashboard's own home (its default model).
+  if (isPhone) {
+    // Key by the resume target so picking a different chat from history
+    // remounts MobileChat and resumes that specific session (not the first).
+    return <MobileChat key={resumeParam ?? "new"} resume={resumeParam} />;
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">

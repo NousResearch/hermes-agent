@@ -47,6 +47,12 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/ds-assets/",
     "/fonts/",
     "/fonts-terminal/",
+    # PWA assets — must be fetchable without a cookie so the OS can load the
+    # home-screen icon / manifest during "Add to Home Screen" (that fetch
+    # carries no session cookie). Non-sensitive static files.
+    "/icons/",
+    "/manifest.webmanifest",
+    "/sw.js",
 )
 
 

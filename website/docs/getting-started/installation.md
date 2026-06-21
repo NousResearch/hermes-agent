@@ -152,9 +152,9 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 
 ### WSL2 Tips
 
-**Where does my data live?** On WSL2, `~/.hermes` is inside the WSL Linux filesystem (`\\wsl.localhost\Ubuntu\home\<user>\.hermes`). Do not move it to `/mnt/c/` — crossing the WSL/Windows filesystem boundary causes a 5-10x slowdown on git operations, npm installs, and database reads.
+**Where does my data live?** On WSL2, `~/.hermes` is inside the WSL Linux filesystem (`\\wsl.localhost\<distro>\home\<user>\.hermes`). Do not move it to `/mnt/c/` — crossing the WSL/Windows filesystem boundary causes a 5-10x slowdown on git operations, npm installs, and database reads.
 
-**How do I access Windows files?** Windows drives mount at `/mnt/c/`, `/mnt/d/`, etc. Use these paths in Hermes when the agent needs to read or write files visible from Windows (e.g., `C:\Users\prata\Downloads\file.pdf` becomes `/mnt/c/Users/prata/Downloads/file.pdf`).
+**How do I access Windows files?** Windows drives mount at `/mnt/c/`, `/mnt/d/`, etc. Use these paths in Hermes when the agent needs to read or write files visible from Windows (e.g., `C:\Users\user\Downloads\file.pdf` becomes `/mnt/c/Users/user/Downloads/file.pdf`).
 
 **Python note:** On WSL2, always use `python3` not `python`. The `python` command may not exist. The Hermes installer handles this automatically, but manual Python work should use `python3` explicitly.
 

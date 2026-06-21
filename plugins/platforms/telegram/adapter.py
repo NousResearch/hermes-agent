@@ -16,6 +16,7 @@ import os
 import tempfile
 import html as _html
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -530,6 +531,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Obsidian folder browser: short callback token -> vault-relative path.
+        # Callback data is capped at 64 bytes, so paths themselves are stored here.
+        self._obsidian_browser_tokens: Dict[str, str] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -3481,6 +3485,154 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _obsidian_browser_token_for_path(self, relative_path: str) -> str:
+        """Return a short callback token for a vault-relative Obsidian path."""
+        tokens = getattr(self, "_obsidian_browser_tokens", None)
+        if not isinstance(tokens, dict):
+            tokens = {}
+            self._obsidian_browser_tokens = tokens
+        # Keep memory bounded; old inline-keyboard messages can expire naturally.
+        if len(tokens) > 500:
+            tokens.clear()
+        token = uuid.uuid4().hex[:12]
+        tokens[token] = relative_path or ""
+        return token
+
+    @staticmethod
+    def _obsidian_button_label(prefix: str, name: str, limit: int = 36) -> str:
+        label = str(name or "").strip() or "/"
+        if len(label) > limit:
+            label = label[: limit - 1].rstrip() + "…"
+        return f"{prefix} {label}"
+
+    def _build_obsidian_browser_keyboard(self, payload) -> "InlineKeyboardMarkup":
+        """Build inline buttons for the Obsidian folder browser."""
+        rows = []
+        for entry in payload.dirs:
+            token = self._obsidian_browser_token_for_path(entry.relative_path)
+            rows.append([
+                InlineKeyboardButton(
+                    self._obsidian_button_label("📁", entry.name),
+                    callback_data=f"ob:{token}",
+                )
+            ])
+        for entry in payload.files:
+            if not entry.url:
+                continue
+            rows.append([
+                InlineKeyboardButton(
+                    self._obsidian_button_label("📝", entry.name),
+                    url=entry.url,
+                )
+            ])
+
+        nav = []
+        if payload.relative_path:
+            root_token = self._obsidian_browser_token_for_path("")
+            parent_token = self._obsidian_browser_token_for_path(payload.parent_path or "")
+            nav.extend([
+                InlineKeyboardButton("🏠 Root", callback_data=f"ob:{root_token}"),
+                InlineKeyboardButton("◀ Parent", callback_data=f"ob:{parent_token}"),
+            ])
+        refresh_token = self._obsidian_browser_token_for_path(payload.relative_path)
+        nav.append(InlineKeyboardButton("🔄 Refresh", callback_data=f"ob:{refresh_token}"))
+        rows.append(nav)
+        return InlineKeyboardMarkup(rows)
+
+    async def send_obsidian_browser(
+        self,
+        chat_id: str,
+        start_path: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an Obsidian vault folder browser with Telegram inline buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from gateway.obsidian_browser import (
+                build_obsidian_browser_payload,
+                render_obsidian_browser_text,
+            )
+
+            payload = build_obsidian_browser_payload(start_path)
+            keyboard = self._build_obsidian_browser_keyboard(payload)
+            text = self.format_message(render_obsidian_browser_text(payload))
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(
+                None,
+                metadata,
+                reply_to_mode=self._reply_to_mode,
+            )
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.MARKDOWN_V2,
+                "reply_markup": keyboard,
+                "reply_to_message_id": reply_to_id,
+                **self._link_preview_kwargs(),
+                **self._notification_kwargs(metadata),
+            }
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_obsidian_browser failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_obsidian_browser_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Handle Obsidian folder-browser callbacks (ob:<token>)."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to browse this vault.")
+            return
+
+        token = data.split(":", 1)[1] if ":" in data else ""
+        relative_path = getattr(self, "_obsidian_browser_tokens", {}).get(token)
+        if relative_path is None:
+            await query.answer(text="This browser button expired. Send /root again.")
+            return
+
+        try:
+            from gateway.obsidian_browser import (
+                build_obsidian_browser_payload,
+                render_obsidian_browser_text,
+            )
+
+            payload = build_obsidian_browser_payload(relative_path)
+            keyboard = self._build_obsidian_browser_keyboard(payload)
+            await query.edit_message_text(
+                text=self.format_message(render_obsidian_browser_text(payload)),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+        except Exception as exc:
+            await query.answer(text=str(exc)[:200])
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -3965,6 +4117,18 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Obsidian browser callbacks (ob:<token>) ---
+        if data.startswith("ob:"):
+            await self._handle_obsidian_browser_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
             return
 
         # --- Gmail-triage callbacks (gt:verb:arg) ---

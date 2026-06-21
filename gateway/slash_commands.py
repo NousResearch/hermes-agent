@@ -228,6 +228,43 @@ class GatewaySlashCommandsMixin:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
 
+    async def _handle_obsidian_root_command(self, event: MessageEvent) -> str:
+        """Handle /root — open the Obsidian vault root folder browser."""
+        source = event.source
+        adapter = self.adapters.get(source.platform) if source else None
+        metadata = {"thread_id": source.thread_id} if source and source.thread_id else None
+
+        sender = getattr(adapter, "send_obsidian_browser", None)
+        if callable(sender) and source:
+            result = await sender(source.chat_id, start_path="", metadata=metadata)
+            if getattr(result, "success", False):
+                # The adapter already sent the inline-button browser. Returning an
+                # empty string prevents the generic gateway path from sending a
+                # duplicate text bubble.
+                return ""
+            error = getattr(result, "error", None) or "unknown error"
+            return f"⚠️ Obsidian root browser failed: {error}"
+
+        # Non-Telegram fallback: show a compact text listing rather than invoking
+        # the LLM. This keeps /root deterministic on platforms without buttons.
+        try:
+            from gateway.obsidian_browser import (
+                build_obsidian_browser_payload,
+                render_obsidian_browser_text,
+            )
+
+            payload = build_obsidian_browser_payload("")
+            lines = [render_obsidian_browser_text(payload), ""]
+            if payload.dirs:
+                lines.append("Folders:")
+                lines.extend(f"- 📁 {entry.relative_path}" for entry in payload.dirs)
+            if payload.files:
+                lines.append("Notes:")
+                lines.extend(f"- 📝 {entry.relative_path}: {entry.url}" for entry in payload.files)
+            return "\n".join(lines).strip()
+        except Exception as exc:
+            return f"⚠️ Obsidian root browser failed: {exc}"
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
         from hermes_constants import display_hermes_home

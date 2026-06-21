@@ -221,6 +221,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
 
     # Info
+    CommandDef("root", "Browse the Obsidian vault root", "Info",
+               gateway_only=True),
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),

@@ -8500,6 +8500,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
+
+        if canonical == "root":
+            return await self._handle_obsidian_root_command(event)
         
         if canonical == "profile":
             return await self._handle_profile_command(event)

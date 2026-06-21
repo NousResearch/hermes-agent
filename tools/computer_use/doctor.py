@@ -58,12 +58,19 @@ def _drive_health_report(
     if skip:
         args["skip"] = list(skip)
 
+    # cua-driver emits UTF-8 (containing emoji in check messages on macOS
+    # and arbitrary file paths on Windows). The Python default
+    # text-mode encoding follows the system locale — `cp1252` on a
+    # default Windows install — which raises UnicodeDecodeError on the
+    # first non-ASCII byte. Pin the codec.
     proc = subprocess.Popen(
         [binary, "mcp"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
     )
     try:
@@ -204,6 +211,17 @@ def run_doctor(
     that `install_cua_driver` + the runtime backend use, so the doctor
     diagnoses what your `computer_use` toolset will actually invoke.
     """
+    # Windows ships stdout/stderr wrapped with the system ANSI codec
+    # (`cp1252` on a US locale, `cp936` on zh-CN, etc.). The check-matrix
+    # output below contains ✅ ❌ ⚠️ ⏭️ glyphs — none of them encodable
+    # in those codepages. Switch stdout to UTF-8 once, idempotently: every
+    # supported TextIOWrapper (Py3.7+) has `.reconfigure`, and a no-op
+    # re-encode is cheap if we were already UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, OSError):
+            pass
     if driver_cmd is None:
         try:
             from hermes_cli.tools_config import _cua_driver_cmd

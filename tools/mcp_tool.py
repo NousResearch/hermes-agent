@@ -290,6 +290,7 @@ _MAX_BACKOFF_SECONDS = 60
 # stops a misconfigured tiny interval from busy-looping the keepalive.
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
+_MAX_CONSECUTIVE_PING_FAILURES = 3  # fallback to list_tools after this many
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -428,6 +429,11 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
         str(_JSONRPC_METHOD_NOT_FOUND) in msg
         or "method not found" in msg
         or "not found: ping" in msg
+        or "method_not_found" in msg
+        or "not implemented" in msg
+        or "unknown method" in msg
+        or "unsupported method" in msg
+        or "unrecognized method" in msg
     )
 
 
@@ -1412,6 +1418,7 @@ class MCPServerTask:
         "_rpc_lock", "_pending_refresh_tasks",
         "_pending_call_context",
         "initialize_result", "_ping_unsupported",
+        "_consecutive_ping_failures",
     )
 
     def __init__(self, name: str):
@@ -1465,6 +1472,12 @@ class MCPServerTask:
         # back to ``list_tools`` (the pre-ping probe) so we neither spam pings
         # nor reconnect-loop. Reset on each fresh transport connection.
         self._ping_unsupported: bool = False
+        # Consecutive keepalive ping failures that were NOT recognized as
+        # "method not found".  After too many consecutive failures the
+        # keepalive falls back to list_tools to break a reconnect loop
+        # caused by an error pattern _is_method_not_found_error doesn't
+        # recognise yet.  Reset on each successful ping or fresh connection.
+        self._consecutive_ping_failures: int = 0
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1638,23 +1651,43 @@ class MCPServerTask:
         if not self._ping_unsupported:
             try:
                 await asyncio.wait_for(self.session.send_ping(), timeout=30.0)
+                self._consecutive_ping_failures = 0
                 return
             except Exception as exc:
                 # Only a "method not found" means ping is unsupported. Any
                 # other error (timeout, closed transport, session expired) is
                 # a real liveness failure — propagate so we reconnect.
-                if not _is_method_not_found_error(exc):
-                    raise
-                if not self._advertises_tools():
-                    # No ping, no tools → no cheaper probe to fall back to.
-                    raise
-                self._ping_unsupported = True
-                logger.info(
-                    "MCP server '%s': does not implement the optional 'ping' "
-                    "utility (-32601); using 'list_tools' for keepalive on "
-                    "this connection.",
-                    self.name,
-                )
+                if _is_method_not_found_error(exc):
+                    if not self._advertises_tools():
+                        # No ping, no tools → no cheaper probe to fall back to.
+                        raise
+                    self._ping_unsupported = True
+                    logger.info(
+                        "MCP server '%s': does not implement the optional 'ping' "
+                        "utility (-32601); using 'list_tools' for keepalive on "
+                        "this connection.",
+                        self.name,
+                    )
+                else:
+                    # Unrecognised ping failure.  Track consecutive failures
+                    # so a persistently broken ping doesn't cause an infinite
+                    # reconnect loop.  After _MAX_CONSECUTIVE_PING_FAILURES
+                    # treat ping as unsupported and fall back to list_tools.
+                    self._consecutive_ping_failures += 1
+                    if (
+                        self._consecutive_ping_failures >= _MAX_CONSECUTIVE_PING_FAILURES
+                        and self._advertises_tools()
+                    ):
+                        self._ping_unsupported = True
+                        logger.warning(
+                            "MCP server '%s': ping failed %d consecutive times "
+                            "(last: %s); falling back to 'list_tools' keepalive.",
+                            self.name,
+                            self._consecutive_ping_failures,
+                            exc,
+                        )
+                    else:
+                        raise
 
         # Fallback probe for servers without ping support.
         await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
@@ -2148,6 +2181,7 @@ class MCPServerTask:
         # Clears any latch from a prior connection in case the server gained
         # ping support across the reconnect.
         self._ping_unsupported = False
+        self._consecutive_ping_failures = 0
         if self.session is None:
             return
         if not self._advertises_tools():

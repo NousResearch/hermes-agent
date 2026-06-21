@@ -108,8 +108,8 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
         if _gateway_exit_code != 0:
             self.ReportServiceStatus(
                 win32service.SERVICE_STOPPED,
-                win32service.NO_ERROR,
-                _gateway_exit_code,
+                waitHint=0,
+                win32ExitCode=_gateway_exit_code,
             )
 
     def _run_gateway(self):

@@ -672,6 +672,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # Per-channel stop signals so stop_typing can interrupt a typing loop
         # that is parked in a 429 back-off sleep (cancel alone races the sleep).
         self._typing_stop_events: Dict[str, asyncio.Event] = {}
+        # Per-channel ownership token the live _typing_loop was spawned under
+        # (recreate-race fix). Co-located with the task + stop_event so the
+        # three can't desync; popped together on teardown.
+        self._typing_loop_token: Dict[str, Any] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         # True while disconnect() is intentionally closing discord.py. The
@@ -3144,7 +3148,7 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send document, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
+    async def send_typing(self, chat_id: str, metadata=None, *, token=None) -> None:
         """Start a persistent typing indicator for a channel.
 
         Discord's TYPING_START gateway event is unreliable in DMs for bots.
@@ -3163,14 +3167,29 @@ class DiscordAdapter(BasePlatformAdapter):
         consecutive POSTs gives up rather than spinning forever — otherwise a
         single wedged loop leaves a permanent "is typing…" bubble after the
         response was already sent.
+
+        Recreate-race fix (``token``): the owning turn passes an ownership
+        token (issued by the base adapter at turn start, threaded through
+        ``_keep_typing``).  A late/stale ``send_typing`` carrying an
+        already-superseded token refuses to arm — closing the no-429
+        stuck-bubble where a refresh tick or the gateway follow-up restart
+        recreated a loop AFTER the owning turn's ``stop_typing`` already tore
+        it down, leaving an orphan that re-POSTs forever.  ``token=None`` keeps
+        the legacy unconditional behavior (other call sites unchanged).
         """
         if not self._client:
+            return
+        # Refuse to arm for a superseded/stopped turn. The stale caller carries
+        # its OWN (now non-current) token, so reading current ownership here is
+        # correct: an orphaned refresh tick can't re-arm. token=None => allowed.
+        if not self._typing_token_is_current(chat_id, token):
             return
         # Don't start a duplicate loop
         if chat_id in self._typing_tasks:
             return
 
         stop_event = asyncio.Event()
+        my_token = token
 
         async def _interruptible_sleep(delay: float) -> None:
             """Sleep up to ``delay`` but wake immediately if stop is requested."""
@@ -3182,7 +3201,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def _typing_loop() -> None:
             consecutive_failures = 0
             try:
-                while not stop_event.is_set():
+                # Stop when the stop_event fires OR our turn is superseded —
+                # the latter terminates an orphan whose stop_typing never ran.
+                while (not stop_event.is_set()
+                       and self._typing_token_is_current(chat_id, my_token)):
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",
@@ -3221,27 +3243,53 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             finally:
-                self._typing_tasks.pop(chat_id, None)
-                self._typing_stop_events.pop(chat_id, None)
+                # Only clear shared state if WE are still the registered owner —
+                # never clobber a newer turn's loop that already replaced us.
+                if self._typing_tasks.get(chat_id) is asyncio.current_task():
+                    self._typing_tasks.pop(chat_id, None)
+                    self._typing_stop_events.pop(chat_id, None)
+                    self._typing_loop_token.pop(chat_id, None)
 
+        # Re-check ownership immediately before publishing, then publish task +
+        # stop_event + token TOGETHER. *** DO NOT insert any `await` between this
+        # guard and create_task: the claim-and-publish must be atomic on the
+        # single-threaded loop. create_task() schedules but does NOT yield, and
+        # _typing_loop_token is set BEFORE create_task so the loop's first
+        # _typing_token_is_current() check can't read a missing entry. ***
+        if not self._typing_token_is_current(chat_id, token):
+            return
         self._typing_stop_events[chat_id] = stop_event
+        self._typing_loop_token[chat_id] = my_token
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
-    async def stop_typing(self, chat_id: str) -> None:
-        """Stop the persistent typing indicator for a channel."""
+    async def stop_typing(self, chat_id: str, *, token=None) -> None:
+        """Stop the persistent typing indicator for a channel.
+
+        ``token`` is informational only: when provided, we refuse to tear down
+        a loop that a NEWER turn already owns (different live token), so an
+        owner-matched ``_stop_typing_refresh`` can't false-stop a superseding
+        turn's bubble.  We deliberately do NOT mutate ``_typing_owner`` here —
+        ``_issue_typing_token`` (new turn) and ``_stop_typing_refresh`` (pop)
+        are the single writers of that dict (Pass-2 R1).  ``token=None`` keeps
+        the legacy unconditional teardown for error/interrupt call sites.
+        """
+        # Don't cancel a newer turn's loop that already superseded us.
+        if token is not None and self._typing_loop_token.get(chat_id) not in (None, token):
+            return
         # Signal the loop to stop FIRST so a cancel landing during a 429
         # back-off sleep is honored promptly (cancel alone races the sleep).
         stop_event = self._typing_stop_events.get(chat_id)
         if stop_event is not None:
             stop_event.set()
         task = self._typing_tasks.pop(chat_id, None)
+        self._typing_stop_events.pop(chat_id, None)
+        self._typing_loop_token.pop(chat_id, None)
         if task:
             task.cancel()
             try:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        self._typing_stop_events.pop(chat_id, None)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""

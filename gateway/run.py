@@ -16002,10 +16002,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # typing task is still alive but may be stale.
                 _followup_adapter = self.adapters.get(source.platform)
                 if _followup_adapter:
+                    # Pass the CURRENT typing-ownership token so this restart is
+                    # stamped with the live owner (recreate-race fix). This runs
+                    # inside the owning turn's still-active handler, so the owner
+                    # is populated. Without the token an adapter that token-gates
+                    # send_typing would treat this as untokened (always-arm) and
+                    # could orphan a loop — the exact field-reproduced vector.
+                    _followup_token = None
+                    _get_tok = getattr(_followup_adapter, "_current_typing_token", None)
+                    if callable(_get_tok):
+                        try:
+                            _followup_token = _get_tok(source.chat_id)
+                        except Exception:
+                            _followup_token = None
+                    _followup_typing_kwargs: dict = {"metadata": _status_thread_metadata}
+                    try:
+                        if "token" in inspect.signature(
+                            _followup_adapter.send_typing
+                        ).parameters:
+                            _followup_typing_kwargs["token"] = _followup_token
+                    except (TypeError, ValueError):
+                        pass
                     try:
                         await _followup_adapter.send_typing(
                             source.chat_id,
-                            metadata=_status_thread_metadata,
+                            **_followup_typing_kwargs,
                         )
                     except Exception:
                         pass

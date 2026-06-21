@@ -748,6 +748,28 @@ class DingTalkAdapter(BasePlatformAdapter):
                             parts.append(item.text)
                     content = " ".join(parts).strip()
 
+        # Fallback: audio message → use recognition text
+        if not content:
+            msg_type = getattr(message, "message_type", "")
+            if msg_type == "audio":
+                extensions = getattr(message, "extensions", {}) or {}
+                audio_content = extensions.get("content", {})
+                if isinstance(audio_content, dict):
+                    recognition = audio_content.get("recognition", "")
+                    if recognition:
+                        content = recognition.strip()
+
+        # Fallback: file message → use fileName as text
+        if not content:
+            msg_type = getattr(message, "message_type", "")
+            if msg_type == "file":
+                extensions = getattr(message, "extensions", {}) or {}
+                file_content = extensions.get("content", {})
+                if isinstance(file_content, dict):
+                    fname = file_content.get("fileName", "")
+                    if fname:
+                        content = f"[文件] {fname}"
+
         # Do NOT strip "@bot" from the text.  The mention is a routing
         # signal (delivered structurally via callback `isInAtList`), and
         # regex-stripping @handles would collateral-damage e-mails
@@ -820,6 +842,41 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if any("image" in t for t in media_types)
                 else MessageType.TEXT
             )
+        elif msg_type_str == "audio":
+            # Voice message — DingTalk already provides recognition text.
+            # Do NOT add media_urls here: if audio_paths is non-empty,
+            # run.py's _enrich_message_with_transcription will overwrite
+            # the recognition text with a failed STT attempt (whisper not installed).
+            # The recognition text from extensions['content']['recognition']
+            # is sufficient and already extracted by _extract_text.
+            if msg_type == MessageType.TEXT:
+                msg_type = MessageType.VOICE
+        elif msg_type_str in ("file", "image"):
+            extensions = getattr(message, "extensions", {}) or {}
+            ext_content = extensions.get("content", {})
+            if isinstance(ext_content, dict):
+                dl_code = ext_content.get("downloadCode") or ""
+                fname = ext_content.get("fileName", "")
+                if dl_code:
+                    media_urls.append(dl_code)
+                    mime = "application/octet-stream"
+                    # Map common extensions
+                    if fname:
+                        ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                        EXT_MAP = {
+                            "pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg",
+                            "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+                            "doc": "application/msword",
+                            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "xls": "application/vnd.ms-excel",
+                            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "md": "text/markdown", "txt": "text/plain", "csv": "text/csv",
+                            "zip": "application/zip", "mp4": "video/mp4",
+                        }
+                        mime = EXT_MAP.get(ext, mime)
+                    media_types.append(mime)
+                    if msg_type == MessageType.TEXT:
+                        msg_type = MessageType.DOCUMENT
 
         return msg_type, media_urls, media_types
 
@@ -1322,6 +1379,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                     for key in ("downloadCode", "pictureDownloadCode", "download_code"):
                         if item.get(key):
                             codes_to_resolve.append((item, key))
+
+        # 3. File/image message (msgtype='file' or 'image', codes in extensions)
+        msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str in ("file", "image"):
+            extensions = getattr(message, "extensions", {}) or {}
+            ext_content = extensions.get("content", {})
+            if isinstance(ext_content, dict) and ext_content.get("downloadCode"):
+                codes_to_resolve.append((ext_content, "downloadCode"))
 
         if not codes_to_resolve:
             return

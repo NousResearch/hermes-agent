@@ -74,6 +74,21 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _resolve_codex_command() -> str:
+    return (
+        os.getenv("HERMES_CODEX_ACP_COMMAND", "").strip()
+        or "codex-acp"
+    )
+
+
+def _resolve_codex_args() -> list[str]:
+    # codex-acp speaks ACP on bare stdio — it needs no subcommand or flags.
+    raw = os.getenv("HERMES_CODEX_ACP_ARGS", "").strip()
+    if not raw:
+        return []
+    return shlex.split(raw)
+
+
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
     home = os.environ.get("HOME", "").strip()
@@ -413,7 +428,16 @@ class CopilotACPClient:
         self.base_url = base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        # Distinguish "not provided" (None) from "explicitly empty" ([]).
+        # codex-acp speaks ACP on bare stdio and is passed args=[], which is
+        # falsy — so an `or` chain would wrongly fall back to copilot's
+        # ["--acp","--stdio"]. Pick the first non-None value instead.
+        if acp_args is not None:
+            self._acp_args = list(acp_args)
+        elif args is not None:
+            self._acp_args = list(args)
+        else:
+            self._acp_args = list(_resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False

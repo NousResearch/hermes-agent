@@ -1833,10 +1833,30 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider == "copilot-acp":
+    if provider == "google-gemini-cli":
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials()
+            return {
+                "provider": "google-gemini-cli",
+                "api_mode": "chat_completions",
+                "base_url": creds.get("base_url", ""),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "google-oauth"),
+                "expires_at_ms": creds.get("expires_at_ms"),
+                "email": creds.get("email", ""),
+                "project_id": creds.get("project_id", ""),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Google Gemini OAuth credentials failed; "
+                        "falling through to next provider.")
+
+    if provider in ("copilot-acp", "codex-acp"):
         creds = resolve_external_process_provider_credentials(provider)
         return {
-            "provider": "copilot-acp",
+            "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

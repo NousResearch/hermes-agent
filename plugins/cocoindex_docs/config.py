@@ -24,7 +24,7 @@ if not LOGGER.handlers:
 LOGGER.setLevel(logging.INFO if VERBOSE_MODE else logging.WARNING)
 
 DOCUMENTS_DIR = Path(
-    os.getenv("HERMES_DOCS_SOURCE_DIR", str(Path.home() / "Dokumente"))
+    os.getenv("HERMES_DOCS_SOURCE_DIR", str(Path.home() / "Dokumente" / "hermes-dokuments"))
 ).expanduser()
 
 STATE_DIR = Path(

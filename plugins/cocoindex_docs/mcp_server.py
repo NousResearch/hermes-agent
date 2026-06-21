@@ -12,7 +12,7 @@ from search import search_documents as run_document_search
 mcp = FastMCP(
     "cocoindex_docs",
     instructions=(
-        "Searches the user's local ~/Dokumente knowledge index. Results include "
+        "Searches the user's local ~/Dokumente/hermes-dokuments knowledge index. Results include "
         "semantic matches plus relative paths, topics, folder context, and excerpts."
     ),
 )
@@ -20,7 +20,7 @@ mcp = FastMCP(
 
 @mcp.tool(
     description=(
-        "Search local documents indexed from ~/Dokumente. Use topic to narrow by "
+        "Search local documents indexed from ~/Dokumente/hermes-dokuments. Use topic to narrow by "
         "top-level folder, folder path, or path fragment. Returns file paths and excerpts."
     )
 )

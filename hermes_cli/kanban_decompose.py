@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from utils import is_truthy_value
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -294,7 +295,7 @@ def decompose_task(
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    auto_promote = is_truthy_value(kanban_cfg.get("auto_promote_children"), default=True)
     roster, valid_names = _build_roster()
 
     try:

@@ -720,7 +720,7 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
         return False
     mt = gw.get("message_timestamps")
     if isinstance(mt, dict):
-        return bool(mt.get("enabled", False))
+        return is_truthy_value(mt.get("enabled"), default=False)
     # Allow a bare ``message_timestamps: true`` shorthand.
     return bool(mt)
 
@@ -2702,7 +2702,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._session_db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                        vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                        vacuum=is_truthy_value(_sess_cfg.get("vacuum_after_prune"), default=True),
                         sessions_dir=self.config.sessions_dir,
                     )
             except Exception as exc:
@@ -2719,7 +2719,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 maybe_auto_prune_checkpoints(
                     retention_days=int(_ckpt_cfg.get("retention_days", 7)),
                     min_interval_hours=int(_ckpt_cfg.get("min_interval_hours", 24)),
-                    delete_orphans=bool(_ckpt_cfg.get("delete_orphans", True)),
+                    delete_orphans=is_truthy_value(_ckpt_cfg.get("delete_orphans"), default=True),
                     max_total_size_mb=int(_ckpt_cfg.get("max_total_size_mb", 500)),
                 )
         except Exception as exc:
@@ -8853,7 +8853,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp = None
         try:
             _pcfg = _load_gateway_config()
-            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
+            _redact_pii = is_truthy_value((_pcfg.get("privacy") or {}).get("redact_pii"), default=False)
         except Exception:
             pass
 
@@ -11823,7 +11823,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cfg = self._read_user_config()
             approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
             if isinstance(approvals, dict):
-                confirm_required = bool(approvals.get("destructive_slash_confirm", True))
+                confirm_required = is_truthy_value(approvals.get("destructive_slash_confirm"), default=True)
         except Exception:
             pass
 

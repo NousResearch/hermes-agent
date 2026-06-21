@@ -61,6 +61,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from utils import is_truthy_value
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -205,7 +206,7 @@ class QQAdapter(BasePlatformAdapter):
         self._client_secret = str(
             extra.get("client_secret") or os.getenv("QQ_CLIENT_SECRET", "")
         ).strip()
-        self._markdown_support = bool(extra.get("markdown_support", True))
+        self._markdown_support = is_truthy_value(extra.get("markdown_support"), default=True)
 
         # Auth/ACL policies
         self._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from utils import is_truthy_value
 import sqlite3
 import time
 from pathlib import Path
@@ -985,7 +986,7 @@ class GatewayKanbanWatchersMixin:
         # ``kanban.auto_decompose_per_tick`` (default 3) so a bulk-load
         # of triage tasks doesn't burst-spend the aux LLM in one tick;
         # remainder defers to subsequent ticks.
-        auto_decompose_enabled = bool(kanban_cfg.get("auto_decompose", True))
+        auto_decompose_enabled = is_truthy_value(kanban_cfg.get("auto_decompose"), default=True)
         try:
             auto_decompose_per_tick = int(
                 kanban_cfg.get("auto_decompose_per_tick", 3) or 3

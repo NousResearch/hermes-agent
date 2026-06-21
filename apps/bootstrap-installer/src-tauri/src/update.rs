@@ -103,9 +103,61 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// RAII guard that owns the "update in progress" marker (see
+/// `paths::update_in_progress_marker`). Created at the top of `run_update`;
+/// its `Drop` removes the marker on EVERY exit path — success, early
+/// `return Err`, or a panic that unwinds through `run_update` — so a crashed
+/// or aborted updater can never permanently strand the marker and block
+/// future desktop launches. The marker payload is `{pid}\n{started_at_unix}`
+/// so the desktop's launch gate can detect a stale marker (dead PID / past a
+/// hard ceiling) and self-heal rather than wait forever.
+struct UpdateMarkerGuard {
+    path: PathBuf,
+}
+
+impl UpdateMarkerGuard {
+    /// Write the marker. Best-effort: a write failure must NOT abort the
+    /// update (the gate degrades to "no marker => proceed", i.e. exactly the
+    /// pre-fix behavior), so we log and carry on with a guard that still
+    /// attempts cleanup of whatever may exist at the path.
+    fn acquire(path: PathBuf) -> Self {
+        let pid = std::process::id();
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(err) = std::fs::write(&path, format!("{pid}\n{started_at}")) {
+            tracing::warn!(?path, %err, "could not write update-in-progress marker");
+        }
+        Self { path }
+    }
+}
+
+impl Drop for UpdateMarkerGuard {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_file(&self.path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = ?self.path, %err, "could not remove update-in-progress marker");
+            }
+        }
+    }
+}
+
 async fn run_update(app: AppHandle) -> Result<()> {
     let hermes_home = crate::paths::hermes_home();
     let install_root = hermes_home.join("hermes-agent");
+
+    // Mutual exclusion (#50238): publish an "update in progress" marker for the
+    // entire duration of this update. A desktop instance the user relaunches
+    // mid-update consults this before spawning its own local backend — without
+    // it, that backend re-locks the venv shim, our `force_kill_other_hermes`
+    // straggler-cleanup kills it, and the relaunch/kill cycle loops. The guard
+    // removes the marker on every exit path (incl. early returns / panics).
+    let _update_marker = UpdateMarkerGuard::acquire(crate::paths::update_in_progress_marker());
+
     let update_branch = update_branch_from_args(std::env::args().skip(1))
         .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
         .unwrap_or_else(|| "main".to_string());
@@ -518,11 +570,13 @@ fn format_locked_paths(paths: &[PathBuf]) -> String {
 /// taskkill, excluding our own PID.
 ///
 /// Safe w.r.t. our own update child: this runs inside the install-lock wait,
-/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. At this
-/// point no update-driven hermes.exe exists yet, so the only hermes.exe images
-/// are stragglers from the old desktop — exactly what we want gone. (`/FI PID
-/// ne <self>` also spares this Tauri process, though it isn't named
-/// hermes.exe.)
+/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. And a
+/// desktop the user relaunches mid-update will NOT have spawned a backend —
+/// `startHermes()` in the desktop gates local-backend startup on our
+/// update-in-progress marker and parks until we finish (#50238). So the only
+/// hermes.exe images here are stragglers from the old desktop — exactly what
+/// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
+/// isn't named hermes.exe.)
 fn force_kill_other_hermes() {
     if !cfg!(target_os = "windows") {
         return;
@@ -990,6 +1044,48 @@ mod tests {
         let probes = install_lock_probe_paths(root);
 
         assert!(locked_paths(&probes).is_empty());
+    }
+
+    #[test]
+    fn update_marker_guard_writes_then_removes_on_drop() {
+        let dir = unique_tmp_dir("marker-guard");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        {
+            let _g = UpdateMarkerGuard::acquire(marker.clone());
+            assert!(marker.exists(), "marker must exist while the guard is held");
+            let body = std::fs::read_to_string(&marker).unwrap();
+            let pid_line = body.lines().next().unwrap();
+            assert_eq!(
+                pid_line.trim().parse::<u32>().unwrap(),
+                std::process::id(),
+                "marker records our pid so the desktop can probe liveness"
+            );
+            assert_eq!(body.lines().count(), 2, "marker is pid + started_at lines");
+        }
+
+        assert!(
+            !marker.exists(),
+            "Drop must remove the marker on every exit path (incl. early return / panic unwind)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_marker_guard_drop_is_quiet_when_already_gone() {
+        let dir = unique_tmp_dir("marker-guard-gone");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone());
+        // Simulate an external cleanup (e.g. the desktop pruned a marker it
+        // judged stale) before our guard drops — Drop must not panic.
+        std::fs::remove_file(&marker).unwrap();
+        drop(guard);
+
+        assert!(!marker.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

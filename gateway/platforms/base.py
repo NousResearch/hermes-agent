@@ -1072,6 +1072,20 @@ def _media_delivery_denied_paths() -> List[Path]:
         denied.append(hermes_root / "auth.json")
         denied.append(hermes_root / "credentials")
         denied.append(hermes_root / "config.yaml")
+    # Sibling/inactive profiles under the shared root hold their own
+    # credentials and config. On a multi-profile gateway host, a path naming
+    # another profile's control files must never be auto-delivered just
+    # because the active profile mentioned it.
+    profiles_root = _HERMES_ROOT / "profiles"
+    try:
+        profile_dirs = [p for p in profiles_root.iterdir() if p.is_dir()]
+    except OSError:
+        profile_dirs = []
+    for profile_dir in profile_dirs:
+        denied.append(profile_dir / ".env")
+        denied.append(profile_dir / "auth.json")
+        denied.append(profile_dir / "credentials")
+        denied.append(profile_dir / "config.yaml")
     return denied
 
 

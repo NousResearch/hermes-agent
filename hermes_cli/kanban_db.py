@@ -2961,31 +2961,48 @@ def _append_event(
 # Board owner — persistent delivery target for orchestrator injection
 # ---------------------------------------------------------------------------
 
+def get_board_owners(
+    conn: sqlite3.Connection, board: str
+) -> list[tuple[str, str]]:
+    """All ``(platform, chat_id)`` owners registered for *board*, deduped,
+    most-recently-updated first. Empty list if none.
+
+    A board may register several delivery channels (e.g. a Feishu chat and a
+    WeChat chat); the orchestrator's convergence injection iterates every one
+    so a summary reaches all of them, not just the latest. Each
+    ``(platform, chat_id)`` pair appears once (the table PK is
+    ``(board, platform, chat_id)``) and blank coordinates are dropped.
+    """
+    rows = conn.execute(
+        "SELECT platform, chat_id FROM kanban_board_owners "
+        "WHERE board = ? ORDER BY updated_at DESC, rowid DESC",
+        (board,),
+    ).fetchall()
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        plat = (row["platform"] or "").strip().lower()
+        chat = (row["chat_id"] or "").strip()
+        if not plat or not chat:
+            continue
+        key = (plat, chat)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 def get_board_owner(
     conn: sqlite3.Connection, board: str
 ) -> Optional[tuple[str, str]]:
-    """Return ``(platform, chat_id)`` for *board*'s persistent owner, or ``None``.
-
-    The kanban orchestrator's task-loop injection resolves its delivery target
-    through this lookup so a converged board can actually reach the
-    coordinator across process restarts and profile boundaries (the in-memory
-    cache and notifier subscriptions are per-process / per-profile). Multiple
-    platforms may be registered for one board; the most-recently-updated row
-    wins. Returns ``None`` on any miss or blank coordinates so callers fall
-    through to the next resolution tier.
+    """Return the most-recently-updated ``(platform, chat_id)`` owner for
+    *board*, or ``None``. Single-value convenience over
+    :func:`get_board_owners`; callers that need every channel (e.g. the
+    convergence injection) should call ``get_board_owners`` directly.
     """
-    row = conn.execute(
-        "SELECT platform, chat_id FROM kanban_board_owners "
-        "WHERE board = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
-        (board,),
-    ).fetchone()
-    if not row:
-        return None
-    plat = (row["platform"] or "").strip()
-    chat = (row["chat_id"] or "").strip()
-    if not plat or not chat:
-        return None
-    return (plat.lower(), chat)
+    owners = get_board_owners(conn, board)
+    return owners[0] if owners else None
 
 
 def set_board_owner(

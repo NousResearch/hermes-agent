@@ -1694,6 +1694,44 @@ class GatewayKanbanWatchersMixin:
                 return (sp.lower(), sch)
         return None
 
+    def _kanban_delivery_targets(
+        self,
+        board_slug: str,
+        *,
+        fallback_sub: Optional[dict] = None,
+    ) -> list[tuple[str, str]]:
+        """All ``(platform, chat_id)`` delivery targets for *board_slug*.
+
+        Tier 1 is the persistent ``kanban_board_owners`` table — when a board
+        has registered channels, **every** one is returned, so a convergence
+        summary reaches Feishu AND WeChat, not just the latest row. When the
+        table has no row for the board, degrade to the single-value cache +
+        subscription fallback (:meth:`_kanban_lookup_board_owner`) so a
+        freshly-subscribed board with no persistent owner still resolves. An
+        empty list means no tier resolved anything (caller should skip).
+        """
+        try:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=board_slug)
+            try:
+                owners = _kb.get_board_owners(conn, board_slug)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            if owners:
+                return owners
+        except Exception as exc:
+            logger.debug(
+                "kanban delivery targets: persistent lookup failed for %s: %s",
+                board_slug, exc,
+            )
+        single = self._kanban_lookup_board_owner(
+            board_slug, fallback_sub=fallback_sub,
+        )
+        return [single] if single else []
+
     async def _kanban_inject_event(
         self,
         *,
@@ -2306,9 +2344,11 @@ class GatewayKanbanWatchersMixin:
         """Schedule a fire-and-forget injection of *msg_text* into the
         orchestrator profile's session for *slug*.
 
-        Source resolution reuses :meth:`_kanban_lookup_board_owner`.  The
-        synthetic event is marked ``internal=True`` so the user does not
-        see the agent's internal reasoning as a reply.
+        Delivery targets come from :meth:`_kanban_delivery_targets`, which
+        expands every channel registered for the board (Feishu + WeChat +
+        ...) so a convergence summary reaches all of them rather than just
+        the latest. The synthetic event is marked ``internal=True`` so the
+        user does not see the agent's internal reasoning as a reply.
         """
         from gateway.config import Platform as _Platform
         from gateway.platforms.base import MessageEvent, SessionSource
@@ -2317,36 +2357,42 @@ class GatewayKanbanWatchersMixin:
             "platform": (self._kanban_last_user_source.get(slug, ("", ""))[0]),
             "chat_id": (self._kanban_last_user_source.get(slug, ("", ""))[1]),
         }
-        owner = self._kanban_lookup_board_owner(slug, fallback_sub=sub_fallback)
-        if not owner or not owner[0]:
+        targets = self._kanban_delivery_targets(slug, fallback_sub=sub_fallback)
+        if not targets:
             logger.debug(
                 "kanban task_loop inject: no source for board %s, skipping", slug,
             )
             return
-        plat_str, chat_id = owner
-        try:
-            platform = _Platform(plat_str)
-        except ValueError:
-            logger.debug(
-                "kanban task_loop inject: invalid platform %s for board %s",
-                plat_str, slug,
+        delivered = 0
+        for plat_str, chat_id in targets:
+            try:
+                platform = _Platform(plat_str)
+            except ValueError:
+                logger.debug(
+                    "kanban task_loop inject: invalid platform %s for board %s",
+                    plat_str, slug,
+                )
+                continue
+            source = SessionSource(
+                platform=platform,
+                chat_id=chat_id,
+                chat_type="private",
+                user_id="system",
+                user_name="kanban-orchestrator",
             )
-            return
-
-        source = SessionSource(
-            platform=platform,
-            chat_id=chat_id,
-            chat_type="private",
-            user_id="system",
-            user_name="kanban-orchestrator",
-        )
-        synthetic = MessageEvent(text=msg_text, source=source, internal=True)
-
-        try:
-            await self._handle_message(synthetic)
-        except Exception as exc:
-            logger.warning(
-                "kanban task_loop injection failed for %s: %s", slug, exc,
+            synthetic = MessageEvent(text=msg_text, source=source, internal=True)
+            try:
+                await self._handle_message(synthetic)
+                delivered += 1
+            except Exception as exc:
+                logger.warning(
+                    "kanban task_loop injection failed for %s on %s: %s",
+                    slug, plat_str, exc,
+                )
+        if delivered:
+            logger.debug(
+                "kanban task_loop inject: delivered to %d/%d target(s) for %s",
+                delivered, len(targets), slug,
             )
 
     async def _kanban_orchestrator_callback(

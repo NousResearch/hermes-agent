@@ -805,7 +805,7 @@ function StickyHumanMessageContainer({ attachments, children }: { attachments?: 
     // while attachments below it scroll away.
     <>
       <div
-        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-1"
+        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-end gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-1"
         data-role="user"
         data-slot="aui_user-message-root"
       >
@@ -1001,7 +1001,10 @@ const UserMessage: FC<{
           ) : null
         }
       >
-        <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
+        <ActionBarPrimitive.Root
+          className="relative ml-auto w-fit max-w-[min(76%,52rem)]"
+          data-slot="aui_user-bubble-actions"
+        >
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
               {/* Always editable — clicking opens the edit composer even while a
@@ -1696,7 +1699,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     <ComposerPrimitive.Root className="contents" data-slot="aui_edit-composer-root">
       <StickyHumanMessageContainer>
         <div
-          className="composer-human-message-container human-execution-message-top relative flex w-full items-start rounded-md bg-(--ui-chat-surface-background)"
+          className="composer-human-message-container human-execution-message-top relative ml-auto flex w-full max-w-[min(76%,52rem)] items-start rounded-md bg-(--ui-chat-surface-background)"
           onBlur={handleEditBlur}
           onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}

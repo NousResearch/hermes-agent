@@ -8,8 +8,8 @@ import { ExportedMessageRepository } from '@assistant-ui/core/internal'
 // bubbles) is not reproducible in jsdom — see USER_BUBBLE_BASE_CLASS's no-drag
 // carve-out in thread.tsx.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
@@ -30,6 +30,8 @@ vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
 vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
 
 Element.prototype.scrollTo = function scrollTo() {}
+
+afterEach(() => cleanup())
 
 function stubOffsetDimension(
   prop: 'offsetHeight' | 'offsetWidth',
@@ -115,6 +117,19 @@ function StockHarness({ onEdit }: { onEdit: () => Promise<void> }) {
 }
 
 describe('click-to-edit user message', () => {
+  it('renders human prompts as a right-aligned, capped-width bubble', async () => {
+    const { container } = render(<StockHarness onEdit={async () => {}} />)
+
+    await screen.findByRole('button', { name: 'Edit message' })
+
+    const root = container.querySelector('[data-slot="aui_user-message-root"]')
+    const actionRoot = container.querySelector('[data-slot="aui_user-bubble-actions"]')
+
+    expect(root?.className).toContain('items-end')
+    expect(actionRoot?.className).toContain('ml-auto')
+    expect(actionRoot?.className).toContain('max-w-[min(76%,52rem)]')
+  })
+
   it('opens the edit composer with the incremental runtime', async () => {
     const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
 

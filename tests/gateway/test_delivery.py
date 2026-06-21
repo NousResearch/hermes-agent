@@ -1,5 +1,7 @@
 """Tests for the delivery routing module."""
 
+from pathlib import Path
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform
@@ -281,3 +283,76 @@ async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkey
 
     with pytest.raises(RuntimeError, match="route failed"):
         await router._deliver_to_platform(target, "hello", metadata={"telegram_reply_to_message_id": "9001"})
+
+
+def _simulate_windows_codepage_write(monkeypatch):
+    """Make ``Path.write_text`` behave like a non-UTF-8 Windows console.
+
+    On Windows ``Path.write_text(data)`` with no ``encoding=`` encodes through
+    the platform code page (cp1252), which raises ``UnicodeEncodeError`` for
+    emoji/CJK/accented text. POSIX CI runs default to UTF-8 and would hide the
+    regression, so we reproduce the Windows default deterministically: encode
+    with cp1252 when the caller omits ``encoding=``, otherwise honor it.
+    """
+    import pathlib
+
+    real_write_text = pathlib.Path.write_text
+
+    def fake_write_text(self, data, encoding=None, *args, **kwargs):
+        effective = encoding or "cp1252"
+        data.encode(effective)  # mirrors the encode open() performs on write
+        return real_write_text(self, data, encoding=effective, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", fake_write_text)
+
+
+# Non-ASCII content larger than MAX_PLATFORM_OUTPUT (4000) to force the
+# truncate-and-save branch in _deliver_to_platform.
+_NON_ASCII_OVERSIZED = ("数据备份完成 🎉 résumé — " * 250)
+
+
+@pytest.mark.asyncio
+async def test_oversized_non_ascii_output_is_delivered_on_windows_codepage(tmp_path, monkeypatch):
+    """Oversized cron output containing emoji/CJK must still be delivered.
+
+    Without an explicit utf-8 encoding the full-output save raises
+    UnicodeEncodeError on a Windows code page, aborting the whole
+    truncate-and-send path so the user receives nothing.
+    """
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    _simulate_windows_codepage_write(monkeypatch)
+
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:12345")
+
+    result = await router._deliver_to_platform(
+        target, _NON_ASCII_OVERSIZED, metadata={"job_id": "nightly"}
+    )
+
+    # The truncated message reached the adapter unharmed.
+    assert len(adapter.calls) == 1
+    assert "🎉" in adapter.calls[0]["content"]
+    assert "truncated, full output saved to" in adapter.calls[0]["content"]
+
+    # The full-output backup was written and round-trips as UTF-8.
+    saved = list((tmp_path / "cron" / "output").glob("nightly_*.txt"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == _NON_ASCII_OVERSIZED
+    assert result["success"] is True
+
+
+def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypatch):
+    """Local file delivery must persist emoji/CJK content as UTF-8."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    _simulate_windows_codepage_write(monkeypatch)
+
+    router = DeliveryRouter(GatewayConfig())
+
+    result = router._deliver_local(
+        "完了 ✅ café", job_id="job1", job_name="日次レポート", metadata=None
+    )
+
+    written = Path(result["path"]).read_text(encoding="utf-8")
+    assert "完了 ✅ café" in written
+    assert "日次レポート" in written

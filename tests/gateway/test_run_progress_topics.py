@@ -52,8 +52,14 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id, metadata=None) -> None:
         self.typing.append({"chat_id": chat_id, "metadata": metadata})
 
-    async def stop_typing(self, chat_id) -> None:
-        self.typing.append({"chat_id": chat_id, "metadata": {"stopped": True}})
+    async def stop_typing(self, chat_id, metadata=None) -> None:
+        self.typing.append(
+            {
+                "chat_id": chat_id,
+                "metadata": {"stopped": True},
+                "stop_metadata": metadata,
+            }
+        )
 
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
@@ -1093,9 +1099,9 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
         events.append("callback-start")
         await asyncio.Event().wait()
 
-    async def _stop_typing(chat_id):
+    async def _stop_typing(chat_id, metadata=None):
         events.append("typing-stopped")
-        await ProgressCaptureAdapter.stop_typing(adapter, chat_id)
+        await ProgressCaptureAdapter.stop_typing(adapter, chat_id, metadata=metadata)
 
     adapter.set_message_handler(_handler)
     adapter.stop_typing = _stop_typing
@@ -1279,6 +1285,44 @@ async def test_keep_typing_stops_immediately_when_interrupt_event_is_set():
     ]
     assert len(normal_typing_calls) == 1
     assert len(stopped_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_thread_metadata_is_forwarded_to_processing_stop_typing(monkeypatch):
+    """Thread-scoped typing must stop with the same metadata used to start it."""
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+
+    async def _handler(event):
+        return "done"
+
+    adapter.set_message_handler(_handler)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="parent-channel",
+        chat_type="group",
+        thread_id="thread-123",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:discord:group:parent-channel:thread-123"
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await asyncio.wait_for(
+        adapter._process_message_background(event, session_key), timeout=1.0
+    )
+
+    stop_calls = [
+        call for call in adapter.typing if call.get("metadata") == {"stopped": True}
+    ]
+    assert stop_calls
+    assert all(
+        call.get("stop_metadata") == {"thread_id": "thread-123"}
+        for call in stop_calls
+    )
 
 
 @pytest.mark.asyncio

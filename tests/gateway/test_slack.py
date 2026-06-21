@@ -2027,6 +2027,22 @@ class TestFormatMessage:
             == "<http://x.com|A &lt; B>"
         )
 
+    def test_link_label_escapes_preexisting_entity(self, adapter):
+        # A label that already contains an entity like '&gt;' must have its
+        # leading '&' escaped to '&amp;' so the literal text survives intact
+        # ('&gt;' -> '&amp;gt;'). Because '&' is escaped first, this also
+        # guards against double-unescaping. If the escape order regressed
+        # (e.g. '&' escaped last), the label would collapse to a real '>'
+        # and close the <...> entity early.
+        assert (
+            adapter.format_message("[docs &gt; setup](http://x.com)")
+            == "<http://x.com|docs &amp;gt; setup>"
+        )
+        assert (
+            adapter.format_message("[Tom &amp; Jerry](http://x.com)")
+            == "<http://x.com|Tom &amp;amp; Jerry>"
+        )
+
     def test_preserves_existing_slack_entities(self, adapter):
         text = "Hey <@U123>, see <https://example.com|example> and <!here>"
         assert adapter.format_message(text) == text

@@ -177,10 +177,18 @@ RUN npm install --prefer-offline --no-audit && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# The Feishu gateway's deps ([feishu] extra: lark-oapi) are baked in for the
+# same reason: the [messaging] extra installed below carries telegram/discord/
+# slack but not lark-oapi, and [all] left feishu to lazy-install only. With
+# HERMES_DISABLE_LAZY_INSTALLS=1 and the read-only venv (chmod -R a-w
+# /opt/hermes), the runtime lazy-install can never run, so Feishu silently
+# fails to connect ("No adapter available for feishu"). Baking [feishu] in
+# mirrors the matrix/hindsight handling above. Fixes #50205.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra feishu
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

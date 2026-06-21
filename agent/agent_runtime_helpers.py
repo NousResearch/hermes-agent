@@ -240,7 +240,11 @@ def sanitize_tool_call_arguments(
     logger=None,
     session_id: str = None,
 ) -> int:
-    """Repair corrupted assistant tool-call argument JSON in-place."""
+    """Repair corrupted assistant tool-call argument JSON in-place.
+
+    Also fixes empty function.name fields that cause 400 errors on
+    strict providers like StepFun.
+    """
     log = logger or logging.getLogger(__name__)
     if not isinstance(messages, list):
         return 0
@@ -284,6 +288,46 @@ def sanitize_tool_call_arguments(
             function = tool_call.get("function")
             if not isinstance(function, dict):
                 continue
+
+            # Fix empty function.name for strict providers like StepFun
+            function_name = function.get("name")
+            if not function_name or not function_name.strip():
+                # Try to find name from tool result message
+                tool_call_id = tool_call.get("id")
+                if tool_call_id:
+                    scan_index = message_index + 1
+                    while scan_index < len(messages):
+                        candidate = messages[scan_index]
+                        if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+                            break
+                        if candidate.get("tool_call_id") == tool_call_id:
+                            # Use tool message name as fallback
+                            tool_msg_name = candidate.get("name")
+                            if tool_msg_name and tool_msg_name.strip():
+                                function["name"] = tool_msg_name.strip()
+                                log.warning(
+                                    "Fixed empty function.name from tool message "
+                                    "(session=%s, message_index=%s, tool_call_id=%s, name=%s)",
+                                    session_id or "-",
+                                    message_index,
+                                    tool_call_id,
+                                    function["name"],
+                                )
+                                repaired += 1
+                                break
+                        scan_index += 1
+
+                # If still empty, use a generic fallback
+                if not function.get("name") or not function["name"].strip():
+                    function["name"] = "unknown_tool"
+                    log.warning(
+                        "Fixed empty function.name with fallback 'unknown_tool' "
+                        "(session=%s, message_index=%s, tool_call_id=%s)",
+                        session_id or "-",
+                        message_index,
+                        tool_call.get("id", "-"),
+                    )
+                    repaired += 1
 
             arguments = function.get("arguments")
             if arguments is None or arguments == "":

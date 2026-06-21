@@ -4220,18 +4220,91 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
+            media_urls = list(getattr(event, "media_urls", None) or [])
+            media_types = list(getattr(event, "media_types", None) or [])
+            has_media = bool(media_urls)
+            voice_paths: list[str] = []
+            for idx, path in enumerate(media_urls):
+                mtype = media_types[idx] if idx < len(media_types) else ""
+                is_audio_mime = mtype.startswith("audio/")
+                is_voice = (
+                    (event.message_type == MessageType.VOICE and (not mtype or is_audio_mime))
+                    or (
+                        is_audio_mime
+                        and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
+                    )
+                )
+                if is_voice:
+                    voice_paths.append(path)
+            all_media_is_voice = has_media and len(voice_paths) == len(media_urls)
+
             can_steer = (
-                steer_text
-                and running_agent is not None
+                running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
             )
-            if can_steer:
+
+            # ``AIAgent.steer()`` is text-only, so media-bearing events cannot
+            # be passed through as raw MessageEvents.  Voice notes are the
+            # useful exception when every attachment is voice-like: transcribe
+            # it first, then steer the transcript into the current run.  Mixed
+            # media (voice + image/file) still queues so non-voice attachments
+            # cannot be dropped.  If transcription fails or the agent rejects
+            # the steer, queue the original event so cached media metadata is
+            # still preserved for the normal next-turn processing path.
+            if all_media_is_voice and can_steer:
                 try:
-                    steered = bool(running_agent.steer(steer_text))
+                    enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+                        steer_text,
+                        voice_paths,
+                    )
                 except Exception as exc:
-                    logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
-                    steered = False
+                    logger.warning(
+                        "Gateway voice fast-steer transcription failed for session %s: %s",
+                        session_key,
+                        exc,
+                    )
+                    successful_transcripts = []
+                    enriched_text = steer_text
+
+                if successful_transcripts and enriched_text.strip():
+                    try:
+                        steered = bool(running_agent.steer(enriched_text.strip()))
+                    except Exception as exc:
+                        logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
+                        steered = False
+
+                    if steered:
+                        # Match the fresh-message voice path: echo the raw STT
+                        # text so the user can verify what was injected.
+                        thread_meta = self._thread_metadata_for_source(
+                            event.source,
+                            self._reply_anchor_for_event(event),
+                        )
+                        for transcript in successful_transcripts:
+                            try:
+                                await adapter.send(
+                                    event.source.chat_id,
+                                    f'🎙️ "{transcript}"',
+                                    metadata=thread_meta,
+                                )
+                            except Exception as echo_exc:
+                                logger.debug(
+                                    "Transcript echo failed (non-fatal): %s",
+                                    echo_exc,
+                                )
+
+            elif has_media:
+                effective_mode = "queue"
+
+            if not steered and effective_mode == "steer" and not has_media:
+                can_text_steer = bool(steer_text) and can_steer
+                if can_text_steer:
+                    try:
+                        steered = bool(running_agent.steer(steer_text))
+                    except Exception as exc:
+                        logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
+                        steered = False
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"

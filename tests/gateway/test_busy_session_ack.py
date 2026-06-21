@@ -83,6 +83,7 @@ def _make_adapter(platform_val="telegram"):
     adapter = MagicMock()
     adapter._pending_messages = {}
     adapter._send_with_retry = AsyncMock()
+    adapter.send = AsyncMock()
     adapter.config = MagicMock()
     adapter.config.extra = {}
     adapter.platform = MagicMock(value=platform_val)
@@ -296,6 +297,136 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Steered" in content or "steer" in content.lower()
         assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_transcribes_voice_and_steers_transcript(self):
+        """Voice notes in steer mode should be timely when STT succeeds.
+
+        ``AIAgent.steer()`` cannot accept media metadata, but voice can be
+        lowered to text first.  Successful STT should steer the transcript into
+        the active run and avoid replaying the original media as a queued next
+        turn.
+        """
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="(The user sent a message with no text content)")
+        event.message_type = MessageType.VOICE
+        event.media_urls = ["/tmp/cached.ogg"]
+        event.media_types = ["audio/ogg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        enriched = '[The user sent a voice message~ Here\'s what they said: "turn left"]'
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value=(enriched, ["turn left"])
+        )
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        runner._enrich_message_with_transcription.assert_awaited_once_with(
+            "(The user sent a message with no text content)",
+            ["/tmp/cached.ogg"],
+        )
+        agent.steer.assert_called_once_with(enriched)
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages.get(sk) is None
+        adapter.send.assert_awaited_once()
+        assert '🎙️ "turn left"' in adapter.send.await_args.args
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Steered" in content
+        assert "Queued for the next turn" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_queues_voice_when_transcription_fails(self):
+        """Failed voice STT must preserve the original media event for next turn."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="")
+        event.message_type = MessageType.VOICE
+        event.media_urls = ["/tmp/cached.ogg"]
+        event.media_types = ["audio/ogg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value=("[voice failed]", [])
+        )
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+        adapter.send.assert_not_awaited()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_queues_non_voice_media_to_preserve_attachment(self):
+        """Documents/images cannot be lowered to steer text without preprocessing."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="please read this pdf")
+        event.message_type = MessageType.DOCUMENT
+        event.media_urls = ["/tmp/cached.pdf"]
+        event.media_types = ["application/pdf"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner._enrich_message_with_transcription = AsyncMock()
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        runner._enrich_message_with_transcription.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+        assert "Steered" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_queues_mixed_voice_and_non_voice_media(self):
+        """Fast voice steer must not drop sibling image/document attachments."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="voice plus image")
+        event.message_type = MessageType.VOICE
+        event.media_urls = ["/tmp/cached.ogg", "/tmp/photo.png"]
+        event.media_types = ["audio/ogg", "image/png"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner._enrich_message_with_transcription = AsyncMock()
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        runner._enrich_message_with_transcription.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+        assert adapter._pending_messages[sk].media_urls == ["/tmp/cached.ogg", "/tmp/photo.png"]
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):

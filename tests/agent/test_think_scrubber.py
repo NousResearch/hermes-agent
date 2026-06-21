@@ -34,7 +34,7 @@ class TestClosedPairs:
 
     @pytest.mark.parametrize(
         "tag",
-        ["think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD"],
+        ["think", "mm:think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD"],
     )
     def test_all_tag_variants(self, tag: str) -> None:
         s = StreamingThinkScrubber()
@@ -122,6 +122,14 @@ class TestPartialTagsAcrossDeltas:
         s = StreamingThinkScrubber()
         assert (
             _drive(s, ["<think>reasoning</th", "ink>after"])
+            == "after"
+        )
+
+    def test_split_minimax_m3_tag_held_back(self) -> None:
+        """MiniMax-M3's namespaced tag can split across token boundaries."""
+        s = StreamingThinkScrubber()
+        assert (
+            _drive(s, ["<mm:", "think>reasoning</mm:", "think>after"])
             == "after"
         )
 

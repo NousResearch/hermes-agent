@@ -90,6 +90,19 @@ class TestRealReasoningBlock:
         assert "Here is my answer" in full
         assert "I need to analyze" not in full  # reasoning was suppressed
 
+    def test_minimax_m3_think_at_start_of_stream(self):
+        """'<mm:think>reasoning</mm:think>answer' should suppress reasoning."""
+        cli = _make_cli_stub()
+        cli._stream_delta("<mm:think>")
+        assert cli._in_reasoning_block
+        cli._stream_delta("I need to analyze this")
+        cli._stream_delta("</mm:think>")
+        assert not cli._in_reasoning_block
+        cli._stream_delta("Here is my answer")
+        full = "".join(cli._emitted)
+        assert "Here is my answer" in full
+        assert "I need to analyze" not in full
+
     def test_think_after_newline(self):
         """'text\\n<think>' should trigger reasoning block."""
         cli = _make_cli_stub()

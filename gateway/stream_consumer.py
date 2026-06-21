@@ -99,11 +99,11 @@ class GatewayStreamConsumer:
     # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
     # run_agent.py _strip_think_blocks() tag variants.
     _OPEN_THINK_TAGS = (
-        "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
+        "<REASONING_SCRATCHPAD>", "<think>", "<mm:think>", "<reasoning>",
         "<THINKING>", "<thinking>", "<thought>",
     )
     _CLOSE_THINK_TAGS = (
-        "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
+        "</REASONING_SCRATCHPAD>", "</think>", "</mm:think>", "</reasoning>",
         "</THINKING>", "</thinking>", "</thought>",
     )
 

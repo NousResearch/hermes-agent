@@ -1603,7 +1603,7 @@ def run_conversation(
                     # thinking-budget exhaustion.
                     _has_think_tags = bool(
                         _trunc_content and re.search(
-                            r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>',
+                            r'<(?:mm:think|think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>',
                             _trunc_content,
                             re.IGNORECASE,
                         )
@@ -3679,7 +3679,7 @@ def run_conversation(
                 _think_text = assistant_message.content.strip()
                 # Strip reasoning XML tags that shouldn't leak to parent display
                 _think_text = re.sub(
-                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
+                    r'</?(?:REASONING_SCRATCHPAD|mm:think|think|reasoning)>', '', _think_text
                 ).strip()
                 # For subagents: relay first line to parent display (existing behaviour).
                 # For all agents with a structured callback: emit reasoning.available event.
@@ -4228,7 +4228,7 @@ def run_conversation(
                     # after tool calls route to prefill instead of nudge.
                     _has_inline_thinking = bool(
                         re.search(
-                            r'<think>|<thinking>|<reasoning>',
+                            r'<mm:think>|<think>|<thinking>|<reasoning>',
                             final_response or "",
                             re.IGNORECASE,
                         )

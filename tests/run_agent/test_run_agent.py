@@ -317,6 +317,12 @@ class TestStripThinkBlocks:
         assert "reasoning" not in result
         assert "answer" in result
 
+    def test_minimax_m3_block_removed(self, agent):
+        result = agent._strip_think_blocks("<mm:think>reasoning</mm:think> answer")
+        assert "reasoning" not in result
+        assert "<mm:think>" not in result
+        assert "answer" in result
+
     def test_multiline_block_removed(self, agent):
         text = "<think>\nline1\nline2\n</think>\nvisible"
         result = agent._strip_think_blocks(text)
@@ -333,9 +339,18 @@ class TestStripThinkBlocks:
         assert "</thinking>" not in result
         assert "answer" in result
 
+    def test_orphaned_closing_minimax_m3_tag(self, agent):
+        result = agent._strip_think_blocks("reasoning</mm:think>answer")
+        assert "</mm:think>" not in result
+        assert "answer" in result
+
     def test_orphaned_opening_think_tag(self, agent):
         result = agent._strip_think_blocks("<think>orphaned reasoning without close")
         assert "<think>" not in result
+
+    def test_orphaned_opening_minimax_m3_tag(self, agent):
+        result = agent._strip_think_blocks("<mm:think>orphaned reasoning without close")
+        assert "<mm:think>" not in result
 
     def test_mixed_orphaned_and_paired_tags(self, agent):
         text = "stray</think><think>paired reasoning</think> visible"

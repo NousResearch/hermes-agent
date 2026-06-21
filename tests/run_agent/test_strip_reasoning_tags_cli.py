@@ -47,6 +47,13 @@ class TestToolCallStripping:
         assert "reasoning" not in result
         assert "answer" in result
 
+    def test_minimax_m3_reasoning_stripped(self):
+        text = "<mm:think>reasoning</mm:think> answer"
+        result = _strip_reasoning_tags(text)
+        assert "reasoning" not in result
+        assert "<mm:think>" not in result
+        assert "answer" in result
+
     def test_mixed_reasoning_and_tool_call(self):
         text = '<think>plan</think><tool_call>{"x":1}</tool_call>final'
         result = _strip_reasoning_tags(text)

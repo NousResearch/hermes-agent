@@ -490,6 +490,12 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         result = agent._build_assistant_message(api_msg, "stop")
         self.assertEqual(result["reasoning"], "Let me calculate 2+2=4.")
 
+    def test_minimax_m3_think_block_extracted(self):
+        agent = self._make_agent()
+        api_msg = self._build_msg("<mm:think>Plan privately.</mm:think>The answer is 4.")
+        result = agent._build_assistant_message(api_msg, "stop")
+        self.assertEqual(result["reasoning"], "Plan privately.")
+
     def test_multiple_think_blocks_extracted(self):
         agent = self._make_agent()
         api_msg = self._build_msg("<think>First thought.</think>Some text<think>Second thought.</think>More text")

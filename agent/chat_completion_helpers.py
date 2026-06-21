@@ -822,12 +822,16 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     reasoning_text = agent._extract_reasoning(assistant_message)
     _from_structured = bool(reasoning_text)
 
-    # Fallback: extract inline <think> blocks from content when no structured
+    # Fallback: extract inline thinking blocks from content when no structured
     # reasoning fields are present (some models/providers embed thinking
     # directly in the content rather than returning separate API fields).
     if not reasoning_text:
         content = assistant_message.content or ""
-        think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+        think_blocks = re.findall(
+            r'<(?:mm:think|think)>(.*?)</(?:mm:think|think)>',
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         if think_blocks:
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
@@ -839,7 +843,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         # Skip callback when streaming is active — reasoning was already
         # displayed during the stream via one of two paths:
         #   (a) _fire_reasoning_delta (structured reasoning_content deltas)
-        #   (b) _stream_delta tag extraction (<think>/<REASONING_SCRATCHPAD>)
+        #   (b) _stream_delta tag extraction (<think>/<mm:think>/<REASONING_SCRATCHPAD>)
         # When streaming is NOT active, always fire so non-streaming modes
         # (gateway, batch, quiet) still get reasoning.
         # Any reasoning that wasn't shown during streaming is caught by the
@@ -1505,8 +1509,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_summary_result.content or "").strip()
 
         if final_response:
-            if "<think>" in final_response:
-                final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+            if re.search(r'<(?:mm:think|think)>', final_response, flags=re.IGNORECASE):
+                final_response = re.sub(
+                    r'<(?:mm:think|think)>.*?</(?:mm:think|think)>\s*',
+                    '',
+                    final_response,
+                    flags=re.DOTALL | re.IGNORECASE,
+                ).strip()
             if final_response:
                 messages.append({"role": "assistant", "content": final_response})
             else:
@@ -1548,8 +1557,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_retry_result.content or "").strip()
 
             if final_response:
-                if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                if re.search(r'<(?:mm:think|think)>', final_response, flags=re.IGNORECASE):
+                    final_response = re.sub(
+                        r'<(?:mm:think|think)>.*?</(?:mm:think|think)>\s*',
+                        '',
+                        final_response,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    ).strip()
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:

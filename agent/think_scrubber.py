@@ -42,7 +42,7 @@ stream cannot taint the next turn's output.
 
 Tag variants handled (case-insensitive):
   ``<think>``, ``<thinking>``, ``<reasoning>``, ``<thought>``,
-  ``<REASONING_SCRATCHPAD>``.
+  ``<REASONING_SCRATCHPAD>`` and MiniMax-M3 ``<mm:think>``.
 
 Block-boundary rule for opens: an opening tag is only treated as a
 reasoning-block opener when it appears at the start of the stream,
@@ -78,6 +78,7 @@ class StreamingThinkScrubber:
 
     _OPEN_TAG_NAMES: Tuple[str, ...] = (
         "think",
+        "mm:think",
         "thinking",
         "reasoning",
         "thought",

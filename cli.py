@@ -185,6 +185,7 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 _REASONING_TAGS = (
     "REASONING_SCRATCHPAD",
     "think",
+    "mm:think",
     "thinking",
     "reasoning",
     "thought",
@@ -202,8 +203,8 @@ def _strip_reasoning_tags(text: str) -> str:
         partial-content dumps.
 
     Covers the variants emitted by reasoning models today: ``<think>``,
-    ``<thinking>``, ``<reasoning>``, ``<REASONING_SCRATCHPAD>``, and
-    ``<thought>`` (Gemma 4).  Must stay in sync with
+    ``<thinking>``, ``<reasoning>``, ``<REASONING_SCRATCHPAD>``,
+    ``<thought>`` (Gemma 4), and ``<mm:think>`` (MiniMax-M3).  Must stay in sync with
     ``run_agent.py::_strip_think_blocks`` and the stream consumer's
     ``_OPEN_THINK_TAGS`` / ``_CLOSE_THINK_TAGS`` tuples.
 
@@ -4933,8 +4934,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # suppress them during streaming too — unless show_reasoning is
         # enabled, in which case we route the inner content to the
         # reasoning display box instead of discarding it.
-        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>")
-        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>", "</thought>")
+        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<mm:think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>")
+        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</mm:think>", "</reasoning>", "</THINKING>", "</thinking>", "</thought>")
 
         # Append to a pre-filter buffer first
         self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text

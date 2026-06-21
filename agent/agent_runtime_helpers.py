@@ -499,8 +499,8 @@ def strip_think_blocks(agent, content: str) -> str:
          ``<think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
       4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
-         ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
-         case-insensitive.
+         ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), and
+         ``<mm:think>`` (MiniMax-M3), all case-insensitive.
 
     Additionally strips standalone tool-call XML blocks that some open
     models (notably Gemma variants on OpenRouter) emit inside assistant
@@ -522,6 +522,7 @@ def strip_think_blocks(agent, content: str) -> str:
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r'<mm:think>.*?</mm:think>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
@@ -555,14 +556,14 @@ def strip_think_blocks(agent, content: str) -> str:
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
     content = re.sub(
-        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
+        r'(?:^|\n)[ \t]*<(?:mm:think|think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
         '',
         content,
         flags=re.DOTALL | re.IGNORECASE,
     )
     # 3. Stray orphan open/close tags that slipped through.
     content = re.sub(
-        r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+        r'</?(?:mm:think|think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
         '',
         content,
         flags=re.IGNORECASE,

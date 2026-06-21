@@ -1,0 +1,149 @@
+=== fresh-clone cherry-pick of 40 feature PRs onto v0.17.0 ===
+  #48024 CLEAN
+  #48057 CLEAN
+  #48065 CLEAN
+  #48069 CONFLICT(union-resolved)
+  #48101 CONFLICT(union-resolved)
+  #49184 CLEAN
+  #49449 CLEAN
+  #49644 CLEAN
+  #49915 CLEAN
+  #49916 CLEAN
+  #49917 CLEAN
+  #50021 CLEAN
+  #50022 CLEAN
+  #50031 CLEAN
+  #50032 CLEAN
+  #50033 CLEAN
+  #50038 CLEAN
+  #50039 CLEAN
+  #50040 CLEAN
+  #50041 CLEAN
+  #50042 CLEAN
+  #50045 CLEAN
+  #50046 CLEAN
+  #50047 CLEAN
+  #50048 CLEAN
+  #50049 CLEAN
+  #50053 CLEAN
+  #50054 CLEAN
+  #50055 CLEAN
+  #50056 CONFLICT(union-resolved)
+  #50064 CLEAN
+  #50066 CLEAN
+  #50068 CLEAN
+  #50073 CLEAN
+  #50078 CLEAN
+  #50080 CLEAN
+  #50086 CLEAN
+  #50146 CLEAN
+  #50155 CLEAN
+  #50296 CLEAN
+cherry-pick: clean=37 resolved=3
+
+=== RESIDUAL: PR-touched source files — stacked clone vs SRC working tree ===
+identical=52  differ-but-upstream-drift=74  REAL-RESIDUAL=5
+--- real-residual files (stacked clone != src, NOT explained by upstream drift) ---
+  agent/gemini_cloudcode_adapter.py
+diff --git a/mnt/devvm/custom/hermes/src/agent/gemini_cloudcode_adapter.py b/agent/gemini_cloudcode_adapter.py
+index 971e48d52..27392bb05 100644
+--- a/mnt/devvm/custom/hermes/src/agent/gemini_cloudcode_adapter.py
++++ b/agent/gemini_cloudcode_adapter.py
+@@ -713,13 +713,6 @@ class GeminiCloudCodeClient:
+             "X-Goog-Api-Client": gemini_cli_x_goog_api_client(),
+             "x-activity-request-id": str(uuid.uuid4()),
+         }
+-        # NOTE (Phase A9 fix, 2026-06-04): we deliberately do NOT inject
+-        # X-Goog-User-Project="antigravity-core-2026" or the Ext binary flag
+-        # here. Those are Google-internal Antigravity dev project headers; on
+-        # external accounts they trigger 400 USER_PROJECT_DENIED. Upstream
+-        # main does not send them. Let cloudcode-pa use the OAuth-bound
+-        # default project. See agent/google_code_assist.py for the matching
+-        # fix and probe/probe_gemini_cloudcode.py for empirical verification.
+         headers.update(self._default_headers)
+ 
+         if stream:
+  agent/models_dev.py
+diff --git a/mnt/devvm/custom/hermes/src/agent/models_dev.py b/agent/models_dev.py
+index 3762e9097..cefe29248 100644
+--- a/mnt/devvm/custom/hermes/src/agent/models_dev.py
++++ b/agent/models_dev.py
+@@ -689,7 +689,7 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
+ 
+ 
+ # ---------------------------------------------------------------------------
+-# Probe-verified overrides: authoritative (Phase A8, 2026-06-04)
++# Probe-verified overrides
+ # ---------------------------------------------------------------------------
+ #
+ # models.dev is a community catalog that consistently UNDER-reports limits
+@@ -700,9 +700,7 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
+ #
+ # This override table is the single source of truth for per-(provider, model)
+ # context_window / max_output / supported reasoning_effort whenever the data
+-# is provably wrong upstream. Source of truth document:
+-#
+-#   /mnt/devvm/custom/hermes/review-copilot-opus-context/AUTHORITATIVE_LIMITS.md
+  hermes_cli/prompt_size.py
+diff --git a/mnt/devvm/custom/hermes/src/hermes_cli/prompt_size.py b/hermes_cli/prompt_size.py
+index 9db0edc77..913beb18b 100644
+--- a/mnt/devvm/custom/hermes/src/hermes_cli/prompt_size.py
++++ b/hermes_cli/prompt_size.py
+@@ -63,7 +63,6 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
+     parts = build_system_prompt_parts(agent)
+     full = build_system_prompt(agent)
+ 
+-    prelude = parts.get("prelude", "")
+     stable = parts.get("stable", "")
+     context = parts.get("context", "")
+     volatile = parts.get("volatile", "")
+@@ -93,7 +92,6 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
+     tools_json = json.dumps(tools, ensure_ascii=False)
+ 
+     sections: List[Tuple[str, int, int]] = [
+-        ("prelude (operator system-prompt files)", len(prelude), _bytes(prelude)),
+         ("stable (identity/guidance/skills)", len(stable), _bytes(stable)),
+         ("context (AGENTS.md/cwd files)", len(context), _bytes(context)),
+         ("volatile (memory/profile/timestamp)", len(volatile), _bytes(volatile)),
+  tests/probe_prelude_e2e.py
+diff --git a/mnt/devvm/custom/hermes/src/tests/probe_prelude_e2e.py b/tests/probe_prelude_e2e.py
+index a872cffd1..d7061ea4e 100644
+--- a/mnt/devvm/custom/hermes/src/tests/probe_prelude_e2e.py
++++ b/tests/probe_prelude_e2e.py
+@@ -6,9 +6,11 @@ Not a unit test — an integration probe. Run:
+ """
+ import os
+ import sys
++from pathlib import Path
+ 
+-# Front-load the worktree (mirror the dev wrapper) so our patched modules win.
+-WT = "/mnt/devvm/custom/hermes/review-sysprompt-prelude"
++# Front-load the repo root (parent of this tests/ dir) so our patched modules
++# win, mirroring the dev wrapper without hardcoding a private worktree path.
++WT = str(Path(__file__).resolve().parent.parent)
+ if WT not in sys.path:
+     sys.path.insert(0, WT)
+ 
+  tests/test_context_engine_tool_wrap.py
+diff --git a/mnt/devvm/custom/hermes/src/tests/test_context_engine_tool_wrap.py b/tests/test_context_engine_tool_wrap.py
+index 7628e2b35..581a1936c 100644
+--- a/mnt/devvm/custom/hermes/src/tests/test_context_engine_tool_wrap.py
++++ b/tests/test_context_engine_tool_wrap.py
+@@ -100,30 +100,6 @@ def test_no_empty_names_emitted():
+         assert nm and nm.strip(), f"tools[{i}].function.name is empty -> would HTTP 400"
+ 
+ 
+-def test_cmx_hermes_engine_schemas_are_bare():
+-    """The cmx engine itself must now expose BARE schemas (source-level guard)."""
+-    import importlib.util, os
+-    cmx_path = "/mnt/devvm/custom/hermes/hermes-cmx/src/cmx/hermes_engine.py"
+-    if not os.path.exists(cmx_path):
+-        import pytest
+-        pytest.skip("cmx source not present in this layout")
+-    # Parse TOOL_SCHEMAS without importing the heavy engine deps.
+-    import ast
+-    tree = ast.parse(open(cmx_path).read())
+-    schemas = None
+-    for node in tree.body:
+
+RESULT: FAIL — 5 real-residual files

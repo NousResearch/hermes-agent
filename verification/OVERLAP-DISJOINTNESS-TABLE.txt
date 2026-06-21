@@ -1,0 +1,35 @@
+=== PER-OVERLAP-FILE DISJOINTNESS: apply each touching PR's per-file diff onto v0.17.0 ===
+(disjoint hunks => all sequential applies CLEAN, 0 conflict markers; a real overlap => CONFLICT)
+method: fresh v0.17.0 worktree; for each file, git apply --3way each touching PR's per-file
+net-diff (base..head) in PR-number order; count residual <<<<<<< markers + verify parse.
+
+agent/agent_init.py                              markers= 0  DISJOINT
+    apply-sequence (PR# order): 48065:CLEAN, 49184:CLEAN, 49917:CLEAN, 50073:CLEAN, 50296:CLEAN
+agent/anthropic_adapter.py                       markers= 0  DISJOINT
+    apply-sequence (PR# order): 48024:CLEAN, 50064:CLEAN
+agent/auxiliary_client.py                        markers= 0  DISJOINT
+    apply-sequence (PR# order): 49184:CLEAN, 50064:CLEAN
+agent/conversation_loop.py                       markers= 0  DISJOINT
+    apply-sequence (PR# order): 49184:CLEAN, 49917:CLEAN, 50073:CLEAN, 50155:CLEAN
+agent/system_prompt.py                           markers= 0  DISJOINT
+    apply-sequence (PR# order): 48101:CLEAN, 49917:CLEAN
+agent/tool_executor.py                           markers= 0  DISJOINT
+    apply-sequence (PR# order): 49917:CLEAN, 50021:CLEAN
+gateway/run.py                                   markers= 0  DISJOINT
+    apply-sequence (PR# order): 49644:CLEAN, 50146:CLEAN
+hermes_cli/commands.py                           markers= 0  DISJOINT
+    apply-sequence (PR# order): 49644:CLEAN, 49917:CLEAN
+hermes_cli/config.py                             markers= 0  DISJOINT
+    apply-sequence (PR# order): 49917:CLEAN, 50046:CLEAN, 50073:CLEAN
+hermes_cli/main.py                               markers= 0  DISJOINT
+    apply-sequence (PR# order): 49644:CLEAN, 49917:CLEAN
+hermes_state.py                                  markers= 0  DISJOINT
+    apply-sequence (PR# order): 50056:CLEAN, 50296:CLEAN
+run_agent.py                                     markers= 0  DISJOINT
+    apply-sequence (PR# order): 49644:CLEAN, 50073:CLEAN, 50296:CLEAN
+tests/hermes_cli/test_web_server.py              markers= 0  DISJOINT
+    apply-sequence (PR# order): 50066:CLEAN, 50086:CLEAN
+tui_gateway/server.py                            markers= 0  DISJOINT
+    apply-sequence (PR# order): 49916:CLEAN, 49917:CLEAN
+
+RESULT: 0 non-disjoint of 14 overlap files  =>  PASS — all 14 overlap files have pairwise-disjoint hunks (clean sequential apply onto v0.17.0)

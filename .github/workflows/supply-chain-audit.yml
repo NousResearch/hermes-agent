@@ -145,9 +145,19 @@ jobs:
           # auto-loaded by the interpreter via site.py. Any nested file with the
           # same name (e.g. hermes_cli/setup.py — the CLI setup wizard) is unrelated
           # and produced false positives that trained reviewers to ignore the scanner.
+          #
+          # Unlike hidden-code patterns above (.pth, base64+exec/eval,
+          # subprocess+obfuscation), reviewed install-hook changes can be expected
+          # maintenance. Require an explicit maintainer label for this one class
+          # only; do not let the label bypass the other critical patterns.
           SETUP_HITS=$(git diff --name-only "$BASE"..."$HEAD" | grep -E '^(setup\.py|setup\.cfg|sitecustomize\.py|usercustomize\.py|__init__\.pth)$' || true)
           if [ -n "$SETUP_HITS" ]; then
-            FINDINGS="${FINDINGS}
+            LABELS=$(gh pr view "${{ github.event.pull_request.number }}" --json labels --jq '.labels[].name' || true)
+            if echo "$LABELS" | grep -Fxq 'install-hook-reviewed'; then
+              echo "Reviewed install-hook change allowed by install-hook-reviewed label:"
+              echo "$SETUP_HITS"
+            else
+              FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: Install-hook file added or modified
           These files can execute code during package installation or interpreter startup.
 
@@ -155,7 +165,11 @@ jobs:
           \`\`\`
           ${SETUP_HITS}
           \`\`\`
+
+          If a maintainer has reviewed and approved these install-hook changes,
+          add the \`install-hook-reviewed\` label and rerun this check.
           "
+            fi
           fi
 
           if [ -n "$FINDINGS" ]; then

@@ -11,7 +11,7 @@ Source file: `hermes_state.py`
 
 ```
 ~/.hermes/state.db (SQLite, WAL mode)
-├── sessions              — Session metadata, token counts, billing
+├── sessions              — Session metadata, token counts, billing, custom metadata
 ├── messages              — Full message history per session
 ├── messages_fts          — FTS5 virtual table (content + tool_name + tool_calls)
 ├── messages_fts_trigram  — FTS5 virtual table with trigram tokenizer (CJK / substring search)
@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    custom_metadata TEXT,
     api_call_count INTEGER DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
@@ -203,6 +204,22 @@ db.end_session("sess_abc123", end_reason="user_exit")
 
 # Reopen a session (clear ended_at/end_reason)
 db.reopen_session("sess_abc123")
+```
+
+### Custom Session Metadata
+
+`custom_metadata` stores a bounded JSON object for client-safe labels attached to a session, such as issue IDs, workflow status, or generated summaries. It is separate from `model_config`, `system_prompt`, and `messages`, so updating it does not alter prompt context, message history, or prompt-cache stability. The API server and CLI expose this as session metadata; callers should not store secrets there.
+
+```python
+db.create_session(
+    session_id="sess_abc123",
+    source="api_server",
+    custom_metadata={"issue_id": "HERMES-123"},
+)
+db.update_session_custom_metadata(
+    "sess_abc123",
+    {"summary": "Investigated API session state"},
+)
 ```
 
 ### Store Messages

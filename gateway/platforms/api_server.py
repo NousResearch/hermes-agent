@@ -1260,6 +1260,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
+                "sessions_search": {"method": "GET", "path": "/api/sessions/search"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
                 "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
@@ -1380,7 +1381,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "end_reason", "message_count", "tool_call_count", "input_tokens",
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
-            "api_call_count", "parent_session_id", "last_active", "preview",
+            "api_call_count", "custom_metadata", "parent_session_id", "last_active", "preview",
             "_lineage_root_id",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
@@ -1456,6 +1457,48 @@ class APIServerAdapter(BasePlatformAdapter):
             "has_more": len(sessions) == limit,
         })
 
+    async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/search — search session custom metadata."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
+        offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
+        source = request.query.get("source") or None
+        key = request.query.get("metadata_key") or request.query.get("key") or None
+        value = request.query.get("metadata_value") or request.query.get("value")
+        q = request.query.get("q") or None
+        if not key and not q:
+            return web.json_response(
+                _openai_error("session metadata search requires q or metadata_key", code="invalid_session_search"),
+                status=400,
+            )
+        if not key and value is not None:
+            return web.json_response(
+                _openai_error("metadata_value requires metadata_key", code="invalid_session_search"),
+                status=400,
+            )
+        sessions = db.search_sessions_by_custom_metadata(
+            key=key,
+            value=value,
+            query=q,
+            source=source,
+            limit=limit,
+            offset=offset,
+        )
+        return web.json_response({
+            "object": "list",
+            "data": [self._session_response(s) for s in sessions],
+            "limit": limit,
+            "offset": offset,
+            "has_more": len(sessions) == limit,
+        })
+
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions — create an empty Hermes session row."""
         auth_err = self._check_auth(request)
@@ -1482,7 +1525,17 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
-        db.create_session(session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
+        custom_metadata = body.get("custom_metadata")
+        try:
+            db.create_session(
+                session_id,
+                "api_server",
+                model=str(model) if model else None,
+                system_prompt=system_prompt,
+                custom_metadata=custom_metadata,
+            )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_custom_metadata"), status=400)
         title = body.get("title")
         if title is not None:
             try:
@@ -1515,7 +1568,7 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        allowed = {"title", "end_reason"}
+        allowed = {"title", "end_reason", "custom_metadata", "custom_metadata_update", "custom_metadata_remove"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
@@ -1526,6 +1579,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 db.set_session_title(session_id, "" if body["title"] is None else str(body["title"]))
             except ValueError as exc:
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
+        try:
+            if "custom_metadata" in body:
+                metadata = body["custom_metadata"]
+                if metadata is None:
+                    metadata = {}
+                db.set_session_custom_metadata(session_id, metadata)
+            if "custom_metadata_update" in body or "custom_metadata_remove" in body:
+                updates = body.get("custom_metadata_update")
+                if updates is None:
+                    updates = {}
+                remove = body.get("custom_metadata_remove") or []
+                if not isinstance(remove, list):
+                    return web.json_response(_openai_error("custom_metadata_remove must be a list", code="invalid_custom_metadata"), status=400)
+                db.update_session_custom_metadata(
+                    session_id,
+                    updates,
+                    remove=remove,
+                )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_custom_metadata"), status=400)
         if body.get("end_reason"):
             db.end_session(session_id, str(body["end_reason"]))
         session = db.get_session(session_id) or session
@@ -4343,6 +4416,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            # Literal route must be registered before /api/sessions/{session_id}
+            # or aiohttp will treat "search" as a session id.
+            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
             self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
             self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)

@@ -12174,6 +12174,19 @@ def main():
     sessions_rename.add_argument("session_id", help="Session ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
 
+    sessions_metadata = sessions_subparsers.add_parser(
+        "metadata", help="Inspect or update a session's custom metadata"
+    )
+    sessions_metadata.add_argument(
+        "session_id",
+        nargs="?",
+        help="Session ID to update (omit with --current to use HERMES_SESSION_ID)",
+    )
+    sessions_metadata.add_argument("--current", action="store_true", help="Use the active HERMES_SESSION_ID")
+    sessions_metadata.add_argument("--json", dest="metadata_json", help="Replace metadata with a JSON object")
+    sessions_metadata.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Set one metadata key (repeatable)")
+    sessions_metadata.add_argument("--remove", action="append", default=[], metavar="KEY", help="Remove one metadata key (repeatable)")
+
     sessions_browse = sessions_subparsers.add_parser(
         "browse",
         help="Interactive session picker — browse, search, and resume sessions",
@@ -12358,6 +12371,51 @@ def main():
                     print(f"Session '{args.session_id}' not found.")
             except ValueError as e:
                 print(f"Error: {e}")
+
+        elif action == "metadata":
+            target = os.environ.get("HERMES_SESSION_ID", "") if getattr(args, "current", False) else (args.session_id or "")
+            if not target:
+                print("Error: provide a session_id or pass --current inside an active Hermes session.")
+                return
+            resolved_session_id = db.resolve_session_id(target)
+            if not resolved_session_id:
+                print(f"Session '{target}' not found.")
+                return
+
+            changed = False
+            try:
+                if args.metadata_json is not None:
+                    replacement = _json.loads(args.metadata_json)
+                    db.set_session_custom_metadata(resolved_session_id, replacement)
+                    changed = True
+                updates = {}
+                for item in args.set:
+                    if "=" not in item:
+                        print(f"Error: --set expects KEY=VALUE, got {item!r}")
+                        return
+                    key, value = item.split("=", 1)
+                    key = key.strip()
+                    if not key:
+                        print("Error: --set key must not be empty")
+                        return
+                    try:
+                        updates[key] = _json.loads(value)
+                    except Exception:
+                        updates[key] = value
+                if updates or args.remove:
+                    db.update_session_custom_metadata(resolved_session_id, updates, remove=args.remove)
+                    changed = True
+            except _json.JSONDecodeError as e:
+                print(f"Error: invalid JSON metadata: {e}")
+                return
+            except ValueError as e:
+                print(f"Error: {e}")
+                return
+
+            metadata = db.get_session_custom_metadata(resolved_session_id)
+            if changed:
+                print(f"Updated metadata for session '{resolved_session_id}'.")
+            print(_json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True))
 
         elif action == "browse":
             limit = getattr(args, "limit", 500) or 500

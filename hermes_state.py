@@ -539,6 +539,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    custom_metadata TEXT,
     api_call_count INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
@@ -677,6 +678,8 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    MAX_CUSTOM_METADATA_BYTES = 16 * 1024
+    MAX_CUSTOM_METADATA_DEPTH = 8
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -1346,13 +1349,16 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        custom_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
+        custom_metadata_json = self.encode_custom_metadata(custom_metadata)
+
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, cwd, custom_metadata, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -1362,6 +1368,7 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     cwd,
+                    custom_metadata_json,
                     time.time(),
                 ),
             )
@@ -1371,6 +1378,114 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    @classmethod
+    def _validate_custom_metadata_value(cls, value: Any, *, depth: int = 0) -> Any:
+        """Return a JSON-safe custom metadata value or raise ``ValueError``."""
+        if depth > cls.MAX_CUSTOM_METADATA_DEPTH:
+            raise ValueError(
+                f"custom_metadata is too deeply nested (max depth {cls.MAX_CUSTOM_METADATA_DEPTH})"
+            )
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, list):
+            return [cls._validate_custom_metadata_value(v, depth=depth + 1) for v in value]
+        if isinstance(value, dict):
+            clean: Dict[str, Any] = {}
+            for key, item in value.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise ValueError("custom_metadata keys must be non-empty strings")
+                if any(ch in key for ch in "\r\n\x00"):
+                    raise ValueError("custom_metadata keys must not contain control characters")
+                clean[key.strip()] = cls._validate_custom_metadata_value(item, depth=depth + 1)
+            return clean
+        raise ValueError(f"custom_metadata values must be JSON-compatible, got {type(value).__name__}")
+
+    @classmethod
+    def encode_custom_metadata(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Validate and encode a session custom metadata object for storage."""
+        if metadata is None:
+            return None
+        if not isinstance(metadata, dict):
+            raise ValueError("custom_metadata must be a JSON object")
+        clean = cls._validate_custom_metadata_value(metadata)
+        encoded = json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > cls.MAX_CUSTOM_METADATA_BYTES:
+            raise ValueError(
+                f"custom_metadata is too large (max {cls.MAX_CUSTOM_METADATA_BYTES} bytes)"
+            )
+        return encoded
+
+    @staticmethod
+    def decode_custom_metadata(raw: Any) -> Dict[str, Any]:
+        """Decode stored custom metadata, degrading malformed legacy text to {}."""
+        if not raw:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(str(raw))
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _session_row_to_dict(self, row) -> Dict[str, Any]:
+        session = dict(row)
+        session["custom_metadata"] = self.decode_custom_metadata(session.get("custom_metadata"))
+        return session
+
+    def get_session_custom_metadata(self, session_id: str) -> Dict[str, Any]:
+        """Return the client-safe custom metadata object for ``session_id``."""
+        session = self.get_session(session_id)
+        if not session:
+            return {}
+        return dict(session.get("custom_metadata") or {})
+
+    def set_session_custom_metadata(self, session_id: str, metadata: Dict[str, Any]) -> bool:
+        """Replace a session's custom metadata object."""
+        encoded = self.encode_custom_metadata(metadata)
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET custom_metadata = ? WHERE id = ?",
+                (encoded, session_id),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def update_session_custom_metadata(
+        self,
+        session_id: str,
+        updates: Dict[str, Any],
+        *,
+        remove: Optional[List[str]] = None,
+    ) -> bool:
+        """Merge custom metadata keys, optionally removing keys first."""
+        if not isinstance(updates, dict):
+            raise ValueError("custom_metadata updates must be a JSON object")
+        remove = [str(k).strip() for k in (remove or []) if str(k).strip()]
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT custom_metadata FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            current = self.decode_custom_metadata(row["custom_metadata"])
+            for key in remove:
+                current.pop(key, None)
+            current.update(updates)
+            encoded = self.encode_custom_metadata(current)
+            conn.execute(
+                "UPDATE sessions SET custom_metadata = ? WHERE id = ?",
+                (encoded, session_id),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -1761,7 +1876,7 @@ class SessionDB:
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             )
             row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._session_row_to_dict(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
@@ -1991,7 +2106,7 @@ class SessionDB:
                 "SELECT * FROM sessions WHERE title = ?", (title,)
             )
             row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._session_row_to_dict(row) if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
@@ -2283,7 +2398,7 @@ class SessionDB:
             rows = cursor.fetchall()
         sessions = []
         for row in rows:
-            s = dict(row)
+            s = self._session_row_to_dict(row)
             # Build the preview from the raw substring
             raw = s.pop("_preview_raw", "").strip()
             if raw:
@@ -2387,7 +2502,7 @@ class SessionDB:
 
         runs: List[Dict[str, Any]] = []
         for row in rows:
-            s = dict(row)
+            s = self._session_row_to_dict(row)
             raw = s.pop("_preview_raw", "").strip()
             if raw:
                 text = raw[:60]
@@ -2423,7 +2538,7 @@ class SessionDB:
             row = cursor.fetchone()
         if not row:
             return None
-        s = dict(row)
+        s = self._session_row_to_dict(row)
         raw = s.pop("_preview_raw", "").strip()
         if raw:
             text = raw[:60]
@@ -3856,7 +3971,57 @@ class SessionDB:
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 )
-            return [dict(row) for row in cursor.fetchall()]
+            return [self._session_row_to_dict(row) for row in cursor.fetchall()]
+
+    def search_sessions_by_custom_metadata(
+        self,
+        *,
+        key: Optional[str] = None,
+        value: Any = None,
+        query: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Search sessions by client-safe custom metadata.
+
+        ``key`` + ``value`` performs exact key/value matching. ``query`` performs
+        a case-insensitive substring search across metadata keys and scalar
+        values, useful for API/webhook lookups such as finding an issue id.
+        """
+        try:
+            limit = max(1, min(int(limit), 200))
+        except (TypeError, ValueError):
+            limit = 20
+        try:
+            offset = max(0, int(offset))
+        except (TypeError, ValueError):
+            offset = 0
+        key = str(key).strip() if key is not None else None
+        needle = str(query or "").strip().lower()
+        exact_value = None if value is None else str(value).lower()
+        rows = self.list_sessions_rich(
+            source=source,
+            limit=100000,
+            offset=0,
+            include_archived=True,
+            order_by_last_active=True,
+        )
+        matches: List[Dict[str, Any]] = []
+        for row in rows:
+            metadata = row.get("custom_metadata") or {}
+            if key:
+                if key not in metadata:
+                    continue
+                candidate = metadata.get(key)
+                if value is not None and str(candidate).lower() != exact_value:
+                    continue
+            if needle:
+                haystack = json.dumps(metadata, ensure_ascii=False, sort_keys=True).lower()
+                if needle not in haystack:
+                    continue
+            matches.append(row)
+        return matches[offset:offset + limit]
 
     # =========================================================================
     # Utility

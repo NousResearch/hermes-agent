@@ -182,3 +182,75 @@ class TestAcceptHooksOnAgentSubparsers:
             f"stderr: {result.stderr[:300]}"
         )
         assert "unrecognized arguments" not in result.stderr
+
+
+def test_sessions_metadata_updates_current_session(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {}
+
+    class FakeDB:
+        def resolve_session_id(self, session_id):
+            captured["resolved_from"] = session_id
+            return "current-session"
+
+        def update_session_custom_metadata(self, session_id, updates, *, remove=None):
+            captured["updated"] = (session_id, updates, remove)
+            return True
+
+        def get_session_custom_metadata(self, session_id):
+            captured["read"] = session_id
+            return {"issue_id": "HERMES-123", "priority": 2}
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setenv("HERMES_SESSION_ID", "current-session")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "metadata", "--current", "--set", "issue_id=HERMES-123", "--set", "priority=2"],
+    )
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert captured == {
+        "resolved_from": "current-session",
+        "updated": ("current-session", {"issue_id": "HERMES-123", "priority": 2}, []),
+        "read": "current-session",
+        "closed": True,
+    }
+    assert "Updated metadata for session 'current-session'." in output
+    assert '"issue_id": "HERMES-123"' in output
+
+
+def test_sessions_metadata_replaces_with_json(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {}
+
+    class FakeDB:
+        def resolve_session_id(self, session_id):
+            return "s1"
+
+        def set_session_custom_metadata(self, session_id, metadata):
+            captured["set"] = (session_id, metadata)
+            return True
+
+        def get_session_custom_metadata(self, session_id):
+            return captured["set"][1]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "metadata", "s1", "--json", '{"summary":"done"}'])
+
+    main_mod.main()
+
+    assert captured["set"] == ("s1", {"summary": "done"})
+    assert '"summary": "done"' in capsys.readouterr().out

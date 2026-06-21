@@ -1303,6 +1303,7 @@ Subcommands:
 | `prune` | Delete old sessions. |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
+| `metadata [session-id] [--current] [--json JSON] [--set KEY=VALUE] [--remove KEY]` | Inspect or update client-safe custom metadata on a session. |
 
 ## `hermes insights`
 

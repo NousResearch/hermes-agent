@@ -211,6 +211,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
             "source": meta.get("source"),
             "model": meta.get("model"),
             "title": meta.get("title"),
+            "custom_metadata": meta.get("custom_metadata") or {},
         },
         "message_count": total,
         "truncated": truncated,
@@ -251,6 +252,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
                 "preview": s.get("preview", ""),
+                "custom_metadata": s.get("custom_metadata") or {},
             })
             if len(results) >= limit:
                 break
@@ -380,6 +382,7 @@ def _scroll(
             "source": session_meta.get("source"),
             "model": session_meta.get("model"),
             "title": session_meta.get("title"),
+            "custom_metadata": session_meta.get("custom_metadata") or {},
         },
         "window": window,
         "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
@@ -469,6 +472,7 @@ def _discover(
             "source": session_meta.get("source") or match_info.get("source", "unknown"),
             "model": session_meta.get("model") or match_info.get("model") or "unknown",
             "title": session_meta.get("title") or None,
+            "custom_metadata": session_meta.get("custom_metadata") or {},
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",

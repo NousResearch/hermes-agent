@@ -49,7 +49,7 @@ def _seed_modpack_sessions(db):
     db.append_message("s_middle", role="assistant", content="Modpack version bumped 0.4 → 0.8.5; quest coverage page added.")
 
     # Newest session — modpack mob spawn fix
-    db.create_session("s_newest", source="cli")
+    db.create_session("s_newest", source="cli", custom_metadata={"issue_id": "HERMES-456", "summary": "Mob spawn fix"})
     db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
                      (now - 1000, "Modpack Mob Spawn Fix", "s_newest"))
     db.append_message("s_newest", role="user", content="Fix the modpack mob spawning")
@@ -148,6 +148,12 @@ class TestBrowseShape:
         result = json.loads(session_search(db=db))
         titles = [r.get("title") for r in result["results"]]
         assert any("Modpack" in (t or "") for t in titles)
+
+    def test_browse_returns_custom_metadata(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(db=db))
+        newest = next(r for r in result["results"] if r["session_id"] == "s_newest")
+        assert newest["custom_metadata"]["issue_id"] == "HERMES-456"
 
 
 # =========================================================================

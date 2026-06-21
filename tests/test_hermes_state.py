@@ -217,6 +217,37 @@ class TestSessionLifecycle:
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
 
+    def test_custom_metadata_round_trips_and_searches(self, db):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            custom_metadata={"issue_id": "HERMES-123", "summary": "first-class metadata"},
+        )
+        assert db.get_session("s1")["custom_metadata"] == {
+            "issue_id": "HERMES-123",
+            "summary": "first-class metadata",
+        }
+
+        assert db.update_session_custom_metadata(
+            "s1",
+            {"status": "triaged"},
+            remove=["summary"],
+        ) is True
+        assert db.get_session_custom_metadata("s1") == {
+            "issue_id": "HERMES-123",
+            "status": "triaged",
+        }
+
+        assert [s["id"] for s in db.search_sessions_by_custom_metadata(key="issue_id", value="HERMES-123")] == ["s1"]
+        assert [s["id"] for s in db.search_sessions_by_custom_metadata(query="triaged")] == ["s1"]
+
+    def test_custom_metadata_rejects_invalid_shapes(self, db):
+        db.create_session(session_id="s1", source="cli")
+        with pytest.raises(ValueError, match="JSON object"):
+            db.set_session_custom_metadata("s1", ["not", "an", "object"])
+        with pytest.raises(ValueError, match="too large"):
+            db.set_session_custom_metadata("s1", {"blob": "x" * (SessionDB.MAX_CUSTOM_METADATA_BYTES + 1)})
+
     def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
         real_connect = sqlite3.connect
 
@@ -2261,6 +2292,78 @@ class TestSchemaInit:
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
+
+    def test_custom_metadata_column_reconciles_on_legacy_db(self, tmp_path):
+        """Existing state.db files gain custom_metadata through column reconciliation."""
+        old_db = tmp_path / "old.db"
+        import sqlite3
+
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        try:
+            cursor = db._conn.execute("PRAGMA table_info(sessions)")
+            columns = {row[1] for row in cursor.fetchall()}
+            assert "custom_metadata" in columns
+
+            db.create_session("s1", source="cli", custom_metadata={"issue_id": "HERMES-123"})
+            assert db.get_session("s1")["custom_metadata"] == {"issue_id": "HERMES-123"}
+        finally:
+            db.close()
 
     def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
         """Opening an old DB should not add topic-mode columns until /topic opts in.

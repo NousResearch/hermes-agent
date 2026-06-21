@@ -1,0 +1,29 @@
+# DEFERRAL REGISTER — every truly-absent line resolved to a category (0 limbo)
+# file -> category -> line_count. Categories all carry verbatim-policy citations.
+
+agent/agent_init.py  ::  PRIVATE-OVERLAY  ::  10 lines
+agent/agent_runtime_helpers.py  ::  COPILOT-LIMITS-SERIES  ::  3 lines
+agent/anthropic_adapter.py  ::  PRIVATE-OVERLAY+COPILOT-LIMITS  ::  161 lines
+agent/auxiliary_client.py  ::  PRIVATE-OVERLAY  ::  69 lines
+agent/chat_completion_helpers.py  ::  COPILOT-AUTO-ROUTER-DEFERRED  ::  38 lines
+agent/conversation_loop.py  ::  CMX-DEFERRED  ::  35 lines
+agent/model_metadata.py  ::  COPILOT-LIMITS-SERIES  ::  26 lines
+agent/system_prompt.py  ::  CMX-DEFERRED  ::  1 lines
+agent/system_prompt_prelude.py  ::  PRELUDE(#48101-covered-or-private)  ::  4 lines
+gateway/run.py  ::  PRIVATE-OVERLAY  ::  39 lines
+hermes_cli/inventory.py  ::  COPILOT-LIMITS-SERIES  ::  3 lines
+hermes_cli/main.py  ::  PRIVATE-OVERLAY/SOURCE-ACCEL  ::  2 lines
+hermes_cli/models.py  ::  COPILOT-LIMITS-SERIES  ::  198 lines
+hermes_state.py  ::  PRIVATE-OVERLAY  ::  9 lines
+run_agent.py  ::  PRIVATE-OVERLAY  ::  8 lines
+tests/agent/test_anthropic_adapter.py  ::  PRIVATE-OVERLAY+COPILOT-LIMITS  ::  32 lines
+tests/agent/test_auxiliary_client.py  ::  PRIVATE-OVERLAY  ::  15 lines
+tests/hermes_cli/test_copilot_catalog_oauth_fallback.py  ::  COPILOT-LIMITS-SERIES  ::  42 lines
+tests/hermes_cli/test_copilot_context.py  ::  COPILOT-LIMITS-SERIES  ::  46 lines
+tests/hermes_cli/test_inventory.py  ::  COPILOT-LIMITS-SERIES  ::  2 lines
+tests/hermes_cli/test_model_switch_copilot_api_mode.py  ::  COPILOT-LIMITS-SERIES  ::  4 lines
+tests/hermes_cli/test_model_validation.py  ::  PRIVATE-OVERLAY  ::  7 lines
+tests/test_context_engine_tool_wrap.py  ::  CMX-DEFERRED  ::  9 lines
+tools/mcp_tool.py  ::  COPILOT-LIMITS-SERIES(_call divergence + already-fixed _reconnecting)  ::  2 lines
+tools/skills_tool.py  ::  PRIVATE-OVERLAY  ::  2 lines
+tui_gateway/server.py  ::  PRIVATE-OVERLAY  ::  37 lines

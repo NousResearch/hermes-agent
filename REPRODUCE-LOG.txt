@@ -1,0 +1,17 @@
+============ 1. DIFF-COVERAGE (overlay vs v0.16.0 ∩ 37 feature PRs) ============
+src delta files     : 137
+feature-PR file union: 146
+ORPHANS (MUST be 0) : 0
+COVERED             : 137 / 137
+============ 2. CLEAN-CHECKOUT reproduction (committed state only) ============
+uncommitted in clean checkout (MUST be 0): 0
+clean-checkout src delta: 137
+identical to working-tree list: YES
+============ 3+4. FULL SET STACKS ONTO v0.17.0 (integration branch) ============
+integration branch @ 682f4e4d3 (base v0.17.0)
+v0.17.0 is ancestor: YES
+real conflict markers (MUST be 0): 0
+PR commits stacked: 39
+(2 conflicts arose during stacking: #50056 1-line import + #48069 keep-both — resolved in-branch
+ AND published as forward-compat/50056-on-v0.17.0 + forward-compat/48069-on-v0.17.0)
+============ DONE — see PR #50086 comment thread for full per-file evidence ============

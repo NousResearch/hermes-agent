@@ -1418,6 +1418,67 @@ def init_agent(
             )
             _config_context_length = None
 
+    # Per-model context_length override from the keyed
+    # `providers.<provider>.models.<model>.context_length` map.
+    #
+    # Historically agent_init only honored the FLAT top-level
+    # `model.context_length` (handled just above) and the legacy
+    # `custom_providers` list (handled just below). A per-model override
+    # parked under `providers.<provider>.models.<model>.context_length` was
+    # therefore invisible to the compressor, even though it is a documented
+    # place to pin a model's window.
+    #
+    # Concrete failure this fixes: a user pins a 1M window for a NON-default
+    # model via
+    #     providers:
+    #       copilot:
+    #         models:
+    #           claude-opus-4.8:
+    #             context_length: 1000000
+    # The top-level `model.context_length` is unset (their default model is a
+    # different one), so `_config_context_length` is None here and the
+    # compressor falls through to auto-detection, which can report a much
+    # smaller window (e.g. 200000). After the 32k output reserve is removed
+    # that yields a ~168000 compression window and premature, repeated
+    # compaction on what the user configured as a 1M model.
+    #
+    # Resolve the override from the live `(agent.provider, agent.model)` pair
+    # so the value is honored for non-default models too. Keep this BEFORE the
+    # custom_providers branch and the final `agent._config_context_length =`
+    # assignment so it persists across switch_model / fallback activation.
+    if _config_context_length is None:
+        try:
+            _prov_key = str(getattr(agent, "provider", "") or "").strip()
+            _providers_cfg = _agent_cfg.get("providers", {}) if isinstance(_agent_cfg, dict) else {}
+            if _prov_key and isinstance(_providers_cfg, dict):
+                _prov_block = _providers_cfg.get(_prov_key, {})
+                if isinstance(_prov_block, dict):
+                    _prov_models = _prov_block.get("models", {})
+                    if isinstance(_prov_models, dict):
+                        _pm_cfg = _prov_models.get(agent.model, {})
+                        if isinstance(_pm_cfg, dict):
+                            _pm_ctx = _pm_cfg.get("context_length")
+                            if _pm_ctx is not None:
+                                try:
+                                    if isinstance(_pm_ctx, bool):
+                                        raise ValueError
+                                    _pm_parsed = int(_pm_ctx)
+                                    if _pm_parsed <= 0:
+                                        raise ValueError
+                                    _config_context_length = _pm_parsed
+                                except (TypeError, ValueError):
+                                    _ra().logger.warning(
+                                        "Invalid context_length for model %r under "
+                                        "providers.%s.models in config.yaml: %r — must be a "
+                                        "positive integer (e.g. 1000000, not '1M'). "
+                                        "Falling back to auto-detection.",
+                                        agent.model, _prov_key, _pm_ctx,
+                                    )
+        except Exception:
+            # Never let an override-lookup error block agent init; fall
+            # through to custom_providers / auto-detection below.
+            pass
+
     # Resolve custom_providers list once for reuse below (startup
     # context-length override and plugin context-engine init).
     try:

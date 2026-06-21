@@ -160,13 +160,32 @@ class CodexAppServerClient:
     def initialize(
         self,
         client_name: str = "hermes",
-        client_title: str = "Hermes Agent",
-        client_version: str = "0.1",
+        client_title: str = "codex",
+        client_version: Optional[str] = None,
         capabilities: Optional[dict] = None,
         timeout: float = 10.0,
     ) -> dict:
         """Send `initialize` + `initialized` handshake. Returns the server's
-        InitializeResponse (userAgent, codexHome, platformFamily, platformOs)."""
+        InitializeResponse (userAgent, codexHome, platformFamily, platformOs).
+
+        Defaults present a codex-shaped client identity to the spawned codex
+        sub-process (its own logs/diagnostics see a plausible peer rather
+        than a placeholder string). ``client_name`` stays "hermes" because
+        some codex versions branch on the LSP-style name for host-specific
+        behavior; ``client_title`` / ``client_version`` are free-form. The
+        version, when omitted, is resolved via ``agent.codex_version`` so
+        we mirror the same semver advertised on chatgpt.com backend calls.
+
+        Experimental app-server capabilities are NOT enabled by default:
+        ``CodexAppServerSession.ensure_started()`` deliberately avoids the
+        experimental permissions path (it needs a matching Codex permissions
+        table), and no tested consumer here requires it. Callers that want
+        an experimental surface pass it explicitly via ``capabilities=``.
+        """
+        if client_version is None:
+            from agent.codex_version import get_codex_cli_version
+
+            client_version = get_codex_cli_version()
         if self._initialized:
             raise RuntimeError("already initialized")
         params = {

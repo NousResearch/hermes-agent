@@ -1224,12 +1224,19 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
     ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
 
-    Malformed tokens are tolerated — we drop the account-ID header rather than
+    The version segment is resolved from the installed codex CLI (see
+    ``agent.codex_version``) so we advertise an authentic, current version
+    rather than the ``0.0.0`` placeholder, and it matches the value sent on
+    the ``/models`` probe and the local app-server ``initialize`` handshake.
+
+    Malformed tokens are tolerated, we drop the account-ID header rather than
     raise, so a bad token still surfaces as an auth error (401) instead of a
     crash at client construction.
     """
+    from agent.codex_version import get_codex_cli_version
+
     headers = {
-        "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
+        "User-Agent": f"codex_cli_rs/{get_codex_cli_version()} (Hermes Agent)",
         "originator": "codex_cli_rs",
     }
     if not isinstance(access_token, str) or not access_token.strip():

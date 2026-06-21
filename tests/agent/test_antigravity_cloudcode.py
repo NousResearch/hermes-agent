@@ -102,13 +102,26 @@ class TestAntigravityCredentials:
         assert antigravity_oauth._get_client_id().startswith("1071006060591-")
         assert antigravity_oauth._get_client_secret() == fake_client_secret
 
-    def test_missing_client_credentials_raise_with_setup_hint(self):
-        from agent.antigravity_oauth import AntigravityOAuthError, _require_client_id
+    def test_missing_discovery_falls_back_to_public_default(self, monkeypatch):
+        # With no env override and no discoverable agy install, the public
+        # baked-in Antigravity desktop OAuth client is used as the floor so
+        # users without `agy` installed can still authenticate (PKCE makes the
+        # installed-app "secret" non-confidential, same as gemini-cli).
+        from agent import antigravity_oauth
+        from agent.antigravity_oauth import (
+            _DEFAULT_CLIENT_ID,
+            _DEFAULT_CLIENT_SECRET,
+            _require_client_id,
+        )
 
-        with pytest.raises(AntigravityOAuthError) as exc_info:
-            _require_client_id()
-        assert exc_info.value.code == "antigravity_oauth_client_id_missing"
-        assert "HERMES_ANTIGRAVITY_CLI_PATH" in str(exc_info.value)
+        monkeypatch.delenv("HERMES_ANTIGRAVITY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("HERMES_ANTIGRAVITY_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("HERMES_ANTIGRAVITY_CLI_PATH", raising=False)
+        antigravity_oauth._discovered_creds_cache.clear()
+
+        assert _require_client_id() == _DEFAULT_CLIENT_ID
+        assert antigravity_oauth._get_client_secret() == _DEFAULT_CLIENT_SECRET
+        assert _DEFAULT_CLIENT_ID.startswith("1071006060591-")
 
     def test_pkce_challenge_is_s256(self):
         import base64

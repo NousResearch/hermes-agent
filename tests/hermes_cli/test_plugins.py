@@ -1902,3 +1902,36 @@ class TestPluginContextProfileName:
         ctx = self._ctx()
         assert ctx._manager._cli_ref is None
         assert ctx.profile_name == "worker1"
+
+
+class TestDispatchToolWithoutCliRef:
+    """ctx.dispatch_tool works in worker/hook contexts (no _cli_ref).
+
+    This pins the contract the plugin docs rely on: a plugin can drive
+    tools from a hook callback even when running in the gateway or a
+    kanban-spawned worker session, where _cli_ref is None.
+    """
+
+    def test_dispatch_tool_invokes_handler_without_cli_ref(self):
+        from tools.registry import registry
+
+        mgr = PluginManager()
+        assert mgr._cli_ref is None  # worker/hook context
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        calls = []
+        registry.register(
+            name="_test_dispatch_probe",
+            toolset="debugging",
+            schema={"name": "_test_dispatch_probe", "description": "probe",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: calls.append((args, kw)) or '{"ok": true}',
+        )
+        try:
+            result = ctx.dispatch_tool("_test_dispatch_probe", {"x": 1})
+            assert result == '{"ok": true}'
+            assert calls and calls[0][0] == {"x": 1}
+            # parent_agent is not forced when there's no CLI agent to resolve.
+            assert calls[0][1].get("parent_agent") is None
+        finally:
+            registry.deregister("_test_dispatch_probe")

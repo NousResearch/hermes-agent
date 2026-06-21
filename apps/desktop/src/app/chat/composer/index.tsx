@@ -40,7 +40,13 @@ import {
   isBrowsingHistory,
   resetBrowseState
 } from '@/store/composer-input-history'
-import { $composerPopoutPosition, $composerPoppedOut, POPOUT_WIDTH_REM, setComposerPoppedOut } from '@/store/composer-popout'
+import {
+  $composerPopoutPosition,
+  $composerPoppedOut,
+  POPOUT_WIDTH_REM,
+  setComposerPoppedOut,
+  setComposerPopoutPosition
+} from '@/store/composer-popout'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
@@ -535,6 +541,27 @@ export function ChatBar({
   useEffect(() => {
     syncComposerMetrics()
   }, [poppedOut, syncComposerMetrics])
+
+  // Keep the floating box on-screen: re-clamp (with the real measured size) when
+  // it pops out and whenever the window resizes — so a position persisted on a
+  // bigger/other monitor, or a shrunk window, can never strand it out of reach.
+  useEffect(() => {
+    if (!poppedOut) {
+      return undefined
+    }
+
+    const reclamp = (persist: boolean) => {
+      const el = composerRef.current
+      const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
+      setComposerPopoutPosition($composerPopoutPosition.get(), { persist, size })
+    }
+
+    reclamp(true)
+    const onResize = () => reclamp(false)
+    window.addEventListener('resize', onResize)
+
+    return () => window.removeEventListener('resize', onResize)
+  }, [poppedOut])
 
   useEffect(() => {
     return () => {

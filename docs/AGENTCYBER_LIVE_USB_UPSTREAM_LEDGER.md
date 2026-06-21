@@ -342,7 +342,11 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 **Commit / push**
 
 - Pre-commit diff stat: `docs/AGENTCYBER_STANDALONE_RUNBOOK.md` (2-line wording update), `tests/cyber/test_live_usb_tool.py` (+51 lines), `tools/cyber_live_usb.py` (exact-comparison cleanup), and this ledger.
-- This entry is intended to be included in the scoped exact-approval commit. After that commit is pushed, record the commit/remote verification in one bounded ledger-only follow-up and stop rather than repeatedly amending the ledger.
+- Committed scoped exact-approval/runbook/tests/ledger changes on the guarded sync branch: `ba5eb84b91056d92825770e0ac77c6e47c99fc3c` (`fix: require exact AgentCyber live USB approval`).
+- Pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force.
+- Verified local and remote branch tips matched after push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `ba5eb84b91056d92825770e0ac77c6e47c99fc3c`.
+- Post-push drift: `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`; `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `77`.
+- This is the bounded ledger-only follow-up recording post-push facts. After pushing this ledger commit, final verification should check local HEAD equals the remote branch tip and stop rather than amending the ledger again solely to mention the ledger commit SHA.
 
 **Next lane**
 

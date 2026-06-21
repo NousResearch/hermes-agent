@@ -315,6 +315,15 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # Explicitly request tool_choice="auto". Without this, some
+            # providers/models (observed: NVIDIA NIM and OpenRouter routes
+            # for qwen3-next and mistral-nemotron) default to never invoking
+            # any tool even though `tools` is present and a direct API call
+            # with tool_choice="auto" correctly returns tool_calls for the
+            # same prompt (issue #49961). The OpenAI SDK does not set this
+            # itself when omitted.
+            existing_tool_choice = params.get("tool_choice")
+            api_kwargs["tool_choice"] = existing_tool_choice if existing_tool_choice else "auto"
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")

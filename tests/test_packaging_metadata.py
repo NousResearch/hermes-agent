@@ -265,3 +265,56 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
+
+def test_neutts_voice_samples_ship_in_both_wheel_and_sdist():
+    """Regression for the bundled NeuTTS default-voice reference sample.
+
+    ``tools/`` is a real package (``tools/__init__.py`` exists, and it is in
+    ``packages.find``), so the wheel ships ``tools/*.py``. But
+    ``tools/neutts_samples/`` is a bare data subdir whose contents (``jo.wav`` /
+    ``jo.txt``) are non-Python files, so they are globbed out of the wheel
+    unless declared as package-data, and dropped from the sdist unless grafted
+    in MANIFEST.in.
+
+    These samples are the default voice reference for the built-in NeuTTS local
+    TTS provider: ``tools/tts_tool.py::_default_neutts_ref_audio`` /
+    ``_default_neutts_ref_text`` resolve them ``__file__``-relative at
+    ``site-packages/tools/neutts_samples/``, and ``tools/neutts_synth.py``
+    exits 1 if either is absent. So a packaged install (pip wheel, Nix venv,
+    Homebrew sdist) using NeuTTS with default config hits a 100% synthesis
+    failure ("reference audio not found"). Source/editable checkouts have the
+    files present, so it escapes CI.
+
+    package-data (NOT data-files) is required here: the resolver reads the
+    samples inside the installed package dir, which is where package-data lands
+    them; data-files would install prefix-relative and not satisfy the
+    ``Path(__file__).parent`` resolution. Mirrors the locales / optional-mcps /
+    plugin-manifest "bare data dropped from the build" fixes.
+    """
+    # The samples must actually exist on disk for the globs to match.
+    on_disk_wav = list((REPO_ROOT / "tools" / "neutts_samples").glob("*.wav"))
+    on_disk_txt = list((REPO_ROOT / "tools" / "neutts_samples").glob("*.txt"))
+    assert on_disk_wav, "expected tools/neutts_samples/*.wav default voice sample on disk"
+    assert on_disk_txt, "expected tools/neutts_samples/*.txt default voice reference on disk"
+
+    # Wheel channel: package-data on the `tools` package must ship both the
+    # wav and txt globs so they land at site-packages/tools/neutts_samples/.
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    tools_pkg_data = data["tool"]["setuptools"]["package-data"].get("tools", [])
+    assert any(g.endswith("neutts_samples/*.wav") for g in tools_pkg_data), (
+        "pyproject [tool.setuptools.package-data] 'tools' must ship "
+        "neutts_samples/*.wav so the wheel carries the NeuTTS default voice audio"
+    )
+    assert any(g.endswith("neutts_samples/*.txt") for g in tools_pkg_data), (
+        "pyproject [tool.setuptools.package-data] 'tools' must ship "
+        "neutts_samples/*.txt so the wheel carries the NeuTTS reference text"
+    )
+
+    # Sdist channel: MANIFEST.in must graft the dir so downstream packagers
+    # building from the sdist also get the samples.
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft tools/neutts_samples" in manifest, (
+        "MANIFEST.in must `graft tools/neutts_samples` so the sdist ships the "
+        "NeuTTS default voice reference samples"
+    )
+

@@ -7,5 +7,12 @@ graft locales
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
 recursive-include plugins plugin.yaml plugin.yml
+# Bundled NeuTTS default-voice reference sample (jo.wav / jo.txt). tools/ is a
+# real package so the wheel ships its .py files, but these data files in the
+# bare tools/neutts_samples/ subdir are otherwise dropped from the sdist
+# (Homebrew, downstream packagers build from it). package-data in pyproject
+# covers the wheel; this graft covers the sdist. Without both, default-config
+# NeuTTS synthesis fails on a sealed install with "reference audio not found".
+graft tools/neutts_samples
 global-exclude __pycache__
 global-exclude *.py[cod]

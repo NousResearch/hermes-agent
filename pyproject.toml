@@ -327,6 +327,15 @@ locales = ["locales/*.yaml"]
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
+# NeuTTS bundled default-voice reference sample. tools/ is a real package, but
+# tools/neutts_samples/ is a bare data subdir, so its non-Python files are
+# dropped from the wheel unless declared here. The runtime resolver
+# (tools/tts_tool.py::_default_neutts_ref_audio) reads them __file__-relative at
+# site-packages/tools/neutts_samples/, which is exactly where package-data lands
+# them — data-files (prefix-relative) would not satisfy that resolution. Without
+# this, every default-config NeuTTS synthesis fails on a sealed install with
+# "reference audio not found".
+tools = ["neutts_samples/*.wav", "neutts_samples/*.txt"]
 plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",

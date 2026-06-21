@@ -712,6 +712,64 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
     else:
         print("No change.")
 
+
+def _model_flow_google_antigravity(_config, current_model=""):
+    """Google Antigravity OAuth via Antigravity Code Assist.
+
+    Antigravity is Google's consumer successor to the Gemini CLI. It reuses the
+    Code Assist backend with a distinct OAuth client + scopes. Leaves the
+    `google-gemini-cli` provider (Enterprise Code Assist) untouched.
+    """
+    from hermes_cli.auth import (
+        DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
+        get_antigravity_oauth_auth_status,
+        resolve_antigravity_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+    from hermes_cli.models import provider_model_ids
+
+    status = get_antigravity_oauth_auth_status()
+    if not status.get("logged_in"):
+        try:
+            from agent.antigravity_oauth import resolve_project_id_from_env, start_oauth_flow
+
+            env_project = resolve_project_id_from_env()
+            start_oauth_flow(force_relogin=True, project_id=env_project)
+        except Exception as exc:
+            print(f"OAuth login failed: {exc}")
+            return
+
+    try:
+        creds = resolve_antigravity_oauth_runtime_credentials(force_refresh=False)
+        project_id = creds.get("project_id", "")
+        if project_id:
+            print(f"  Using Antigravity project: {project_id}")
+    except Exception as exc:
+        print(f"Failed to resolve Antigravity credentials: {exc}")
+        return
+
+    models = provider_model_ids("google-antigravity")
+    default = current_model or (models[0] if models else "gemini-3-flash-agent")
+    selected = _prompt_model_selection(
+        models,
+        current_model=default,
+        confirm_provider="google-antigravity",
+        confirm_base_url=DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
+    )
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider(
+            "google-antigravity", DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL
+        )
+        print(
+            f"Default model set to: {selected} (via Google Antigravity OAuth / Code Assist)"
+        )
+    else:
+        print("No change.")
+
+
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
 

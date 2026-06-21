@@ -1804,6 +1804,15 @@ _AGGREGATOR_PROVIDERS = frozenset(
     {"nous", "openrouter", "copilot", "kilocode"}
 )
 
+# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
+# (e.g. google-antigravity serves Claude / Gemini / GPT-OSS where the account
+# is entitled). For bare short-alias resolution (`sonnet`, `opus`, ...) these
+# must NOT hijack the alias away from the model's native vendor provider
+# (`anthropic`, `gemini`, ...). They're tried only as a last resort, after
+# every native-vendor catalog. They are NOT aggregators (an explicit switch TO
+# them is still valid), so they stay out of _AGGREGATOR_PROVIDERS.
+_BORROWED_MODEL_PROVIDERS = frozenset({"google-antigravity"})
+
 
 def _resolve_static_model_alias(
     name_lower: str,
@@ -1841,12 +1850,23 @@ def _resolve_static_model_alias(
             return provider, matched
 
     for provider in _PROVIDER_MODELS:
-        if provider in current_keys or provider in _AGGREGATOR_PROVIDERS:
+        if (
+            provider in current_keys
+            or provider in _AGGREGATOR_PROVIDERS
+            or provider in _BORROWED_MODEL_PROVIDERS
+        ):
             continue
         if matched := _match(provider):
             return provider, matched
 
     for provider in _AGGREGATOR_PROVIDERS:
+        if provider in current_keys and (matched := _match(provider)):
+            return provider, matched
+
+    # Last resort: providers that re-expose other vendors' models (e.g.
+    # google-antigravity serving Claude). Only reached when no native-vendor
+    # catalog matched — so `sonnet` resolves to anthropic, not antigravity.
+    for provider in _BORROWED_MODEL_PROVIDERS:
         if provider in current_keys and (matched := _match(provider)):
             return provider, matched
 
@@ -1896,9 +1916,21 @@ def detect_static_provider_for_model(
 
     # --- Step 1: check static provider catalogs for a direct match ---
     for pid, models in _PROVIDER_MODELS.items():
-        if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
+        if (
+            pid in current_keys
+            or pid in _AGGREGATOR_PROVIDERS
+            or pid in _BORROWED_MODEL_PROVIDERS
+        ):
             continue
         if any(name_lower == m.lower() for m in models):
+            return (pid, name)
+
+    # Borrow-list providers (re-expose other vendors' models) only after every
+    # native-vendor catalog, and only when one is the current provider.
+    for pid in _BORROWED_MODEL_PROVIDERS:
+        if pid in current_keys:
+            continue
+        if any(name_lower == m.lower() for m in _PROVIDER_MODELS.get(pid, [])):
             return (pid, name)
 
     return None

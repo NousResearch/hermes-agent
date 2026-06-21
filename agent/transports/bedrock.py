@@ -11,6 +11,88 @@ from typing import Any, Dict, List, Optional
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
+# ── Max output token limits for non-Anthropic Bedrock models ──────────────
+# Source: AWS Bedrock model card docs (https://docs.aws.amazon.com/bedrock/
+# latest/userguide/model-cards.html).  Substring matching — longest match
+# wins.  Anthropic/Claude models are NOT listed here; they are resolved via
+# _get_anthropic_max_output() from anthropic_adapter, which already has a
+# complete and maintained Claude table.
+_BEDROCK_NATIVE_OUTPUT_LIMITS: Dict[str, int] = {
+    # Amazon Nova
+    "amazon.nova-2-lite":      65_536,
+    "amazon.nova-premier":     25_600,
+    "amazon.nova-pro":          5_120,
+    "amazon.nova-lite":         5_120,
+    "amazon.nova-micro":        5_120,
+    # Meta Llama 4
+    "meta.llama4-maverick":     8_192,
+    "meta.llama4-scout":        8_192,
+    # Meta Llama 3.x
+    "meta.llama3-3-70b":        4_096,
+    "meta.llama3-2-90b":        4_096,
+    "meta.llama3-2-11b":        4_096,
+    "meta.llama3-2-3b":         4_096,
+    "meta.llama3-2-1b":         4_096,
+    "meta.llama3-1-405b":       4_096,
+    "meta.llama3-1-70b":        4_096,
+    "meta.llama3-1-8b":         4_096,
+    "meta.llama3-70b":          8_192,
+    "meta.llama3-8b":           8_192,
+    # Mistral AI
+    "mistral.magistral-small":  40_960,
+    "mistral.mistral-large-3":  32_768,
+    "mistral.devstral-2":       32_768,
+    "mistral.pixtral-large":    16_384,
+    "mistral.ministral-3":       8_192,
+    "mistral.mistral-large-2402": 4_096,
+    "mistral.mistral-small-2402": 4_096,
+    "mistral.mixtral-8x7b":     4_096,
+    "mistral.mistral-7b":       4_096,
+    # Cohere
+    "cohere.command-r-plus":    4_096,
+    "cohere.command-r":         4_096,
+    # DeepSeek
+    "deepseek.r1":              8_192,
+    "deepseek.deepseek-v3":     8_192,
+    # AI21 Labs
+    "ai21.jamba-1-5-large":     4_096,
+    "ai21.jamba-1-5-mini":      4_096,
+}
+
+# Safe fallback for unknown future Bedrock-native models.  Bedrock will
+# clamp to the model's actual ceiling if this exceeds it.
+_BEDROCK_DEFAULT_OUTPUT_LIMIT = 8_192
+
+
+def _get_bedrock_max_output(model: str) -> int:
+    """Resolve the max output token limit for a Bedrock model ID.
+
+    Resolution order:
+    1. _BEDROCK_NATIVE_OUTPUT_LIMITS table — for non-Anthropic Bedrock models.
+       Uses longest-substring match so date-stamped / versioned IDs resolve.
+    2. _get_anthropic_max_output() — for Claude models (which carry provider
+       prefixes like 'global.', 'us.', 'anthropic.' in Bedrock model IDs).
+    3. _BEDROCK_DEFAULT_OUTPUT_LIMIT (8 192) — safe fallback; Bedrock clamps.
+    """
+    m = model.lower()
+    # Check native table first (longest match wins)
+    best_key = ""
+    best_val: Optional[int] = None
+    for key, val in _BEDROCK_NATIVE_OUTPUT_LIMITS.items():
+        if key in m and len(key) > len(best_key):
+            best_key = key
+            best_val = val
+    if best_val is not None:
+        return best_val
+
+    # Claude models delivered via Bedrock carry prefixes like
+    # 'global.anthropic.claude-sonnet-4-6' — delegate to the Anthropic table.
+    if "claude" in m or "anthropic" in m:
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        return _get_anthropic_max_output(model)
+
+    return _BEDROCK_DEFAULT_OUTPUT_LIMIT
+
 
 class BedrockTransport(ProviderTransport):
     """Transport for api_mode='bedrock_converse'."""
@@ -41,28 +123,27 @@ class BedrockTransport(ProviderTransport):
         Calls convert_messages and convert_tools internally.
 
         params:
-            max_tokens: int — output token limit (default: model native limit
-                via _get_anthropic_max_output, same table used by the direct
-                Anthropic path; falls back to 16384 for non-Claude models)
+            max_tokens: int — output token limit (default: model's native
+                output ceiling via _get_bedrock_max_output — Claude models use
+                the shared Anthropic table; all other Bedrock models use the
+                _BEDROCK_NATIVE_OUTPUT_LIMITS table in this module)
             temperature: float | None
             guardrail_config: dict | None — Bedrock guardrails
             region: str — AWS region (default 'us-east-1')
         """
         from agent.bedrock_adapter import build_converse_kwargs
-        from agent.anthropic_adapter import _get_anthropic_max_output
 
         region = params.get("region", "us-east-1")
         guardrail = params.get("guardrail_config")
 
         requested_max_tokens = params.get("max_tokens")
         if requested_max_tokens is None:
-            # Use the per-model native output limit from the shared table.
-            # _get_anthropic_max_output normalises model IDs (strips regional
-            # prefixes like "global.", "us.", strips dots) and returns the
-            # model's declared ceiling (e.g. 64K for Sonnet 4.6, 128K for
-            # Opus 4.8).  Non-Claude / unknown models fall back to 128K which
-            # is safe — Bedrock will clamp to the actual model maximum.
-            max_tokens = _get_anthropic_max_output(model)
+            # Resolve the model's declared output ceiling.  Claude models
+            # (e.g. 'global.anthropic.claude-sonnet-4-6') delegate to the
+            # shared Anthropic table; all other Bedrock-native models
+            # (Amazon Nova, Meta Llama, Mistral, etc.) use the table in this
+            # module.  Bedrock silently clamps overshoots to the actual limit.
+            max_tokens = _get_bedrock_max_output(model)
         else:
             max_tokens = requested_max_tokens
 

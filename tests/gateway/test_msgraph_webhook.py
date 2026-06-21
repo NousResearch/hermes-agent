@@ -51,6 +51,7 @@ class TestMSGraphWebhookConfig:
             platforms={Platform.MSGRAPH_WEBHOOK: PlatformConfig(enabled=True, extra={})}
         )
 
+        monkeypatch.setenv("MSGRAPH_WEBHOOK_HOST", "127.0.0.1")
         monkeypatch.setenv("MSGRAPH_WEBHOOK_PORT", "8650")
         monkeypatch.setenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "env-state")
         monkeypatch.setenv(
@@ -61,12 +62,39 @@ class TestMSGraphWebhookConfig:
         _apply_env_overrides(config)
 
         extra = config.platforms[Platform.MSGRAPH_WEBHOOK].extra
+        assert extra["host"] == "127.0.0.1"
         assert extra["port"] == 8650
         assert extra["client_state"] == "env-state"
         assert extra["accepted_resources"] == [
             "communications/onlineMeetings",
             "chats/getAllMessages",
         ]
+
+    def test_env_host_enables_documented_loopback_quickstart(self, monkeypatch):
+        """The env-only quickstart sets MSGRAPH_WEBHOOK_HOST=127.0.0.1.
+
+        That value must reach the adapter so the loopback bind is accepted
+        without a source CIDR allowlist. Regression: the host env var was
+        previously not bridged into config, so the adapter stayed on its
+        ``0.0.0.0`` default and ``connect()`` failed closed at startup,
+        demanding ``allowed_source_cidrs`` the docs never mentioned.
+        """
+        config = GatewayConfig()
+
+        monkeypatch.setenv("MSGRAPH_WEBHOOK_ENABLED", "true")
+        monkeypatch.setenv("MSGRAPH_WEBHOOK_HOST", "127.0.0.1")
+        monkeypatch.setenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "env-state")
+
+        _apply_env_overrides(config)
+
+        assert Platform.MSGRAPH_WEBHOOK in config.platforms
+        platform_config = config.platforms[Platform.MSGRAPH_WEBHOOK]
+        assert platform_config.extra["host"] == "127.0.0.1"
+
+        adapter = MSGraphWebhookAdapter(platform_config)
+        assert adapter._host == "127.0.0.1"
+        # Loopback bind must not require a source CIDR allowlist.
+        assert adapter._source_allowlist_required_but_missing() is False
 
 
 class TestMSGraphValidationHandshake:

@@ -36,12 +36,13 @@ Or via env vars in `~/.hermes/.env` (auto-merged on startup):
 
 ```bash
 MSGRAPH_WEBHOOK_ENABLED=true
+MSGRAPH_WEBHOOK_HOST=127.0.0.1
 MSGRAPH_WEBHOOK_PORT=8646
 MSGRAPH_WEBHOOK_CLIENT_STATE=<generate-with-openssl-rand-hex-32>
 MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES=communications/onlineMeetings
 ```
 
-Note: the bind host is read from `extra.host` in `config.yaml` (see the example above); there is no `MSGRAPH_WEBHOOK_HOST` env-var override.
+Note: env vars merge into the config at gateway startup and take priority over `config.yaml` when a setting is defined in both places.
 
 Start the gateway: `hermes gateway run`. The listener exposes:
 
@@ -70,7 +71,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 | `max_seen_receipts` | `5000` | Dedupe cache size for notification IDs. Oldest entries evicted when the cap is hit. |
 | `allowed_source_cidrs` | `[]` | Required for non-loopback binds. Leave empty only when the listener is bound to loopback and fronted by a local tunnel / reverse proxy. |
 
-Most settings also have an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup (the exception is `host`, which is config-only — see the note above) — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
+Most settings also have an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
 
 ## Security Hardening
 

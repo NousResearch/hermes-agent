@@ -12,6 +12,14 @@ deferred set equals the local source delta — with 0 unaccounted.
   source line into covered-by-open-PR / deferred-in-#50111 / non-substantive /
   UNACCOUNTED. Exit 0 iff UNACCOUNTED == 0.
 - `reconcile_output.txt` — the committed run output (PASS — 0 unaccounted).
+- `symdiff_reconcile.py` — the RIGOROUS bidirectional check on the COMMON base
+  v0.16.0 (D ⊆ U ∪ X), restricted to overlay-changed source files. This is the
+  stricter check: it found a genuine gap the one-directional script missed
+  (#50046 shipped the stable-update reader but not its config defaults — now
+  folded in). Exit 0 iff D \ (U ∪ X) == ∅.
+- `symdiff_cleanclone_output.txt` — symdiff run **from a clean clone** (origin =
+  NousResearch, fork = arminanton, origin/main fetched fresh): PASS, 0 uncovered.
+  Proves the reconciliation does not depend on any local session state.
 - `v017_reapply_output.txt` — the committed all-PRs-onto-v0.17.0 net-diff check.
 
 ## Result (committed)

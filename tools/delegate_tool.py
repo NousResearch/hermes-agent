@@ -2073,6 +2073,8 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2129,6 +2131,11 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
+    # Per-call model/provider overrides beat config-level delegation settings
+    if model:
+        cfg["model"] = model
+    if provider:
+        cfg["provider"] = provider
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -2173,7 +2180,8 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role,
+             "model": model, "provider": provider}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2214,16 +2222,19 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model/provider override top-level creds
+            task_model = t.get("model") or creds["model"]
+            task_provider = t.get("provider") or creds["provider"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
+                override_provider=task_provider,
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -2898,7 +2909,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent model IS selectable per call: pass 'model' and/or 'provider' to override delegation.config for that specific call. Without these, children inherit the parent model (plus its fallback chain) unless pinned via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3056,6 +3067,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task model override. Overrides delegation.model for this task only.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task provider override. Overrides delegation.provider for this task only.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3103,6 +3122,22 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Per-call model override (e.g. 'deepseek/deepseek-v4-pro', "
+                    "'z-ai/glm-5.2'). Overrides delegation.model for this specific "
+                    "call only. Leave empty to use the delegation config default."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Per-call provider override (e.g. 'openrouter'). Overrides "
+                    "delegation.provider for this specific call only. Leave empty "
+                    "to use the delegation config default."
+                ),
+            },
         },
         "required": [],
     },
@@ -3144,6 +3179,8 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
+        model=args.get("model"),
+        provider=args.get("provider"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

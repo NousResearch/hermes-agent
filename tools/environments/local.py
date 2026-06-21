@@ -244,9 +244,21 @@ def _find_bash() -> str:
             or "/bin/sh"
         )
 
+    def _to_real_bash(path: str) -> str:
+        if not path:
+            return path
+        lower_path = path.lower()
+        for pattern, replacement in [("\\bin\\bash.exe", "\\usr\\bin\\bash.exe"), ("/bin/bash.exe", "/usr/bin/bash.exe")]:
+            idx = lower_path.find(pattern)
+            if idx != -1:
+                candidate = path[:idx] + replacement + path[idx + len(pattern):]
+                if os.path.isfile(candidate):
+                    return candidate
+        return path
+
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
-        return custom
+        return _to_real_bash(custom)
 
     # Prefer our own portable Git install first — this way a broken or
     # partially-uninstalled system Git can't hijack the bash lookup.  The
@@ -265,11 +277,11 @@ def _find_bash() -> str:
             os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
             if os.path.isfile(candidate):
-                return candidate
+                return _to_real_bash(candidate)
 
     found = shutil.which("bash")
     if found:
-        return found
+        return _to_real_bash(found)
 
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
@@ -277,7 +289,7 @@ def _find_bash() -> str:
         os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
-            return candidate
+            return _to_real_bash(candidate)
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

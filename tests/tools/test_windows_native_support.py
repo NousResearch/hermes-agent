@@ -1007,3 +1007,38 @@ class TestGatewayDetachedWatcherWindowsFlags:
             "CreateProcess and retry without the breakaway bit, matching "
             "gateway_windows._spawn_detached's fallback pattern."
         )
+
+
+class TestGitBashWrapperRedirection:
+    """Verify that _find_bash on Windows redirects bin/bash.exe to usr/bin/bash.exe."""
+
+    def test_redirects_bin_to_usr_bin_when_exists(self, monkeypatch):
+        from tools.environments import local
+        
+        # Force IS_WINDOWS to True for the test
+        monkeypatch.setattr(local, "_IS_WINDOWS", True)
+        
+        # Mock shutil.which to return a path ending in bin/bash.exe
+        monkeypatch.setattr(local.shutil, "which", lambda cmd: r"C:\Program Files\Git\bin\bash.exe")
+        
+        # Mock os.path.isfile to return True when checking the usr/bin/bash.exe path,
+        # but False for others (to avoid infinite recursion or matching other candidates)
+        def mock_isfile(path):
+            if path.lower() == r"c:\program files\git\usr\bin\bash.exe".lower():
+                return True
+            return False
+            
+        monkeypatch.setattr(local.os.path, "isfile", mock_isfile)
+        
+        resolved = local._find_bash()
+        assert resolved == r"C:\Program Files\Git\usr\bin\bash.exe"
+
+    def test_falls_back_to_bin_when_usr_bin_missing(self, monkeypatch):
+        from tools.environments import local
+        
+        monkeypatch.setattr(local, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local.shutil, "which", lambda cmd: r"C:\Program Files\Git\bin\bash.exe")
+        monkeypatch.setattr(local.os.path, "isfile", lambda path: False)
+        
+        resolved = local._find_bash()
+        assert resolved == r"C:\Program Files\Git\bin\bash.exe"

@@ -402,7 +402,24 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    # The seen_names check above dedups on the raw frontmatter
+                    # name, but the command map is keyed by the normalized slug.
+                    # Two distinct names that collapse to the same slug (e.g.
+                    # "git_helper" vs "git-helper") would otherwise both pass
+                    # that check and the second write would silently clobber the
+                    # first. Dedup on the resolved slug too, first-wins: since
+                    # the local SKILLS_DIR is scanned before external dirs, a
+                    # local/built-in skill keeps its slash command rather than
+                    # being shadowed by a later colliding skill.
+                    cmd_key = f"/{cmd_name}"
+                    if cmd_key in _skill_commands:
+                        logger.debug(
+                            "Skill %r maps to slash command %s already claimed by "
+                            "%r; keeping the first and skipping this one.",
+                            name, cmd_key, _skill_commands[cmd_key]["name"],
+                        )
+                        continue
+                    _skill_commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),

@@ -377,6 +377,32 @@ class TestScanSkillCommands:
         assert "/sonarr-v3v4-api" in result
         assert any("/" in k[1:] for k in result) is False  # no unescaped /
 
+    def test_slug_collision_keeps_first_skill(self, tmp_path):
+        """Two skills whose names normalize to the same slug do not clobber.
+
+        ``git_helper`` and ``git-helper`` are distinct frontmatter names but
+        both reduce to the ``/git-helper`` command. The first one scanned must
+        keep the command rather than being silently overwritten by the second.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            # ``a-first`` sorts before ``z-second`` so the index walk visits the
+            # underscore-named skill first; that one must win the slash command.
+            first = tmp_path / "a-first"
+            first.mkdir()
+            (first / "SKILL.md").write_text(
+                "---\nname: git_helper\ndescription: First skill.\n---\n\nBody.\n"
+            )
+            second = tmp_path / "z-second"
+            second.mkdir()
+            (second / "SKILL.md").write_text(
+                "---\nname: git-helper\ndescription: Second skill.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/git-helper" in result
+        # First-wins: the entry resolves to the first skill, not the shadowing one.
+        assert result["/git-helper"]["name"] == "git_helper"
+        assert result["/git-helper"]["skill_dir"] == str(first)
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

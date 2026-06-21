@@ -1424,7 +1424,63 @@ def register(ctx):
 
     ctx.register_hook("on_session_start", _on_session_start)
 
-    # ── Hook: post_tool_call — skill_manage sync + load success tracking ──
+    # ── Register proxy commands from graph-discovered skills ──
+    def _register_graph_commands():
+        """Scan all skills' SKILL.md frontmatter for commands: and register proxy handlers."""
+        try:
+            skill_dirs = _find_all_skills_dirs()
+            skills = _scan_skill_mds(skill_dirs)
+            deduped = _dedup_skills(skills)
+            _registered = 0
+            for _name, _path in deduped.items():
+                try:
+                    _text = _path.read_text(encoding="utf-8", errors="replace")
+                    _text = _text.lstrip("\ufeff")
+                    if _text.startswith("---"):
+                        _end = _text.find("---", 3)
+                        if _end != -1:
+                            _fm = yaml.safe_load(_text[3:_end].strip()) or {}
+                            _cmds = _fm.get("metadata", {}).get("hermes", {}).get("commands", [])
+                            if isinstance(_cmds, str):
+                                _cmds = [c.strip() for c in _cmds.split(",") if c.strip()]
+                            if isinstance(_cmds, list):
+                                for _cmd in _cmds:
+                                    _cmd = _cmd.lstrip("/").strip()
+                                    if _cmd:
+                                        ctx.register_command(
+                                            name=_cmd,
+                                            handler=_make_proxy(_name),
+                                            description=f"Proxy to graph-discovered skill: {_name}",
+                                        )
+                                        _registered += 1
+                except Exception:
+                    pass
+            if _registered:
+                logger.info("skill-graph: registered %d proxy slash commands from graph skills", _registered)
+        except Exception:
+            logger.exception("skill-graph: failed to register proxy commands")
+
+    def _make_proxy(skill_name: str):
+        """Create a proxy handler that loads the given skill."""
+        def _proxy(_args: str) -> str | None:
+            try:
+                _result = _handle_skill_load({"name": skill_name})
+                _data = json.loads(_result)
+                if _data.get("success"):
+                    _content = _data.get("content", "")
+                    return (
+                        f"Loaded skill: {skill_name}\n"
+                        f"  Description: {_data.get('description', '')}\n"
+                        f"  Category:    {_data.get('category', '')}\n"
+                        f"  Content ({len(_content)} chars):\n"
+                        f"{_content[:500]}\n..."
+                    )
+            except Exception:
+                pass
+            return None
+        return _proxy
+
+    _register_graph_commands()
     _last_loaded_skill: str | None = None
 
     def _on_post_tool_call(**kw):

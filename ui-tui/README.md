@@ -289,6 +289,7 @@ Primary event types the client handles today:
 | `sudo.request`             | `{ request_id }`                                                            |
 | `secret.request`           | `{ prompt, env_var, request_id }`                                           |
 | `background.complete`      | `{ task_id, text }`                                                         |
+| `billing.step_up.verification` | `{ verification_url, user_code }`                                       |
 | `review.summary`           | `{ text }`                                                                  |
 | `browser.progress`         | `{ message }`                                                               |
 | `voice.status`             | `{ state }`                                                                 |
@@ -450,6 +451,7 @@ ui-tui/
       openExternalUrl.ts         platform-aware URL opener (macOS/Linux/Windows)
       osc52.ts                   OSC 52 terminal clipboard copy sequence
       parentLog.ts               append-only log to ~/.hermes/tui-parent.log
+      perfPane.tsx               FPS / render perf overlay pane
       platform.ts                platform-aware keybinding and SSH detection helpers
       precisionWheel.ts          high-precision scroll wheel with sticky-frame budget
       prompt.ts                  composer prompt text helpers (Termux-safe)

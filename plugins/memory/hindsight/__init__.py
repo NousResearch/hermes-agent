@@ -17,6 +17,7 @@ Config via environment variables:
   HINDSIGHT_MODE                   — cloud or local (default: cloud)
   HINDSIGHT_TIMEOUT                — API request timeout in seconds (default: 120)
   HINDSIGHT_IDLE_TIMEOUT           — embedded daemon idle timeout seconds; 0 disables shutdown (default: 300)
+  HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT — seconds to wait for a slow embedded daemon /health before treating it as stale (default: 30; set via config.json port_health_grace_timeout)
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
   HINDSIGHT_RETAIN_OBSERVATION_SCOPES — observation scoping for retained memories: per_tag/combined/all_combinations, or a JSON list of tag-lists for custom scopes
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
@@ -84,6 +85,43 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+# Env var the embedded daemon manager reads (at import time, as a module-level
+# constant) to size the grace window it waits for a slow /health before
+# declaring a daemon stale and killing it. Default upstream is 30s; on
+# resource-contended hosts a busy daemon can exceed a single 2s health check
+# and get needlessly killed + restarted (issue #13125 comment thread). We
+# surface it as plugin config so users can raise it without hand-setting an
+# env var, consistent with "config.json, not raw env vars".
+_PORT_HEALTH_GRACE_ENV = "HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT"
+
+
+def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
+    """Export the embedded-daemon health grace timeout to the process env.
+
+    Must run BEFORE ``hindsight_embed.daemon_embed_manager`` is imported,
+    because the package reads the env var into a module-level constant at
+    import time. We only set it when the user configured a value AND the
+    env var isn't already set, so an explicit env override always wins.
+    """
+    raw = config.get("port_health_grace_timeout")
+    if raw is None or raw == "":
+        return
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid Hindsight port_health_grace_timeout %r; ignoring.", raw
+        )
+        return
+    if seconds < 0:
+        logger.warning(
+            "Negative Hindsight port_health_grace_timeout %r; ignoring.", raw
+        )
+        return
+    # setdefault: an explicit env var the operator set wins over config.
+    os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -968,6 +1006,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
+            {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
 
     def _get_client(self):
@@ -1228,6 +1267,9 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local":
             self._mode = "local_embedded"
         if self._mode == "local_embedded":
+            # Export the daemon health grace timeout BEFORE importing
+            # daemon_embed_manager (which reads it at import time).
+            _export_port_health_grace_timeout(self._config)
             available, reason = _check_local_runtime()
             if not available:
                 logger.warning(

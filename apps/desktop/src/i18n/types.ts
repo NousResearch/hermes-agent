@@ -159,6 +159,11 @@ export interface Translations {
     }
   }
 
+  remoteDisplayBanner: {
+    message: (reason: string) => string
+    dismiss: string
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string
@@ -276,6 +281,7 @@ export interface Translations {
       checkNow: string
       checking: string
       seeWhatsNew: string
+      updateNow: string
       releaseNotes: string
       onLatest: string
       installing: string
@@ -462,6 +468,8 @@ export interface Translations {
       removedMessage: (provider: string) => string
       failedRemove: (provider: string) => string
       noProviderKeys: string
+      searchKeys: string
+      noKeysMatch: string
       loading: string
     }
     sessions: {
@@ -625,7 +633,8 @@ export interface Translations {
     gatewayRunning: string
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
-    restartMessaging: string
+    restartGateway: string
+    gatewayRestartFailed: string
     updateHermes: string
     actionRunning: string
     actionDone: string
@@ -1174,6 +1183,7 @@ export interface Translations {
       search: string
       noModels: string
       editModels: string
+      refreshModels: string
       fast: string
       medium: string
     }
@@ -1228,6 +1238,7 @@ export interface Translations {
       gatewayChecking: string
       gatewayConnecting: string
       gatewayOffline: string
+      gatewayRestarting: string
       gatewayTitle: string
       agents: string
       closeAgents: string

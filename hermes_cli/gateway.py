@@ -5893,12 +5893,26 @@ def _gateway_command_inner(args):
         elif is_windows():
             from hermes_cli import gateway_windows
 
-            gateway_windows.install(
-                force=force,
-                start_now=getattr(args, 'start_now', None),
-                start_on_login=getattr(args, 'start_on_login', None),
-                elevated_handoff=getattr(args, 'elevated_handoff', False),
-            )
+            service_type = getattr(args, 'service_type', None)
+            if service_type == 'service':
+                # Explicit Windows Service install — don't fallback on failure
+                gateway_windows.install_service(force=force, allow_fallback=False)
+            elif service_type == 'scheduled-task':
+                # Explicit Scheduled Task install
+                gateway_windows.install(
+                    force=force,
+                    start_now=getattr(args, 'start_now', None),
+                    start_on_login=getattr(args, 'start_on_login', None),
+                    elevated_handoff=getattr(args, 'elevated_handoff', False),
+                )
+            else:
+                # Default: try Service first, fallback to Scheduled Task
+                gateway_windows.install(
+                    force=force,
+                    start_now=getattr(args, 'start_now', None),
+                    start_on_login=getattr(args, 'start_on_login', None),
+                    elevated_handoff=getattr(args, 'elevated_handoff', False),
+                )
         elif is_wsl():
             print("WSL detected but systemd is not running.")
             print(

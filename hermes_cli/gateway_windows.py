@@ -1007,36 +1007,67 @@ def is_service_registered() -> bool:
         return False
 
 
-def install_service(force: bool = False) -> None:
-    """Install as Windows Service with SCM RecoveryActions."""
+def install_service(force: bool = False, allow_fallback: bool = True) -> None:
+    """Install as Windows Service with SCM RecoveryActions.
+
+    Args:
+        force: If True, overwrite existing service without ownership check.
+        allow_fallback: If True, fall back to Scheduled Task on failure.
+                       Set to False when --service-type service is explicit.
+    """
     _assert_windows()
     try:
         import win32service
     except ImportError:
-        print("⚠ pywin32 not available — falling back to Scheduled Task")
-        install(force=force)
+        if allow_fallback:
+            print("⚠ pywin32 not available — falling back to Scheduled Task")
+            install(force=force)
+        else:
+            print("✗ pywin32 not available — cannot install as Windows Service")
+            print("  Install pywin32: pip install pywin32")
         return
 
     service_name = get_service_name()
     script_path = _write_service_script()
     python_exe = _resolve_service_python()
 
-    # Build binPath: pythonw.exe _hermes_gateway_service.py
-    bin_path = f'"{python_exe}" "{script_path}"'
+    # Build binPath: pythonw.exe _hermes_gateway_service.py --name <service_name>
+    bin_path = f'"{python_exe}" "{script_path}" --name {service_name}'
 
     try:
         scm = win32service.OpenSCManager(
             None, None, win32service.SC_MANAGER_CREATE_SERVICE
         )
         try:
-            # Delete existing service if present
+            # Check for existing service (Blocker 5: ownership check)
             try:
                 existing = win32service.OpenService(
                     scm, service_name, win32service.SERVICE_ALL_ACCESS
                 )
-                win32service.DeleteService(existing)
-                win32service.CloseServiceHandle(existing)
-                time.sleep(1)  # Let SCM process the deletion
+                try:
+                    # Check if it's a Hermes service by querying description
+                    config = win32service.QueryServiceConfig(existing)
+                    existing_bin = config[3] if len(config) > 3 else ""
+
+                    # Only delete if it's a Hermes service or force=True
+                    is_hermes = "hermes" in existing_bin.lower() or "_hermes_gateway_service" in existing_bin.lower()
+                    if not is_hermes and not force:
+                        print(f"✗ Service '{service_name}' exists but is not a Hermes service")
+                        print(f"  Binary: {existing_bin}")
+                        print(f"  Use --force to overwrite")
+                        return
+
+                    if not force and not is_hermes:
+                        print(f"✗ Service '{service_name}' already exists (not Hermes)")
+                        print(f"  Use --force to overwrite")
+                        return
+
+                    # Delete existing Hermes service
+                    win32service.DeleteService(existing)
+                    win32service.CloseServiceHandle(existing)
+                    time.sleep(1)  # Let SCM process the deletion
+                finally:
+                    win32service.CloseServiceHandle(existing)
             except Exception:
                 pass
 
@@ -1088,9 +1119,13 @@ def install_service(force: bool = False) -> None:
         print(f"  RecoveryActions: quadratic backoff restart on failure")
         print(f"  Start type: AUTO_START (starts at boot)")
     except Exception as exc:
-        print(f"⚠ Service install failed: {exc}")
-        print("  Falling back to Scheduled Task...")
-        install(force=force)
+        if allow_fallback:
+            print(f"⚠ Service install failed: {exc}")
+            print("  Falling back to Scheduled Task...")
+            install(force=force)
+        else:
+            print(f"✗ Service install failed: {exc}")
+            print("  Fix the error and retry, or use: hermes gateway install --service-type scheduled-task")
 
 
 def uninstall_service() -> None:

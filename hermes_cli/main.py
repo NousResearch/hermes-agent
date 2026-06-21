@@ -8928,6 +8928,13 @@ def main():
     hooks_parser.set_defaults(func=cmd_hooks)
 
     # =========================================================================
+    # dev command — maintainer workflow for focused checks and odin validation
+    # =========================================================================
+    from hermes_cli.dev import build_parser as _build_dev_parser
+
+    _build_dev_parser(subparsers)
+
+    # =========================================================================
     # doctor command
     # =========================================================================
     doctor_parser = subparsers.add_parser(

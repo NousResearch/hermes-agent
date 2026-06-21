@@ -527,7 +527,26 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if not resolved_lock_path.exists():
         return False
 
-    handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    # Passive liveness probe only: we open the lock solely to test whether some
+    # OTHER process holds the flock, then release immediately. This NEVER writes,
+    # so open it read-only. Opening "a+" (read-write) here used to crash the whole
+    # gateway with PermissionError when the lock file was momentarily owned by a
+    # different user (e.g. a stray root-context start left a root-owned
+    # gateway.lock); the liveness check has no need for write access. The real
+    # owner still claims the lock read-write in acquire_gateway_runtime_lock().
+    try:
+        handle = open(resolved_lock_path, "r", encoding="utf-8")
+    except PermissionError:
+        # Can't even read it (alien-owned, no read bit). Fall back to a
+        # bytewise read-probe via os.open(O_RDONLY); if that also fails we
+        # conservatively report the lock as active (someone owns the file) so
+        # we don't spuriously declare the gateway dead and trigger a replace.
+        try:
+            fd = os.open(resolved_lock_path, os.O_RDONLY)
+        except OSError:
+            return True
+        os.close(fd)
+        return True
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)

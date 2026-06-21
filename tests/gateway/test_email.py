@@ -1436,7 +1436,8 @@ class TestConnectionConfigResolution(unittest.TestCase):
         self.assertEqual(adapter._address, "hermes@test.com")
 
     def test_connect_aborts_without_attempting_imap_when_host_missing(self):
-        """A missing host returns False without the cryptic DNS error."""
+        """A missing host returns False without the cryptic DNS error, and marks
+        the failure non-retryable so the gateway stops reconnecting (#40715)."""
         import asyncio
         from gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
@@ -1453,6 +1454,32 @@ class TestConnectionConfigResolution(unittest.TestCase):
 
         self.assertFalse(result)
         mock_imap.assert_not_called()
+        # The OOM fix (#40715): a blank host must NOT leave the platform in the
+        # retryable reconnect loop — it is a permanent config error.
+        self.assertTrue(adapter.has_fatal_error)
+        self.assertEqual(adapter.fatal_error_code, "email_missing_configuration")
+        self.assertFalse(adapter.fatal_error_retryable)
+        self.assertIn("EMAIL_IMAP_HOST", adapter.fatal_error_message or "")
+
+    def test_blank_present_env_vars_are_not_required(self):
+        """Blank/whitespace EMAIL_* values must read as missing (#40715) — an
+        abandoned setup with empty keys must not enable the platform."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        for blank in ("", "   ", "\n"):
+            with patch.dict(os.environ, {
+                "EMAIL_ADDRESS": blank, "EMAIL_PASSWORD": blank,
+                "EMAIL_IMAP_HOST": blank, "EMAIL_SMTP_HOST": blank,
+            }, clear=False):
+                self.assertFalse(check_email_requirements())
+
+    def test_all_settings_present_satisfies_requirements(self):
+        """The connected check passes only when all four settings are non-blank."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            self.assertTrue(check_email_requirements())
 
 
 if __name__ == "__main__":

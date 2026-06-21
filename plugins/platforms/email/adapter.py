@@ -159,14 +159,16 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
     return False
     
 def check_email_requirements() -> bool:
-    """Check if email platform dependencies are available."""
-    addr = os.getenv("EMAIL_ADDRESS")
-    pwd = os.getenv("EMAIL_PASSWORD")
-    imap = os.getenv("EMAIL_IMAP_HOST")
-    smtp = os.getenv("EMAIL_SMTP_HOST")
-    if not all([addr, pwd, imap, smtp]):
-        return False
-    return True
+    """Check if email platform settings are available and non-blank.
+
+    Treats blank/whitespace-only values as missing so an abandoned setup that
+    left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
+    """
+    addr = os.getenv("EMAIL_ADDRESS", "").strip()
+    pwd = os.getenv("EMAIL_PASSWORD", "").strip()
+    imap = os.getenv("EMAIL_IMAP_HOST", "").strip()
+    smtp = os.getenv("EMAIL_SMTP_HOST", "").strip()
+    return all([addr, pwd, imap, smtp])
 
 
 def _decode_header_value(raw: str) -> str:
@@ -418,10 +420,19 @@ class EmailAdapter(BasePlatformAdapter):
             if not value
         ]
         if missing:
-            logger.error(
-                "[Email] Not configured — missing %s. Set it via `hermes gateway "
-                "setup` (env) or platforms.email in config.yaml.",
-                ", ".join(missing),
+            message = (
+                "Not configured — missing "
+                + ", ".join(missing)
+                + ". Set it via `hermes gateway setup` (env) or platforms.email "
+                "in config.yaml."
+            )
+            logger.error("[Email] %s", message)
+            # Mark non-retryable so the gateway does NOT keep reconnecting against
+            # an empty host. A blank-but-present env var (e.g. ``EMAIL_IMAP_HOST=``)
+            # used to slip past the startup gate and drive an indefinite retry
+            # loop that leaked memory until the host OOM-killed (#40715).
+            self._set_fatal_error(
+                "email_missing_configuration", message, retryable=False
             )
             return False
 

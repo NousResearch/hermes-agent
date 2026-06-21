@@ -2940,6 +2940,61 @@ def _estimate_tui_input_height(
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
 
 
+def _compute_input_page_cursor(
+    text: str,
+    cursor_pos: int,
+    direction: int,
+    visible_height: int,
+    columns: int,
+) -> int:
+    """Return the cursor position that scrolls the input box by one page.
+
+    PageUp / PageDown use this so users can review long pasted or dictated
+    text (e.g. from Wispr Flow) that overflows the capped input ``TextArea``.
+    The cursor is moved by roughly one viewport of content — prompt_toolkit
+    then scrolls the window to keep the cursor visible, revealing the
+    previous/next page.  Movement stays inside the buffer and never triggers
+    shell-history browsing (the failure mode for a single long wrapped line,
+    where Up/Down would otherwise jump straight to history).
+
+    direction: -1 scrolls toward the start, +1 toward the end.
+    """
+    if not text:
+        return cursor_pos
+    visible_height = max(1, int(visible_height or 1))
+    columns = max(1, int(columns or 80))
+    cursor_pos = max(0, min(len(text), int(cursor_pos)))
+
+    lines = text.split('\n')
+    # Row/col of the current cursor position.
+    lines_before = text[:cursor_pos].split('\n')
+    current_row = len(lines_before) - 1
+    current_col = len(lines_before[-1])
+
+    if direction < 0:
+        # --- PageUp ---
+        if len(lines) > 1:
+            target_row = max(0, current_row - visible_height)
+        else:
+            # Single logical line that wraps: page by characters instead of
+            # by logical lines so the user can still reach the top.
+            return max(0, cursor_pos - visible_height * columns)
+    else:
+        # --- PageDown ---
+        if len(lines) > 1:
+            target_row = min(len(lines) - 1, current_row + visible_height)
+        else:
+            return min(len(text), cursor_pos + visible_height * columns)
+
+    # Rebuild the character offset of the start of target_row, preserving the
+    # cursor's column (clamped to the target row's length).
+    pos = 0
+    for r in range(target_row):
+        pos += len(lines[r]) + 1  # +1 for the newline
+    col = min(current_col, len(lines[target_row]))
+    return pos + col
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -12445,6 +12500,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def history_down(event):
             """Down arrow: browse history when on last line, else move cursor down."""
             event.app.current_buffer.auto_down(count=event.arg)
+
+        # --- PageUp / PageDown: scroll the input box to review long pastes ---
+        # The TextArea is capped at a few visible rows, and for a single long
+        # wrapped line (e.g. a Wispr Flow dictation blob with no newlines)
+        # Up/Down jump straight to shell history, leaving no way to scroll to
+        # the top.  PageUp/PageDown move the cursor by ~one viewport of content
+        # so prompt_toolkit's cursor-following scroll reveals the rest.  The
+        # movement stays inside the buffer and never browses history.
+        def _scroll_input_page(event, direction):
+            buf = event.app.current_buffer
+            text = buf.text
+            if not text:
+                return
+            try:
+                columns = event.app.output.get_size().columns
+            except Exception:
+                columns = shutil.get_terminal_size((80, 24)).columns
+            prompt_text = self._get_tui_prompt_text()
+            visible_height = _estimate_tui_input_height(
+                buf.document.lines, prompt_text, columns
+            )
+            target = _compute_input_page_cursor(
+                text, buf.cursor_position, direction, visible_height, columns
+            )
+            if target != buf.cursor_position:
+                buf.cursor_position = target
+                event.app.invalidate()
+
+        @kb.add('pageup', filter=_normal_input)
+        def input_page_up(event):
+            """PageUp: scroll the input box up one page to review long text."""
+            _scroll_input_page(event, -1)
+
+        @kb.add('pagedown', filter=_normal_input)
+        def input_page_down(event):
+            """PageDown: scroll the input box down one page to review long text."""
+            _scroll_input_page(event, +1)
 
         @kb.add('c-l')
         def handle_ctrl_l(event):

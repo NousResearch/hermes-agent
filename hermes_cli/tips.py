@@ -61,6 +61,7 @@ TIPS = [
     "Type a new message while the agent is working to interrupt and redirect it.",
     "Alt+V pastes an image from your clipboard into the conversation.",
     "Pasting 5+ lines auto-saves to a file and inserts a compact reference instead.",
+    "PageUp / PageDown scroll the input box so you can review long pasted or dictated text before sending.",
 
     # --- CLI Flags ---
     "hermes -c resumes your most recent CLI session. hermes -c \"project name\" resumes by title.",

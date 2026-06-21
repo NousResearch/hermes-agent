@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -948,10 +948,23 @@ def _load_global_auth_store() -> Dict[str, Any]:
 
 
 def _auth_lock_path() -> Path:
-    return _auth_file_path().with_suffix(".lock")
+    return _auth_lock_path_for(_auth_file_path())
+
+
+def _auth_lock_path_for(auth_path: Path) -> Path:
+    """Return the auth-store lock path for an explicit auth.json path."""
+    return auth_path.expanduser().resolve(strict=False).with_suffix(".lock")
 
 
 _auth_lock_holder = threading.local()
+_AUTH_PATH_LOCK_HOLDERS: Dict[str, threading.local] = {}
+_AUTH_PATH_LOCK_HOLDERS_GUARD = threading.Lock()
+
+
+def _auth_lock_holder_for_path(auth_path: Path) -> threading.local:
+    key = str(auth_path.expanduser().resolve(strict=False))
+    with _AUTH_PATH_LOCK_HOLDERS_GUARD:
+        return _AUTH_PATH_LOCK_HOLDERS.setdefault(key, threading.local())
 
 
 @contextmanager
@@ -1041,6 +1054,22 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         _auth_lock_holder,
         timeout_seconds,
         "Timed out waiting for auth store lock",
+    ):
+        yield
+
+
+@contextmanager
+def _auth_store_lock_for_path(
+    auth_path: Path,
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+):
+    """Cross-process advisory lock for a specific auth.json path."""
+    canonical = auth_path.expanduser().resolve(strict=False)
+    with _file_lock(
+        _auth_lock_path_for(canonical),
+        _auth_lock_holder_for_path(canonical),
+        timeout_seconds,
+        f"Timed out waiting for auth store lock: {canonical}",
     ):
         yield
 
@@ -3357,6 +3386,267 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
+
+@dataclass(frozen=True)
+class CodexStoreRef:
+    auth_path: Path
+    source: Literal["classic", "profile", "root_fallback"]
+
+    @property
+    def is_root_fallback(self) -> bool:
+        return self.source == "root_fallback"
+
+
+@dataclass(frozen=True)
+class CodexOAuthIdentity:
+    account_id: Optional[str] = None
+    subject: Optional[str] = None
+    email: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CodexTokenSnapshot:
+    ref: CodexStoreRef
+    tokens: Dict[str, str]
+    last_refresh: Optional[str]
+    identity: CodexOAuthIdentity
+
+
+def _profile_has_own_codex_state(auth_store: Dict[str, Any]) -> bool:
+    providers = auth_store.get("providers")
+    return isinstance(providers, dict) and isinstance(providers.get("openai-codex"), dict)
+
+
+def _codex_state_has_usable_tokens(state: Any) -> bool:
+    if not isinstance(state, dict):
+        return False
+    tokens = state.get("tokens")
+    return (
+        isinstance(tokens, dict)
+        and bool(str(tokens.get("access_token") or "").strip())
+        and bool(str(tokens.get("refresh_token") or "").strip())
+    )
+
+
+def _resolve_codex_store_ref() -> CodexStoreRef:
+    """Resolve the exact store authoritative for the Codex singleton."""
+    profile_path = _auth_file_path()
+    with _auth_store_lock_for_path(profile_path):
+        profile_store = _load_auth_store(profile_path)
+        if _profile_has_own_codex_state(profile_store):
+            return CodexStoreRef(profile_path, "profile")
+
+    root_path = _global_auth_file_path()
+    if root_path is None:
+        return CodexStoreRef(profile_path, "classic")
+
+    with _auth_store_lock_for_path(root_path):
+        root_store = _load_auth_store(root_path)
+        root_providers = root_store.get("providers")
+        if isinstance(root_providers, dict) and isinstance(root_providers.get("openai-codex"), dict):
+            return CodexStoreRef(root_path, "root_fallback")
+
+    return CodexStoreRef(profile_path, "profile")
+
+
+def _load_codex_state_exact(ref: CodexStoreRef) -> Dict[str, Any]:
+    store = _load_auth_store(ref.auth_path)
+    providers = store.get("providers")
+    state = providers.get("openai-codex") if isinstance(providers, dict) else None
+    if not isinstance(state, dict):
+        raise AuthError(
+            "No Codex credentials stored. Run `hermes auth` to authenticate.",
+            provider="openai-codex",
+            code="codex_auth_missing",
+            relogin_required=True,
+        )
+    return dict(state)
+
+
+def _codex_oauth_identity_from_tokens(tokens: Dict[str, str]) -> CodexOAuthIdentity:
+    claims = _decode_jwt_claims(tokens.get("access_token"))
+
+    def _claim(*names: str) -> Optional[str]:
+        for name in names:
+            value = claims.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    account_id = _claim(
+        "account_id",
+        "chatgpt_account_id",
+        "https://api.openai.com/auth.chatgpt_account_id",
+        "https://api.openai.com/auth.account_id",
+    )
+    subject = _claim("sub")
+    email = _claim("email", "preferred_username", "upn")
+    if email:
+        email = email.strip().lower()
+    return CodexOAuthIdentity(account_id=account_id, subject=subject, email=email)
+
+
+def _snapshot_from_codex_state(ref: CodexStoreRef, state: Dict[str, Any]) -> CodexTokenSnapshot:
+    tokens = state.get("tokens")
+    if not isinstance(tokens, dict):
+        raise AuthError(
+            "Codex auth state is missing tokens. Run `hermes auth` to re-authenticate.",
+            provider="openai-codex",
+            code="codex_auth_invalid_shape",
+            relogin_required=True,
+        )
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise AuthError(
+            "Codex auth is missing access_token. Run `hermes auth` to re-authenticate.",
+            provider="openai-codex",
+            code="codex_auth_missing_access_token",
+            relogin_required=True,
+        )
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise AuthError(
+            "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.",
+            provider="openai-codex",
+            code="codex_auth_missing_refresh_token",
+            relogin_required=True,
+        )
+    copied = {str(k): str(v) for k, v in tokens.items() if isinstance(k, str) and isinstance(v, str)}
+    return CodexTokenSnapshot(
+        ref=ref,
+        tokens=copied,
+        last_refresh=state.get("last_refresh") if isinstance(state.get("last_refresh"), str) else None,
+        identity=_codex_oauth_identity_from_tokens(copied),
+    )
+
+
+def _read_codex_snapshot_exact(ref: CodexStoreRef) -> CodexTokenSnapshot:
+    with _auth_store_lock_for_path(ref.auth_path):
+        state = _load_codex_state_exact(ref)
+        return _snapshot_from_codex_state(ref, state)
+
+
+def _codex_token_version(snapshot: CodexTokenSnapshot) -> Tuple[str, str, str]:
+    return (
+        str(snapshot.tokens.get("access_token") or ""),
+        str(snapshot.tokens.get("refresh_token") or ""),
+        str(snapshot.last_refresh or ""),
+    )
+
+
+def _codex_access_token_expiry(access_token: str) -> Optional[float]:
+    claims = _decode_jwt_claims(access_token)
+    exp = claims.get("exp")
+    return float(exp) if isinstance(exp, (int, float)) else None
+
+
+def _codex_tokens_strictly_fresh(snapshot: CodexTokenSnapshot, skew_seconds: int) -> bool:
+    access = str(snapshot.tokens.get("access_token") or "").strip()
+    expiry = _codex_access_token_expiry(access)
+    return bool(access) and expiry is not None and expiry > time.time() + max(0, int(skew_seconds))
+
+
+def _codex_identity_compatible(
+    existing: CodexOAuthIdentity,
+    candidate: CodexOAuthIdentity,
+) -> bool:
+    if existing.account_id and candidate.account_id:
+        return existing.account_id == candidate.account_id
+    if existing.subject and candidate.subject:
+        return existing.subject == candidate.subject
+    if existing.email and candidate.email:
+        return existing.email == candidate.email
+    return True
+
+
+def _codex_identity_changed_error() -> AuthError:
+    return AuthError(
+        "Codex credential identity changed during refresh.",
+        provider="openai-codex",
+        code="codex_identity_changed_during_refresh",
+        relogin_required=False,
+    )
+
+
+_CODEX_PROCESS_LOCKS: Dict[str, threading.Lock] = {}
+_CODEX_PROCESS_LOCKS_GUARD = threading.Lock()
+_CODEX_FILE_LOCK_HOLDERS: Dict[str, threading.local] = {}
+_CODEX_FILE_LOCK_HOLDERS_GUARD = threading.Lock()
+
+
+def _codex_process_lock_for_key(lock_key: str) -> threading.Lock:
+    with _CODEX_PROCESS_LOCKS_GUARD:
+        return _CODEX_PROCESS_LOCKS.setdefault(lock_key, threading.Lock())
+
+
+@contextmanager
+def _timed_codex_process_lock(lock_key: str, timeout_seconds: float):
+    lock = _codex_process_lock_for_key(lock_key)
+    acquired = lock.acquire(timeout=max(1.0, float(timeout_seconds)))
+    if not acquired:
+        raise AuthError(
+            "Timed out waiting for Codex OAuth refresh lock.",
+            provider="openai-codex",
+            code="codex_refresh_contention",
+            relogin_required=False,
+        )
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _codex_file_lock_holder_for_path(lock_path: Path) -> threading.local:
+    key = str(lock_path.expanduser().resolve(strict=False))
+    with _CODEX_FILE_LOCK_HOLDERS_GUARD:
+        return _CODEX_FILE_LOCK_HOLDERS.setdefault(key, threading.local())
+
+
+def _codex_singleton_refresh_lock_key(ref: CodexStoreRef) -> str:
+    return "\0".join(
+        (
+            "openai-codex",
+            "singleton",
+            str(ref.auth_path.expanduser().resolve(strict=False)),
+        )
+    )
+
+
+def _codex_refresh_lock_path(auth_path: Path, lock_key: str) -> Path:
+    digest = hashlib.sha256(lock_key.encode("utf-8")).hexdigest()
+    return (
+        auth_path.expanduser().resolve(strict=False).parent
+        / "locks"
+        / "oauth-refresh"
+        / f"openai-codex-{digest}.lock"
+    )
+
+
+@contextmanager
+def _codex_refresh_file_lock(
+    *,
+    auth_path: Path,
+    lock_key: str,
+    timeout_seconds: float,
+):
+    lock_path = _codex_refresh_lock_path(auth_path, lock_key)
+    try:
+        with _file_lock(
+            lock_path,
+            _codex_file_lock_holder_for_path(lock_path),
+            timeout_seconds,
+            "Timed out waiting for Codex OAuth refresh lock",
+        ):
+            yield
+    except TimeoutError as exc:
+        raise AuthError(
+            "Timed out waiting for Codex OAuth refresh lock.",
+            provider="openai-codex",
+            code="codex_refresh_contention",
+            relogin_required=False,
+        ) from exc
+
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
@@ -3679,6 +3969,161 @@ def refresh_codex_oauth_pure(
     return updated
 
 
+def _try_adopt_changed_codex_snapshot(
+    *,
+    ref: CodexStoreRef,
+    attempted: CodexTokenSnapshot,
+    refresh_skew_seconds: int,
+) -> Optional[CodexTokenSnapshot]:
+    latest = _read_codex_snapshot_exact(ref)
+    if _codex_token_version(latest) == _codex_token_version(attempted):
+        return None
+    if not _codex_identity_compatible(attempted.identity, latest.identity):
+        raise _codex_identity_changed_error()
+    if not _codex_tokens_strictly_fresh(latest, refresh_skew_seconds):
+        return None
+    logger.info(
+        "Codex OAuth refresh did not complete locally, but a newer persisted "
+        "credential was found and adopted"
+    )
+    return latest
+
+
+def _persist_codex_refresh_result_cas(
+    *,
+    ref: CodexStoreRef,
+    attempted: CodexTokenSnapshot,
+    refreshed: Dict[str, Any],
+    refresh_skew_seconds: int,
+) -> CodexTokenSnapshot:
+    with _auth_store_lock_for_path(ref.auth_path):
+        store = _load_auth_store(ref.auth_path)
+        latest_state = _load_codex_state_exact(ref)
+        latest = _snapshot_from_codex_state(ref, latest_state)
+        if _codex_token_version(latest) != _codex_token_version(attempted):
+            if not _codex_identity_compatible(attempted.identity, latest.identity):
+                raise _codex_identity_changed_error()
+            if _codex_tokens_strictly_fresh(latest, refresh_skew_seconds):
+                return latest
+            raise AuthError(
+                "Codex credential changed during refresh and could not be safely adopted.",
+                provider="openai-codex",
+                code="codex_refresh_concurrent_mutation",
+                relogin_required=False,
+            )
+
+        access_token = str(refreshed.get("access_token") or "").strip()
+        if not access_token:
+            raise AuthError(
+                "Codex token refresh response was missing access_token.",
+                provider="openai-codex",
+                code="codex_refresh_missing_access_token",
+                relogin_required=True,
+            )
+        refresh_token = str(refreshed.get("refresh_token") or "").strip() or str(
+            attempted.tokens.get("refresh_token") or ""
+        ).strip()
+        last_refresh = str(refreshed.get("last_refresh") or "").strip() or datetime.now(
+            timezone.utc
+        ).isoformat().replace("+00:00", "Z")
+
+        updated_state = dict(latest_state)
+        updated_state["tokens"] = {
+            **dict(attempted.tokens),
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+        updated_state["last_refresh"] = last_refresh
+        updated_state["auth_mode"] = "chatgpt"
+        _store_provider_state(store, "openai-codex", updated_state, set_active=False)
+        try:
+            _save_auth_store(store, ref.auth_path)
+        except Exception as exc:
+            raise AuthError(
+                "Codex token refresh succeeded, but the rotated credential could not be persisted. "
+                "The OAuth refresh will not be repeated automatically.",
+                provider="openai-codex",
+                code="codex_refresh_persist_failed",
+                relogin_required=False,
+            ) from exc
+
+        return _snapshot_from_codex_state(ref, updated_state)
+
+
+def _refresh_codex_singleton_serialized(
+    observed: CodexTokenSnapshot,
+    *,
+    timeout_seconds: float,
+    refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    force_refresh: bool = False,
+) -> CodexTokenSnapshot:
+    max_origin_retries = 3
+    for _ in range(max_origin_retries):
+        initial_ref = _resolve_codex_store_ref()
+        lock_key = _codex_singleton_refresh_lock_key(initial_ref)
+        lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(timeout_seconds) + 10.0)
+        with _timed_codex_process_lock(lock_key, lock_timeout):
+            with _codex_refresh_file_lock(
+                auth_path=initial_ref.auth_path,
+                lock_key=lock_key,
+                timeout_seconds=lock_timeout,
+            ):
+                stable_ref = _resolve_codex_store_ref()
+                stable_key = _codex_singleton_refresh_lock_key(stable_ref)
+                if stable_key != lock_key:
+                    continue
+
+                current = _read_codex_snapshot_exact(stable_ref)
+                if _codex_token_version(current) != _codex_token_version(observed):
+                    if not _codex_identity_compatible(observed.identity, current.identity):
+                        raise _codex_identity_changed_error()
+                    if _codex_tokens_strictly_fresh(current, refresh_skew_seconds):
+                        return current
+
+                if not force_refresh and _codex_tokens_strictly_fresh(current, refresh_skew_seconds):
+                    return current
+
+                attempted = current
+                refresh_token = str(attempted.tokens.get("refresh_token") or "").strip()
+                if not refresh_token:
+                    raise AuthError(
+                        "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.",
+                        provider="openai-codex",
+                        code="codex_auth_missing_refresh_token",
+                        relogin_required=True,
+                    )
+
+                try:
+                    refreshed = refresh_codex_oauth_pure(
+                        str(attempted.tokens.get("access_token") or ""),
+                        refresh_token,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except Exception:
+                    recovered = _try_adopt_changed_codex_snapshot(
+                        ref=stable_ref,
+                        attempted=attempted,
+                        refresh_skew_seconds=refresh_skew_seconds,
+                    )
+                    if recovered is not None:
+                        return recovered
+                    raise
+
+                return _persist_codex_refresh_result_cas(
+                    ref=stable_ref,
+                    attempted=attempted,
+                    refreshed=refreshed,
+                    refresh_skew_seconds=refresh_skew_seconds,
+                )
+
+    raise AuthError(
+        "Codex credential origin changed repeatedly during refresh.",
+        provider="openai-codex",
+        code="codex_refresh_origin_unstable",
+        relogin_required=False,
+    )
+
+
 def _refresh_codex_auth_tokens(
     tokens: Dict[str, str],
     timeout_seconds: float,
@@ -3779,18 +4224,7 @@ def resolve_codex_runtime_credentials(
         data = _read_codex_tokens()
     except AuthError as exc:
         read_error = exc
-        if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
-            "codex_auth_missing_access_token",
-            "codex_auth_missing_refresh_token",
-            "codex_auth_invalid_shape",
-        }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
-            if imported:
-                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
-            else:
-                data = None
-        else:
-            data = None
+        data = None
 
     if data is None:
         pool_token = _pool_codex_access_token()
@@ -3844,19 +4278,17 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # Re-read under lock to avoid racing with other Hermes processes
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_codex_tokens(_lock=False)
-            tokens = dict(data["tokens"])
-            access_token = str(tokens.get("access_token", "") or "").strip()
-
-            should_refresh = bool(force_refresh)
-            if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
-
-            if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
-                access_token = str(tokens.get("access_token", "") or "").strip()
+        observed_ref = _resolve_codex_store_ref()
+        observed = _read_codex_snapshot_exact(observed_ref)
+        refreshed_snapshot = _refresh_codex_singleton_serialized(
+            observed,
+            timeout_seconds=refresh_timeout_seconds,
+            refresh_skew_seconds=refresh_skew_seconds,
+            force_refresh=force_refresh,
+        )
+        tokens = dict(refreshed_snapshot.tokens)
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        data = {"tokens": tokens, "last_refresh": refreshed_snapshot.last_refresh}
 
     base_url = (
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")

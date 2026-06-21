@@ -146,8 +146,8 @@ def test_reraises_when_imported_token_lacks_refresh_token(monkeypatch):
     assert saved == {}  # nothing was persisted
 
 
-def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monkeypatch):
-    """Exact cron failure path: Hermes auth has refresh_token but missing access_token."""
+def test_runtime_missing_singleton_access_token_does_not_import_codex_cli(tmp_path, monkeypatch):
+    """Runtime resolution no longer auto-imports ~/.codex after malformed Hermes state."""
     hermes_home = tmp_path / "hermes"
     codex_home = tmp_path / "codex"
     hermes_home.mkdir()
@@ -171,14 +171,14 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-    resolved = resolve_codex_runtime_credentials()
+    with pytest.raises(AuthError) as ei:
+        resolve_codex_runtime_credentials()
 
-    assert resolved["api_key"] == "fresh-access"
-    assert resolved["source"] == "hermes-auth-store"
+    assert ei.value.code == "codex_auth_missing_access_token"
     stored = json.loads((hermes_home / "auth.json").read_text())
     tokens = stored["providers"]["openai-codex"]["tokens"]
-    assert tokens["access_token"] == "fresh-access"
-    assert tokens["refresh_token"] == "fresh-refresh"
+    assert "access_token" not in tokens
+    assert tokens["refresh_token"] == "stale-refresh"
 
 
 def test_missing_singleton_access_token_reraises_when_codex_cli_half_token(tmp_path, monkeypatch):

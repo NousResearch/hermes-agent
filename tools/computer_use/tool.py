@@ -135,12 +135,23 @@ def _get_backend() -> ComputerUseBackend:
             backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
             if backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
-                _backend = CuaDriverBackend()
+                candidate = CuaDriverBackend()
             elif backend_name == "noop":  # pragma: no cover
-                _backend = _NoopBackend()
+                candidate = _NoopBackend()
             else:
                 raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            _backend.start()
+            # Only cache the backend after it has successfully started.  A
+            # partially-started cua-driver session otherwise poisons the live
+            # process until restart after a transient startup failure.
+            try:
+                candidate.start()
+            except Exception:
+                try:
+                    candidate.stop()
+                except Exception:
+                    pass
+                raise
+            _backend = candidate
         return _backend
 
 
@@ -786,7 +797,10 @@ def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str
     out: List[str] = []
     for e in elements[:max_lines]:
         label = e.label.replace("\n", " ")[:60]
-        out.append(f"  #{e.index} {e.role} {label!r} @ {e.bounds}"
+        bounds = "bounds unavailable" if e.attributes.get("bounds_available") is False else str(e.bounds)
+        source = e.attributes.get("geometry_source")
+        source_suffix = f" source={source}" if source and source not in {"none", "tree_markdown"} else ""
+        out.append(f"  #{e.index} {e.role} {label!r} @ {bounds}{source_suffix}"
                    + (f" [{e.app}]" if e.app else ""))
     if len(elements) > max_lines:
         out.append(f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)")

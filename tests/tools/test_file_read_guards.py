@@ -275,7 +275,7 @@ class TestFileDedup(unittest.TestCase):
         ))
 
         self.assertIn("error", result)
-        self.assertIn("internal read_file status text", result["error"])
+        self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
@@ -299,7 +299,7 @@ class TestFileDedup(unittest.TestCase):
         ))
 
         self.assertIn("error", result)
-        self.assertIn("internal read_file status text", result["error"])
+        self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")

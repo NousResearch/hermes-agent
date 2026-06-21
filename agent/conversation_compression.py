@@ -609,6 +609,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    trigger_reason: Optional[str] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -1017,6 +1018,11 @@ def compress_context(
             summary_snippet=_extract_compaction_summary_snippet(compressed),
             raw_store_count=None,  # session-scoped count not cheap here; omit (N-NEW-3)
             after_fallback=_after_fb,
+            trigger_reason=trigger_reason,
+            trigger_value=(
+                getattr(_cc, "threshold_tokens", None)
+                if trigger_reason == "threshold" else None
+            ),
         )
     except Exception:
         logger.debug("compaction announce skipped (non-fatal)", exc_info=True)

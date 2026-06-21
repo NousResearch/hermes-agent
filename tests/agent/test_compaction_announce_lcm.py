@@ -122,6 +122,25 @@ class TestLCMDoneSiteAnnounce:
         assert "preserved in lcm.db" in line
         assert "previous:" not in line and "→ current:" not in line
 
+    def test_in_turn_reason_threaded_to_announce(self, tmp_path: Path):
+        """Phase 4/5: a trigger_reason passed at the in-turn call site reaches the
+        announce head through the real done-site (threshold reason + value)."""
+        emitted: list = []
+        engine = _lcm_engine(tmp_path)
+        agent = _real_agent_with_lcm(tmp_path, emitted, engine)
+
+        messages = _bulk_messages()
+        approx = count_messages_tokens(messages)
+        agent._compress_context(
+            messages, "You are testing LCM.", approx_tokens=approx,
+            trigger_reason="threshold",
+        )
+
+        announce = [m for m in emitted if m.startswith("🗜️ Context compacted")]
+        assert len(announce) == 1, f"expected one LCM announce, got {emitted}"
+        # the reason clause is present in the head
+        assert "compaction threshold" in announce[0]
+
     def test_ingest_write_ahead_raw_rows_exist_at_announce(self, tmp_path: Path):
         """C-NEW-1/C-NEW-2: the 'preserved in lcm.db' claim is empirically backed —
         raw rows for the session exist in the store at announce time."""

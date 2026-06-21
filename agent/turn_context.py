@@ -295,7 +295,7 @@ def build_turn_context(
                 _orig_len = len(messages)
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
+                    task_id=effective_task_id, trigger_reason="threshold",
                 )
                 if len(messages) >= _orig_len:
                     break  # Cannot compress further

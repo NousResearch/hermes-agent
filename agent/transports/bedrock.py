@@ -41,21 +41,36 @@ class BedrockTransport(ProviderTransport):
         Calls convert_messages and convert_tools internally.
 
         params:
-            max_tokens: int — output token limit (default 4096)
+            max_tokens: int — output token limit (default: model native limit
+                via _get_anthropic_max_output, same table used by the direct
+                Anthropic path; falls back to 16384 for non-Claude models)
             temperature: float | None
             guardrail_config: dict | None — Bedrock guardrails
             region: str — AWS region (default 'us-east-1')
         """
         from agent.bedrock_adapter import build_converse_kwargs
+        from agent.anthropic_adapter import _get_anthropic_max_output
 
         region = params.get("region", "us-east-1")
         guardrail = params.get("guardrail_config")
+
+        requested_max_tokens = params.get("max_tokens")
+        if requested_max_tokens is None:
+            # Use the per-model native output limit from the shared table.
+            # _get_anthropic_max_output normalises model IDs (strips regional
+            # prefixes like "global.", "us.", strips dots) and returns the
+            # model's declared ceiling (e.g. 64K for Sonnet 4.6, 128K for
+            # Opus 4.8).  Non-Claude / unknown models fall back to 128K which
+            # is safe — Bedrock will clamp to the actual model maximum.
+            max_tokens = _get_anthropic_max_output(model)
+        else:
+            max_tokens = requested_max_tokens
 
         kwargs = build_converse_kwargs(
             model=model,
             messages=messages,
             tools=tools,
-            max_tokens=params.get("max_tokens", 4096),
+            max_tokens=max_tokens,
             temperature=params.get("temperature"),
             guardrail_config=guardrail,
         )

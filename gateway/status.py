@@ -595,7 +595,7 @@ def write_runtime_status(
     if restart_requested is not _UNSET:
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
-        payload["active_agents"] = max(0, int(active_agents))
+        payload["active_agents"] = parse_active_agents(active_agents)
     if served_profiles is not _UNSET:
         # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
         # for a single-profile gateway. Lets `hermes status` show per-profile
@@ -624,11 +624,11 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
 def parse_active_agents(raw: Any) -> int:
     """Coerce a persisted ``active_agents`` value to a clamped non-negative int.
 
-    The status file is written atomically but can still hold an
-    absent/None/garbage ``active_agents`` after a partial write or a manual
-    edit.  Both HTTP surfaces (``/api/status`` and ``/health/detailed``) read it
-    through this single helper so the field they expose is consistent and never
-    negative.  Mirrors the write-side clamp in ``write_runtime_status``.
+    The shared coercion for the in-flight gateway-turn count. Used on the WRITE
+    side (``write_runtime_status``) and by both HTTP read surfaces
+    (``/api/status`` and ``/health/detailed``) so the count is clamped to a
+    single contract — never negative, never raising on a manually-edited or
+    otherwise non-numeric value (degrades to ``0``).
     """
     try:
         return max(0, int(raw))

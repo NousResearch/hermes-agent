@@ -1844,7 +1844,7 @@ async def get_status(profile: Optional[str] = None):
         # liveness via the single shared contract in gateway.status.  Liveness
         # keys off gateway_running (a live PID/health probe), NEVER
         # gateway_updated_at — a healthy idle gateway never advances that.
-        active_agents = parse_active_agents(runtime.get("active_agents", 0)) if runtime else 0
+        active_agents = parse_active_agents((runtime or {}).get("active_agents", 0))
         gateway_busy = derive_gateway_busy(
             gateway_running=gateway_running,
             gateway_state=gateway_state,
@@ -1862,8 +1862,12 @@ async def get_status(profile: Optional[str] = None):
             from hermes_cli.gateway import _get_restart_drain_timeout
 
             restart_drain_timeout = _get_restart_drain_timeout()
-        except Exception:
-            restart_drain_timeout = None
+        except ImportError:
+            # Resolver moved/renamed — fall back to the real default so the
+            # field stays a numeric poll-deadline hint, never None.
+            from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+            restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 
         # Dashboard auth gate (Phase 7): surface whether the gate is engaged
         # and which providers are registered so ``hermes status`` and the

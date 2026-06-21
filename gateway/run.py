@@ -4647,7 +4647,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
-        """Load reasoning effort from config.yaml.
+        """Load global reasoning effort from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
         "minimal", "low", "medium", "high", "xhigh". Returns None to use
@@ -4663,6 +4663,239 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if effort and str(effort).strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return result
+
+    @staticmethod
+    def _load_source_reasoning_config(source: Optional[SessionSource]) -> dict | None:
+        """Load per-source reasoning effort overrides from config.yaml.
+
+        This is intentionally deterministic pre-LLM routing.  It lets a gateway
+        topic/channel opt into deeper or lighter reasoning without changing the
+        global default or relying on a model-side classifier.
+
+        Supported config (platform key is usually ``telegram``)::
+
+            telegram:
+              reasoning_effort_by_thread:
+                "-1001234567890:8": xhigh   # chat_id:thread_id, preferred
+                "8": xhigh                   # thread_id fallback
+                "-1001234567890": low        # whole chat/channel fallback
+
+        ``topic_reasoning_effort`` / ``thread_reasoning_effort`` /
+        ``reasoning_effort_overrides`` are accepted as aliases so local configs
+        can use the name that reads best for their platform.
+        """
+        if source is None:
+            return None
+
+        from hermes_constants import parse_reasoning_effort
+
+        try:
+            platform_key = _platform_config_key(source.platform)
+        except Exception:
+            platform = getattr(source, "platform", "")
+            platform_key = str(getattr(platform, "value", platform) or "")
+
+        cfg = _load_gateway_runtime_config()
+        platform_cfg = cfg.get(platform_key) or {}
+        if not isinstance(platform_cfg, dict):
+            return None
+
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        thread_id = str(getattr(source, "thread_id", "") or "").strip()
+        chat_topic = str(getattr(source, "chat_topic", "") or "").strip()
+
+        candidates: list[str] = []
+        if chat_id and thread_id:
+            candidates.append(f"{chat_id}:{thread_id}")
+        if thread_id:
+            candidates.extend([thread_id, f"thread:{thread_id}"])
+        if chat_topic:
+            candidates.extend([chat_topic, chat_topic.lower()])
+        if chat_id:
+            candidates.append(chat_id)
+
+        mapping_names = (
+            "reasoning_effort_by_thread",
+            "topic_reasoning_effort",
+            "thread_reasoning_effort",
+            "reasoning_effort_overrides",
+        )
+        for mapping_name in mapping_names:
+            mapping = platform_cfg.get(mapping_name)
+            if not isinstance(mapping, dict):
+                continue
+            for key in candidates:
+                if key not in mapping:
+                    continue
+                raw_value = mapping.get(key)
+                if isinstance(raw_value, dict):
+                    raw_value = raw_value.get("effort") or raw_value.get("reasoning_effort")
+                effort = str(raw_value or "").strip()
+                parsed = parse_reasoning_effort(effort)
+                if parsed is not None:
+                    return parsed
+                logger.warning(
+                    "Unknown %s.%s[%r] reasoning_effort %r, ignoring",
+                    platform_key,
+                    mapping_name,
+                    key,
+                    raw_value,
+                )
+        return None
+
+    @staticmethod
+    def _load_source_profile(source: Optional[SessionSource]) -> Optional[str]:
+        """Resolve the Hermes profile a gateway topic/thread is bound to.
+
+        This is deterministic, pre-LLM routing: a Telegram topic can be mapped
+        to a named profile so its *live* turns adopt that profile's role
+        (``SOUL.md``) and reasoning effort (the profile's own ``config.yaml``).
+        Memory / USER profile / sessions / skills stay shared from the default
+        home — this is a behaviour overlay, NOT a HERMES_HOME swap.
+
+        Config (platform key is usually ``telegram``)::
+
+            telegram:
+              profile_by_thread:
+                "-1001234567890:2": engineer   # chat_id:thread_id, preferred
+                "2": engineer                   # thread_id fallback
+                "107": task-manager
+
+        ``profile_overrides`` / ``topic_profile`` / ``thread_profile`` are
+        accepted as aliases.
+        """
+        if source is None:
+            return None
+
+        from hermes_cli.profiles import normalize_profile_name
+
+        try:
+            platform_key = _platform_config_key(source.platform)
+        except Exception:
+            platform = getattr(source, "platform", "")
+            platform_key = str(getattr(platform, "value", platform) or "")
+
+        cfg = _load_gateway_runtime_config()
+        platform_cfg = cfg.get(platform_key) or {}
+        if not isinstance(platform_cfg, dict):
+            return None
+
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        thread_id = str(getattr(source, "thread_id", "") or "").strip()
+        chat_topic = str(getattr(source, "chat_topic", "") or "").strip()
+
+        candidates: list[str] = []
+        if chat_id and thread_id:
+            candidates.append(f"{chat_id}:{thread_id}")
+        if thread_id:
+            candidates.extend([thread_id, f"thread:{thread_id}"])
+        if chat_topic:
+            candidates.extend([chat_topic, chat_topic.lower()])
+        if chat_id:
+            candidates.append(chat_id)
+
+        mapping_names = (
+            "profile_by_thread",
+            "profile_overrides",
+            "topic_profile",
+            "thread_profile",
+        )
+        for mapping_name in mapping_names:
+            mapping = platform_cfg.get(mapping_name)
+            if not isinstance(mapping, dict):
+                continue
+            for key in candidates:
+                if key not in mapping:
+                    continue
+                raw_value = mapping.get(key)
+                if isinstance(raw_value, dict):
+                    raw_value = raw_value.get("profile") or raw_value.get("name")
+                name = str(raw_value or "").strip()
+                if not name:
+                    continue
+                try:
+                    return normalize_profile_name(name)
+                except Exception:
+                    logger.warning(
+                        "Invalid %s.%s[%r] profile %r, ignoring",
+                        platform_key,
+                        mapping_name,
+                        key,
+                        raw_value,
+                    )
+        return None
+
+    @staticmethod
+    def _profile_dir(profile_name: str) -> "Optional[Path]":
+        """Return the on-disk directory for a named profile, or None.
+
+        Anchored on the gateway's ``_hermes_home`` module global (which tests
+        monkeypatch and which already reflects the active profile root) rather
+        than the process-wide ``~/.hermes`` so resolution stays consistent with
+        the rest of the gateway. Profiles live under ``<root>/profiles/<name>``;
+        when ``_hermes_home`` is itself a profile dir, the root is its
+        grandparent.
+        """
+        if not profile_name:
+            return None
+        try:
+            from hermes_cli.profiles import normalize_profile_name
+            canon = normalize_profile_name(profile_name)
+        except Exception:
+            return None
+        if canon == "default":
+            return None
+        home = _hermes_home
+        try:
+            root = home.parent.parent if home.parent.name == "profiles" else home
+            pdir = root / "profiles" / canon
+            return pdir if pdir.is_dir() else None
+        except OSError:
+            return None
+
+    @classmethod
+    def _load_profile_reasoning_config(cls, profile_name: str) -> dict | None:
+        """Load ``agent.reasoning_effort`` from a named profile's config.yaml.
+
+        The profile is the single source of truth for its effort.  Returns
+        None when the profile is missing, has no config, or the effort is
+        unset/unrecognized (caller falls through to the next resolution tier).
+        """
+        from hermes_constants import parse_reasoning_effort
+
+        pdir = cls._profile_dir(profile_name)
+        if pdir is None:
+            return None
+        config_path = pdir / "config.yaml"
+        try:
+            if not config_path.exists():
+                return None
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception:
+            logger.debug("Could not load profile config from %s", config_path, exc_info=True)
+            return None
+        if not isinstance(cfg, dict):
+            return None
+        effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
+        return parse_reasoning_effort(effort)
+
+    @classmethod
+    def _load_profile_soul(cls, profile_name: str) -> Optional[str]:
+        """Load a named profile's SOUL.md content (role overlay), or None."""
+        pdir = cls._profile_dir(profile_name)
+        if pdir is None:
+            return None
+        soul_path = pdir / "SOUL.md"
+        try:
+            if not soul_path.exists():
+                return None
+            content = soul_path.read_text(encoding="utf-8").strip()
+            return content or None
+        except Exception:
+            logger.debug("Could not read profile SOUL from %s", soul_path, exc_info=True)
+            return None
 
     @staticmethod
     def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
@@ -4690,6 +4923,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 value_tokens.append(token)
         return " ".join(value_tokens).strip().lower(), persist_global
 
+    @staticmethod
+    def _unwrap_voice_transcript(text: str) -> tuple[Optional[str], str]:
+        """Return (transcript, tail) when text is a STT voice-message wrapper.
+
+        The STT path wraps recognized speech as
+        ``[The user sent a voice message~ Here's what they said: "..."]`` and
+        may append reply/context blocks after it. Returns ``(None, "")`` when
+        the text is not a voice wrapper so callers can fall through to the
+        plain-text path.
+        """
+        if not isinstance(text, str):
+            return None, ""
+        voice_match = re.match(
+            r"^\[The user sent a voice message~ Here's what they said: \"(?P<transcript>.*?)\"\]"
+            r"(?P<tail>[\s\S]*)$",
+            text.lstrip(),
+            flags=re.DOTALL,
+        )
+        if not voice_match:
+            return None, ""
+        return voice_match.group("transcript"), voice_match.group("tail").lstrip()
+
+    @staticmethod
+    def _parse_turn_reasoning_prefix(text: str) -> tuple[Optional[str], str]:
+        """Parse one-shot reasoning prefixes from the start of a user turn.
+
+        This is intentionally deterministic and runs before any model call:
+        ``light ...`` lowers reasoning for this turn, ``heavy ...`` raises it.
+        The prefix is stripped before the message is persisted/sent to the LLM.
+        """
+        if not isinstance(text, str):
+            return None, text
+
+        stripped = text.lstrip()
+        if not stripped or stripped.startswith("/"):
+            return None, text
+
+        transcript, tail = GatewayRunner._unwrap_voice_transcript(stripped)
+        if transcript is not None:
+            voice_mode, voice_rest = GatewayRunner._parse_turn_reasoning_prefix(
+                transcript
+            )
+            if voice_mode:
+                if tail:
+                    voice_rest = f"{voice_rest}\n\n{tail}"
+                return voice_mode, voice_rest
+
+        match = re.match(
+            r"^(?P<prefix>light|lite|лайт|heavy|хеви|хэви)"
+            r"(?:\s*[:：,;.!?\-–—]+)?\s+"
+            r"(?P<rest>\S[\s\S]*)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None, text
+
+        token = match.group("prefix").lower()
+        mode = "light" if token in {"light", "lite", "лайт"} else "heavy"
+        return mode, match.group("rest")
+
+    @staticmethod
+    def _apply_turn_reasoning_override(
+        reasoning_config: Optional[dict],
+        turn_reasoning_mode: Optional[str],
+    ) -> Optional[dict]:
+        """Apply a one-turn light/heavy reasoning override."""
+        if not turn_reasoning_mode:
+            return reasoning_config
+        from hermes_constants import parse_reasoning_effort
+
+        effort = "low" if turn_reasoning_mode == "light" else "xhigh"
+        return parse_reasoning_effort(effort)
+
     def _resolve_session_reasoning_config(
         self,
         *,
@@ -4707,6 +5014,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
+
+        # Topic→profile routing: when this topic is bound to a named profile,
+        # the profile's own config.yaml is the single source of truth for its
+        # reasoning effort. Sits below an explicit /reasoning session override
+        # but above the legacy per-thread effort map and the global default.
+        profile_name = self._load_source_profile(source)
+        if profile_name:
+            profile_effort = self._load_profile_reasoning_config(profile_name)
+            if profile_effort is not None:
+                return profile_effort
+
+        source_override = self._load_source_reasoning_config(source)
+        if source_override is not None:
+            return source_override
+
         return self._load_reasoning_config()
 
     def _set_session_reasoning_override(
@@ -10076,25 +10398,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    return_transcripts=True,
                 )
-                # Echo each successful transcript back to the user immediately,
-                # before the agent loop runs. Lets the user verify STT quality
-                # in real-time and see the raw whisper output verbatim.
+                # Echo successful transcripts back before the agent loop so the
+                # user can verify STT quality. Keep Telegram's quote-style
+                # format used by Sasha's voice workflow.
                 if _successful_transcripts:
                     _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
-                        for _tx in _successful_transcripts:
-                            try:
-                                await _echo_adapter.send(
-                                    source.chat_id,
-                                    f'🎙️ "{_tx}"',
-                                    metadata=_echo_meta,
-                                )
-                            except Exception as _echo_exc:
-                                logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
-                                )
+                        try:
+                            _quote_text = "\n".join(f"> 🎙 {transcript}" for transcript in _successful_transcripts)
+                            await _echo_adapter.send(
+                                source.chat_id,
+                                _quote_text,
+                                metadata=_echo_meta,
+                            )
+                        except Exception:
+                            logger.debug("Failed to echo voice transcript to chat", exc_info=True)
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
                 # English notice via `_stt_adapter.send()`. That bypassed the
@@ -12800,7 +13121,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
+            turn_reasoning_mode, stripped_prompt = self._parse_turn_reasoning_prefix(prompt)
+            if turn_reasoning_mode:
+                logger.info(
+                    "Background turn reasoning override: mode=%s task=%s",
+                    turn_reasoning_mode,
+                    task_id,
+                )
+                prompt = stripped_prompt
             reasoning_config = self._resolve_session_reasoning_config(source=source)
+            reasoning_config = self._apply_turn_reasoning_override(
+                reasoning_config,
+                turn_reasoning_mode,
+            )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
@@ -14529,7 +14862,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         audio_paths: List[str],
-    ) -> tuple[str, List[str]]:
+        *,
+        return_transcripts: bool = False,
+    ) -> tuple[str, list[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
         and prepend the transcript to the message text.
@@ -14662,17 +14997,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                 if echo_adapter:
-                    for tx in successful_transcripts:
-                        try:
-                            await echo_adapter.send(
-                                source.chat_id,
-                                f'🎙️ "{tx}"',
-                                metadata=echo_meta,
-                            )
-                        except Exception as echo_exc:
-                            logger.debug(
-                                "Transcript echo failed (non-fatal): %s", echo_exc,
-                            )
+                    try:
+                        quote_text = "\n".join(f"> 🎙 {tx}" for tx in successful_transcripts)
+                        await echo_adapter.send(
+                            source.chat_id,
+                            quote_text,
+                            metadata=echo_meta,
+                        )
+                    except Exception as echo_exc:
+                        logger.debug(
+                            "Transcript echo failed (non-fatal): %s", echo_exc,
+                        )
             return enriched_text or None
 
         # Non-audio fallback: preserve original _dequeue_pending_text semantics.
@@ -17266,6 +17601,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if cfg_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
+            # Topic→profile routing: if this topic is bound to a named profile,
+            # overlay that profile's SOUL.md as an authoritative role directive.
+            # Memory / USER / sessions / skills stay shared from the default home
+            # — this is a behaviour overlay, not a HERMES_HOME swap.
+            _profile_name = self._load_source_profile(source)
+            if _profile_name:
+                _profile_soul = self._load_profile_soul(_profile_name)
+                if _profile_soul:
+                    _overlay = (
+                        f"## Active role profile: {_profile_name}\n\n"
+                        f"This topic is operating under the **{_profile_name}** role. "
+                        f"The following role directive is authoritative for this turn "
+                        f"and overrides any conflicting general behavior:\n\n"
+                        f"{_profile_soul}"
+                    )
+                    combined_ephemeral = (combined_ephemeral + "\n\n" + _overlay).strip()
+
+            # Re-read .env and config for fresh credentials (gateway is long-lived,
+            # keys may change without restart). Keep config.yaml authoritative for
+            # runtime budget settings bridged into env vars.
+            _reload_runtime_env_preserving_config_authority()
             max_iterations = _current_max_iterations()
 
             try:
@@ -17287,9 +17643,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
 
             pr = self._provider_routing
+            turn_reasoning_mode, stripped_message = self._parse_turn_reasoning_prefix(message)
+            if turn_reasoning_mode:
+                logger.info(
+                    "Turn reasoning override: mode=%s session=%s",
+                    turn_reasoning_mode,
+                    session_key or "",
+                )
+                message = stripped_message
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
                 session_key=session_key,
+            )
+            reasoning_config = self._apply_turn_reasoning_override(
+                reasoning_config,
+                turn_reasoning_mode,
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -20103,6 +20471,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "manager relaunches the gateway."
         )
         raise SystemExit(75)
+
+    # A /restart command that is not handled by an explicit service-manager
+    # shortcut (systemd, etc.) still needs a non-zero exit so that any
+    # service manager using ``KeepAlive`` / ``Restart=on-failure`` will
+    # revive the gateway.  On macOS, launchd's default plist sets
+    # ``SuccessfulExit=false`` — a clean exit 0 is treated as intentional
+    # and the gateway stays dead.
+    if runner._restart_requested:
+        logger.info(
+            "Exiting with code 1 (restart requested without explicit service "
+            "manager) so the service manager can revive the gateway."
+        )
+        return False  # → sys.exit(1) in the caller
 
     return True
 

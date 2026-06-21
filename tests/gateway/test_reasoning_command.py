@@ -15,13 +15,22 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
+def _make_event(
+    text="/reasoning",
+    platform=Platform.TELEGRAM,
+    user_id="12345",
+    chat_id="67890",
+    thread_id=None,
+    chat_topic=None,
+):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
         user_name="testuser",
+        thread_id=thread_id,
+        chat_topic=chat_topic,
     )
     return MessageEvent(text=text, source=source)
 
@@ -203,6 +212,65 @@ class TestReasoningCommand:
         runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "xhigh"}
 
         assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "xhigh"}
+
+    def test_resolve_session_reasoning_uses_thread_config_override(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n"
+            "  reasoning_effort: low\n"
+            "telegram:\n"
+            "  reasoning_effort_by_thread:\n"
+            "    '67890:42': xhigh\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        source = _make_event("/reasoning", chat_id="67890", thread_id="42").source
+
+        assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "xhigh"}
+
+    def test_resolve_session_reasoning_thread_config_is_not_global(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n"
+            "  reasoning_effort: medium\n"
+            "telegram:\n"
+            "  reasoning_effort_by_thread:\n"
+            "    '67890:42': xhigh\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        source = _make_event("/reasoning", chat_id="67890", thread_id="99").source
+
+        assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "medium"}
+
+    def test_session_reasoning_override_beats_thread_config_override(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n"
+            "  reasoning_effort: low\n"
+            "telegram:\n"
+            "  reasoning_effort_by_thread:\n"
+            "    '67890:42': xhigh\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        source = _make_event("/reasoning", chat_id="67890", thread_id="42").source
+        session_key = runner._session_key_for_source(source)
+        runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
+
+        assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "high"}
 
     def test_run_agent_reloads_reasoning_config_per_message(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

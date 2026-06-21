@@ -339,6 +339,103 @@ def test_format_footer_full_layout_with_reasoning(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# messages field (count / limit)
+# ---------------------------------------------------------------------------
+
+def test_format_footer_messages_count_and_limit():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        message_count=326, message_limit=600,
+        fields=("messages",),
+    )
+    assert out == "326/600msgs"
+
+
+def test_format_footer_messages_count_only_when_no_limit():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        message_count=326, message_limit=None,
+        fields=("messages",),
+    )
+    assert out == "326msgs"
+
+
+def test_format_footer_messages_hidden_when_count_missing():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        message_count=None, message_limit=600,
+        fields=("messages",),
+    )
+    # no count -> field silently dropped (no "/600msgs" artifact)
+    assert out == ""
+
+
+def test_format_footer_messages_zero_count_is_valid():
+    # 0 is a real count (fresh session), not falsy-skipped
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        message_count=0, message_limit=600,
+        fields=("messages",),
+    )
+    assert out == "0/600msgs"
+
+
+def test_format_footer_messages_over_limit_shows_overage():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        message_count=612, message_limit=600,
+        fields=("messages",),
+    )
+    assert out == "612/600msgs"
+
+
+def test_format_footer_messages_position_in_full_layout(monkeypatch, tmp_path):
+    # Ace's target: provider/model · reasoning · context · msgs · cwd
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = format_runtime_footer(
+        model="claude-opus-4-8",
+        provider="claude-app",
+        context_tokens=45_400,
+        context_length=1_000_000,
+        cwd=str(tmp_path),
+        reasoning="xhigh",
+        message_count=326,
+        message_limit=600,
+        fields=("provider_model", "reasoning", "context_full", "messages", "cwd"),
+    )
+    assert out == "claude-app/claude-opus-4-8 · r:xhigh · 45.4k/1M (5%) · 326/600msgs · ~"
+
+
+def test_format_footer_messages_omitted_field_no_regression():
+    # back-compat: callers that don't list "messages" are unaffected even
+    # though the kwargs default to None.
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50, context_length=100,
+        cwd="/opt/project",
+        fields=("model", "context_pct"),
+    )
+    assert out == "gpt-5.4 · 50%"
+
+
+def test_build_footer_threads_message_count_and_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = build_footer_line(
+        user_config={
+            "display": {"runtime_footer": {"enabled": True, "fields": ["messages"]}},
+        },
+        platform_key="discord",
+        model="claude-opus-4-8",
+        provider="claude-app",
+        context_tokens=0, context_length=None,
+        cwd="",
+        message_count=326,
+        message_limit=600,
+    )
+    assert out == "326/600msgs"
+
+
+# ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
 
@@ -454,3 +551,115 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# gateway wiring — _resolve_footer_message_stats (raw count + hard-limit)
+# ---------------------------------------------------------------------------
+
+class _FakeSessionDB:
+    """Minimal stand-in for the gateway session DB."""
+
+    def __init__(self, rows):
+        # rows: {session_id: row_dict_or_None} or an Exception to raise
+        self._rows = rows
+
+    def get_session(self, session_id):
+        val = self._rows.get(session_id)
+        if isinstance(val, Exception):
+            raise val
+        return val
+
+
+def test_resolve_footer_stats_count_and_default_limit():
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": {"message_count": 326}})
+    count, limit = _resolve_footer_message_stats(db, "s1", {})
+    assert count == 326
+    assert limit == 400  # code default when config doesn't override
+
+
+def test_resolve_footer_stats_limit_from_config():
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": {"message_count": 326}})
+    cfg = {"compression": {"hygiene_hard_message_limit": 600}}
+    count, limit = _resolve_footer_message_stats(db, "s1", cfg)
+    assert (count, limit) == (326, 600)
+
+
+def test_resolve_footer_stats_limit_none_when_compression_disabled():
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": {"message_count": 50}})
+    cfg = {"compression": {"enabled": False, "hygiene_hard_message_limit": 600}}
+    count, limit = _resolve_footer_message_stats(db, "s1", cfg)
+    assert count == 50
+    assert limit is None  # count-only "50msgs"
+
+
+def test_resolve_footer_stats_count_none_when_no_db():
+    from gateway.run import _resolve_footer_message_stats
+
+    count, limit = _resolve_footer_message_stats(None, "s1", {})
+    assert count is None
+    assert limit == 400
+
+
+def test_resolve_footer_stats_count_none_when_no_session_id():
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": {"message_count": 326}})
+    count, limit = _resolve_footer_message_stats(db, None, {})
+    assert count is None
+
+
+def test_resolve_footer_stats_failsafe_on_db_error():
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": RuntimeError("db boom")})
+    count, limit = _resolve_footer_message_stats(db, "s1", {"compression": {"hygiene_hard_message_limit": 600}})
+    # DB error -> count hidden, but limit still resolves; footer still renders
+    assert count is None
+    assert limit == 600
+
+
+def test_resolve_footer_stats_missing_row():
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": None})
+    count, limit = _resolve_footer_message_stats(db, "s1", {})
+    assert count is None
+    assert limit == 400
+
+
+def test_resolve_footer_stats_bad_limit_value_falls_back_to_default():
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": {"message_count": 10}})
+    cfg = {"compression": {"hygiene_hard_message_limit": "garbage"}}
+    count, limit = _resolve_footer_message_stats(db, "s1", cfg)
+    assert count == 10
+    assert limit == 400  # unparseable -> default, not a crash
+
+
+def test_resolve_footer_stats_end_to_end_render():
+    # The helper output threaded into build_footer_line produces "326/600msgs".
+    from gateway.run import _resolve_footer_message_stats
+
+    db = _FakeSessionDB({"s1": {"message_count": 326}})
+    count, limit = _resolve_footer_message_stats(
+        db, "s1", {"compression": {"hygiene_hard_message_limit": 600}}
+    )
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["messages"]}}},
+        platform_key="discord",
+        model="claude-opus-4-8",
+        provider="claude-app",
+        context_tokens=0, context_length=None,
+        cwd="",
+        message_count=count,
+        message_limit=limit,
+    )
+    assert out == "326/600msgs"

@@ -17,6 +17,8 @@ Available fields:
     context_pct     — last-call occupancy as a percent (``5%``)
     context_full    — ``used/window (pct)``, both humanized (``50.2k/1M (5%)``)
     reasoning       — model reasoning-effort level, ``r:<level>`` (``r:xhigh``)
+    messages        — raw transcript count vs hygiene hard-limit (``326/600msgs``);
+                      count only when no limit is known (``326msgs``)
     cwd             — home-relative working dir (``~``)
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
@@ -144,6 +146,8 @@ def format_runtime_footer(
     cwd: Optional[str] = None,
     provider: Optional[str] = None,
     reasoning: Optional[str] = None,
+    message_count: Optional[int] = None,
+    message_limit: Optional[int] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -181,6 +185,16 @@ def format_runtime_footer(
             r = (reasoning or "").strip()
             if r:
                 parts.append(f"r:{r}")
+        elif field == "messages":
+            # Raw transcript message count vs the hygiene hard-limit. The count
+            # is the running ``sessions.message_count`` (the same raw tally the
+            # hard-limit valve checks) — NOT the small compacted active context.
+            # 0 is a valid count (fresh session), so test ``is not None``.
+            if message_count is not None and message_count >= 0:
+                if message_limit and message_limit > 0:
+                    parts.append(f"{message_count}/{message_limit}msgs")
+                else:
+                    parts.append(f"{message_count}msgs")
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
@@ -214,6 +228,8 @@ def build_footer_line(
     cwd: Optional[str] = None,
     provider: Optional[str] = None,
     reasoning: Optional[str] = None,
+    message_count: Optional[int] = None,
+    message_limit: Optional[int] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -235,5 +251,7 @@ def build_footer_line(
         cwd=cwd,
         provider=provider,
         reasoning=reasoning,
+        message_count=message_count,
+        message_limit=message_limit,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

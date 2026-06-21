@@ -1826,6 +1826,63 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+# Mirror the gateway hygiene default so the footer denominator matches the
+# valve that actually trips (see _handle_message_with_agent).
+_FOOTER_DEFAULT_HARD_MSG_LIMIT = 400
+
+
+def _resolve_footer_message_stats(
+    session_db: Any,
+    session_id: Optional[str],
+    config: dict | None,
+) -> tuple[Optional[int], Optional[int]]:
+    """Resolve ``(message_count, message_limit)`` for the runtime footer.
+
+    ``message_count`` is the running raw ``sessions.message_count`` tally — the
+    SAME raw count the hygiene hard-limit valve checks (``len(history)``), NOT
+    the small compacted active-context size. ``message_limit`` is
+    ``compression.hygiene_hard_message_limit`` (default 400), so the footer's
+    ``X/Ymsgs`` denominator equals the limit that forces a hygiene compaction.
+
+    Fully fail-safe: any error / missing data yields ``None`` for that element,
+    which makes the formatter hide the field rather than break the reply. When
+    compression is disabled the limit is ``None`` (count-only ``Nmsgs``).
+    """
+    count: Optional[int] = None
+    if session_db is not None and session_id:
+        try:
+            row = session_db.get_session(session_id)
+            if row is not None:
+                _raw = row.get("message_count")
+                if _raw is not None:
+                    count = int(_raw)
+        except Exception:
+            count = None
+
+    limit: Optional[int] = None
+    try:
+        comp = (config or {}).get("compression") or {}
+        if isinstance(comp, dict):
+            _enabled = str(comp.get("enabled", True)).lower() in {"true", "1", "yes"}
+            if _enabled:
+                limit = _FOOTER_DEFAULT_HARD_MSG_LIMIT
+                _raw_limit = comp.get("hygiene_hard_message_limit")
+                if _raw_limit is not None:
+                    # Narrowly scope the parse so an unparseable override keeps
+                    # the default rather than dropping the field (mirrors the
+                    # gateway hygiene resolver).
+                    try:
+                        _parsed = int(_raw_limit)
+                        if _parsed > 0:
+                            limit = _parsed
+                    except (TypeError, ValueError):
+                        pass
+    except Exception:
+        limit = None
+
+    return count, limit
+
+
 def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
 
@@ -9101,14 +9158,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                _footer_cfg = _load_gateway_config()
+                _footer_msg_count, _footer_msg_limit = _resolve_footer_message_stats(
+                    getattr(self, "_session_db", None),
+                    session_entry.session_id,
+                    _footer_cfg,
+                )
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
+                    user_config=_footer_cfg,
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
                     provider=agent_result.get("provider"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    message_count=_footer_msg_count,
+                    message_limit=_footer_msg_limit,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

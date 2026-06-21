@@ -1567,3 +1567,80 @@ class TestFocusAppFilterNoMatch:
         assert res.ok is True
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
+
+
+class TestCuaEnvironmentScrubbing:
+    """Verify that cua-driver subprocess environment is sanitized (issue #37878)."""
+
+    def test_cua_session_sanitizes_provider_env_vars(self):
+        """_CuaDriverSession._aenter() must sanitize sensitive env vars.
+
+        The cua-driver MCP subprocess should not inherit Hermes-managed credentials
+        or other sensitive environment variables — only runtime-required vars.
+        This is a regression test for issue #37878.
+        """
+        from unittest.mock import MagicMock, patch, AsyncMock
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        import asyncio
+
+        bridge = _AsyncBridge()
+        session = _CuaDriverSession(bridge)
+
+        captured_env = {}
+
+        async def test_aenter():
+            # Set up test environment with both safe and blocked vars
+            test_env = {
+                "OPENAI_API_KEY": "sk-secret",  # blocked
+                "ANTHROPIC_API_KEY": "sk-ant-secret",  # blocked
+                "PATH": "/usr/bin:/bin",  # safe
+                "HOME": "/home/user",  # safe
+                "SAFE_VAR": "allowed",  # safe
+            }
+
+            with patch.dict(os.environ, test_env, clear=True):
+                with patch("tools.computer_use.cua_backend.cua_driver_binary_available",
+                          return_value=True):
+                    # Mock StdioServerParameters to capture the env arg
+                    def capture_env(**kwargs):
+                        captured_env.update(kwargs.get("env", {}))
+                        # Return mock that works with async context manager
+                        mock = MagicMock()
+                        mock.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+                        mock.__aexit__ = AsyncMock(return_value=None)
+                        return mock
+
+                    with patch("mcp.StdioServerParameters", side_effect=capture_env), \
+                         patch("mcp.client.stdio.stdio_client") as mock_stdio, \
+                         patch("mcp.ClientSession") as mock_session_class, \
+                         patch("contextlib.AsyncExitStack"):
+
+                        # Setup mocks for stdio_client and ClientSession
+                        mock_read = MagicMock()
+                        mock_write = MagicMock()
+                        mock_stdio.return_value.__aenter__ = AsyncMock(
+                            return_value=(mock_read, mock_write))
+                        mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
+
+                        mock_session = MagicMock()
+                        mock_session.initialize = AsyncMock()
+                        mock_session_class.return_value.__aenter__ = AsyncMock(
+                            return_value=mock_session)
+                        mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+                        try:
+                            await session._aenter()
+                        except Exception:
+                            pass  # Mocks may raise, but env should be captured
+
+        asyncio.run(test_aenter())
+
+        # Verify blocked credentials are not in the passed env
+        assert "OPENAI_API_KEY" not in captured_env, \
+            "OPENAI_API_KEY should be stripped from cua-driver subprocess"
+        assert "ANTHROPIC_API_KEY" not in captured_env, \
+            "ANTHROPIC_API_KEY should be stripped from cua-driver subprocess"
+
+        # Verify PATH is preserved (safe var)
+        assert "PATH" in captured_env or "SAFE_VAR" in captured_env, \
+            "At least one safe environment variable should be preserved"

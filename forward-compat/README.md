@@ -17,6 +17,7 @@ patches **inside this draft PR (#50111)**.
 |-------|---------|----------------------|
 | `50056-on-v0.17.0.patch` | HERMES_SQLITE_DRIVER selection + driver-agnostic Row/error handling | `git apply --check` exit 0 (verified) |
 | `48069-on-v0.17.0.patch` | MCP keepalive in-flight race (keep-both with upstream `_keepalive_probe` refactor) | `git apply --check` exit 0 (verified) |
+| `50073-on-v0.17.0.patch` | compression oversized-message offload (conversation_loop/agent_init drift) | `git apply --check` exit 0 (verified) |
 
 Each patch is `git diff v0.17.0(2bd1977d8)..forward-compat/<n>-on-v0.17.0` — i.e.
 exactly the feature's contribution expressed against a pristine v0.17.0 tree, with
@@ -29,6 +30,7 @@ V017=2bd1977d8fad185c9b4be47884f7e87f1add0ce3
 git checkout -b on-v0.17.0 "$V017"
 git apply forward-compat/50056-on-v0.17.0.patch
 git apply forward-compat/48069-on-v0.17.0.patch
+git apply forward-compat/50073-on-v0.17.0.patch
 # ...plus the 38 clean feature PRs (see ../APPLY-ORDER.md)
 ```
 

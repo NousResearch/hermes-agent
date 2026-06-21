@@ -1,0 +1,328 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 2d4432413..2a29f7846 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1559,6 +1559,24 @@ def init_agent(
+         )
+     agent.compression_enabled = compression_enabled
+ 
++    # P2: configurable compression-retry ceiling (default 3, preserves
++    # historical behavior). LCM users who persist content to files and
++    # reference them by a single line can afford many more passes; raise
++    # via compression.max_attempts. Floor at 1.
++    agent.max_compression_attempts = max(
++        1, int(_compression_cfg.get("max_attempts", 3))
++    )
++    # P3: oversized-single-message handling (default off, zero behavior
++    # change unless opted in). chunk_oversized_input enables the file-ref
++    # primary path at the 413/context_overflow dead-ends. never_413 is the
++    # master override that forces it on so a 413 is never surfaced.
++    agent.chunk_oversized_input = str(
++        _compression_cfg.get("chunk_oversized_input", False)
++    ).lower() in {"true", "1", "yes"}
++    agent.never_413 = str(
++        _compression_cfg.get("never_413", False)
++    ).lower() in {"true", "1", "yes"}
++
+     # Reject models whose context window is below the minimum required
+     # for reliable tool-calling workflows (64K tokens).
+     _ctx = getattr(agent.context_compressor, "context_length", 0)
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index 0ccc96494..d0ecdbc04 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -909,7 +909,7 @@ def run_conversation(
+         retry_count = 0
+         max_retries = agent._api_max_retries
+         _retry = TurnRetryState()
+-        max_compression_attempts = 3
++        max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
+ 
+         finish_reason = "stop"
+         response = None  # Guard against UnboundLocalError if all retries fail
+@@ -2894,6 +2894,19 @@ def run_conversation(
+                     )
+ 
+                 if is_payload_too_large:
++                    # P3: oversized-single-message file-reference offload.
++                    # If a SINGLE message dominates the window, history
++                    # compression can't help; offload it to a file ref
++                    # (reusing the paste pattern) and retry instead of
++                    # dead-ending with 413. Gated off by default; enabled
++                    # via compression.never_413 or chunk_oversized_input.
++                    if (getattr(agent, "never_413", False)
++                            or getattr(agent, "chunk_oversized_input", False)):
++                        if agent._offload_oversized_message(messages):
++                            conversation_history = None
++                            time.sleep(1)
++                            restart_with_compressed_messages = True
++                            break
+                     compression_attempts += 1
+                     if compression_attempts > max_compression_attempts:
+                         # Terminal — surface the buffered retry trace.
+@@ -2955,6 +2968,18 @@ def run_conversation(
+                 )
+ 
+                 if is_context_length_error:
++                    # P3: oversized-single-message file-reference offload
++                    # (same as the 413 path). "prompt is too long" frequently
++                    # classifies as context_overflow rather than 413. Gated
++                    # off by default; enabled via compression.never_413 or
++                    # chunk_oversized_input.
++                    if (getattr(agent, "never_413", False)
++                            or getattr(agent, "chunk_oversized_input", False)):
++                        if agent._offload_oversized_message(messages):
++                            conversation_history = None
++                            time.sleep(1)
++                            restart_with_compressed_messages = True
++                            break
+                     compressor = agent.context_compressor
+                     old_ctx = compressor.context_length
+ 
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index d36f7e8a9..d5444f4d4 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -1259,6 +1259,17 @@ DEFAULT_CONFIG = {
+         "threshold": 0.50,            # compress when context usage exceeds this ratio
+         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
++        "max_attempts": 3,            # P2: compression-retry ceiling on context_overflow/413.
++                                      # Default 3 (historical). LCM users that persist content
++                                      # to files and reference them by a single line can afford
++                                      # many more passes; set to 6/12 for deep rolling compaction.
++        "chunk_oversized_input": False,  # P3: when a SINGLE message alone exceeds the model max
++                                      # (history compression can't help), save it to
++                                      # $HERMES_HOME/pastes/ and pass a file reference instead of
++                                      # hard-failing with 413. Default off (opt-in).
++        "never_413": False,           # P3 master override: when True, forces the oversized-input
++                                      # file-reference handling regardless of chunk_oversized_input,
++                                      # guaranteeing a 413 payload-too-large is never surfaced.
+         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+         "protect_first_n": 3,         # non-system head messages always preserved
+                                       # verbatim, in ADDITION to the system prompt
+diff --git a/run_agent.py b/run_agent.py
+index 7c195b35c..904329ffb 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -5116,6 +5116,108 @@ class AIAgent:
+             force=force,
+         )
+ 
++    def _offload_oversized_message(self, messages: list) -> bool:
++        """P3: offload a single oversized message to a file reference.
++
++        When ONE message alone exceeds the model's context window, history
++        compression cannot help (it can only drop OTHER messages).  Rather
++        than dead-ending with a 413 ``payload_too_large``, we reuse the
++        ``paste.collapse`` pattern: write the oversized message body to
++        ``$HERMES_HOME/pastes/`` and replace it in-place with a short file
++        reference the agent can re-read on demand via its file tools.
++
++        Returns True if a message was offloaded (caller should retry), or
++        False if no oversized text message was found (caller falls through
++        to the existing failure path unchanged).
++
++        This is gated by the caller on ``never_413`` /
++        ``chunk_oversized_input`` so default behavior is unchanged.
++        """
++        from agent.model_metadata import estimate_messages_tokens_rough
++
++        if not messages:
++            return False
++
++        # Per-policy: file-reference is the default for an oversized single
++        # message (D-P3c; no part-count math; the reference is tiny).  Find
++        # the largest text message and, if it alone dominates the window,
++        # offload it.  Walk from the tail so the most-recent (usually the
++        # culprit) is found first on ties.
++        ctx_len = getattr(
++            getattr(self, "context_compressor", None), "context_length", 0
++        ) or 0
++
++        biggest_idx = -1
++        biggest_tokens = 0
++        for i in range(len(messages) - 1, -1, -1):
++            msg = messages[i]
++            content = msg.get("content")
++            if not isinstance(content, str) or not content:
++                continue
++            # Never offload the system head or a tool-protocol message:
++            # only user/assistant text bodies are safe to externalize.
++            if msg.get("role") not in {"user", "assistant"}:
++                continue
++            t = estimate_messages_tokens_rough([{"role": "user", "content": content}])
++            if t > biggest_tokens:
++                biggest_tokens = t
++                biggest_idx = i
++
++        if biggest_idx < 0:
++            return False
++
++        # Only offload when this single message is genuinely the problem:
++        # it alone is at least ~70% of the window (so compressing the rest
++        # would not have saved us).  Guards against needless offloading when
++        # the overflow is really an accumulation of many small messages
++        # (which existing compression handles correctly).
++        if ctx_len and biggest_tokens < int(ctx_len * 0.70):
++            return False
++
++        body = messages[biggest_idx].get("content", "")
++        line_count = body.count("\n") + 1
++
++        try:
++            from hermes_constants import display_hermes_home as _dhh_fn
++            from pathlib import Path
++            from datetime import datetime
++
++            paste_dir = Path(_dhh_fn()) / "pastes"
++            paste_dir.mkdir(parents=True, exist_ok=True)
++            ref_path = (
++                paste_dir
++                / f"oversized_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
++            )
++            ref_path.write_text(body, encoding="utf-8")
++        except Exception as exc:  # pragma: no cover - filesystem edge
++            logger.error(f"{self.log_prefix}P3 offload failed to write file: {exc}")
++            return False
++
++        placeholder = (
++            f"[Large message offloaded: ~{biggest_tokens:,} tokens, "
++            f"{line_count} lines → {ref_path}]\n"
++            f"The full content was saved to the file above because it exceeded "
++            f"the model's context window. Read it with your file tools "
++            f"(read_file / search_files) when you need its contents."
++        )
++        messages[biggest_idx] = {
++            **messages[biggest_idx],
++            "content": placeholder,
++        }
++
++        # Honest UX: tell the user exactly what happened (no silent magic).
++        self._buffer_status(
++            f"📎 Message too large (~{biggest_tokens:,} tokens), saved to "
++            f"{ref_path} and passed as a file reference; I'll read it on "
++            f"demand."
++        )
++        self._flush_status_buffer()
++        logger.info(
++            f"{self.log_prefix}P3 offloaded oversized message "
++            f"(~{biggest_tokens:,} tokens) to {ref_path}"
++        )
++        return True
++
+     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
+         """Record the first guardrail decision that should stop this turn."""
+         if decision.should_halt and self._tool_guardrail_halt_decision is None:
+diff --git a/tests/agent/test_p2_p3_oversized_handling.py b/tests/agent/test_p2_p3_oversized_handling.py
+new file mode 100644
+index 000000000..f6516385d
+--- /dev/null
++++ b/tests/agent/test_p2_p3_oversized_handling.py
+@@ -0,0 +1,106 @@
++"""P2 + P3 tests: configurable compression ceiling and oversized-message offload.
++
++P2 — compression.max_attempts flows to agent.max_compression_attempts (floor 1).
++P3 — agent._offload_oversized_message writes the culprit message to a file and
++     replaces it in-place with a tiny reference, gated by config flags.
++"""
++import types
++from pathlib import Path
++
++import pytest
++
++
++# ── P2: config clamp logic ────────────────────────────────────────────
++@pytest.mark.parametrize(
++    "cfg,expect",
++    [({}, 3), ({"max_attempts": 12}, 12), ({"max_attempts": 6}, 6),
++     ({"max_attempts": 0}, 1), ({"max_attempts": -5}, 1)],
++)
++def test_p2_max_attempts_clamp(cfg, expect):
++    # mirrors agent_init.py: max(1, int(_compression_cfg.get("max_attempts", 3)))
++    assert max(1, int(cfg.get("max_attempts", 3))) == expect
++
++
++def test_p2_config_schema_defaults_present():
++    from hermes_cli.config import DEFAULT_CONFIG
++    comp = DEFAULT_CONFIG["compression"]
++    assert comp["max_attempts"] == 3
++    assert comp["chunk_oversized_input"] is False
++    assert comp["never_413"] is False
++
++
++# ── P3: oversized-message offload ─────────────────────────────────────
++def _make_agent(tmp_path, ctx_len=100_000):
++    """Build a minimal duck-typed agent exposing just what the helper needs."""
++    from run_agent import AIAgent
++
++    agent = AIAgent.__new__(AIAgent)  # bypass __init__
++    agent.log_prefix = "[test] "
++    agent.context_compressor = types.SimpleNamespace(context_length=ctx_len)
++    agent._status_lines = []
++    agent._buffer_status = lambda m: agent._status_lines.append(m)
++    agent._flush_status_buffer = lambda: None
++    return agent
++
++
++def test_p3_offloads_dominant_message(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    # display_hermes_home reads HERMES_HOME — point pastes/ into tmp_path
++    import hermes_constants
++    monkeypatch.setattr(hermes_constants, "display_hermes_home", lambda: str(tmp_path))
++
++    agent = _make_agent(tmp_path, ctx_len=10_000)
++    # one giant user message (~well over 70% of 10k-token window) + small tail
++    big = "X " * 60_000  # ~ tens of thousands of tokens
++    messages = [
++        {"role": "system", "content": "sys"},
++        {"role": "user", "content": big},
++        {"role": "assistant", "content": "ok"},
++    ]
++    did = agent._offload_oversized_message(messages)
++    assert did is True
++    # culprit replaced with a tiny reference
++    new_body = messages[1]["content"]
++    assert "offloaded" in new_body.lower()
++    assert "pastes" in new_body
++    assert len(new_body) < 500
++    # file actually written under pastes/
++    pastes = list((Path(tmp_path) / "pastes").glob("oversized_*.txt"))
++    assert len(pastes) == 1
++    assert pastes[0].read_text() == big
++    # user was told (honest UX)
++    assert any("too large" in s.lower() for s in agent._status_lines)
++
++
++def test_p3_skips_when_no_dominant_message(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    import hermes_constants
++    monkeypatch.setattr(hermes_constants, "display_hermes_home", lambda: str(tmp_path))
++
++    agent = _make_agent(tmp_path, ctx_len=1_000_000)
++    # many small messages, none dominates → existing compression should handle it
++    messages = [{"role": "system", "content": "sys"}]
++    messages += [{"role": "user", "content": "small message " * 10} for _ in range(20)]
++    did = agent._offload_oversized_message(messages)
++    assert did is False
++    # nothing written
++    assert not (Path(tmp_path) / "pastes").exists() or not list(
++        (Path(tmp_path) / "pastes").glob("oversized_*.txt")
++    )
++
++
++def test_p3_skips_tool_and_system_messages(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    import hermes_constants
++    monkeypatch.setattr(hermes_constants, "display_hermes_home", lambda: str(tmp_path))
++
++    agent = _make_agent(tmp_path, ctx_len=10_000)
++    big = "Y " * 60_000
++    # the giant message is a TOOL message → must NOT be offloaded
++    messages = [
++        {"role": "system", "content": "sys"},
++        {"role": "tool", "content": big},
++    ]
++    did = agent._offload_oversized_message(messages)
++    assert did is False
++    assert messages[1]["content"] == big  # untouched

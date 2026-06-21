@@ -22,6 +22,7 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import json
 import logging
 import os
 import shlex
@@ -178,6 +179,28 @@ def maybe_persist_tool_result(
     )
 
 
+def _content_size(content) -> int:
+    """Character size of a tool-result message ``content`` payload.
+
+    ``content`` is usually a plain string, but vision-capable tools
+    (computer_use, browser screenshots) return an OpenAI-style multimodal
+    content *list* — e.g. ``[{"type": "text", ...}, {"type": "image_url",
+    "image_url": {"url": "data:image/png;base64,..."}}]``. Calling ``len()``
+    on such a list counts the number of blocks (~2), not the payload size, so
+    a multi-MB base64 image would register as ~2 chars and slip under the
+    aggregate budget — exactly the case the budget exists to catch. Serialise
+    list/other content so the base64 image data is counted at its real size.
+    """
+    if isinstance(content, str):
+        return len(content)
+    if content is None:
+        return 0
+    try:
+        return len(json.dumps(content, default=str))
+    except Exception:
+        return len(str(content))
+
+
 def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
@@ -195,9 +218,15 @@ def enforce_turn_budget(
     total_size = 0
     for i, msg in enumerate(tool_messages):
         content = msg.get("content", "")
-        size = len(content)
+        size = _content_size(content)
         total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
+        # Only plain-string results can be spilled to disk. Multimodal
+        # content lists (image_url parts) still count toward the aggregate
+        # above so other results spill to make room, but they are never
+        # selected as spill candidates: maybe_persist_tool_result /
+        # _write_to_sandbox operate on strings, and persistence already
+        # bypasses multimodal results upstream.
+        if isinstance(content, str) and PERSISTED_OUTPUT_TAG not in content:
             candidates.append((i, size))
 
     if total_size <= config.turn_budget:

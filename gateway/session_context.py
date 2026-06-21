@@ -44,6 +44,30 @@ from typing import Any
 # When it holds "" (after clear_session_vars resets it), we return "" — no fallback.
 _UNSET: Any = object()
 
+# Process-level flag: has any code in this process bound a session via
+# set_session_vars()? Concurrent multi-session hosts (the messaging gateway, the
+# ACP adapter, the API server, the TUI, cron) all do. A pure single-process
+# CLI/one-shot that never engages the session-context system does not.
+#
+# Consumers that bridge session vars into a child process env (see
+# tools/environments/local.py) use this to decide their leak policy: when the
+# session-context machinery is engaged, the ContextVars are authoritative and an
+# _UNSET var means "no session bound in THIS context" — so a process-global
+# os.environ mirror (written last-writer-wins by whatever concurrent session ran
+# most recently) must NOT be inherited. When it was never engaged, the os.environ
+# fallback is preserved (there is no concurrency to leak across). This is a
+# monotonic latch — once any host binds a session, the process is "engaged" for
+# its lifetime; it never flips back.
+_session_context_engaged: bool = False
+
+
+def session_context_engaged() -> bool:
+    """True if any session has been bound via set_session_vars in this process.
+
+    See the _session_context_engaged docstring for the leak-policy rationale.
+    """
+    return _session_context_engaged
+
 # ---------------------------------------------------------------------------
 # Per-task session variables
 # ---------------------------------------------------------------------------
@@ -123,6 +147,12 @@ def set_session_vars(
 
     ``cwd`` pins the logical working directory for this context.
     """
+    # Mark the session-context machinery as engaged for this process. Consumers
+    # (e.g. the subprocess-env bridge) use this to switch from "os.environ
+    # fallback" to "ContextVar-authoritative, strip on _UNSET" — see the
+    # _session_context_engaged docstring.
+    global _session_context_engaged
+    _session_context_engaged = True
     tokens = [
         _SESSION_PLATFORM.set(platform),
         _SESSION_SOURCE.set(source),

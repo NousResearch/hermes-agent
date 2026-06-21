@@ -203,6 +203,54 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _inject_session_context_env(env: dict) -> None:
+    """Bridge gateway session ContextVars into a subprocess environment.
+
+    ContextVars don't propagate to child processes, so the live session vars
+    (HERMES_SESSION_*) are bridged onto the child env here.
+
+    🔴 Cross-session leak guard. The session vars also have a process-global
+    os.environ mirror (written last-writer-wins as a CLI/cron fallback, never
+    cleared). Under a concurrent multi-session host (messaging gateway, ACP
+    adapter, API server, TUI) that global belongs to *whichever turn wrote it
+    last* — NOT necessarily this task. A subprocess spawned from a thread/context
+    whose ContextVar is _UNSET (e.g. a worker thread that never inherited the
+    agent's copied context) would otherwise inherit the FOREIGN global and act on
+    another session's identity (verified 2026: a /bug subprocess read a
+    concurrent session's thread id and renamed an unrelated Discord thread).
+
+    So once the session-context machinery is engaged in this process (any host
+    has called set_session_vars), the session vars are ContextVar-authoritative:
+    - ContextVar set (incl. explicitly-empty "") → that value wins, overriding
+      any stale snapshot/global value.
+    - ContextVar _UNSET → STRIP the var from the child env rather than inherit
+      the possibly-foreign process-global.
+    In a pure single-process CLI/one-shot that never engaged the session-context
+    system there is no concurrency to leak across and callers legitimately set
+    HERMES_SESSION_* directly in os.environ, so the inherited fallback is kept.
+    """
+    try:
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            session_context_engaged,
+        )
+    except Exception:
+        return
+
+    _engaged = session_context_engaged()
+    for var_name, var in _VAR_MAP.items():
+        value = var.get()
+        if value is not _UNSET:
+            # Explicitly bound (including "") — authoritative for this task.
+            env[var_name] = "" if value is None else str(value)
+        elif _engaged:
+            # Unset for THIS task while the session-context system is engaged:
+            # drop any inherited global so a concurrent session's value can't
+            # leak into this subprocess.
+            env.pop(var_name, None)
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -226,6 +274,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[key] = value
 
     _inject_context_hermes_home(sanitized)
+    _inject_session_context_env(sanitized)
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
@@ -387,16 +436,10 @@ def _make_run_env(env: dict) -> dict:
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
 
-    # Inject ContextVar-based session vars into subprocess env.
-    # ContextVars don't propagate to child processes, so we bridge them here.
-    try:
-        from gateway.session_context import _UNSET, _VAR_MAP
-        for var_name, var in _VAR_MAP.items():
-            value = var.get()
-            if value is not _UNSET and value:
-                run_env[var_name] = value
-    except Exception:
-        pass
+    # ContextVars don't propagate to child processes, so bridge the gateway
+    # session vars here. Strips foreign-concurrent-session values under the
+    # gateway; see _inject_session_context_env for the cross-session leak guard.
+    _inject_session_context_env(run_env)
 
     return run_env
 

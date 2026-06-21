@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -242,6 +243,331 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+
+ACTIVE_WAKE_MARKER = "HERMES_ACTIVE_WAKE"
+_PASSIVE_WAKE_STATUSES = {"", "ok", "go", "green", "pass", "passed", "success", "silent", "none", "no-change", "no_change", "heartbeat"}
+
+
+def _safe_active_wake_token(value: object, *, fallback: str = "") -> str:
+    """Bound a marker-supplied token before storing it in durable cron state."""
+    text = str(value or fallback or "").replace("\r", " ").replace("\n", " ").strip()
+    text = re.sub(r"[^A-Za-z0-9_.:@=-]+", "-", text)
+    return text[:160]
+
+
+def _parse_active_wake_marker(content: str) -> tuple[Optional[dict], str]:
+    """Extract an opt-in cron material-event marker from the first non-empty line.
+
+    Marker format:
+        HERMES_ACTIVE_WAKE {"event_key":"pr-123","status":"ci_failed","summary":"CI failed"}
+
+    The marker line is removed from passive delivery/output so the operator sees
+    the normal report once, while the internal wake uses the sanitized summary.
+    Normal cron output without this marker remains passive even when a job has
+    active_wake=True.
+    """
+    if not content:
+        return None, content
+    lines = content.splitlines()
+    marker_index = None
+    for idx, line in enumerate(lines):
+        if line.strip():
+            marker_index = idx
+            break
+    if marker_index is None:
+        return None, content
+    first = lines[marker_index].strip()
+    if not first.startswith(ACTIVE_WAKE_MARKER):
+        return None, content
+    raw = first[len(ACTIVE_WAKE_MARKER):].strip()
+    if raw.startswith(":"):
+        raw = raw[1:].strip()
+    try:
+        payload = json.loads(raw) if raw else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Invalid %s marker JSON; treating output as passive", ACTIVE_WAKE_MARKER)
+        return None, content
+    if not isinstance(payload, dict):
+        return None, content
+    cleaned_lines = lines[:marker_index] + lines[marker_index + 1:]
+    cleaned = "\n".join(cleaned_lines).strip()
+    output_hash = hashlib.sha256(cleaned.encode("utf-8", "replace")).hexdigest()
+    event_key = _safe_active_wake_token(payload.get("event_key") or payload.get("key") or output_hash[:16])
+    status = _safe_active_wake_token(payload.get("status") or payload.get("state") or "material")
+    summary = str(payload.get("summary") or payload.get("text") or cleaned[:240] or f"Cron material event: {event_key}")
+    material = payload.get("material", True)
+    marker = {
+        "event_key": event_key,
+        "status": status,
+        "summary": summary,
+        "output_hash": output_hash,
+        "state_key": f"{event_key}:{status}",
+        "material": bool(material) and status.lower() not in _PASSIVE_WAKE_STATUSES,
+    }
+    return marker, cleaned
+
+
+def _record_active_wake_state(job_id: str, state: dict, *, bump_seq: bool = True) -> dict:
+    """Persist sanitized active-wake bookkeeping on the cron job record."""
+    try:
+        from cron.jobs import set_active_wake_state
+        persisted = set_active_wake_state(job_id, state, bump_seq=bump_seq)
+        if isinstance(persisted, dict):
+            state.update(persisted)
+    except Exception as exc:
+        logger.debug("Job '%s': failed to record active_wake_state: %s", job_id, exc)
+    return state
+
+
+def _active_wake_state_matches(current: dict, expected: dict) -> bool:
+    """Return True when a stored active-wake state still describes expected."""
+    for key in ("state_key", "output_hash", "event_key", "status"):
+        expected_value = expected.get(key)
+        if expected_value is not None and current.get(key) != expected_value:
+            return False
+    return True
+
+
+def _record_active_wake_state_if_current(job_id: str, expected: dict, state: dict) -> bool:
+    """Legacy CAS helper retained for tests/older call sites."""
+    try:
+        expected_seq = expected.get("seq")
+        if expected_seq is not None:
+            return _merge_active_wake_receipt(job_id, expected_seq, state)
+        from cron.jobs import get_job
+        current_job = get_job(job_id) or {}
+        current_state = current_job.get("active_wake_state") or {}
+        if not isinstance(current_state, dict) or not _active_wake_state_matches(current_state, expected):
+            logger.debug(
+                "Job '%s': skipped stale active-wake receipt update for state_key=%s",
+                job_id,
+                expected.get("state_key"),
+            )
+            return False
+        _record_active_wake_state(job_id, state, bump_seq=False)
+        return True
+    except Exception as exc:
+        logger.debug("Job '%s': failed to CAS-record active_wake_state: %s", job_id, exc)
+        return False
+
+
+def _merge_active_wake_receipt(job_id: str, expected_seq: int, receipt: dict) -> bool:
+    """Persist receipt fields only when the scheduled active-wake seq is current."""
+    try:
+        from cron.jobs import merge_active_wake_receipt
+        return merge_active_wake_receipt(job_id, expected_seq, receipt)
+    except Exception as exc:
+        logger.debug("Job '%s': failed to merge active_wake receipt: %s", job_id, exc)
+        return False
+
+
+def _sanitize_cron_active_wake_text(text: str) -> str:
+    """Sanitize marker summaries before injecting an internal cron wake event."""
+    try:
+        from agent.redact import redact_sensitive_text
+        text = redact_sensitive_text(text or "")
+    except Exception:
+        text = text or ""
+    text = re.sub(r"(?i)MEDIA:[^\s`'\"<>),\]}]+", "", text)
+    text = re.sub(
+        r"(?<![A-Za-z0-9_.-])(?:~|\.{1,2}|/(?:tmp|var/tmp|home|Users|mnt|media|opt|workspace|private/tmp))/[^\s`'\"<>),\]}]+",
+        "[redacted-path]",
+        text,
+    )
+    text = re.sub(
+        r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9][A-Za-z0-9_-]{6,}\b|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b",
+        "[redacted-token]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return "\n".join(line.rstrip() for line in text.splitlines() if line.strip())[:500].strip()
+
+
+def _trigger_cron_active_wake(
+    *,
+    adapters,
+    loop,
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+    message: str,
+) -> dict:
+    """Schedule one sanitized internal active-wake event for a cron material marker."""
+    try:
+        from gateway.config import Platform
+        platform = Platform(str(platform_name).lower())
+    except Exception:
+        return {"scheduled_agent": False, "triggered_agent": False, "trigger_error": "NOT_WIRED"}
+    adapter = (adapters or {}).get(platform)
+    handle_message = getattr(adapter, "handle_message", None) if adapter is not None else None
+    if adapter is None or loop is None or not callable(handle_message):
+        return {"scheduled_agent": False, "triggered_agent": False, "trigger_error": "NOT_WIRED"}
+    try:
+        from agent.async_utils import safe_schedule_threadsafe
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=platform,
+            chat_id=str(chat_id),
+            chat_type="group",
+            thread_id=str(thread_id) if thread_id else None,
+            user_id=None,
+            user_name="Hermes Cron Active Wake",
+            is_bot=False,
+            message_id=None,
+        )
+        target_session_key = None
+        runner = getattr(adapter, "runner", None)
+        if runner is not None:
+            try:
+                target_session_key = runner._session_key_for_source(source)
+            except Exception:
+                target_session_key = None
+        acceptance: dict[str, object] = {
+            "accepted_by_session": False,
+            "started_by_session": False,
+            "active_wake_status": "scheduled",
+        }
+        if target_session_key:
+            acceptance["target_session_key"] = target_session_key
+        wake_event = MessageEvent(
+            text=_sanitize_cron_active_wake_text(message),
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        setattr(wake_event, "_hermes_active_wake_acceptance", acceptance)
+        if target_session_key:
+            setattr(wake_event, "_hermes_active_wake_target_session_key", target_session_key)
+        future = safe_schedule_threadsafe(
+            handle_message(wake_event),
+            loop,
+            logger=logger,
+            log_message="cron active_wake request scheduling failed",
+        )
+        if future is None:
+            return {"scheduled_agent": False, "triggered_agent": False, "trigger_error": "NOT_WIRED"}
+        return {
+            "scheduled_agent": True,
+            "triggered_agent": True,
+            "active_wake_status": "scheduled",
+            "target_session_key": target_session_key,
+            "_acceptance": acceptance,
+            "_future": future,
+        }
+    except Exception as exc:
+        return {"scheduled_agent": False, "triggered_agent": False, "trigger_error": _safe_active_wake_token(str(exc) or "ACTIVE_WAKE_FAILED")}
+
+
+def _maybe_active_wake_cron(
+    job: dict,
+    content: str,
+    *,
+    delivery_error: Optional[str],
+    adapters=None,
+    loop=None,
+) -> tuple[str, Optional[dict]]:
+    """Classify and maybe schedule an internal active wake for a cron result.
+
+    Returns (cleaned_content, state). `state` is sanitized durable metadata;
+    absence means passive/no material event.
+    """
+    marker, cleaned_content = _parse_active_wake_marker(content)
+    if not job.get("active_wake"):
+        return (cleaned_content if marker else content), None
+    if not marker:
+        return content, None
+    prior = job.get("active_wake_state") or {}
+    now_iso = _hermes_now().isoformat()
+    state = {
+        "classified_at": now_iso,
+        "event_key": marker["event_key"],
+        "status": marker["status"],
+        "state_key": marker["state_key"],
+        "output_hash": marker["output_hash"],
+        "material": bool(marker.get("material")),
+        "passive_delivery_status": "error" if delivery_error else "ok",
+        "active_wake_status": "not_scheduled",
+        "operator_receipt": "pending",
+    }
+    is_transition = prior.get("state_key") != marker["state_key"]
+    if not marker.get("material"):
+        state["active_wake_status"] = "passive_status"
+        _record_active_wake_state(job["id"], state, bump_seq=is_transition)
+        return cleaned_content, state
+    if prior.get("state_key") == marker["state_key"]:
+        state["active_wake_status"] = "deduped"
+        state["operator_receipt"] = prior.get("operator_receipt", "pending")
+        if "accepted_by_session" in prior:
+            state["accepted_by_session"] = bool(prior.get("accepted_by_session"))
+        if "started_by_session" in prior:
+            state["started_by_session"] = bool(prior.get("started_by_session"))
+        if prior.get("target_session_key_hash"):
+            state["target_session_key_hash"] = prior.get("target_session_key_hash")
+        _record_active_wake_state(job["id"], state, bump_seq=False)
+        return cleaned_content, state
+    if delivery_error:
+        state["active_wake_status"] = "passive_delivery_failed"
+        state["operator_receipt"] = "not_claimed"
+        _record_active_wake_state(job["id"], state, bump_seq=True)
+        return cleaned_content, state
+    target = _resolve_delivery_target(job)
+    if not target:
+        state["active_wake_status"] = "no_target"
+        state["operator_receipt"] = "not_claimed"
+        _record_active_wake_state(job["id"], state, bump_seq=True)
+        return cleaned_content, state
+    try:
+        result = _trigger_cron_active_wake(
+            adapters=adapters,
+            loop=loop,
+            platform_name=str(target["platform"]),
+            chat_id=str(target["chat_id"]),
+            thread_id=target.get("thread_id"),
+            message=str(marker.get("summary") or cleaned_content[:240]),
+        )
+    except Exception as exc:
+        result = {"scheduled_agent": False, "trigger_error": str(exc)}
+    state["active_wake_status"] = str(result.get("active_wake_status") or ("scheduled" if result.get("scheduled_agent") else "not_scheduled"))
+    if result.get("trigger_error"):
+        state["trigger_error"] = _safe_active_wake_token(result.get("trigger_error"))
+    state["scheduled_agent"] = bool(result.get("scheduled_agent"))
+    acceptance = result.get("_acceptance") if isinstance(result, dict) else None
+    if isinstance(acceptance, dict):
+        state["accepted_by_session"] = bool(acceptance.get("accepted_by_session"))
+        state["started_by_session"] = bool(acceptance.get("started_by_session"))
+        state["operator_receipt"] = "observed" if acceptance.get("started_by_session") else "pending"
+        if acceptance.get("target_session_key"):
+            state["target_session_key_hash"] = hashlib.sha256(str(acceptance.get("target_session_key")).encode()).hexdigest()[:16]
+    else:
+        state["operator_receipt"] = "pending" if state["scheduled_agent"] else "not_claimed"
+
+    _record_active_wake_state(job["id"], state, bump_seq=True)
+
+    if isinstance(acceptance, dict):
+        future = result.get("_future") if isinstance(result, dict) else None
+        scheduled_seq = state.get("seq")
+        if future is not None and scheduled_seq is not None and hasattr(future, "add_done_callback"):
+
+            def _record_final_receipt(_future) -> None:
+                receipt = {
+                    "active_wake_status": str(acceptance.get("active_wake_status") or state.get("active_wake_status") or "scheduled"),
+                    "accepted_by_session": bool(acceptance.get("accepted_by_session")),
+                    "started_by_session": bool(acceptance.get("started_by_session")),
+                    "operator_receipt": "observed" if acceptance.get("started_by_session") else "pending",
+                    "receipt_checked_at": _hermes_now().isoformat(),
+                }
+                if state.get("target_session_key_hash"):
+                    receipt["target_session_key_hash"] = state.get("target_session_key_hash")
+                _merge_active_wake_receipt(job["id"], scheduled_seq, receipt)
+
+            try:
+                future.add_done_callback(_record_final_receipt)
+            except Exception:
+                logger.debug("Job '%s': failed to attach active-wake receipt callback", job.get("id"), exc_info=True)
+    return cleaned_content, state
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -2339,6 +2665,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
             should_deliver = False
 
+        # Active-wake markers are internal routing metadata; strip them before
+        # passive delivery so the operator receives only the human-facing report.
+        # Classification/wake scheduling happens after passive delivery so the
+        # ledger can keep passive result separate from active-wake result.
+        active_wake_state = None
+        if success and should_deliver and job.get("active_wake"):
+            _marker, deliver_content = _parse_active_wake_marker(deliver_content)
+            should_deliver = bool(deliver_content.strip())
+
         delivery_error = None
         if should_deliver:
             try:
@@ -2346,6 +2681,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             except Exception as de:
                 delivery_error = str(de)
                 logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+        if success and final_response.strip():
+            _cleaned_response, active_wake_state = _maybe_active_wake_cron(
+                job,
+                final_response,
+                delivery_error=delivery_error,
+                adapters=adapters,
+                loop=loop,
+            )
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.

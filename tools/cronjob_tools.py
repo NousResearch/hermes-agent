@@ -467,6 +467,13 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["script"] = job["script"]
     if job.get("no_agent"):
         result["no_agent"] = True
+    if job.get("active_wake"):
+        result["active_wake"] = True
+    if job.get("active_wake_state"):
+        state = dict(job.get("active_wake_state") or {})
+        state.pop("wake_text", None)
+        state.pop("seq", None)
+        result["active_wake_state"] = state
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
@@ -539,6 +546,8 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    active_wake: Optional[bool] = None,
+    ack_trigger_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -605,6 +614,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                active_wake=bool(active_wake or ack_trigger_agent),
             )
             _notify_provider_jobs_changed_safe()
             return json.dumps(
@@ -757,6 +767,8 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if active_wake is not None or ack_trigger_agent is not None:
+                updates["active_wake"] = bool(active_wake if active_wake is not None else ack_trigger_agent)
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -889,6 +901,21 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
             },
+            "active_wake": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Opt-in material-event active wake. Existing jobs stay passive by default. "
+                    "When enabled, cron output can request a wake only by starting with a marker line such as: "
+                    "HERMES_ACTIVE_WAKE {\"event_key\":\"pr-123\",\"status\":\"ci_failed\",\"summary\":\"CI failed\"}. "
+                    "The marker is stripped from passive delivery, identical event_key/status is deduped, and output without the marker remains passive."
+                ),
+            },
+            "ack_trigger_agent": {
+                "type": "boolean",
+                "default": False,
+                "description": "Alias for active_wake for ACK/active-wake terminology compatibility.",
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -966,6 +993,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        active_wake=args.get("active_wake"),
+        ack_trigger_agent=args.get("ack_trigger_agent"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

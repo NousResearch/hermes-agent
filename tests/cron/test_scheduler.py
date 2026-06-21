@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _parse_active_wake_marker, _maybe_active_wake_cron
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -3486,3 +3486,283 @@ class TestHomeTargetEnvVarRegistry:
         from cron.scheduler import _HOME_TARGET_ENV_VARS
 
         assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"
+
+
+class TestCronActiveWakeMVP:
+    @staticmethod
+    def _isolate_cron_jobs(tmp_path, monkeypatch):
+        import cron.jobs as cron_jobs
+
+        monkeypatch.setattr(cron_jobs, "CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr(cron_jobs, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", tmp_path / "cron" / "output")
+        return cron_jobs
+
+    @staticmethod
+    def _material_content(status, body=None):
+        return f'HERMES_ACTIVE_WAKE {{"event_key":"pr-42","status":"{status}","summary":"{status}"}}\n{body or status}'
+
+    def test_marker_schema_strips_first_line_and_classifies_material(self):
+        marker = 'HERMES_ACTIVE_WAKE {"event_key":"pr-42","status":"ci_failed","summary":"CI failed"}'
+        parsed, cleaned = _parse_active_wake_marker(marker + "\n\nCI failed on linux")
+        assert cleaned == "CI failed on linux"
+        assert parsed["event_key"] == "pr-42"
+        assert parsed["status"] == "ci_failed"
+        assert parsed["state_key"] == "pr-42:ci_failed"
+        assert parsed["material"] is True
+        assert len(parsed["output_hash"]) == 64
+
+    def test_no_marker_is_passive_even_when_job_opted_in(self):
+        job = {"id": "job1", "active_wake": True, "deliver": "local"}
+        cleaned, state = _maybe_active_wake_cron(job, "ordinary periodic GO", delivery_error=None)
+        assert cleaned == "ordinary periodic GO"
+        assert state is None
+
+    def test_job_without_opt_in_never_schedules_wake(self):
+        job = {"id": "job1", "active_wake": False, "deliver": "local"}
+        content = 'HERMES_ACTIVE_WAKE {"event_key":"pr-42","status":"ci_failed"}\nCI failed'
+        with patch("cron.scheduler._record_active_wake_state") as record, \
+             patch("cron.scheduler._trigger_cron_active_wake") as trigger:
+            cleaned, state = _maybe_active_wake_cron(job, content, delivery_error=None)
+        assert cleaned == "CI failed"
+        assert state is None
+        record.assert_not_called()
+        trigger.assert_not_called()
+
+    def test_material_event_schedules_once_and_dedupes_same_state(self):
+        job = {
+            "id": "job1",
+            "active_wake": True,
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-1001"},
+        }
+        content = 'HERMES_ACTIVE_WAKE {"event_key":"pr-42","status":"ci_failed","summary":"CI failed"}\nCI failed'
+        acceptance = {"accepted_by_session": True, "started_by_session": True, "active_wake_status": "started", "target_session_key": "telegram:-1001"}
+        with patch("cron.scheduler._record_active_wake_state") as record, \
+             patch("cron.scheduler._trigger_cron_active_wake", return_value={"scheduled_agent": True, "active_wake_status": "scheduled", "_acceptance": acceptance}) as trigger:
+            cleaned, state = _maybe_active_wake_cron(job, content, delivery_error=None, adapters={}, loop=object())
+        assert cleaned == "CI failed"
+        assert state["active_wake_status"] in {"scheduled", "started"}
+        assert state["scheduled_agent"] is True
+        assert state["operator_receipt"] == "observed"
+        assert "target_session_key" not in state
+        assert "target_session_key_hash" in state
+        trigger.assert_called_once()
+        record.assert_called()
+
+        dedupe_job = dict(job)
+        dedupe_job["active_wake_state"] = {"state_key": "pr-42:ci_failed", "operator_receipt": "observed"}
+        with patch("cron.scheduler._record_active_wake_state") as record, \
+             patch("cron.scheduler._trigger_cron_active_wake") as trigger:
+            _cleaned, dedupe_state = _maybe_active_wake_cron(dedupe_job, content, delivery_error=None, adapters={}, loop=object())
+        assert dedupe_state["active_wake_status"] == "deduped"
+        assert dedupe_state["operator_receipt"] == "observed"
+        trigger.assert_not_called()
+        record.assert_called()
+
+    def test_changed_status_wakes_again(self):
+        job = {
+            "id": "job1",
+            "active_wake": True,
+            "active_wake_state": {"state_key": "pr-42:ci_failed"},
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-1001"},
+        }
+        content = 'HERMES_ACTIVE_WAKE {"event_key":"pr-42","status":"changes_requested"}\nReview requested changes'
+        with patch("cron.scheduler._record_active_wake_state"), \
+             patch("cron.scheduler._trigger_cron_active_wake", return_value={"scheduled_agent": True, "active_wake_status": "scheduled", "_acceptance": {}}) as trigger:
+            _cleaned, state = _maybe_active_wake_cron(job, content, delivery_error=None, adapters={}, loop=object())
+        assert state["state_key"] == "pr-42:changes_requested"
+        assert state["active_wake_status"] == "scheduled"
+        trigger.assert_called_once()
+
+    def test_late_active_wake_receipt_callback_does_not_overwrite_newer_state(self, tmp_path, monkeypatch):
+        from concurrent.futures import Future
+
+        cron_jobs = self._isolate_cron_jobs(tmp_path, monkeypatch)
+        job = cron_jobs.create_job(
+            prompt="watch PR",
+            schedule="every 5m",
+            active_wake=True,
+            deliver="origin",
+            origin={"platform": "telegram", "chat_id": "-1001"},
+        )
+        first_future = Future()
+        acceptance = {
+            "accepted_by_session": True,
+            "started_by_session": True,
+            "active_wake_status": "started",
+        }
+
+        with patch("cron.scheduler._trigger_cron_active_wake", return_value={
+            "scheduled_agent": True,
+            "active_wake_status": "scheduled",
+            "_acceptance": acceptance,
+            "_future": first_future,
+        }):
+            _cleaned, first_state = _maybe_active_wake_cron(
+                cron_jobs.get_job(job["id"]),
+                self._material_content("ci_failed", "CI failed"),
+                delivery_error=None,
+                adapters={},
+                loop=object(),
+            )
+        assert first_state["state_key"] == "pr-42:ci_failed"
+        assert first_state["seq"] == 1
+
+        with patch("cron.scheduler._trigger_cron_active_wake", return_value={
+            "scheduled_agent": True,
+            "active_wake_status": "scheduled",
+            "_acceptance": {},
+        }):
+            _cleaned, second_state = _maybe_active_wake_cron(
+                cron_jobs.get_job(job["id"]),
+                self._material_content("changes_requested", "Review requested changes"),
+                delivery_error=None,
+                adapters={},
+                loop=object(),
+            )
+        assert second_state["state_key"] == "pr-42:changes_requested"
+        assert second_state["seq"] == 2
+
+        first_future.set_result(None)
+
+        stored = cron_jobs.get_job(job["id"])["active_wake_state"]
+        assert stored["state_key"] == "pr-42:changes_requested"
+        assert stored["status"] == "changes_requested"
+        assert stored["seq"] == 2
+
+    def test_three_event_sequence_wakes_after_late_callback_for_prior_status(self, tmp_path, monkeypatch):
+        from concurrent.futures import Future
+
+        cron_jobs = self._isolate_cron_jobs(tmp_path, monkeypatch)
+        job = cron_jobs.create_job(
+            prompt="watch PR",
+            schedule="every 5m",
+            active_wake=True,
+            deliver="origin",
+            origin={"platform": "telegram", "chat_id": "-1001"},
+        )
+        first_future = Future()
+        trigger_results = [
+            {"scheduled_agent": True, "active_wake_status": "scheduled", "_acceptance": {"started_by_session": True}, "_future": first_future},
+            {"scheduled_agent": True, "active_wake_status": "scheduled", "_acceptance": {}},
+            {"scheduled_agent": True, "active_wake_status": "scheduled", "_acceptance": {}},
+        ]
+
+        with patch("cron.scheduler._trigger_cron_active_wake", side_effect=trigger_results) as trigger:
+            _maybe_active_wake_cron(
+                cron_jobs.get_job(job["id"]),
+                self._material_content("ci_failed", "CI failed"),
+                delivery_error=None,
+                adapters={},
+                loop=object(),
+            )
+            _maybe_active_wake_cron(
+                cron_jobs.get_job(job["id"]),
+                self._material_content("changes_requested", "Review requested changes"),
+                delivery_error=None,
+                adapters={},
+                loop=object(),
+            )
+            first_future.set_result(None)
+            _cleaned, third_state = _maybe_active_wake_cron(
+                cron_jobs.get_job(job["id"]),
+                self._material_content("ci_failed", "CI failed again"),
+                delivery_error=None,
+                adapters={},
+                loop=object(),
+            )
+
+        assert trigger.call_count == 3
+        assert third_state["state_key"] == "pr-42:ci_failed"
+        assert third_state["active_wake_status"] == "scheduled"
+        assert third_state["seq"] == 3
+        assert cron_jobs.get_job(job["id"])["active_wake_state"]["seq"] == 3
+
+    def test_active_wake_seq_stable_on_dedupe_and_callback_merges_receipt_only(self, tmp_path, monkeypatch):
+        from concurrent.futures import Future
+
+        cron_jobs = self._isolate_cron_jobs(tmp_path, monkeypatch)
+        job = cron_jobs.create_job(
+            prompt="watch PR",
+            schedule="every 5m",
+            active_wake=True,
+            deliver="origin",
+            origin={"platform": "telegram", "chat_id": "-1001"},
+        )
+        future = Future()
+        acceptance = {"accepted_by_session": True, "started_by_session": True, "active_wake_status": "started"}
+        with patch("cron.scheduler._trigger_cron_active_wake", return_value={
+            "scheduled_agent": True,
+            "active_wake_status": "scheduled",
+            "_acceptance": acceptance,
+            "_future": future,
+        }) as trigger:
+            _maybe_active_wake_cron(
+                cron_jobs.get_job(job["id"]),
+                self._material_content("ci_failed", "CI failed"),
+                delivery_error=None,
+                adapters={},
+                loop=object(),
+            )
+            before_receipt = cron_jobs.get_job(job["id"])["active_wake_state"]
+            future.set_result(None)
+            after_receipt = cron_jobs.get_job(job["id"])["active_wake_state"]
+            _cleaned, dedupe_state = _maybe_active_wake_cron(
+                cron_jobs.get_job(job["id"]),
+                self._material_content("ci_failed", "CI failed duplicate"),
+                delivery_error=None,
+                adapters={},
+                loop=object(),
+            )
+
+        assert trigger.call_count == 1
+        assert before_receipt["seq"] == after_receipt["seq"] == dedupe_state["seq"] == 1
+        assert after_receipt["state_key"] == before_receipt["state_key"] == "pr-42:ci_failed"
+        assert after_receipt["event_key"] == before_receipt["event_key"] == "pr-42"
+        assert after_receipt["status"] == before_receipt["status"] == "ci_failed"
+        assert after_receipt["operator_receipt"] == "observed"
+        assert after_receipt["receipt_checked_at"]
+        assert dedupe_state["active_wake_status"] == "deduped"
+
+
+
+    def test_run_one_job_no_agent_material_stdout_strips_passive_and_wakes(self):
+        from cron.scheduler import run_one_job
+
+        job = {
+            "id": "job1",
+            "active_wake": True,
+            "no_agent": True,
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-1001"},
+        }
+        final = 'HERMES_ACTIVE_WAKE {"event_key":"watchdog","status":"firing","summary":"Watchdog fired"}\nDisk at 95%'
+        with patch("cron.scheduler.run_job", return_value=(True, "doc", final, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None) as deliver, \
+             patch("cron.scheduler.mark_job_run") as mark, \
+             patch("cron.scheduler._record_active_wake_state"), \
+             patch("cron.scheduler._trigger_cron_active_wake", return_value={"scheduled_agent": True, "active_wake_status": "scheduled", "_acceptance": {}}) as trigger:
+            assert run_one_job(job, adapters={}, loop=object()) is True
+        deliver.assert_called_once()
+        assert deliver.call_args.args[1] == "Disk at 95%"
+        trigger.assert_called_once()
+        mark.assert_called_once_with("job1", True, None, delivery_error=None)
+
+    def test_delivery_failure_or_missing_adapter_does_not_claim_receipt(self):
+        job = {
+            "id": "job1",
+            "active_wake": True,
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-1001"},
+        }
+        content = 'HERMES_ACTIVE_WAKE {"event_key":"pr-42","status":"ci_failed"}\nCI failed'
+        with patch("cron.scheduler._record_active_wake_state"):
+            _cleaned, failed_state = _maybe_active_wake_cron(job, content, delivery_error="send failed", adapters={}, loop=object())
+            _cleaned, missing_state = _maybe_active_wake_cron(job, content, delivery_error=None, adapters={}, loop=None)
+        assert failed_state["active_wake_status"] == "passive_delivery_failed"
+        assert failed_state["operator_receipt"] == "not_claimed"
+        assert missing_state["scheduled_agent"] is False
+        assert missing_state["operator_receipt"] == "not_claimed"

@@ -67,6 +67,13 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         ),
     )
     cron_create.add_argument(
+        "--active-wake",
+        dest="active_wake",
+        action="store_true",
+        default=False,
+        help="Opt in to material-event active wake; output must include HERMES_ACTIVE_WAKE JSON marker and identical event/status is deduped.",
+    )
+    cron_create.add_argument(
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
@@ -129,6 +136,21 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         action="store_const",
         const=False,
         help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
+    )
+    cron_edit.add_argument(
+        "--active-wake",
+        dest="active_wake",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Enable material-event active wake for this job.",
+    )
+    cron_edit.add_argument(
+        "--no-active-wake",
+        dest="active_wake",
+        action="store_const",
+        const=False,
+        help="Disable material-event active wake for this job.",
     )
     cron_edit.add_argument(
         "--workdir",

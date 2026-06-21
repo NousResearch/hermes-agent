@@ -472,6 +472,8 @@ def _handle_send(args):
         return json.dumps(_error(f"Send failed: {e}"))
 
 
+
+
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
     if platform_name == "telegram":
@@ -577,9 +579,16 @@ def _get_cron_auto_delivery_target():
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
     chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
+    # Some tests and legacy cron runners still seed these values in os.environ.
+    # If a previous ContextVar-based cron test explicitly cleared the vars to
+    # "", keep that process-local fallback alive without affecting real cron
+    # cleanup (run_job does not write these env vars).
+    if not platform or not chat_id:
+        platform = os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
+        chat_id = os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
     if not platform or not chat_id:
         return None
-    thread_id = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or None
+    thread_id = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or None
     return {
         "platform": platform,
         "chat_id": chat_id,

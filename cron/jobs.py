@@ -688,6 +688,76 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         _save_jobs_unlocked(jobs)
 
 
+_ACTIVE_WAKE_RECEIPT_FIELDS = frozenset({
+    "accepted_by_session",
+    "started_by_session",
+    "operator_receipt",
+    "active_wake_status",
+    "receipt_checked_at",
+    "target_session_key_hash",
+})
+
+
+def set_active_wake_state(job_id: str, state: Dict[str, Any], *, bump_seq: bool) -> Optional[Dict[str, Any]]:
+    """Persist authoritative active-wake state with a locked monotonic seq.
+
+    The scheduler owns event/status/state_key/output_hash classification.  The
+    seq is assigned here, at the storage boundary, so async receipt callbacks
+    can later CAS against the persisted generation instead of a stale scheduler
+    snapshot.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
+            current_state = job.get("active_wake_state") or {}
+            try:
+                current_seq = int((current_state if isinstance(current_state, dict) else {}).get("seq") or 0)
+            except (TypeError, ValueError):
+                current_seq = 0
+            next_seq = current_seq + 1 if bump_seq else (current_seq or 1)
+            next_state = dict(state or {})
+            next_state["seq"] = next_seq
+            job["active_wake_state"] = next_state
+            jobs[i] = job
+            _save_jobs_unlocked(jobs)
+            return copy.deepcopy(next_state)
+    return None
+
+
+def merge_active_wake_receipt(job_id: str, expected_seq: int, receipt: Dict[str, Any]) -> bool:
+    """Merge receipt-only fields iff the active-wake seq is still current."""
+    try:
+        expected = int(expected_seq)
+    except (TypeError, ValueError):
+        return False
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
+            current_state = job.get("active_wake_state") or {}
+            if not isinstance(current_state, dict):
+                return False
+            try:
+                current_seq = int(current_state.get("seq") or 0)
+            except (TypeError, ValueError):
+                current_seq = 0
+            if current_seq != expected:
+                return False
+            receipt_only = {
+                key: value
+                for key, value in dict(receipt or {}).items()
+                if key in _ACTIVE_WAKE_RECEIPT_FIELDS
+            }
+            job["active_wake_state"] = {**current_state, **receipt_only}
+            jobs[i] = job
+            _save_jobs_unlocked(jobs)
+            return True
+    return False
+
+
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     """Normalize and validate a cron job workdir.
 
@@ -738,6 +808,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    active_wake: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -782,6 +853,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        active_wake: Opt-in material-event wake mode. When True, scheduler
+                looks for an explicit material-event marker in job output and
+                asks the live gateway to wake the delivery session only when
+                the marker's event/status state changes.
 
     Returns:
         The created job dict
@@ -816,6 +891,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_active_wake = bool(active_wake)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -847,6 +923,8 @@ def create_job(
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
+        "active_wake": normalized_active_wake,
+        "active_wake_state": None,
         "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),

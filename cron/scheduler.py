@@ -1184,10 +1184,11 @@ def _get_script_timeout() -> int:
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    Scripts are resolved against the **canonical** ``~/.hermes/scripts/``
+    directory first, then fall back to ``HERMES_HOME/scripts/`` for
+    profile-scoped scripts.  Both relative and absolute paths are resolved
+    and validated against one of these directories to prevent arbitrary
+    script execution via path traversal or absolute path injection.
 
     Supported interpreters (chosen by file extension):
 
@@ -1205,35 +1206,59 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Args:
         script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            against ``~/.hermes/scripts/`` first, with
+            ``HERMES_HOME/scripts/`` as a fallback.  Absolute and
+            ~-prefixed paths are also validated to ensure they stay
+            within one of the scripts directories.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir_resolved = scripts_dir.resolve()
-
     raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
 
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
+    # Primary: canonical ~/.hermes/scripts/ (shared across all profiles)
+    canonical_dir = (Path.home() / ".hermes" / "scripts").resolve()
 
-    if not path.exists():
-        return False, f"Script not found: {path}"
+    # Secondary: HERMES_HOME/scripts/ (profile-specific fallback)
+    profile_dir = _get_hermes_home() / "scripts"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir_resolved = profile_dir.resolve()
+
+    # Deduplicate: when HERMES_HOME is ~/.hermes, both point to the same dir
+    search_dirs = [canonical_dir]
+    if canonical_dir != profile_dir_resolved:
+        search_dirs.append(profile_dir_resolved)
+
+    path = None
+    found_container = False
+    for scripts_dir_resolved in search_dirs:
+        if raw.is_absolute():
+            candidate = raw.resolve()
+        else:
+            candidate = (scripts_dir_resolved / raw).resolve()
+
+        # Guard against path traversal, absolute path injection, and
+        # symlink escape — scripts MUST reside within this directory.
+        try:
+            candidate.relative_to(scripts_dir_resolved)
+        except ValueError:
+            continue
+
+        found_container = True
+        if candidate.exists() and candidate.is_file():
+            path = candidate
+            break
+
+    if path is None:
+        checked = ", ".join(str(d) for d in search_dirs)
+        if not found_container:
+            return False, (
+                f"Blocked: script path resolves outside the scripts "
+                f"directories ({checked}): {script_path!r}"
+            )
+        return False, f"Script not found: {script_path} (checked {checked})"
+
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 

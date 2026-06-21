@@ -363,6 +363,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    p_create.add_argument(
+        "--subscribe-platform",
+        default=None,
+        help="Auto-subscribe platform (e.g. discord). Requires --subscribe-chat-id.",
+    )
+    p_create.add_argument(
+        "--subscribe-chat-id",
+        default=None,
+        help="Auto-subscribe chat/channel id. Requires --subscribe-platform.",
+    )
+    p_create.add_argument(
+        "--subscribe-thread-id",
+        default=None,
+        help="Auto-subscribe thread id (optional, required for Discord threads).",
+    )
+    p_create.add_argument(
+        "--subscribe-user-id",
+        default=None,
+        help="Auto-subscribe user id (optional).",
+    )
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -1348,10 +1369,93 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+
+        # ── subscription (explicit --subscribe-* > env-based auto-subscribe) ──
+        from gateway.session_context import get_session_env
+
+        sub_platform: str | None = getattr(args, "subscribe_platform", None)
+        sub_chat_id: str | None = getattr(args, "subscribe_chat_id", None)
+        sub_thread_id: str | None = getattr(args, "subscribe_thread_id", None)
+        sub_user_id: str | None = getattr(args, "subscribe_user_id", None)
+
+        has_explicit = sub_platform is not None or sub_chat_id is not None
+        sub_created = False
+        sub_error: str | None = None
+
+        if has_explicit:
+            # Validate completeness: platform + chat-id are required.
+            if not sub_platform or not sub_chat_id:
+                print(
+                    "kanban: --subscribe-platform and --subscribe-chat-id "
+                    "are both required when using explicit subscription.",
+                    file=sys.stderr,
+                )
+                return 2
+
+            try:
+                kb.add_notify_sub(
+                    conn,
+                    task_id=task_id,
+                    platform=sub_platform,
+                    chat_id=sub_chat_id,
+                    thread_id=sub_thread_id or None,
+                    user_id=sub_user_id or None,
+                    notifier_profile=_profile_author(),
+                )
+                sub_created = True
+            except Exception as exc:
+                sub_error = str(exc)
+
+        elif not getattr(args, "json", False):
+            # JSON mode indicates scripting, skip implicit subscription.
+            # Fall back to env-based auto-subscribe (existing behaviour).
+            session_platform = get_session_env("HERMES_SESSION_PLATFORM")
+            session_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+            if session_platform and session_chat_id:
+                sub_platform = session_platform
+                sub_chat_id = session_chat_id
+                sub_thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+                sub_user_id = get_session_env("HERMES_SESSION_USER_ID") or None
+                try:
+                    kb.add_notify_sub(
+                        conn,
+                        task_id=task_id,
+                        platform=sub_platform,
+                        chat_id=sub_chat_id,
+                        thread_id=sub_thread_id,
+                        user_id=sub_user_id,
+                        notifier_profile=_profile_author(),
+                    )
+                    sub_created = True
+                except Exception as exc:
+                    sub_error = str(exc)
+
     if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+        result = _task_to_dict(task)
+        result["subscription"] = (
+            {"created": f"{sub_platform}:{sub_chat_id}"
+             + (f":{sub_thread_id}" if sub_thread_id else ""),
+             "method": "explicit" if has_explicit else "env"}
+            if sub_created
+            else {"created": False, "error": sub_error or "not attempted"}
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+
+        # Subscription status line
+        if sub_created:
+            target = f"{sub_platform}:{sub_chat_id}"
+            if sub_thread_id:
+                target += f":{sub_thread_id}"
+            print(f"subscription: created {target}")
+        elif sub_error:
+            print(f"subscription: not created ({sub_error})", file=sys.stderr)
+        elif has_explicit:
+            print(
+                f"subscription: not created ({sub_error or 'unknown error'})",
+                file=sys.stderr,
+            )
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are

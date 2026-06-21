@@ -200,3 +200,34 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def build_session_subprocess_env(base_env: dict | None = None) -> dict:
+    """Build a subprocess environment with current session vars from ContextVar.
+
+    Use this when spawning subprocesses that need ``HERMES_SESSION_*`` vars
+    (e.g. ``hermes kanban create`` for auto-subscribe).  ContextVars are
+    task-local and do not propagate to child processes, so we bridge them
+    explicitly here.
+
+    Resolution per var:
+    1. ContextVar value (set by ``set_session_vars``) — overrides os.environ.
+    2. ``os.environ`` — fallback for CLI / cron / non-gateway contexts.
+    3. (skipped if absent from both)
+
+    Returns a new dict; does not mutate the caller's env.
+    """
+    import os
+
+    env = dict(base_env) if base_env else {}
+    for var_name, var in _VAR_MAP.items():
+        value = var.get()
+        if value is _UNSET:
+            # Never set in this context — fall back to os.environ.
+            oval = os.environ.get(var_name, "")
+            if oval:
+                env[var_name] = oval
+        else:
+            # Explicitly set (even to "") — trust the ContextVar.
+            env[var_name] = value
+    return env

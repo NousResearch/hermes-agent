@@ -566,3 +566,163 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create --subscribe-* explicit subscription
+# ---------------------------------------------------------------------------
+
+
+def test_create_explicit_subscribe(kanban_home):
+    """--subscribe-platform + --subscribe-chat-id + --subscribe-thread-id
+    creates a subscription and reports it in the output."""
+    import re
+
+    out = kc.run_slash(
+        "create 'test sub' --assignee alice "
+        "--subscribe-platform discord "
+        "--subscribe-chat-id 12345 "
+        "--subscribe-thread-id 67890"
+    )
+    assert "Created" in out
+    assert "subscription: created discord:12345:67890" in out
+
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "12345"
+    assert subs[0]["thread_id"] == "67890"
+
+
+def test_create_explicit_subscribe_json_mode(kanban_home):
+    """Explicit --subscribe-* in JSON mode includes subscription in the JSON."""
+    import json
+    import re
+
+    out = kc.run_slash(
+        "create 'json sub' --assignee alice "
+        "--subscribe-platform discord "
+        "--subscribe-chat-id 12345 "
+        "--subscribe-thread-id 67890 "
+        "--json"
+    )
+    data = json.loads(out)
+    assert data["title"] == "json sub"
+    sub = data["subscription"]
+    assert sub["created"] == "discord:12345:67890"
+    assert sub["method"] == "explicit"
+
+    tid = data["id"]
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+
+
+def test_create_explicit_subscribe_incomplete_args(kanban_home):
+    """--subscribe-platform without --subscribe-chat-id must fail."""
+    out = kc.run_slash(
+        "create 'bad sub' --subscribe-platform discord"
+    )
+    assert "subscription: created" not in out
+    # The function returns 2 and should print an error
+    assert "both required" in out.lower() or "kanban:" in out
+
+
+def test_create_explicit_subscribe_chat_id_only(kanban_home):
+    """--subscribe-chat-id without --subscribe-platform must fail."""
+    out = kc.run_slash(
+        "create 'bad sub' --subscribe-chat-id 12345"
+    )
+    assert "subscription: created" not in out
+    assert "both required" in out.lower() or "kanban:" in out
+
+
+def test_create_no_subscribe_no_env(kanban_home, monkeypatch):
+    """Without explicit --subscribe-* and without HERMES_SESSION_* env,
+    no subscription is created and no false success reported."""
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+
+    out = kc.run_slash("create 'no sub' --assignee alice")
+    assert "Created" in out
+    # No subscription line at all
+    assert "subscription: not created" not in out
+    assert "subscription: created" not in out
+
+
+def test_create_env_auto_subscribe(kanban_home, monkeypatch):
+    """When HERMES_SESSION_* env vars are set and no explicit --subscribe-*,
+    auto-subscribe still works (existing behaviour preserved)."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat99")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "th99")
+
+    import re
+    out = kc.run_slash("create 'env sub' --assignee alice")
+    assert "Created" in out
+    assert "subscription: created telegram:chat99:th99" in out
+
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+
+
+def test_create_explicit_beats_env(kanban_home, monkeypatch):
+    """Explicit --subscribe-* takes priority over HERMES_SESSION_* env vars."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat99")
+
+    import re
+    out = kc.run_slash(
+        "create 'explicit wins' --assignee alice "
+        "--subscribe-platform discord "
+        "--subscribe-chat-id 99999"
+    )
+    assert "subscription: created discord:99999" in out
+
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "99999"
+
+
+def test_create_subscription_failure_reported(kanban_home, monkeypatch):
+    """When add_notify_sub raises, card is still created but failure is reported.
+    No false 'subscription: created' in output."""
+    import hermes_cli.kanban_db as kb_module
+
+    # Force add_notify_sub to fail
+    real_add_notify_sub = kb_module.add_notify_sub
+
+    def _failing_add_notify_sub(*args, **kwargs):
+        raise RuntimeError("simulated db error")
+
+    monkeypatch.setattr(kb_module, "add_notify_sub", _failing_add_notify_sub)
+
+    out = kc.run_slash(
+        "create 'test failure' --assignee alice "
+        "--subscribe-platform discord "
+        "--subscribe-chat-id 12345"
+    )
+    assert "Created" in out
+    assert "subscription: not created" in out
+    assert "simulated db error" in out
+    assert "subscription: created" not in out

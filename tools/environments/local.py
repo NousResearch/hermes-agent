@@ -388,13 +388,12 @@ def _make_run_env(env: dict) -> dict:
     apply_subprocess_home_env(run_env)
 
     # Inject ContextVar-based session vars into subprocess env.
-    # ContextVars don't propagate to child processes, so we bridge them here.
+    # ContextVars don't propagate to child processes, so we bridge them here
+    # via build_session_subprocess_env() which respects explicit empty values.
     try:
-        from gateway.session_context import _UNSET, _VAR_MAP
-        for var_name, var in _VAR_MAP.items():
-            value = var.get()
-            if value is not _UNSET and value:
-                run_env[var_name] = value
+        from gateway.session_context import build_session_subprocess_env
+        session_env = build_session_subprocess_env()
+        run_env.update(session_env)
     except Exception:
         pass
 

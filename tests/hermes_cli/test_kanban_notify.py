@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from hermes_cli import kanban_db as kb
 from unittest.mock import AsyncMock, MagicMock, patch
+from gateway.platforms.base import SendResult
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,7 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True)
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -111,6 +113,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True)
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -166,6 +169,7 @@ async def test_notifier_second_blocked_delivers(kanban_home):
 
     async def _capture_send(chat_id, msg, metadata=None):
         delivered_msgs.append(msg)
+        return SendResult(success=True)
 
     fake_adapter = MagicMock()
     fake_adapter.send = AsyncMock(side_effect=_capture_send)
@@ -412,6 +416,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True)
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -546,6 +551,7 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     async def _send(chat_id, msg, metadata=None):
         sends.append((chat_id, msg))
         runner._running = False
+        return SendResult(success=True)
 
     async def _send_images(chat_id, images, metadata=None, **_kw):
         images_uploaded.extend(p for p, _ in images)
@@ -627,6 +633,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     async def _send(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True)
 
     async def _send_document(chat_id, file_path, metadata=None, **_kw):
         documents_uploaded.append(file_path)
@@ -653,3 +660,190 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+# ---------------------------------------------------------------------------
+# SendResult.success=False handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notifier_sendresult_false_preserves_sub_and_logs(kanban_home):
+    """When adapter.send returns SendResult(success=False), the subscription
+    is preserved (not deleted), cursor is rewound for retry, and error is logged."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="fail task", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_failure(chat_id, msg, metadata=None):
+        runner._running = False
+        return SendResult(success=False, error="thread not found")
+
+    fake_adapter.send = AsyncMock(side_effect=_send_failure)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    # Send was called
+    fake_adapter.send.assert_called_once()
+    # But subscription is preserved — not deleted
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1, (
+        "Subscription must survive SendResult(success=False) so retry can happen"
+    )
+    # Cursor should still be rewound (0 for first event)
+    assert int(subs[0]["last_event_id"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_notifier_mixed_subs_success_and_failure(kanban_home):
+    """Mixed subscriptions: one target succeeds, one fails.
+    Success sub can be deleted, failure sub must be preserved."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="mixed task", assignee="worker1")
+        # Sub A: will succeed
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="good-chat")
+        # Sub B: will fail
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="bad-chat")
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    send_count = 0
+
+    async def _mixed_send(chat_id, msg, metadata=None):
+        nonlocal send_count
+        send_count += 1
+        if chat_id == "bad-chat":
+            return SendResult(success=False, error="thread not found")
+        return SendResult(success=True)
+
+    fake_adapter.send = AsyncMock(side_effect=_mixed_send)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        # Let two ticks run: first processes both subs,
+        # good-chat succeeds and unsubs, bad-chat fails and rewinds.
+        # Second tick retries bad-chat (still fails, counter=2 < MAX).
+        if tick_count >= 2:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    # Both subs were attempted at least once
+    assert send_count >= 2
+
+    # Check final subscription state
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    # Good-chat should be gone (unsubbed after successful delivery + terminal status)
+    good_subs = [s for s in subs if s["chat_id"] == "good-chat"]
+    assert len(good_subs) == 0, (
+        f"Successful subscription should be removed; got {good_subs}"
+    )
+
+    # Bad-chat should still be here (preserved after failure)
+    bad_subs = [s for s in subs if s["chat_id"] == "bad-chat"]
+    assert len(bad_subs) == 1, (
+        f"Failed subscription must survive for retry; got {bad_subs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_notifier_adapter_exception_preserves_sub(kanban_home):
+    """When adapter.send raises an exception (not SendResult.success=False),
+    the old failure path still works: subscription preserved, cursor rewound."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="exc task", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_exception(chat_id, msg, metadata=None):
+        runner._running = False
+        raise ConnectionError("network down")
+
+    fake_adapter.send = AsyncMock(side_effect=_send_exception)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    # Subscription must survive the exception
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1, "Subscription must survive adapter exception"

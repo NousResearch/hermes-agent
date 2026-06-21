@@ -836,6 +836,23 @@ def _precreate_secret_file(path: Path) -> None:
         logger.debug("Could not pre-create secret file %s: %s", path, e)
 
 
+def _env_line_safe(value: Any) -> str:
+    """Neutralize characters that would break ``.env`` line structure.
+
+    A ``.env`` file is strictly line-oriented (one ``KEY=VALUE`` per line),
+    and ``_write_env_vars`` interpolates each value straight into that line.
+    A value carrying an embedded CR/LF would therefore spill onto a new line
+    and be re-parsed as a *separate* ``KEY=VALUE`` entry on the next
+    ``read_text().splitlines()`` round-trip — letting a malformed or pasted
+    secret (e.g. an api_key copied with a trailing record) inject an
+    arbitrary additional variable into the persisted credentials file. Strip
+    the line terminators (``\r``, ``\n``) and the NUL byte so a value can
+    only ever occupy the single line it is written on.
+    """
+    text = value if isinstance(value, str) else str(value)
+    return text.replace("\r", "").replace("\n", "").replace("\x00", "")
+
+
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
@@ -847,13 +864,13 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
         if key_match in remove_set:
             continue
         if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
+            new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}")
             updated_keys.add(key_match)
         else:
             new_lines.append(line)
     for key, val in env_writes.items():
         if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
+            new_lines.append(f"{key}={_env_line_safe(val)}")
     # Pre-create with 0600 so secrets are never briefly world-readable.
     _precreate_secret_file(env_path)
     env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")

@@ -56,6 +56,17 @@ class TestCliSkinPromptIntegration:
         with patch("hermes_cli.skin_engine.get_active_prompt_symbol", return_value="⚔ "):
             assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
 
+    def test_skin_prompt_profile_label_overrides_profile_name(self):
+        cli = _make_cli_stub()
+
+        skin = SimpleNamespace(
+            get_branding=lambda key, fallback="": "sandra" if key == "prompt_profile_label" else fallback
+        )
+        with patch("hermes_cli.skin_engine.get_active_prompt_symbol", return_value="Σ "), \
+             patch("hermes_cli.skin_engine.get_active_skin", return_value=skin), \
+             patch("hermes_cli.profiles.get_active_profile_name", return_value="team-aip"):
+            assert cli._get_tui_prompt_fragments() == [("class:prompt", "sandra Σ ")]
+
     def test_build_tui_style_dict_uses_skin_overrides(self):
         cli = _make_cli_stub()
 

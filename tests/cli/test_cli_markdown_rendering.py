@@ -3,13 +3,48 @@ from io import StringIO
 from rich.console import Console
 from rich.markdown import Markdown
 
-from cli import _render_final_assistant_content
+from cli import _flow_soft_wrapped_markdown_paragraphs, _render_final_assistant_content
 
 
 def _render_to_text(renderable) -> str:
     buf = StringIO()
     Console(file=buf, width=80, force_terminal=False, color_system=None).print(renderable)
     return buf.getvalue()
+
+
+def test_soft_wrapped_plain_paragraphs_flow_to_panel_width():
+    renderable = _render_final_assistant_content(
+        "This paragraph was hard wrapped by a model\n"
+        "even though the terminal panel has room.",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "This paragraph was hard wrapped by a model even though" in output
+    assert "model\neven" not in output
+
+
+def test_soft_wrap_flow_preserves_markdown_blocks():
+    text = (
+        "Plain prose line one\n"
+        "plain prose line two\n\n"
+        "- list item one\n"
+        "- list item two\n"
+        "| A | B |\n"
+        "|---|---|\n"
+        "| 1 | 2 |\n"
+        "```\n"
+        "code line one\n"
+        "code line two\n"
+        "```"
+    )
+
+    flowed = _flow_soft_wrapped_markdown_paragraphs(text)
+
+    assert "Plain prose line one plain prose line two" in flowed
+    assert "- list item one\n- list item two" in flowed
+    assert "| A | B |\n|---|---|\n| 1 | 2 |" in flowed
+    assert "code line one\ncode line two" in flowed
 
 
 def test_final_assistant_content_uses_markdown_renderable():

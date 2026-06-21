@@ -2218,6 +2218,58 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
 
 
+_MARKDOWN_BLOCK_START_RE = re.compile(
+    r"^\s*(?:#{1,6}\s|[-+*]\s|[-+*]\s*\[[ xX]\]\s|\d+[.)]\s|>|```|~~~|\|)"
+)
+
+
+def _flow_soft_wrapped_markdown_paragraphs(text: str) -> str:
+    """Collapse model hard-wraps inside plain prose paragraphs.
+
+    Models often emit ~80-column prose even when the classic CLI response panel
+    is much wider. Treat single newlines between plain paragraph lines as soft
+    wraps so Rich can wrap against the actual panel width, while leaving markdown
+    structure (lists, headings, blockquotes, code fences, tables) alone.
+    """
+    lines = str(text or "").split("\n")
+    out: list[str] = []
+    paragraph: list[str] = []
+    in_fence = False
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            out.append(" ".join(part.strip() for part in paragraph))
+            paragraph = []
+
+    for line in lines:
+        stripped = line.strip()
+        fence = stripped.startswith(("```", "~~~"))
+        if in_fence:
+            flush_paragraph()
+            out.append(line)
+            if fence:
+                in_fence = False
+            continue
+        if fence:
+            flush_paragraph()
+            out.append(line)
+            in_fence = True
+            continue
+        if not stripped:
+            flush_paragraph()
+            out.append(line)
+            continue
+        if line[:1].isspace() or _MARKDOWN_BLOCK_START_RE.match(line):
+            flush_paragraph()
+            out.append(line)
+            continue
+        paragraph.append(line)
+
+    flush_paragraph()
+    return "\n".join(out)
+
+
 def _terminal_width_for_streaming() -> int:
     """Display cells available inside the streamed response box.
 
@@ -2253,6 +2305,10 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     panel_width = max(20, cols - 12)
 
     normalized_mode = str(mode or "render").strip().lower()
+    if normalized_mode == "raw":
+        return _rich_text_from_ansi(text or "")
+
+    text = _flow_soft_wrapped_markdown_paragraphs(text or "")
     if normalized_mode == "strip":
         # Strip first — inline markdown inside cells (`code`, **bold**, ~~strike~~)
         # changes cell display width — then re-align so the column padding
@@ -2260,8 +2316,6 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
         return _RichText(
             realign_markdown_tables(_strip_markdown_syntax(text), panel_width)
         )
-    if normalized_mode == "raw":
-        return _rich_text_from_ansi(text or "")
 
     # `render` mode: Rich's Markdown renderer handles CJK width via wcwidth
     # internally, so a pre-pass through realign_markdown_tables would just
@@ -11814,12 +11868,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         symbol = (symbol or "❯ ").rstrip() + " "
 
-        # Prepend profile name when not default
+        # Prepend profile name when not default. Skins may override the visible
+        # prompt label while keeping the underlying profile identity unchanged
+        # (for example, a named operating skin on a Linear-team profile).
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
             if profile not in {"default", "custom"}:
-                symbol = f"{profile} {symbol}"
+                profile_label = profile
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    override = str(get_active_skin().get_branding("prompt_profile_label", "") or "").strip()
+                    if override:
+                        profile_label = override
+                except Exception:
+                    pass
+                symbol = f"{profile_label} {symbol}"
         except Exception:
             pass
         stripped = symbol.rstrip()

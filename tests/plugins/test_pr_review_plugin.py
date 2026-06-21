@@ -80,6 +80,21 @@ def test_build_review_input_records_truncation_and_docs():
         "additions": 10,
         "deletions": 2,
         "url": "https://github.com/o/r/pull/7",
+        "statusCheckRollup": [
+            {
+                "name": "validate",
+                "workflowName": "CI",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "detailsUrl": "https://github.com/o/r/actions/runs/1",
+            },
+            {
+                "name": "e2e",
+                "workflowName": "CI",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+            },
+        ],
     }
 
     context, manifest = core.build_review_input(
@@ -97,6 +112,8 @@ def test_build_review_input_records_truncation_and_docs():
     assert manifest["docs_loaded"] == ["AGENTS.md"]
     assert manifest["included_files"] == ["src/app.ts"]
     assert manifest["skipped_files"] == [{"filename": "dist/app.js", "reason": "ignored_path"}]
+    assert manifest["check_context"]["counts"] == {"success": 1, "failure": 1}
+    assert "Observed GitHub checks" in context
 
 
 def test_write_artifacts_renders_markdown(tmp_path: Path):
@@ -134,7 +151,10 @@ def test_write_artifacts_renders_markdown(tmp_path: Path):
     assert "`src/app.ts:42`" in rendered
     assert findings["risk"] == "medium"
     assert findings["findings"][0]["fingerprint"]
+    assert findings["findings"][0]["category"] == "correctness"
     assert findings["review_fingerprint"]
+    assert Path(paths["trace"]).exists()
+    assert "GitHub checks observed" in rendered
 
 
 def test_config_from_base_branch_extends_docs_and_ignore_patterns(monkeypatch):
@@ -199,8 +219,25 @@ def test_normalize_review_caps_findings_and_adds_fingerprints():
     assert len(review["findings"]) == core.MAX_FINDINGS
     assert review["findings"][0]["confidence"] == "medium"
     assert review["findings"][0]["line"] is None
+    assert review["findings"][0]["category"] == "correctness"
+    assert review["findings"][0]["blocking"] is True
     assert review["findings"][0]["fingerprint"]
     assert review["review_fingerprint"]
+
+
+def test_normalize_review_clamps_approve_to_advisory_comment():
+    review = core.normalize_review(
+        {
+            "verdict": "approve",
+            "risk": "low",
+            "summary": "No issues.",
+            "findings": [],
+            "verification_notes": [],
+        }
+    )
+
+    assert review["verdict"] == "comment"
+    assert review["model_verdict"] == "approve"
 
 
 def test_post_or_update_summary_comment_updates_existing_without_duplicate(monkeypatch):

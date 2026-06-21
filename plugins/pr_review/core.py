@@ -118,6 +118,7 @@ def fetch_pr_metadata(ref: PullRequestRef) -> Dict[str, Any]:
         "deletions",
         "changedFiles",
         "labels",
+        "statusCheckRollup",
     ]
     return run_gh_json([
         "pr",
@@ -289,8 +290,10 @@ def finding_fingerprint(finding: Dict[str, Any]) -> str:
     basis = hint or json.dumps(
         {
             "severity": finding.get("severity"),
+            "category": finding.get("category"),
             "path": finding.get("path"),
             "line": finding.get("line"),
+            "range": finding.get("range"),
             "title": finding.get("title"),
             "evidence": finding.get("evidence"),
         },
@@ -298,6 +301,63 @@ def finding_fingerprint(finding: Dict[str, Any]) -> str:
         default=str,
     )
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def summarize_status_checks(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize GitHub statusCheckRollup into compact observed-CI evidence."""
+    raw = metadata.get("statusCheckRollup")
+    checks_in = raw if isinstance(raw, list) else []
+    checks: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = {}
+    for item in checks_in:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("context") or item.get("workflowName") or "unnamed")
+        status = str(item.get("status") or "").lower() or None
+        conclusion = str(item.get("conclusion") or "").lower() or None
+        state = conclusion or status or "unknown"
+        counts[state] = counts.get(state, 0) + 1
+        checks.append(
+            {
+                "name": name,
+                "workflow": item.get("workflowName") or None,
+                "status": status,
+                "conclusion": conclusion,
+                "details_url": item.get("detailsUrl") or item.get("targetUrl") or None,
+                "completed_at": item.get("completedAt") or None,
+            }
+        )
+    return {
+        "observed": bool(checks),
+        "counts": counts,
+        "checks": checks,
+        "merge_state": metadata.get("mergeStateStatus"),
+        "is_draft": bool(metadata.get("isDraft")),
+    }
+
+
+def build_review_trace(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build an auditable trace of what this review run observed and skipped."""
+    trace: List[Dict[str, Any]] = [
+        {"kind": "github", "label": "Fetched PR metadata, changed files, and diff with gh"},
+        {"kind": "policy", "label": "Loaded reviewer config and docs from trusted base branch only"},
+    ]
+    for path in manifest.get("docs_loaded") or []:
+        trace.append({"kind": "context", "label": f"Loaded trusted doc {path}"})
+    skipped = manifest.get("skipped_files") or []
+    if skipped:
+        trace.append({"kind": "filter", "label": f"Skipped {len(skipped)} ignored/generated file(s)"})
+    check_context = manifest.get("check_context") or {}
+    if check_context.get("observed"):
+        counts = check_context.get("counts") or {}
+        bits = ", ".join(f"{key}={value}" for key, value in sorted(counts.items())) or "checks observed"
+        trace.append({"kind": "ci", "label": f"Observed GitHub check rollup: {bits}"})
+    else:
+        trace.append({"kind": "ci", "label": "No GitHub check rollup was observed"})
+    if manifest.get("diff_truncated"):
+        trace.append({"kind": "context", "label": f"Diff truncated at {manifest.get('max_diff_chars')} characters"})
+    trace.append({"kind": "llm", "label": "Generated advisory structured review through Hermes model context"})
+    return trace
 
 
 def artifact_dir(ref: PullRequestRef, head_sha: str) -> Path:
@@ -310,8 +370,17 @@ def review_schema() -> Dict[str, Any]:
         "type": "object",
         "properties": {
             "severity": {"type": "string", "enum": ["critical", "warning", "suggestion"]},
+            "category": {"type": "string", "enum": ["correctness", "security", "reliability", "data-integrity", "test-gap", "ux", "maintainability"]},
+            "blocking": {"type": "boolean"},
             "path": {"type": "string"},
             "line": {"type": ["integer", "null"]},
+            "range": {
+                "type": "object",
+                "properties": {
+                    "start": {"type": ["integer", "null"]},
+                    "end": {"type": ["integer", "null"]},
+                },
+            },
             "title": {"type": "string"},
             "evidence": {"type": "string"},
             "why_it_matters": {"type": "string"},
@@ -319,7 +388,7 @@ def review_schema() -> Dict[str, Any]:
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             "fingerprint_hint": {"type": "string"},
         },
-        "required": ["severity", "path", "title", "evidence", "why_it_matters", "suggested_fix", "confidence"],
+        "required": ["severity", "category", "path", "title", "evidence", "why_it_matters", "suggested_fix", "confidence"],
     }
     return {
         "type": "object",
@@ -347,7 +416,8 @@ def build_review_input(
     clipped_diff, diff_truncated = truncate_text(diff, max_diff_chars)
     context_fingerprint = stable_fingerprint(
         {
-            "metadata": {k: metadata.get(k) for k in ("number", "title", "baseRefName", "headRefName", "headRefOid")},
+            "metadata": {k: metadata.get(k) for k in ("number", "title", "baseRefName", "headRefName", "headRefOid", "mergeStateStatus", "isDraft")},
+            "check_context": summarize_status_checks(metadata),
             "docs": docs,
             "reviewer_config": reviewer_config or {},
             "included_files": [f.get("filename") for f in included_files],
@@ -355,6 +425,7 @@ def build_review_input(
             "diff": clipped_diff,
         }
     )
+    check_context = summarize_status_checks(metadata)
     manifest = {
         "repo": metadata.get("url", ""),
         "number": metadata.get("number"),
@@ -371,6 +442,7 @@ def build_review_input(
         "diff_truncated": diff_truncated,
         "max_diff_chars": max_diff_chars,
         "reviewer_config": reviewer_config or {},
+        "check_context": check_context,
         "context_fingerprint": context_fingerprint,
     }
     sections = [
@@ -381,6 +453,10 @@ def build_review_input(
         "",
         "## Trusted reviewer config",
         json.dumps(reviewer_config or {}, indent=2, sort_keys=True),
+        "",
+        "## Observed GitHub checks / PR state",
+        "This is observed GitHub/CI metadata, not tests run by Hermes during this review.",
+        json.dumps(check_context, indent=2, sort_keys=True, default=str),
         "",
         "## Trusted base-branch project docs",
     ]
@@ -403,6 +479,14 @@ def build_review_input(
     return "\n".join(sections), manifest
 
 
+def _render_check_summary(check_context: Dict[str, Any]) -> str:
+    if not check_context.get("observed"):
+        return "**GitHub checks observed:** none"
+    counts = check_context.get("counts") or {}
+    bits = ", ".join(f"{key}: {value}" for key, value in sorted(counts.items()))
+    return f"**GitHub checks observed:** {bits or 'present'}"
+
+
 def render_markdown(review: Dict[str, Any], manifest: Dict[str, Any]) -> str:
     findings = review.get("findings") or []
     diagnostics = {
@@ -419,6 +503,7 @@ def render_markdown(review: Dict[str, Any], manifest: Dict[str, Any]) -> str:
         f"**Risk:** {str(review.get('risk', 'low')).title()}",
         f"**Reviewed commit:** `{str(manifest.get('head_sha') or 'unknown')[:12]}`",
         f"**Findings:** {len(findings)}",
+        _render_check_summary(manifest.get("check_context") or {}),
         "",
         "### Summary",
         str(review.get("summary") or "No summary provided."),
@@ -435,6 +520,8 @@ def render_markdown(review: Dict[str, Any], manifest: Dict[str, Any]) -> str:
                 "",
                 f"{idx}. **{sev} — {finding.get('title', 'Finding')}**",
                 f"   - Location: `{loc}`",
+                f"   - Category: {finding.get('category', 'correctness')}",
+                f"   - Blocking: {'yes' if finding.get('blocking') else 'no'}",
                 f"   - Confidence: {finding.get('confidence', 'medium')}",
                 f"   - Evidence: {finding.get('evidence', '')}",
                 f"   - Why it matters: {finding.get('why_it_matters', '')}",
@@ -451,6 +538,12 @@ def render_markdown(review: Dict[str, Any], manifest: Dict[str, Any]) -> str:
         lines.append(f"- Loaded trusted doc `{path}` from the base branch")
     if manifest.get("diff_truncated"):
         lines.append(f"- Diff was truncated at {manifest.get('max_diff_chars')} characters")
+    check_context = manifest.get("check_context") or {}
+    if check_context.get("observed"):
+        for check in (check_context.get("checks") or [])[:8]:
+            lines.append(
+                f"- Observed GitHub check `{check.get('name')}`: {check.get('conclusion') or check.get('status') or 'unknown'}"
+            )
     skipped = manifest.get("skipped_files") or []
     if skipped:
         lines.append(f"- Skipped {len(skipped)} ignored/generated files")
@@ -459,9 +552,12 @@ def render_markdown(review: Dict[str, Any], manifest: Dict[str, Any]) -> str:
 
 def normalize_review(raw: Any) -> Dict[str, Any]:
     review = raw if isinstance(raw, dict) else {}
-    verdict = str(review.get("verdict") or "comment").lower()
-    if verdict not in {"approve", "comment", "request_changes"}:
-        verdict = "comment"
+    model_verdict = str(review.get("verdict") or "comment").lower()
+    if model_verdict not in {"approve", "comment", "request_changes"}:
+        model_verdict = "comment"
+    # MVP policy is advisory-only. Preserve the model's requested verdict for
+    # audit, but never render/post an approve or request-changes action yet.
+    verdict = "comment"
     risk = str(review.get("risk") or "medium").lower()
     if risk not in {"low", "medium", "high"}:
         risk = "medium"
@@ -477,13 +573,26 @@ def normalize_review(raw: Any) -> Dict[str, Any]:
         confidence = str(item.get("confidence") or "medium").lower()
         if confidence not in {"low", "medium", "high"}:
             confidence = "medium"
+        category = str(item.get("category") or "correctness").lower()
+        if category not in {"correctness", "security", "reliability", "data-integrity", "test-gap", "ux", "maintainability"}:
+            category = "correctness"
         line = item.get("line")
         if not isinstance(line, int):
             line = None
+        raw_range = item.get("range") if isinstance(item.get("range"), dict) else {}
+        start = raw_range.get("start") if isinstance(raw_range, dict) else None
+        end = raw_range.get("end") if isinstance(raw_range, dict) else None
+        line_range = {
+            "start": start if isinstance(start, int) else line,
+            "end": end if isinstance(end, int) else line,
+        }
         finding = {
             "severity": severity,
+            "category": category,
+            "blocking": bool(item.get("blocking") or severity == "critical"),
             "path": str(item.get("path") or "unknown"),
             "line": line,
+            "range": line_range,
             "title": str(item.get("title") or "Finding"),
             "evidence": str(item.get("evidence") or ""),
             "why_it_matters": str(item.get("why_it_matters") or ""),
@@ -498,13 +607,14 @@ def normalize_review(raw: Any) -> Dict[str, Any]:
     notes = raw_notes if isinstance(raw_notes, list) else []
     normalized = {
         "verdict": verdict,
+        "model_verdict": model_verdict,
         "risk": risk,
         "summary": str(review.get("summary") or "No summary provided."),
         "findings": findings,
         "verification_notes": [str(note) for note in notes],
     }
     normalized["review_fingerprint"] = stable_fingerprint(
-        {"verdict": verdict, "risk": risk, "summary": normalized["summary"], "findings": findings}
+        {"verdict": verdict, "model_verdict": model_verdict, "risk": risk, "summary": normalized["summary"], "findings": findings}
     )
     return normalized
 
@@ -517,11 +627,13 @@ def write_artifacts(out_dir: Path, *, context: str, manifest: Dict[str, Any], re
         "manifest": out_dir / "context-manifest.json",
         "findings": out_dir / "findings.json",
         "review": out_dir / "review.md",
+        "trace": out_dir / "review-trace.json",
     }
     paths["context"].write_text(context, encoding="utf-8")
     paths["manifest"].write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     paths["findings"].write_text(json.dumps(review, indent=2, sort_keys=True), encoding="utf-8")
     paths["review"].write_text(render_markdown(review, manifest), encoding="utf-8")
+    paths["trace"].write_text(json.dumps(build_review_trace(manifest), indent=2, sort_keys=True), encoding="utf-8")
     return {name: str(path) for name, path in paths.items()}
 
 

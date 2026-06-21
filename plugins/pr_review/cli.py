@@ -32,6 +32,16 @@ Default policy:
 """
 
 
+def mode_instructions(mode: str) -> str:
+    profiles = {
+        "light": "Light mode: return only obvious high-confidence correctness/security issues; prefer zero findings over speculative notes.",
+        "balanced": "Balanced mode: return the strongest actionable findings across correctness, security, reliability, data integrity, UX, and test gaps.",
+        "strict": "Strict mode: be more willing to flag medium-confidence regression risks and missing tests, but still avoid style nits.",
+        "security": "Security mode: prioritize auth, authorization, injection, data exposure, unsafe rendering, dependency, and secret-handling risks.",
+    }
+    return profiles.get(mode, profiles["balanced"])
+
+
 def register_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="pr_review_command")
 
@@ -55,6 +65,12 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         type=int,
         default=120_000,
         help="Maximum diff characters to send to the model/context artifact (default: 120000)",
+    )
+    review.add_argument(
+        "--mode",
+        choices=("light", "balanced", "strict", "security"),
+        default="balanced",
+        help="Review depth/profile (default: balanced)",
     )
     review.add_argument(
         "--json",
@@ -109,6 +125,8 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
         files = core.fetch_pr_files(ref)
         base_ref = str(metadata.get("baseRefName") or "main")
         reviewer_config = core.load_reviewer_config(ref, base_ref)
+        review_mode = getattr(args, "mode", "balanced") or "balanced"
+        reviewer_config = {**reviewer_config, "mode": review_mode}
         ignore_patterns = (*core.DEFAULT_IGNORE_PATTERNS, *reviewer_config.get("ignore_patterns", []))
         included_files, skipped_files = core.filter_files(files, patterns=ignore_patterns)
         docs = core.collect_trusted_docs(
@@ -133,7 +151,7 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
                 raise RuntimeError("Hermes plugin LLM context is unavailable; rerun with --dry-run/--no-llm or from Hermes CLI")
             result = ctx.llm.complete_structured(
                 system_prompt=SYSTEM_PROMPT,
-                instructions=REVIEW_INSTRUCTIONS,
+                instructions=f"{REVIEW_INSTRUCTIONS}\n\nReview mode: {review_mode}. {mode_instructions(review_mode)}",
                 input=[{"type": "text", "text": context}],
                 json_schema=core.review_schema(),
                 schema_name="hermes.pr_review.v1",
@@ -172,7 +190,9 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
         "pr": ref.number,
         "head_sha": manifest.get("head_sha"),
         "verdict": review.get("verdict"),
+        "model_verdict": review.get("model_verdict"),
         "risk": review.get("risk"),
+        "mode": review_mode,
         "findings": len(review.get("findings") or []),
         "paths": paths,
         "docs_loaded": manifest.get("docs_loaded"),

@@ -106,14 +106,21 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   const keys = new Set<string>()
 
   for (const provider of providers) {
-    const families = collapseModelFamilies(provider.models ?? [])
-
-    for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
-      keys.add(modelVisibilityKey(provider.slug, family.id))
-    }
+    expandProviderDefaults(provider, keys)
   }
 
   return keys
+}
+
+/** Add a provider's curated default model keys (top-N collapsed families) to
+ *  `target`. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
+ *  expansion rule lives in exactly one place. */
+function expandProviderDefaults(provider: ModelOptionProvider, target: Set<string>): void {
+  const families = collapseModelFamilies(provider.models ?? [])
+
+  for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
+    target.add(modelVisibilityKey(provider.slug, family.id))
+  }
 }
 
 /** Resolve the canonical working set: the user's stored keys plus the curated
@@ -148,11 +155,7 @@ export function resolveVisibleKeys(
       continue
     }
 
-    const families = collapseModelFamilies(provider.models ?? [])
-
-    for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
-      next.add(modelVisibilityKey(provider.slug, family.id))
-    }
+    expandProviderDefaults(provider, next)
   }
 
   return next
@@ -180,14 +183,15 @@ export function effectiveVisibleKeys(
  *  Seeds from `resolveVisibleKeys` (NOT `effectiveVisibleKeys`) so other
  *  providers' hide-all sentinels survive the persist. When the last visible
  *  model of a provider is toggled off, a sentinel records the explicit
- *  hide-all; re-enabling any model clears that provider's sentinel. */
+ *  hide-all; re-enabling a model clears THAT provider's sentinel (only). */
 export function toggleModelVisibility(
   stored: Set<string> | null,
   providers: readonly ModelOptionProvider[],
   providerSlug: string,
   model: string
 ): Set<string> {
-  const next = new Set(resolveVisibleKeys(stored, providers))
+  // `resolveVisibleKeys` always returns a fresh Set, so we can mutate it directly.
+  const next = resolveVisibleKeys(stored, providers)
   const key = modelVisibilityKey(providerSlug, model)
   const sentinel = emptyProviderSentinelKey(providerSlug)
 
@@ -203,6 +207,10 @@ export function toggleModelVisibility(
       next.add(sentinel)
     }
   } else {
+    // Re-enabling promotes a previously hidden-all provider to an explicit
+    // set of exactly the one re-enabled model — the curated defaults are NOT
+    // restored. Intentional: "you hid everything, you get back only what you
+    // re-enable." (Locked in by the sentinel-clear-on-re-enable test.)
     next.delete(sentinel)
     next.add(key)
   }

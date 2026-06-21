@@ -1141,6 +1141,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".hwpx": "application/vnd.hancom.hwpx",
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",

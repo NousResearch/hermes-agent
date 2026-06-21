@@ -5145,6 +5145,96 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    def _discord_attachment_display_name(self, att, ext: str = "") -> str:
+        """Return the most human-readable Discord attachment name available.
+
+        Discord may sanitize non-ASCII characters in ``filename`` while
+        preserving the original display name in ``title``. Prefer that title
+        for transcript/cache display, and append the extension from
+        ``filename`` when Discord omitted it.
+        """
+        raw_name = (
+            getattr(att, "title", None)
+            or getattr(att, "filename", None)
+            or f"document{ext or '.bin'}"
+        )
+        display_name = str(raw_name).replace("\x00", "").strip()
+        display_name = re.sub(r"[\r\n\t/\\]+", "_", display_name)
+        if not display_name or display_name in {".", ".."}:
+            display_name = f"document{ext or '.bin'}"
+        if ext and not display_name.lower().endswith(ext.lower()):
+            display_name = f"{display_name}{ext}"
+        return display_name
+
+    def _extract_hwpx_text(self, data: bytes, max_chars: int = 100_000) -> str:
+        """Best-effort plain-text extraction for HWPX documents.
+
+        HWPX is a ZIP container with Hangul word processor XML parts. Extract
+        text from section XML ``hp:t`` nodes without adding a converter
+        dependency. XML bytes are capped before regex scanning so malformed or
+        adversarial attachments cannot balloon processing indefinitely.
+        """
+        import html
+        import io
+        import zipfile
+
+        chunks: list[str] = []
+        total_xml_bytes = 0
+        max_xml_bytes = 4 * 1024 * 1024
+        text_node_re = re.compile(
+            rb"<(?:[A-Za-z_][\w.-]*:)?t(?:\s[^>]*)?>(.*?)</(?:[A-Za-z_][\w.-]*:)?t>",
+            re.DOTALL,
+        )
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                infos = {
+                    info.filename: info for info in zf.infolist()
+                    if not info.is_dir() and info.filename.endswith(".xml")
+                }
+                names = [
+                    name for name in infos
+                    if name.startswith("Contents/section")
+                ]
+                if not names:
+                    names = [
+                        name for name in infos
+                        if name.startswith("Contents/")
+                    ]
+
+                for name in sorted(names):
+                    info = infos[name]
+                    if info.file_size <= 0:
+                        continue
+                    if total_xml_bytes + info.file_size > max_xml_bytes:
+                        break
+                    total_xml_bytes += info.file_size
+                    try:
+                        xml_bytes = zf.read(name)
+                    except Exception:
+                        continue
+                    for match in text_node_re.finditer(xml_bytes):
+                        raw_text = match.group(1)
+                        try:
+                            decoded = raw_text.decode("utf-8")
+                        except UnicodeDecodeError:
+                            decoded = raw_text.decode("utf-8", errors="ignore")
+                        text = html.unescape(decoded).strip()
+                        if text:
+                            chunks.append(text)
+                            if sum(len(part) + 1 for part in chunks) >= max_chars:
+                                break
+                    if sum(len(part) + 1 for part in chunks) >= max_chars:
+                        break
+        except Exception:
+            return ""
+
+        text = " ".join(chunks)
+        text = re.sub(r"[ \t]+", " ", text).strip()
+        if len(text) > max_chars:
+            return text[:max_chars].rstrip() + "\n[truncated]"
+        return text
+
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -5299,6 +5389,14 @@ class DiscordAdapter(BasePlatformAdapter):
                     # the path to the agent.
                     msg_type = MessageType.DOCUMENT
                     break
+                elif att.filename:
+                    # Some document types (notably .hwpx from Discord) arrive
+                    # without content_type. Still classify supported extensions
+                    # as documents so gateway/run.py injects the local path.
+                    _, doc_ext = os.path.splitext(att.filename)
+                    if doc_ext.lower() in SUPPORTED_DOCUMENT_TYPES:
+                        msg_type = MessageType.DOCUMENT
+                        break
 
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
@@ -5384,6 +5482,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = mime_to_ext.get(content_type, "")
                 allow_any_attachment = self._discord_allow_any_attachment()
                 in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
+                display_name = self._discord_attachment_display_name(att, ext)
                 if not in_allowlist and not allow_any_attachment:
                     logger.warning(
                         "[Discord] Unsupported document type '%s' (%s), skipping",
@@ -5394,13 +5493,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     if max_doc_bytes and att.size and att.size > max_doc_bytes:
                         logger.warning(
                             "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
-                            att.size, max_doc_bytes, att.filename,
+                            att.size, max_doc_bytes, display_name,
                         )
                     else:
                         try:
                             raw_bytes = await self._cache_discord_document(att, ext)
                             cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext or '.bin'}"
+                                raw_bytes, display_name
                             )
                             if in_allowlist:
                                 doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
@@ -5426,8 +5525,6 @@ class DiscordAdapter(BasePlatformAdapter):
                             if in_allowlist and ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
-                                    display_name = att.filename or f"document{ext}"
-                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
                                     injection = f"[Content of {display_name}]:\n{text_content}"
                                     if pending_text_injection:
                                         pending_text_injection = f"{pending_text_injection}\n\n{injection}"
@@ -5435,6 +5532,14 @@ class DiscordAdapter(BasePlatformAdapter):
                                         pending_text_injection = injection
                                 except UnicodeDecodeError:
                                     pass
+                            elif in_allowlist and ext == ".hwpx":
+                                text_content = self._extract_hwpx_text(raw_bytes)
+                                if text_content:
+                                    injection = f"[Extracted text of {display_name}]:\n{text_content}"
+                                    if pending_text_injection:
+                                        pending_text_injection = f"{pending_text_injection}\n\n{injection}"
+                                    else:
+                                        pending_text_injection = injection
                             # NOTE: for the allow_any_attachment path we deliberately
                             # do NOT inject a path string here. ``gateway/run.py``
                             # already detects DOCUMENT-typed events with
@@ -5445,7 +5550,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         except Exception as e:
                             logger.warning(
                                 "[Discord] Failed to cache document %s: %s",
-                                att.filename, e, exc_info=True,
+                                display_name, e, exc_info=True,
                             )
 
         # Use normalized_content (saved before auto-threading) instead of message.content,

@@ -54,6 +54,60 @@ class RecordingVikingClient:
         return {"result": {"memories": [], "resources": []}}
 
 
+class FakeResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+class TestVikingClientTenantIdentityRetry:
+    def test_root_tenant_scoped_error_retries_with_tenant_headers(self, monkeypatch):
+        calls = []
+
+        class FakeHttpx:
+            def post(self, url, json=None, headers=None, timeout=None, **kwargs):
+                calls.append({"url": url, "headers": dict(headers or {})})
+                if len(calls) == 1:
+                    return FakeResponse(
+                        400,
+                        {
+                            "status": "error",
+                            "error": {
+                                "code": "INVALID_ARGUMENT",
+                                "message": (
+                                    "ROOT requests to tenant-scoped APIs must include "
+                                    "X-OpenViking-Account and X-OpenViking-User headers. "
+                                    "Use a user key for regular data access."
+                                ),
+                            },
+                        },
+                    )
+                return FakeResponse(200, {"status": "ok", "result": {"memories": []}})
+
+        monkeypatch.setattr(openviking_plugin, "_get_httpx", lambda: FakeHttpx())
+        client = openviking_plugin._VikingClient(
+            "http://openviking.test",
+            "root-key",
+            account="default",
+            user="default",
+            agent="hermes",
+        )
+
+        assert client.post("/api/v1/search/find", {"query": "hello"}) == {
+            "status": "ok",
+            "result": {"memories": []},
+        }
+        assert len(calls) == 2
+        assert "X-OpenViking-Account" not in calls[0]["headers"]
+        assert "X-OpenViking-User" not in calls[0]["headers"]
+        assert calls[1]["headers"]["X-OpenViking-Account"] == "default"
+        assert calls[1]["headers"]["X-OpenViking-User"] == "default"
+
+
 class TestOpenVikingSummaryUriNormalization:
     def test_normalize_summary_uri_maps_pseudo_files_to_parent_directory(self):
         assert OpenVikingMemoryProvider._normalize_summary_uri("viking://user/hermes/.overview.md") == "viking://user/hermes"

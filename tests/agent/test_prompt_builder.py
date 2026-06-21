@@ -522,6 +522,51 @@ class TestBuildSkillsSystemPrompt:
         assert "imessage" in result
         assert "Send iMessages" in result
 
+    def test_environment_gating_survives_snapshot_fast_path(
+        self, monkeypatch, tmp_path
+    ):
+        """An env-gated skill hidden on the cold scan must stay hidden when the
+        prompt is rebuilt from the disk snapshot.
+
+        The snapshot fast path re-checks platforms but used to forget the
+        environment gate, so kanban/s6-only skills leaked back into the index
+        on every process after the first.
+        """
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "ops"
+
+        gated_skill = skills_dir / "s6-supervisor"
+        gated_skill.mkdir(parents=True)
+        (gated_skill / "SKILL.md").write_text(
+            "---\nname: s6-supervisor\ndescription: Manage s6 services\n"
+            "environments: [s6]\n---\n"
+        )
+
+        uni_skill = skills_dir / "web-search"
+        uni_skill.mkdir()
+        (uni_skill / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        # s6 environment inactive: the gated skill must never be offered.
+        with patch("agent.skill_utils._detect_environment", return_value=False):
+            # Cold path: full scan, writes the snapshot.
+            cold = build_skills_system_prompt()
+            assert "web-search" in cold
+            assert "s6-supervisor" not in cold
+
+            # Drop only the in-process cache so the rebuild is served from the
+            # disk snapshot (the fast path), not a fresh filesystem scan.
+            clear_skills_system_prompt_cache()
+            warm = build_skills_system_prompt()
+
+        assert "web-search" in warm
+        assert "s6-supervisor" not in warm
+
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

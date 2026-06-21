@@ -1490,6 +1490,41 @@ class MCPServerTask:
             return True
         return getattr(caps, "tools", None) is not None
 
+    def _ping_is_safe(self) -> bool:
+        """Whether it is safe to send a ``ping`` keepalive to this server.
+
+        Per the MCP JSON-RPC spec, ``ping`` is an *optional* method — servers
+        are not required to implement it.  Sending it unconditionally to a
+        server that does not support it causes the server to return
+        ``Unknown method: ping``, which the keepalive loop previously treated
+        as a failure and triggered a reconnect every ~3 minutes (#50028).
+
+        We probe the server's ``experimental`` capabilities block first (some
+        servers advertise ping there), then fall back to a conservative
+        default: allow ping only for HTTP-transport servers, where the SDK
+        ``ping`` maps to a cheap OPTIONS/GET round-trip that validates the TCP
+        connection without issuing a real JSON-RPC call.  stdio servers that
+        don't implement the method return a JSON-RPC error.
+
+        Callers that get a ``-32601 Method not found`` back from an actual
+        ``send_ping()`` should still swallow the error and skip keepalive
+        rather than reconnecting — this helper is best-effort, not definitive.
+        """
+        init_result = self.initialize_result
+        if init_result is None:
+            # No capability info yet — safe default: HTTP transports usually
+            # tolerate ping; stdio is risky, skip for both to be safe.
+            return False
+        # Check experimental capabilities block (some servers advertise here)
+        caps = getattr(init_result, "capabilities", None)
+        if caps is not None:
+            experimental = getattr(caps, "experimental", None) or {}
+            if isinstance(experimental, dict) and "ping" in experimental:
+                return True
+        # Conservative safe default: trust ping only on HTTP transports where
+        # the SDK falls back to a connection probe if the server returns error.
+        return self._is_http()
+
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
     async def _refresh_tools_task(self):
@@ -1720,13 +1755,29 @@ class MCPServerTask:
                     try:
                         await self._keepalive_probe()
                     except Exception as exc:
-                        logger.warning(
-                            "MCP server '%s' keepalive failed, "
-                            "triggering reconnect: %s",
-                            self.name, exc,
-                        )
-                        self._reconnect_event.set()
-                        break
+                        exc_str = str(exc)
+                        # Swallow JSON-RPC -32601 / "Unknown method" errors
+                        # that indicate the server doesn't implement the
+                        # keepalive method.  These are non-fatal — we don't
+                        # have a better probe, and the connection may still be
+                        # perfectly healthy.  Any other error (timeout, EOF,
+                        # transport failure) is a genuine keepalive failure
+                        # and warrants a reconnect.
+                        if "-32601" in exc_str or "unknown method" in exc_str.lower():
+                            logger.debug(
+                                "MCP server '%s': keepalive method not supported "
+                                "(server returned '%s') — skipping reconnect; "
+                                "connection remains open",
+                                self.name, exc_str,
+                            )
+                        else:
+                            logger.warning(
+                                "MCP server '%s' keepalive failed, "
+                                "triggering reconnect: %s",
+                                self.name, exc,
+                            )
+                            self._reconnect_event.set()
+                            break
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():

@@ -1,12 +1,14 @@
 """Tests for Windows Service backend implementation.
 
 Tests cover:
-- Service module imports and attributes (existing)
-- Service name default/profile consistency (Blocker 3)
-- install_service force=False ownership check (Blocker 5)
-- Explicit service install failure no silent fallback (Blocker 6)
-- Gateway crash triggers failure/recovery semantics (Blocker 4)
-- SvcStop planned marker import stability (Blocker 7)
+- Service module imports and attributes
+- Service name default/profile consistency
+- install_service force=False ownership check
+- Explicit service install failure no silent fallback
+- Gateway crash triggers failure/recovery semantics
+- SvcStop planned marker write and graceful stop
+- SystemExit code mapping (_resolve_exit_code)
+- Marker parent directory creation (HIGH 2)
 """
 
 import sys
@@ -57,6 +59,10 @@ class TestServiceModuleImports:
         from hermes_cli._hermes_gateway_service import configure_recovery_actions
         assert callable(configure_recovery_actions)
 
+    def test_import_resolve_exit_code(self):
+        from hermes_cli._hermes_gateway_service import _resolve_exit_code
+        assert callable(_resolve_exit_code)
+
 
 class TestServiceClassAttributes:
     """Test HermesGatewayService class attributes."""
@@ -75,7 +81,7 @@ class TestServiceClassAttributes:
 
 
 class TestServiceNameScoping:
-    """Test service name generation (Blocker 3)."""
+    """Test service name generation."""
 
     def test_default_service_name(self):
         from hermes_cli.gateway_windows import get_service_name
@@ -132,7 +138,7 @@ class TestLifecycleFunctionsExist:
         assert callable(service_status)
 
     def test_install_service_accepts_allow_fallback(self):
-        """install_service should accept allow_fallback parameter (Blocker 6)."""
+        """install_service should accept allow_fallback parameter."""
         import inspect
         from hermes_cli.gateway_windows import install_service
         sig = inspect.signature(install_service)
@@ -160,11 +166,276 @@ class TestPyprojectDependency:
 
 
 # =========================================================================
-# New tests for Blockers 4, 5, 6, 7
+# SystemExit code mapping (BLOCKER 2)
+# =========================================================================
+
+class TestResolveExitCode:
+    """Test _resolve_exit_code maps SystemExit.code correctly."""
+
+    def test_none_returns_zero(self):
+        """SystemExit(None) => 0 (success)."""
+        from hermes_cli._hermes_gateway_service import _resolve_exit_code
+        assert _resolve_exit_code(None) == 0
+
+    def test_zero_returns_zero(self):
+        """SystemExit(0) => 0 (explicit success)."""
+        from hermes_cli._hermes_gateway_service import _resolve_exit_code
+        assert _resolve_exit_code(0) == 0
+
+    def test_positive_int_returns_same(self):
+        """SystemExit(42) => 42."""
+        from hermes_cli._hermes_gateway_service import _resolve_exit_code
+        assert _resolve_exit_code(42) == 42
+
+    def test_negative_int_returns_same(self):
+        """SystemExit(-1) => -1."""
+        from hermes_cli._hermes_gateway_service import _resolve_exit_code
+        assert _resolve_exit_code(-1) == -1
+
+    def test_string_returns_one(self):
+        """SystemExit("error") => 1 (non-int maps to 1)."""
+        from hermes_cli._hermes_gateway_service import _resolve_exit_code
+        assert _resolve_exit_code("error") == 1
+
+
+class TestGatewayExitCodeTracking:
+    """Test gateway exit code is set correctly on various exit conditions."""
+
+    def test_gateway_exit_code_starts_zero(self):
+        """_gateway_exit_code should be 0 by default."""
+        from hermes_cli._hermes_gateway_service import _gateway_exit_code
+        assert _gateway_exit_code == 0
+
+    def test_run_gateway_sets_zero_on_system_exit_zero(self):
+        """SystemExit(0) should NOT be treated as failure."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+
+        with patch('hermes_cli.gateway.run_gateway', side_effect=SystemExit(0)):
+            service._run_gateway()
+
+        import hermes_cli._hermes_gateway_service as svc_mod
+        assert svc_mod._gateway_exit_code == 0
+        assert service._stop_event.is_set()
+
+    def test_run_gateway_sets_zero_on_system_exit_none(self):
+        """SystemExit(None) should NOT be treated as failure."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+
+        with patch('hermes_cli.gateway.run_gateway', side_effect=SystemExit(None)):
+            service._run_gateway()
+
+        import hermes_cli._hermes_gateway_service as svc_mod
+        assert svc_mod._gateway_exit_code == 0
+        assert service._stop_event.is_set()
+
+    def test_run_gateway_sets_nonzero_on_system_exit_nonzero(self):
+        """SystemExit(5) should be treated as failure."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+
+        with patch('hermes_cli.gateway.run_gateway', side_effect=SystemExit(5)):
+            service._run_gateway()
+
+        import hermes_cli._hermes_gateway_service as svc_mod
+        assert svc_mod._gateway_exit_code == 5
+        assert service._stop_event.is_set()
+
+    def test_run_gateway_sets_nonzero_on_exception(self):
+        """Unhandled exception should be treated as failure."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+
+        with patch('hermes_cli.gateway.run_gateway', side_effect=Exception("crash")):
+            service._run_gateway()
+
+        import hermes_cli._hermes_gateway_service as svc_mod
+        assert svc_mod._gateway_exit_code == 1
+        assert service._stop_event.is_set()
+
+
+# =========================================================================
+# SvcStop import path and graceful stop (BLOCKER 7, HIGH 1)
+# =========================================================================
+
+class TestSvcStopBehavior:
+    """Test SvcStop planned marker write and graceful stop."""
+
+    def test_svc_stop_handles_write_failure(self):
+        """SvcStop should log warning if marker write fails."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+        service._gateway_thread = None
+
+        # Mock ReportServiceStatus to avoid SCM calls
+        service.ReportServiceStatus = MagicMock()
+
+        # Mock _write_planned_stop_marker to raise
+        service._write_planned_stop_marker = MagicMock(side_effect=Exception("write failed"))
+
+        # SvcStop should not raise even if marker write fails
+        with patch('hermes_cli._hermes_gateway_service.logging') as mock_logging:
+            service.SvcStop()
+            # Should log warning
+            mock_logging.warning.assert_any_call(
+                "Failed to write planned-stop marker: %s",
+                mock_logging.warning.call_args_list[0][0][1]
+            )
+
+        # stop_event should still be set
+        assert service._stop_event.is_set()
+
+    def test_svc_stop_writes_marker_on_success(self):
+        """SvcStop should call _write_planned_stop_marker on success."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+        service._gateway_thread = None
+
+        # Mock ReportServiceStatus to avoid SCM calls
+        service.ReportServiceStatus = MagicMock()
+
+        # Mock _write_planned_stop_marker to succeed
+        service._write_planned_stop_marker = MagicMock()
+
+        service.SvcStop()
+
+        # Should call _write_planned_stop_marker
+        service._write_planned_stop_marker.assert_called_once()
+
+        # stop_event should be set
+        assert service._stop_event.is_set()
+
+    def test_svc_stop_waits_for_gateway_thread(self):
+        """SvcStop should wait for gateway thread to exit (HIGH 1)."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+        service.ReportServiceStatus = MagicMock()
+        service._write_planned_stop_marker = MagicMock()
+
+        # Create a "gateway thread" that exits when stop_event is set
+        thread_exited = threading.Event()
+
+        def fake_gateway():
+            service._stop_event.wait()
+            thread_exited.set()
+
+        service._gateway_thread = threading.Thread(target=fake_gateway)
+        service._gateway_thread.start()
+
+        # SvcStop should signal stop and wait for thread to finish
+        service.SvcStop()
+
+        # Thread should have exited
+        assert thread_exited.is_set()
+        assert not service._gateway_thread.is_alive()
+
+    def test_svc_stop_reports_stop_pending(self):
+        """SvcStop should report SERVICE_STOP_PENDING to SCM."""
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+        import win32service
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+        service._stop_event = threading.Event()
+        service._gateway_thread = None
+        service.ReportServiceStatus = MagicMock()
+        service._write_planned_stop_marker = MagicMock()
+
+        service.SvcStop()
+
+        # Should report STOP_PENDING first, then STOPPED
+        calls = service.ReportServiceStatus.call_args_list
+        assert calls[0] == call(
+            win32service.SERVICE_STOP_PENDING,
+            waitHint=35 * 1000,
+        )
+        assert calls[-1] == call(win32service.SERVICE_STOPPED)
+
+
+# =========================================================================
+# Planned-stop marker directory creation (HIGH 2)
+# =========================================================================
+
+class TestPlannedStopMarkerDirCreation:
+    """Test that _write_planned_stop_marker creates parent directory if needed."""
+
+    def test_marker_creates_parent_dir(self):
+        """_write_planned_stop_marker should create HERMES_HOME dir if missing."""
+        import tempfile
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Use a subdirectory that doesn't exist
+            missing_dir = os.path.join(tmpdir, "nonexistent", "hermes")
+            with patch.dict('os.environ', {'HERMES_HOME': missing_dir}):
+                service._write_planned_stop_marker()
+
+                marker_path = Path(missing_dir) / ".gateway-planned-stop.json"
+                assert marker_path.exists()
+
+                # Verify content
+                import json
+                with open(marker_path, 'r') as f:
+                    data = json.load(f)
+                assert 'target_pid' in data
+                assert 'written_at' in data
+
+    def test_marker_uses_hermes_home_env(self):
+        """_write_planned_stop_marker should prefer HERMES_HOME env var."""
+        import tempfile
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict('os.environ', {'HERMES_HOME': tmpdir}):
+                service._write_planned_stop_marker()
+
+                marker_path = Path(tmpdir) / ".gateway-planned-stop.json"
+                assert marker_path.exists()
+
+    def test_marker_handles_write_error_gracefully(self):
+        """_write_planned_stop_marker should raise on I/O errors (caller handles)."""
+        import tempfile
+        from hermes_cli._hermes_gateway_service import HermesGatewayService
+
+        service = HermesGatewayService.__new__(HermesGatewayService)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict('os.environ', {'HERMES_HOME': tmpdir}):
+                # Mock open to raise on the marker file write
+                real_open = open
+                def mock_open(path, *args, **kwargs):
+                    if '.gateway-planned-stop.tmp' in str(path):
+                        raise OSError("Simulated write failure")
+                    return real_open(path, *args, **kwargs)
+                with patch('builtins.open', side_effect=mock_open):
+                    with pytest.raises(OSError, match="Simulated write failure"):
+                        service._write_planned_stop_marker()
+
+
+# =========================================================================
+# Install force/ownership check
 # =========================================================================
 
 class TestInstallServiceForceCheck:
-    """Test install_service force=False ownership check (Blocker 5)."""
+    """Test install_service force=False ownership check."""
 
     def test_install_service_rejects_non_hermes_service(self):
         """install_service(force=False) should not delete a non-Hermes service."""
@@ -192,7 +463,7 @@ class TestInstallServiceForceCheck:
 
 
 class TestExplicitServiceNoFallback:
-    """Test explicit --service-type service doesn't fallback (Blocker 6)."""
+    """Test explicit --service-type service doesn't fallback."""
 
     def test_explicit_service_no_fallback_on_pywin32_missing(self):
         """When allow_fallback=False and pywin32 fails, should not call install()."""
@@ -220,120 +491,8 @@ class TestExplicitServiceNoFallback:
                 mock_install.assert_not_called()
 
 
-class TestGatewayCrashRecovery:
-    """Test gateway crash triggers failure/recovery semantics (Blocker 4)."""
-
-    def test_gateway_exit_code_tracked(self):
-        """_gateway_exit_code should be set on gateway crash."""
-        from hermes_cli._hermes_gateway_service import _gateway_exit_code
-        # Should be 0 by default
-        assert _gateway_exit_code == 0
-
-    def test_run_gateway_sets_exit_code_on_exception(self):
-        """_run_gateway should set non-zero exit code on exception."""
-        from hermes_cli._hermes_gateway_service import (
-            HermesGatewayService, _gateway_exit_code
-        )
-
-        # Create a service instance
-        service = HermesGatewayService.__new__(HermesGatewayService)
-        service._stop_event = threading.Event()
-
-        # Mock run_gateway to raise
-        with patch('hermes_cli.gateway.run_gateway', side_effect=Exception("crash")):
-            service._run_gateway()
-
-        # Exit code should be non-zero
-        import hermes_cli._hermes_gateway_service as svc_mod
-        assert svc_mod._gateway_exit_code != 0
-
-    def test_run_gateway_sets_exit_code_on_system_exit(self):
-        """_run_gateway should set exit code on SystemExit."""
-        from hermes_cli._hermes_gateway_service import HermesGatewayService
-
-        service = HermesGatewayService.__new__(HermesGatewayService)
-        service._stop_event = threading.Event()
-
-        with patch('hermes_cli.gateway.run_gateway', side_effect=SystemExit(42)):
-            service._run_gateway()
-
-        import hermes_cli._hermes_gateway_service as svc_mod
-        assert svc_mod._gateway_exit_code == 42
-
-
-class TestSvcStopImportPath:
-    """Test SvcStop planned marker import stability (Blocker 7)."""
-
-    def test_svc_stop_handles_write_failure(self):
-        """SvcStop should log warning if marker write fails."""
-        from hermes_cli._hermes_gateway_service import HermesGatewayService
-
-        service = HermesGatewayService.__new__(HermesGatewayService)
-        service._stop_event = threading.Event()
-
-        # Mock ReportServiceStatus to avoid SCM calls
-        service.ReportServiceStatus = MagicMock()
-
-        # Mock _write_planned_stop_marker to raise
-        service._write_planned_stop_marker = MagicMock(side_effect=Exception("write failed"))
-
-        # SvcStop should not raise even if marker write fails
-        with patch('hermes_cli._hermes_gateway_service.logging') as mock_logging:
-            service.SvcStop()
-            # Should log warning
-            mock_logging.warning.assert_called_once()
-            assert "planned-stop marker" in str(mock_logging.warning.call_args)
-
-        # stop_event should still be set
-        assert service._stop_event.is_set()
-
-    def test_svc_stop_writes_marker_on_success(self):
-        """SvcStop should call _write_planned_stop_marker on success."""
-        from hermes_cli._hermes_gateway_service import HermesGatewayService
-
-        service = HermesGatewayService.__new__(HermesGatewayService)
-        service._stop_event = threading.Event()
-
-        # Mock ReportServiceStatus to avoid SCM calls
-        service.ReportServiceStatus = MagicMock()
-
-        # Mock _write_planned_stop_marker to succeed
-        service._write_planned_stop_marker = MagicMock()
-
-        service.SvcStop()
-
-        # Should call _write_planned_stop_marker
-        service._write_planned_stop_marker.assert_called_once()
-
-        # stop_event should be set
-        assert service._stop_event.is_set()
-
-    def test_write_planned_stop_marker_creates_file(self):
-        """_write_planned_stop_marker should create the marker file."""
-        import json
-        import tempfile
-        from hermes_cli._hermes_gateway_service import HermesGatewayService
-
-        service = HermesGatewayService.__new__(HermesGatewayService)
-
-        # Use a temporary directory for HERMES_HOME
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.dict('os.environ', {'HERMES_HOME': tmpdir}):
-                service._write_planned_stop_marker()
-
-                # Check that marker file was created
-                marker_path = Path(tmpdir) / ".gateway-planned-stop.json"
-                assert marker_path.exists()
-
-                # Check that marker contains required fields
-                with open(marker_path, 'r') as f:
-                    data = json.load(f)
-                assert 'target_pid' in data
-                assert 'written_at' in data
-
-
 class TestServiceScriptNameArgument:
-    """Test service script accepts --name argument (Blocker 3)."""
+    """Test service script accepts --name argument."""
 
     def test_main_accepts_name_arg(self):
         """main() should accept --name argument."""

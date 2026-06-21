@@ -753,10 +753,16 @@ def _handle_create(args: dict, **kw) -> str:
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
-    # Stamp the originating session id when the agent loop runs under
-    # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
-    # CLI / dashboard paths and on legacy hosts that don't set the env.
-    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    # Stamp the originating session id when the agent loop runs under ACP
+    # (which binds HERMES_SESSION_ID in a per-session ContextVar before invoking
+    # tools). Read it through get_session_env so concurrent ACP sessions sharing
+    # the process-global os.environ don't leak each other's id; get_session_env
+    # falls back to os.environ for CLI / legacy hosts. NULL on CLI / dashboard
+    # paths that don't set it at all.
+    from gateway.session_context import get_session_env
+    # ``get_session_env`` returns "" (not None) when unset; normalize so an
+    # absent id stays NULL rather than being stored as an empty string.
+    session_id = args.get("session_id") or get_session_env("HERMES_SESSION_ID") or None
     priority = args.get("priority")
     # Resolve workspace. If the caller passed one explicitly, honor it.
     # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)

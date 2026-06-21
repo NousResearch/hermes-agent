@@ -1460,18 +1460,23 @@ class HermesACPAgent(acp.Agent):
 
         def _run_agent() -> dict:
             nonlocal previous_approval_cb, previous_interactive, edit_approval_token, previous_session_id
-            # Bind HERMES_SESSION_KEY for this session so per-session caches
-            # (e.g. the interactive sudo password cache in tools.terminal_tool)
-            # scope to the ACP session rather than leaking across sessions
-            # that land on the same reused executor thread. This call runs
-            # inside a contextvars.copy_context() below, so the ContextVar
-            # write is isolated from other concurrent ACP sessions.
+            # Bind HERMES_SESSION_KEY *and* HERMES_SESSION_ID for this session so
+            # per-session state (the interactive sudo password cache in
+            # tools.terminal_tool, and the originating-session stamp read by
+            # tools like kanban_create) scopes to the ACP session rather than
+            # leaking across sessions that land on the same reused executor
+            # thread. This call runs inside a contextvars.copy_context() below,
+            # so the ContextVar writes are isolated from other concurrent ACP
+            # sessions — unlike the process-global os.environ mirror set below,
+            # which two concurrent prompts would clobber.
             try:
                 from gateway.session_context import (
                     clear_session_vars,
                     set_session_vars,
                 )
-                session_tokens = set_session_vars(session_key=session_id)
+                session_tokens = set_session_vars(
+                    session_key=session_id, session_id=session_id
+                )
             except Exception:
                 session_tokens = None
                 clear_session_vars = None  # type: ignore[assignment]
@@ -1494,11 +1499,12 @@ class HermesACPAgent(acp.Agent):
             # and the non-interactive auto-approve path must not fire.
             previous_interactive = os.environ.get("HERMES_INTERACTIVE")
             os.environ["HERMES_INTERACTIVE"] = "1"
-            # Propagate the originating ACP session id to tools that want to
-            # tag side-effects with it (e.g. ``kanban_create`` stamps it on
-            # the new task so clients can render a per-session board). Save
-            # and restore around the agent call so a re-used executor thread
-            # never leaks one session's id into the next session's tools.
+            # Legacy process-global mirror of the originating ACP session id for
+            # tools/hosts that still read os.environ directly. The ContextVar set
+            # via set_session_vars() above is the concurrency-safe source of
+            # truth (read through get_session_env); this env mirror is kept only
+            # for non-ContextVar-aware readers. Save and restore around the agent
+            # call so a re-used executor thread doesn't leave a stale id behind.
             previous_session_id = os.environ.get("HERMES_SESSION_ID")
             os.environ["HERMES_SESSION_ID"] = session_id
             try:

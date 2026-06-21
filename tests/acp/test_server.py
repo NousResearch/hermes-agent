@@ -1251,6 +1251,48 @@ class TestPrompt:
         assert os.environ.get("HERMES_SESSION_ID") == "outer-sess"
 
     @pytest.mark.asyncio
+    async def test_prompt_binds_session_id_in_isolated_contextvar(self, agent, monkeypatch):
+        """The originating ACP session id must reach tools through the
+        per-session ContextVar (concurrency-safe), not only the process-global
+        ``os.environ`` mirror. Reading it via ``get_session_env`` inside the
+        agent loop must return the active session even after a *concurrent*
+        session has clobbered ``os.environ`` — otherwise tools like
+        ``kanban_create`` would stamp the wrong id when two ACP sessions run on
+        the shared executor at once."""
+        from gateway.session_context import get_session_env
+
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        captured: dict[str, str] = {}
+
+        def mock_run(user_message, conversation_history=None, task_id=None, **kwargs):
+            # Simulate a second ACP session, running concurrently on another
+            # executor thread, overwriting the shared process-global env.
+            os.environ["HERMES_SESSION_ID"] = "other-concurrent-session"
+            # Despite the clobber, the ContextVar-aware accessor must still
+            # resolve to *this* session's id.
+            captured["ctx"] = get_session_env("HERMES_SESSION_ID")
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hi")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert captured["ctx"] == new_resp.session_id, (
+            "HERMES_SESSION_ID must resolve to the originating ACP session via "
+            "the isolated ContextVar even when os.environ was overwritten by a "
+            "concurrent session"
+        )
+
+    @pytest.mark.asyncio
     async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
         """If ACP already streamed response chunks, final_response should not be sent again."""
         new_resp = await agent.new_session(cwd=".")

@@ -774,3 +774,55 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=live_task
         ) is True
+
+
+class TestTelegramFollowupGraceEnvParsing:
+    """Regression: malformed HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS must not crash (issue #50120)."""
+
+    def test_malformed_value_falls_back_to_default(self, monkeypatch):
+        """A non-numeric env var falls back to 3.0s instead of raising ValueError."""
+        from gateway.run import _float_env
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "abc")
+        result = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
+        assert result == 3.0
+
+    def test_empty_value_falls_back_to_default(self, monkeypatch):
+        """An empty string falls back to the default."""
+        from gateway.run import _float_env
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "")
+        result = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
+        assert result == 3.0
+
+    def test_whitespace_value_falls_back_to_default(self, monkeypatch):
+        """Whitespace-only value falls back to the default."""
+        from gateway.run import _float_env
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "  ")
+        result = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
+        assert result == 3.0
+
+    def test_comma_decimal_falls_back_to_default(self, monkeypatch):
+        """Locale-style comma decimal (e.g. '1,5') falls back to default."""
+        from gateway.run import _float_env
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "1,5")
+        result = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
+        assert result == 3.0
+
+    def test_valid_value_parsed_correctly(self, monkeypatch):
+        """A valid numeric string is parsed normally."""
+        from gateway.run import _float_env
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "5.5")
+        result = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
+        assert result == 5.5
+
+    def test_unset_uses_default(self, monkeypatch):
+        """When the env var is not set, the default is returned."""
+        from gateway.run import _float_env
+
+        monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+        result = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
+        assert result == 3.0

@@ -5,12 +5,15 @@ import json
 import sys
 import types
 
+import pytest
+
 for mod in ("tools.registry",):
     if mod not in sys.modules:
         stub = types.ModuleType(mod)
         stub.registry = types.SimpleNamespace(register=lambda **_kw: None)
         sys.modules[mod] = stub
 
+import tools.cyber_live_usb as live_usb  # noqa: E402
 from tools.cyber_live_usb import _handle  # noqa: E402
 
 
@@ -58,3 +61,89 @@ class TestLiveUsbTool:
     def test_no_action_returns_error(self) -> None:
         out = json.loads(_handle({}))
         assert "error" in out
+
+    def test_build_requires_operator_approval_when_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.delenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", raising=False)
+        monkeypatch.setattr(
+            live_usb,
+            "_run",
+            lambda *_args, **_kw: pytest.fail("build must fail before running build_iso.sh without approval"),
+        )
+
+        out = json.loads(_handle({"action": "build"}))
+
+        assert out["approved"] is False
+        assert "operator approval" in out["error"]
+        assert out["reason"] == "missing HERMES_AGENTCYBER_LIVE_USB_APPROVAL"
+
+    def test_write_requires_operator_approval_before_touching_device(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = {"is_block_device": False}
+
+        def fake_is_block_device(_path) -> bool:  # noqa: ANN001
+            called["is_block_device"] = True
+            return True
+
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.delenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", raising=False)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", fake_is_block_device)
+        monkeypatch.setattr(
+            live_usb,
+            "_run",
+            lambda *_args, **_kw: pytest.fail("write must fail before invoking write_usb.sh without approval"),
+        )
+
+        out = json.loads(_handle({"action": "write", "device": "/dev/sdz", "iso": "/tmp/hermes.iso"}))
+
+        assert out["approved"] is False
+        assert "operator approval" in out["error"]
+        assert called["is_block_device"] is False
+
+    def test_provision_requires_operator_approval_when_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.delenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", raising=False)
+        monkeypatch.setattr(
+            live_usb,
+            "_run",
+            lambda *_args, **_kw: pytest.fail("provision must fail before invoking provision.sh without approval"),
+        )
+
+        out = json.loads(_handle({"action": "provision", "device": "/dev/sdz1"}))
+
+        assert out["approved"] is False
+        assert "operator approval" in out["error"]
+
+    def test_write_approved_path_is_mocked_and_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd: list[str], timeout: int = 300) -> dict:
+            captured["cmd"] = cmd
+            captured["timeout"] = timeout
+            return {"rc": 0, "stdout": "mocked write ok", "stderr": ""}
+
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
+        monkeypatch.setattr(live_usb.Path, "exists", lambda _path: True)
+        monkeypatch.setattr(live_usb, "_run", fake_run)
+
+        out = json.loads(_handle({
+            "action": "write",
+            "device": "/dev/sdz",
+            "iso": "/tmp/hermes.iso",
+            "operator_approval": "approved-live-usb-lane",
+            "verify": True,
+        }))
+
+        assert out["success"] is True
+        assert captured["timeout"] == 600
+        assert captured["cmd"] == [
+            "bash",
+            str(live_usb._SCRIPTS_DIR / "write_usb.sh"),
+            "--iso",
+            "/tmp/hermes.iso",
+            "--device",
+            "/dev/sdz",
+            "--yes",
+            "--verify",
+        ]

@@ -19,6 +19,7 @@ a USB-management session.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 # Path to the live-usb/ scripts directory, relative to this file
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "live-usb"
+_APPROVAL_ENV_VAR = "HERMES_AGENTCYBER_LIVE_USB_APPROVAL"
+_APPROVAL_ARG_KEYS = ("operator_approval", "approval_token", "live_usb_approval")
 
 
 def _running_as_root() -> bool:
@@ -66,6 +69,46 @@ def _run(cmd: list[str], timeout: int = 300) -> dict:
         return {"rc": -1, "stdout": "", "stderr": f"Command timed out after {timeout}s"}
     except Exception as exc:
         return {"rc": -1, "stdout": "", "stderr": str(exc)}
+
+
+def _operator_approval_error(action: str, reason: str) -> dict:
+    """Return a secret-safe approval error for high-consequence actions."""
+    return {
+        "error": f"{action} requires explicit operator approval.",
+        "reason": reason,
+        "approved": False,
+        "hint": (
+            f"Set {_APPROVAL_ENV_VAR} in the standalone AgentCyber environment "
+            "and pass the matching value as operator_approval for this exact "
+            "operator-approved live USB operation. status and list_usb do not "
+            "require approval. Never print the approval value."
+        ),
+    }
+
+
+def _require_operator_approval(args: dict, action: str) -> dict | None:
+    """Fail closed unless a high-consequence action has operator approval.
+
+    Root alone is not enough for build/write/provision: an unattended agent run
+    could otherwise build media or write a block device as soon as the toolset is
+    enabled. The approval token lives in the operator-controlled AgentCyber
+    environment; it is compared without logging or returning the secret.
+    """
+    expected = os.getenv(_APPROVAL_ENV_VAR, "").strip()
+    if not expected:
+        return _operator_approval_error(action, f"missing {_APPROVAL_ENV_VAR}")
+
+    provided = ""
+    for key in _APPROVAL_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            provided = value.strip()
+            break
+    if not provided:
+        return _operator_approval_error(action, "missing operator_approval")
+    if not hmac.compare_digest(provided, expected):
+        return _operator_approval_error(action, "operator_approval did not match")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +194,10 @@ def _build(args: dict, **_kw: Any) -> dict:
                      "sudo live-usb/build_iso.sh",
         }
 
+    approval_error = _require_operator_approval(args, "build")
+    if approval_error:
+        return approval_error
+
     script = _script("build_iso.sh")
     cmd = ["bash", script]
 
@@ -189,6 +236,10 @@ def _write(args: dict, **_kw: Any) -> dict:
             "hint":  "Run: sudo live-usb/write_usb.sh --iso <path> --device <dev> --yes",
         }
 
+    approval_error = _require_operator_approval(args, "write")
+    if approval_error:
+        return approval_error
+
     device = args.get("device", "")
     if not device:
         return {"error": "device is required (e.g. /dev/sdb). Use list_usb to find it."}
@@ -219,6 +270,10 @@ def _provision(args: dict, **_kw: Any) -> dict:
     """Inject config into an already-written USB."""
     if not _running_as_root():
         return {"error": "Provisioning requires root (needs to mount the USB partition)."}
+
+    approval_error = _require_operator_approval(args, "provision")
+    if approval_error:
+        return approval_error
 
     device = args.get("device", "")
     if not device:
@@ -277,7 +332,8 @@ SCHEMA = {
             "Build, write, and provision Hermes AgentCyber live USB drives. "
             "Produces a bootable USB that auto-starts the Hermes gateway (or "
             "interactive shell / headless scan) when plugged into any PC. "
-            "list_usb and status are safe; build and write require root."
+            "list_usb and status are safe; build, write, and provision require "
+            "root plus operator approval."
         ),
         "parameters": {
             "type": "object",
@@ -307,6 +363,7 @@ SCHEMA = {
                 "model_provider":{"type": "string", "description": "Model provider: anthropic, openai, openrouter (provision)."},
                 "audit":         {"type": "boolean", "description": "Enable SOC audit log on the USB (provision)."},
                 # shared
+                "operator_approval": {"type": "string", "description": "Operator-provided live USB approval token required for build/write/provision. Never required for status/list_usb; never print this value."},
                 "timeout":       {"type": "integer", "description": "Operation timeout in seconds (build: 1800, write: 600)."},
             },
             "required": ["action"],

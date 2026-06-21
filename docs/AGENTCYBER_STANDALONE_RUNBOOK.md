@@ -173,6 +173,18 @@ Expected:
 
 Exact spacing and icons may vary by terminal skin.
 
+## Live USB operator approval
+
+`status` and `list_usb` are read-only and do not need root or an approval token. The high-consequence actions `build`, `write`, and `provision` require both root and an operator-controlled approval token before any build script, block-device check, or USB-writing command runs.
+
+For an explicitly approved live USB maintenance session only, the operator can set a token in the standalone AgentCyber environment and provide the same value as `operator_approval` in the `live_usb` tool call:
+
+```bash
+export HERMES_AGENTCYBER_LIVE_USB_APPROVAL="<operator-approved one-time token>"
+```
+
+Do not print, log, or persist the token. Clear it after the approved operation. Cron repair runs must not set this token, run as root, build an ISO, or write/provision USB media.
+
 ## Asset scope
 
 Built-in Breaking Circuits assets are expected to be enabled for the Cyber Edition runtime. Asset matching should recognize BC-owned domains and lab ranges without treating cyber terminology alone as suspicious.

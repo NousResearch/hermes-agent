@@ -18,7 +18,7 @@ export class GatewayClient extends JsonRpcGatewayClient {
     const resolved = token ?? window.__HERMES_SESSION_TOKEN__ ?? "";
     if (!resolved) {
       throw new Error(
-        "Session token not available — page must be served by the Hermes dashboard",
+        "Session token not available — page must be served by the metakina-agent dashboard",
       );
     }
 

@@ -101,7 +101,7 @@ const BOOT_FAKE_STEP_MS = (() => {
 })()
 const RUNTIME_SCHEMA_VERSION = 4
 const RUNTIME_IMPORT_CHECK = bundledRuntimeImportCheck()
-const APP_NAME = 'Hermes'
+const APP_NAME = '元话 Agent'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 const WINDOW_BUTTON_POSITION = {
@@ -221,7 +221,7 @@ function previewFileMetadata(filePath, mimeType) {
 app.setName(APP_NAME)
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
-  copyright: 'Copyright © 2026 Nous Research'
+  copyright: 'Copyright © 2026 metakina'
 })
 
 let mainWindow = null
@@ -237,7 +237,7 @@ let desktopLogFlushPromise = Promise.resolve()
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
-  message: 'Waiting to start Hermes backend',
+  message: 'Waiting to start metakina-agent runtime',
   phase: 'idle',
   progress: 0,
   running: false,
@@ -854,7 +854,7 @@ function fetchJson(url, token, options = {}) {
     const client = parsed.protocol === 'https:' ? https : http
 
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      reject(new Error(`Unsupported metakina-agent runtime URL protocol: ${parsed.protocol}`))
       return
     }
 
@@ -889,7 +889,7 @@ function fetchJson(url, token, options = {}) {
     req.on('error', reject)
     if (options.timeoutMs) {
       req.setTimeout(options.timeoutMs, () => {
-        req.destroy(new Error(`Timed out connecting to Hermes backend after ${options.timeoutMs}ms`))
+        req.destroy(new Error(`Timed out connecting to metakina-agent runtime after ${options.timeoutMs}ms`))
       })
     }
     if (body) req.write(body)
@@ -1176,7 +1176,7 @@ async function waitForHermes(baseUrl, token) {
     }
   }
 
-  throw new Error(`Hermes dashboard did not become ready: ${lastError?.message || 'timeout'}`)
+  throw new Error(`metakina-agent dashboard did not become ready: ${lastError?.message || 'timeout'}`)
 }
 
 function getWindowButtonPosition() {
@@ -1560,7 +1560,7 @@ function resolveRemoteBackend() {
     if (!rawEnvToken) {
       throw new Error(
         'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-        'Both must be provided to connect to a remote Hermes backend.'
+        'Both must be provided to connect to a remote metakina-agent runtime.'
       )
     }
 
@@ -1646,14 +1646,14 @@ async function startHermes() {
   if (connectionPromise) return connectionPromise
 
   connectionPromise = (async () => {
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await advanceBootProgress('backend.resolve', 'Resolving metakina-agent runtime', 8)
     const remote = resolveRemoteBackend()
     if (remote) {
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
+      await advanceBootProgress('backend.remote', `Connecting to remote metakina-agent runtime at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
       updateBootProgress({
         phase: 'backend.ready',
-        message: 'Remote Hermes backend is ready',
+        message: 'Remote metakina-agent runtime is ready',
         progress: 94,
         running: true,
         error: null
@@ -1678,8 +1678,8 @@ async function startHermes() {
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
 
-    await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
-    rememberLog(`Starting Hermes backend via ${backend.label}`)
+    await advanceBootProgress('backend.spawn', `Starting metakina-agent runtime via ${backend.label}`, 84)
+    rememberLog(`Starting metakina-agent runtime via ${backend.label}`)
 
     hermesProcess = spawn(backend.command, backend.args, {
       cwd: hermesCwd,
@@ -1711,11 +1711,11 @@ async function startHermes() {
       rejectBackendStart = reject
     })
     hermesProcess.once('error', error => {
-      rememberLog(`Hermes backend failed to start: ${error.message}`)
+      rememberLog(`metakina-agent runtime failed to start: ${error.message}`)
       updateBootProgress(
         {
           error: error.message,
-          message: `Hermes backend failed to start: ${error.message}`,
+          message: `metakina-agent runtime failed to start: ${error.message}`,
           phase: 'backend.error',
           running: false
         },
@@ -1727,12 +1727,12 @@ async function startHermes() {
       rejectBackendStart?.(error)
     })
     hermesProcess.once('exit', (code, signal) => {
-      rememberLog(`Hermes dashboard exited (${signal || code})`)
+      rememberLog(`metakina-agent dashboard exited (${signal || code})`)
       hermesProcess = null
       connectionPromise = null
       sendBackendExit({ code, signal })
       if (!backendReady) {
-        const message = `Hermes dashboard exited before it became ready (${signal || code}).`
+        const message = `metakina-agent dashboard exited before it became ready (${signal || code}).`
         updateBootProgress(
           {
             error: message,
@@ -1744,19 +1744,19 @@ async function startHermes() {
         )
         rejectBackendStart?.(
           new Error(
-            `Hermes dashboard exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentHermesLog()}`
+            `metakina-agent dashboard exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentHermesLog()}`
           )
         )
       }
     })
 
     const baseUrl = `http://127.0.0.1:${port}`
-    await advanceBootProgress('backend.wait', 'Waiting for Hermes dashboard to become ready', 90)
+    await advanceBootProgress('backend.wait', 'Waiting for metakina-agent dashboard to become ready', 90)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendReady = true
     updateBootProgress({
       phase: 'backend.ready',
-      message: 'Hermes backend is ready. Finalizing desktop startup',
+      message: 'metakina-agent runtime is ready. Finalizing desktop startup',
       progress: 94,
       running: true,
       error: null
@@ -1796,7 +1796,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 620,
-    title: 'Hermes',
+    title: '元话 Agent',
     titleBarStyle: IS_MAC ? 'hidden' : 'default',
     titleBarOverlay: IS_MAC ? { height: TITLEBAR_HEIGHT } : undefined,
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,

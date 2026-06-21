@@ -21,7 +21,7 @@ const NEUTRAL_PERSONALITIES = new Set(['', 'default', 'none', 'neutral'])
 const HERMES_FRAME_COUNT = 8
 // Optical centering offsets tuned per frame so Hermes' body stays centered
 // even when the staff extends farther left/right in certain poses.
-const HERMES_DEFAULT_FRAME_OPTICAL_OFFSET_PX = [8, 4, 4, 0, 9, 2, 5, 9] as const
+const HERMES_DEFAULT_FRAME_OPTICAL_OFFSET_PX = [0, 0, 0, 0, 0, 0, 0, 0] as const
 const ASSET_BASE_URL = import.meta.env.BASE_URL || '/'
 
 const FALLBACK_COPY: IntroCopy[] = [
@@ -177,7 +177,7 @@ export const Intro: FC<IntroProps> = ({ personality, seed }) => {
   return (
     <div className="pointer-events-none flex min-h-[calc(100vh-var(--titlebar-height)-var(--thread-composer-clearance)-var(--composer-shell-pad-block-end))] w-full min-w-0 flex-col items-center justify-center px-3 py-8 text-center text-muted-foreground sm:px-6 lg:px-8">
       <button
-        aria-label="Change Hermes pose"
+        aria-label="Change metakina logo"
         className="pointer-events-auto mb-5 aspect-8/7 w-full max-w-64 cursor-default border-0 bg-transparent p-0"
         onClick={advanceFrame}
         type="button"
@@ -188,13 +188,13 @@ export const Intro: FC<IntroProps> = ({ personality, seed }) => {
           className="h-full w-full object-contain select-none"
           draggable={false}
           src={publicAssetPath(`hermes-frames/hermes-frame-${frameIndex}.png?v=matte-clean-6`)}
-          style={{ transform: `translateX(${spriteOffsetPx}px) scale(1.1)` }}
+          style={{ transform: `translateX(${spriteOffsetPx}px)` }}
         />
       </button>
       <div className="w-full min-w-0 max-w-xl">
         <p className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-midground/85">
           <span aria-hidden="true" className="dither inline-block size-1.5 rounded-[1px]" />
-          Hermes Agent
+          元话 Agent
         </p>
         <h1 className="mb-2.5 text-xl font-semibold tracking-tight text-foreground">{copy.headline}</h1>
         <p className="m-0 leading-normal">{copy.body}</p>

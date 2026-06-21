@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Switch } from '@/components/ui/switch'
 import { getSkills, getToolsets, toggleSkill } from '@/hermes'
+import { dt } from '@/lib/i18n'
 import { Brain, Wrench } from '@/lib/icons'
+import { $desktopLanguage } from '@/store/language'
 import { notify, notifyError } from '@/store/notifications'
+import { useStore } from '@nanostores/react'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { asText, includesQuery, prettyName, toolNames } from './helpers'
@@ -11,6 +14,7 @@ import { ListRow, LoadingState, Pill, SectionHeading, SettingsContent } from './
 import type { SearchProps } from './types'
 
 export function ToolsSettings({ query }: SearchProps) {
+  const language = useStore($desktopLanguage)
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
@@ -26,10 +30,10 @@ export function ToolsSettings({ query }: SearchProps) {
         setSkills(s)
         setToolsets(t)
       })
-      .catch(err => notifyError(err, 'Capabilities failed to load'))
+      .catch(err => notifyError(err, language === 'zh' ? '能力列表加载失败' : 'Capabilities failed to load'))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [language])
 
   const filteredSkills = useMemo(() => {
     if (!skills) {
@@ -87,8 +91,15 @@ export function ToolsSettings({ query }: SearchProps) {
       setSkills(c => c?.map(s => (s.name === skill.name ? { ...s, enabled } : s)) ?? c)
       notify({
         kind: 'success',
-        title: enabled ? 'Skill enabled' : 'Skill disabled',
-        message: `${skill.name} applies to new sessions.`
+        title: enabled
+          ? language === 'zh'
+            ? '技能已启用'
+            : 'Skill enabled'
+          : language === 'zh'
+            ? '技能已禁用'
+            : 'Skill disabled',
+        message:
+          language === 'zh' ? `${skill.name} 将应用于新的会话。` : `${skill.name} applies to new sessions.`
       })
     } catch (err) {
       notifyError(err, `Failed to update ${skill.name}`)
@@ -98,13 +109,21 @@ export function ToolsSettings({ query }: SearchProps) {
   }
 
   if (!skills || !toolsets) {
-    return <LoadingState label="Loading skills and toolsets..." />
+    return <LoadingState label={language === 'zh' ? '正在加载技能和工具集...' : 'Loading skills and toolsets...'} />
   }
 
   return (
     <SettingsContent>
       <div className="mb-6">
-        <SectionHeading icon={Brain} meta={`${filteredSkills.filter(s => s.enabled).length} enabled`} title="Skills" />
+        <SectionHeading
+          icon={Brain}
+          meta={
+            language === 'zh'
+              ? `已启用 ${filteredSkills.filter(s => s.enabled).length} 个`
+              : `${filteredSkills.filter(s => s.enabled).length} enabled`
+          }
+          title={dt(language, 'skills', 'Skills')}
+        />
         {skillGroups.map(([category, list]) => (
           <div className="mt-4 first:mt-0" key={category}>
             <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
@@ -133,8 +152,12 @@ export function ToolsSettings({ query }: SearchProps) {
       <div className="mb-6">
         <SectionHeading
           icon={Wrench}
-          meta={`${filteredToolsets.filter(t => t.enabled).length} enabled`}
-          title="Toolsets"
+          meta={
+            language === 'zh'
+              ? `已启用 ${filteredToolsets.filter(t => t.enabled).length} 个`
+              : `${filteredToolsets.filter(t => t.enabled).length} enabled`
+          }
+          title={dt(language, 'tools', 'Toolsets')}
         />
         <div className="divide-y divide-border/40">
           {filteredToolsets.map(toolset => {
@@ -145,9 +168,23 @@ export function ToolsSettings({ query }: SearchProps) {
               <ListRow
                 action={
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <Pill tone={toolset.enabled ? 'primary' : 'muted'}>{toolset.enabled ? 'Enabled' : 'Disabled'}</Pill>
+                    <Pill tone={toolset.enabled ? 'primary' : 'muted'}>
+                      {toolset.enabled
+                        ? language === 'zh'
+                          ? '已启用'
+                          : 'Enabled'
+                        : language === 'zh'
+                          ? '已禁用'
+                          : 'Disabled'}
+                    </Pill>
                     <Pill tone={toolset.configured ? 'primary' : 'muted'}>
-                      {toolset.configured ? 'Configured' : 'Needs keys'}
+                      {toolset.configured
+                        ? language === 'zh'
+                          ? '已配置'
+                          : 'Configured'
+                        : language === 'zh'
+                          ? '需要密钥'
+                          : 'Needs keys'}
                     </Pill>
                   </div>
                 }
@@ -164,7 +201,7 @@ export function ToolsSettings({ query }: SearchProps) {
                       ))}
                       {tools.length > 10 && (
                         <span className="rounded-md bg-muted px-1.5 py-0.5 text-[0.64rem] text-muted-foreground">
-                          +{tools.length - 10} more
+                          {language === 'zh' ? `另有 ${tools.length - 10} 个` : `+${tools.length - 10} more`}
                         </span>
                       )}
                     </div>

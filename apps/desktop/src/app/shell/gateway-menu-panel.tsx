@@ -4,6 +4,7 @@ import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Activity, AlertCircle, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import type { DesktopLanguage } from '@/store/language'
 import type { StatusResponse } from '@/types/hermes'
 
 interface GatewayMenuPanelProps {
@@ -12,6 +13,7 @@ interface GatewayMenuPanelProps {
   onRestart: () => void
   restarting: boolean
   statusSnapshot: StatusResponse | null
+  language: DesktopLanguage
 }
 
 const PLATFORM_TONE: Record<string, StatusTone> = {
@@ -23,7 +25,19 @@ const PLATFORM_TONE: Record<string, StatusTone> = {
   fatal: 'bad'
 }
 
-const prettyState = (state: string) => state.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
+const STATE_ZH: Record<string, string> = {
+  connected: '已连接',
+  connecting: '连接中',
+  fatal: '严重错误',
+  offline: '离线',
+  online: '在线',
+  pending_restart: '等待重启',
+  retrying: '重试中',
+  startup_failed: '启动失败'
+}
+
+const prettyState = (state: string, language: DesktopLanguage) =>
+  language === 'zh' ? (STATE_ZH[state] ?? state.replace(/_/g, ' ')) : state.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
 
 // Strip leading "YYYY-MM-DD HH:MM:SS,mmm " and "[runtime_id] " prefixes from
 // log lines so they don't dominate the display. Full text preserved on hover.
@@ -36,11 +50,12 @@ export function GatewayMenuPanel({
   onOpenSystem,
   onRestart,
   restarting,
-  statusSnapshot
+  statusSnapshot,
+  language
 }: GatewayMenuPanelProps) {
   const gatewayRunning = Boolean(statusSnapshot?.gateway_running)
   const platforms = Object.entries(statusSnapshot?.gateway_platforms || {}).sort(([l], [r]) => l.localeCompare(r))
-  const stateLabel = gatewayRunning ? prettyState(statusSnapshot?.gateway_state || 'online') : 'Offline'
+  const stateLabel = gatewayRunning ? prettyState(statusSnapshot?.gateway_state || 'online', language) : language === 'zh' ? '离线' : 'Offline'
   const recentLogs = logLines.slice(-5)
 
   return (
@@ -52,7 +67,7 @@ export function GatewayMenuPanel({
           ) : (
             <AlertCircle className="size-3.5 text-destructive" />
           )}
-          <span className="font-medium">Gateway</span>
+          <span className="font-medium">{language === 'zh' ? '网关' : 'Gateway'}</span>
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <StatusDot tone={gatewayRunning ? 'good' : 'bad'} />
             {stateLabel}
@@ -60,22 +75,22 @@ export function GatewayMenuPanel({
         </div>
         <div className="flex items-center">
           <Button
-            aria-label={restarting ? 'Restarting gateway' : 'Restart gateway'}
+            aria-label={language === 'zh' ? (restarting ? '正在重启网关' : '重启网关') : restarting ? 'Restarting gateway' : 'Restart gateway'}
             className="size-7 text-muted-foreground hover:text-foreground"
             disabled={restarting}
             onClick={onRestart}
             size="icon-sm"
-            title={restarting ? 'Restarting gateway' : 'Restart gateway'}
+            title={language === 'zh' ? (restarting ? '正在重启网关' : '重启网关') : restarting ? 'Restarting gateway' : 'Restart gateway'}
             variant="ghost"
           >
             <RefreshCw className={cn(restarting && 'animate-spin')} />
           </Button>
           <Button
-            aria-label="Open system panel"
+            aria-label={language === 'zh' ? '打开系统面板' : 'Open system panel'}
             className="size-7 text-muted-foreground hover:text-foreground"
             onClick={onOpenSystem}
             size="icon-sm"
-            title="Open system panel"
+            title={language === 'zh' ? '打开系统面板' : 'Open system panel'}
             variant="ghost"
           >
             <IconLayoutDashboard />
@@ -85,7 +100,7 @@ export function GatewayMenuPanel({
 
       {recentLogs.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>Recent activity</SectionLabel>
+          <SectionLabel>{language === 'zh' ? '最近活动' : 'Recent activity'}</SectionLabel>
           <ul className="mt-1.5 space-y-0.5">
             {recentLogs.map((line, index) => (
               <li
@@ -102,21 +117,21 @@ export function GatewayMenuPanel({
             onClick={onOpenSystem}
             type="button"
           >
-            View all logs →
+            {language === 'zh' ? '查看全部日志 →' : 'View all logs →'}
           </button>
         </div>
       )}
 
       {platforms.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>Platforms</SectionLabel>
+          <SectionLabel>{language === 'zh' ? '平台' : 'Platforms'}</SectionLabel>
           <ul className="mt-1.5 space-y-1">
             {platforms.map(([name, platform]) => (
               <li className="flex items-center justify-between gap-2 text-xs" key={name}>
                 <span className="truncate capitalize">{name}</span>
                 <span className="flex items-center gap-1.5 text-[0.66rem] text-muted-foreground">
                   <StatusDot tone={PLATFORM_TONE[platform.state] || 'muted'} />
-                  {prettyState(platform.state)}
+                  {prettyState(platform.state, language)}
                 </span>
               </li>
             ))}

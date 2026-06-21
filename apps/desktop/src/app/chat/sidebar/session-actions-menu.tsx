@@ -1,4 +1,5 @@
 import { IconBookmark, IconBookmarkFilled, IconCircleX, IconFileDownload, IconPencil } from '@tabler/icons-react'
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 import type * as React from 'react'
 import type { ReactNode } from 'react'
@@ -25,6 +26,7 @@ import { renameSession } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
+import { $desktopLanguage } from '@/store/language'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
 
@@ -50,6 +52,7 @@ export function SessionActionsMenu({
   align = 'end',
   sideOffset = 6
 }: SessionActionsMenuProps) {
+  const language = useStore($desktopLanguage)
   const itemClass = 'gap-2.5 text-foreground focus:bg-accent [&_svg]:size-4'
   const [renameOpen, setRenameOpen] = useState(false)
 
@@ -57,7 +60,12 @@ export function SessionActionsMenu({
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-        <DropdownMenuContent align={align} aria-label={`Actions for ${title}`} className="w-44" sideOffset={sideOffset}>
+        <DropdownMenuContent
+          align={align}
+          aria-label={language === 'zh' ? `${title} 的操作` : `Actions for ${title}`}
+          className="w-44"
+          sideOffset={sideOffset}
+        >
           <DropdownMenuItem
             className={itemClass}
             disabled={!onPin}
@@ -67,14 +75,14 @@ export function SessionActionsMenu({
             }}
           >
             {pinned ? <IconBookmarkFilled /> : <IconBookmark />}
-            <span>{pinned ? 'Unpin' : 'Pin'}</span>
+            <span>{language === 'zh' ? (pinned ? '取消置顶' : '置顶') : pinned ? 'Unpin' : 'Pin'}</span>
           </DropdownMenuItem>
           <CopyButton
             appearance="menu-item"
             className={itemClass}
             disabled={!sessionId}
-            errorMessage="Could not copy session ID"
-            label="Copy ID"
+            errorMessage={language === 'zh' ? '无法复制会话 ID' : 'Could not copy session ID'}
+            label={language === 'zh' ? '复制 ID' : 'Copy ID'}
             text={sessionId}
           />
           <DropdownMenuItem
@@ -86,7 +94,7 @@ export function SessionActionsMenu({
             }}
           >
             <IconFileDownload />
-            <span>Export</span>
+            <span>{language === 'zh' ? '导出' : 'Export'}</span>
           </DropdownMenuItem>
           <DropdownMenuItem
             className={itemClass}
@@ -97,7 +105,7 @@ export function SessionActionsMenu({
             }}
           >
             <IconPencil />
-            <span>Rename</span>
+            <span>{language === 'zh' ? '重命名' : 'Rename'}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator className="my-3" />
           <DropdownMenuItem
@@ -110,12 +118,18 @@ export function SessionActionsMenu({
             variant="destructive"
           >
             <IconCircleX />
-            <span>Delete</span>
+            <span>{language === 'zh' ? '删除' : 'Delete'}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <RenameSessionDialog currentTitle={title} onOpenChange={setRenameOpen} open={renameOpen} sessionId={sessionId} />
+      <RenameSessionDialog
+        currentTitle={title}
+        language={language}
+        onOpenChange={setRenameOpen}
+        open={renameOpen}
+        sessionId={sessionId}
+      />
     </>
   )
 }
@@ -125,9 +139,10 @@ interface RenameSessionDialogProps {
   onOpenChange: (open: boolean) => void
   sessionId: string
   currentTitle: string
+  language: 'zh' | 'en'
 }
 
-function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: RenameSessionDialogProps) {
+function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, language }: RenameSessionDialogProps) {
   const [value, setValue] = useState(currentTitle)
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -158,10 +173,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
       const result = await renameSession(sessionId, next)
       const finalTitle = result.title || next || ''
       setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
-      notify({ kind: 'success', message: 'Renamed', durationMs: 2_000 })
+      notify({ kind: 'success', message: language === 'zh' ? '已重命名' : 'Renamed', durationMs: 2_000 })
       onOpenChange(false)
     } catch (err) {
-      notifyError(err, 'Rename failed')
+      notifyError(err, language === 'zh' ? '重命名失败' : 'Rename failed')
     } finally {
       setSubmitting(false)
     }
@@ -171,8 +186,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Rename session</DialogTitle>
-          <DialogDescription>Give this chat a memorable title. Leave empty to clear.</DialogDescription>
+          <DialogTitle>{language === 'zh' ? '重命名会话' : 'Rename session'}</DialogTitle>
+          <DialogDescription>
+            {language === 'zh' ? '给这个对话设置一个便于识别的标题。留空可清除标题。' : 'Give this chat a memorable title. Leave empty to clear.'}
+          </DialogDescription>
         </DialogHeader>
         <Input
           autoFocus
@@ -186,16 +203,16 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
               onOpenChange(false)
             }
           }}
-          placeholder="Untitled session"
+          placeholder={language === 'zh' ? '未命名会话' : 'Untitled session'}
           ref={inputRef}
           value={value}
         />
         <DialogFooter>
           <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
-            Cancel
+            {language === 'zh' ? '取消' : 'Cancel'}
           </Button>
           <Button disabled={submitting} onClick={() => void submit()} type="button">
-            Save
+            {language === 'zh' ? '保存' : 'Save'}
           </Button>
         </DialogFooter>
       </DialogContent>

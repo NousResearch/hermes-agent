@@ -92,7 +92,7 @@ async function checkRuntime(ctx: OnboardingContext) {
 }
 
 function notifyReady(provider: string) {
-  notify({ kind: 'success', title: 'Hermes is ready', message: `${provider} connected.` })
+  notify({ kind: 'success', title: '元话 Agent is ready', message: `${provider} connected.` })
 }
 
 async function reloadAndConnect(ctx: OnboardingContext, providerName: string, onFail: () => void) {

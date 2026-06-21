@@ -8,6 +8,7 @@ import { Activity, AlertCircle, Command, Cpu, FolderOpen, GitBranch, Loader2, Sp
 import { compactPath, contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { $desktopActionTasks } from '@/store/activity'
+import { $desktopLanguage } from '@/store/language'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
@@ -58,6 +59,7 @@ export function useStatusbarItems({
   const currentProvider = useStore($currentProvider)
   const currentUsage = useStore($currentUsage)
   const desktopActionTasks = useStore($desktopActionTasks)
+  const language = useStore($desktopLanguage)
   const previewServerRestartStatus = useStore($previewServerRestartStatus)
   const sessionStartedAt = useStore($sessionStartedAt)
   const turnStartedAt = useStore($turnStartedAt)
@@ -79,15 +81,15 @@ export function useStatusbarItems({
       await restartGateway()
       notify({
         kind: 'success',
-        title: 'Gateway restart requested',
-        message: 'Status will update once the gateway reconnects.'
+        title: language === 'zh' ? '已请求重启网关' : 'Gateway restart requested',
+        message: language === 'zh' ? '网关重新连接后状态会自动更新。' : 'Status will update once the gateway reconnects.'
       })
     } catch (err) {
-      notifyError(err, 'Failed to restart gateway')
+      notifyError(err, language === 'zh' ? '重启网关失败' : 'Failed to restart gateway')
     } finally {
       setRestartingGateway(false)
     }
-  }, [restartingGateway])
+  }, [language, restartingGateway])
 
   const gatewayMenuContent = useMemo(
     () => (
@@ -97,9 +99,10 @@ export function useStatusbarItems({
         onRestart={() => void handleRestartGateway()}
         restarting={restartingGateway}
         statusSnapshot={statusSnapshot}
+        language={language}
       />
     ),
-    [gatewayLogLines, handleRestartGateway, openCommandCenterSection, restartingGateway, statusSnapshot]
+    [gatewayLogLines, handleRestartGateway, language, openCommandCenterSection, restartingGateway, statusSnapshot]
   )
 
   const { bgFailed, bgRunning } = useMemo(() => {
@@ -121,18 +124,26 @@ export function useStatusbarItems({
         icon: <Command className="size-3.5" />,
         id: 'command-center',
         onSelect: toggleCommandCenter,
-        title: commandCenterOpen ? 'Close Command Center' : 'Open Command Center',
+        title: language === 'zh' ? (commandCenterOpen ? '关闭命令中心' : '打开命令中心') : commandCenterOpen ? 'Close Command Center' : 'Open Command Center',
         variant: 'action'
       },
       {
         className: gatewayUp ? undefined : 'text-destructive hover:text-destructive',
-        detail: gatewayUp ? statusSnapshot?.gateway_state || 'online' : 'offline',
+        detail: gatewayUp
+          ? language === 'zh'
+            ? statusSnapshot?.gateway_state === 'online'
+              ? '在线'
+              : statusSnapshot?.gateway_state || '在线'
+            : statusSnapshot?.gateway_state || 'online'
+          : language === 'zh'
+            ? '离线'
+            : 'offline',
         icon: gatewayUp ? <Activity className="size-3" /> : <AlertCircle className="size-3" />,
         id: 'gateway-health',
-        label: 'Gateway',
+        label: language === 'zh' ? '网关' : 'Gateway',
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
-        title: 'Gateway and platform health',
+        title: language === 'zh' ? '网关与平台状态' : 'Gateway and platform health',
         variant: 'menu'
       },
       {
@@ -140,7 +151,16 @@ export function useStatusbarItems({
           agentsOpen && 'bg-accent/55 text-foreground',
           bgFailed > 0 && 'text-destructive hover:text-destructive'
         ),
-        detail: bgFailed > 0 ? `${bgFailed} failed` : bgRunning > 0 ? `${bgRunning} running` : undefined,
+        detail:
+          bgFailed > 0
+            ? language === 'zh'
+              ? `${bgFailed} 个失败`
+              : `${bgFailed} failed`
+            : bgRunning > 0
+              ? language === 'zh'
+                ? `${bgRunning} 个运行中`
+                : `${bgRunning} running`
+              : undefined,
         icon:
           bgFailed > 0 ? (
             <AlertCircle className="size-3" />
@@ -150,9 +170,9 @@ export function useStatusbarItems({
             <Sparkles className="size-3" />
           ),
         id: 'agents',
-        label: 'Agents',
+        label: language === 'zh' ? 'Agent' : 'Agents',
         onSelect: openAgents,
-        title: agentsOpen ? 'Close agents' : 'Open agents',
+        title: language === 'zh' ? (agentsOpen ? '关闭 Agent 面板' : '打开 Agent 面板') : agentsOpen ? 'Close agents' : 'Open agents',
         variant: 'action'
       }
     ],
@@ -163,6 +183,7 @@ export function useStatusbarItems({
       commandCenterOpen,
       gatewayMenuContent,
       gatewayUp,
+      language,
       openAgents,
       statusSnapshot?.gateway_state,
       toggleCommandCenter
@@ -176,8 +197,8 @@ export function useStatusbarItems({
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
-        label: 'Running',
-        title: 'Current turn elapsed',
+        label: language === 'zh' ? '运行中' : 'Running',
+        title: language === 'zh' ? '当前轮次耗时' : 'Current turn elapsed',
         variant: 'text'
       },
       {
@@ -185,32 +206,44 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: 'Context usage',
+        title: language === 'zh' ? '上下文用量' : 'Context usage',
         variant: 'text'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
-        label: 'Session',
-        title: 'Runtime session elapsed',
+        label: language === 'zh' ? '会话' : 'Session',
+        title: language === 'zh' ? '运行会话耗时' : 'Runtime session elapsed',
         variant: 'text'
       },
       {
         detail: currentProvider || '',
         icon: <Cpu className="size-3" />,
         id: 'model-summary',
-        label: currentModel || 'No model selected',
+        label: currentModel || (language === 'zh' ? '未选择模型' : 'No model selected'),
         onSelect: () => setModelPickerOpen(true),
-        title: currentProvider ? `Switch model · ${currentProvider}: ${currentModel || ''}` : 'Open model picker',
+        title: currentProvider
+          ? language === 'zh'
+            ? `切换模型 · ${currentProvider}: ${currentModel || ''}`
+            : `Switch model · ${currentProvider}: ${currentModel || ''}`
+          : language === 'zh'
+            ? '打开模型选择器'
+            : 'Open model picker',
         variant: 'action'
       },
       {
         icon: <FolderOpen className="size-3" />,
         id: 'cwd',
-        label: currentCwd ? compactPath(currentCwd) : 'No project cwd',
+        label: currentCwd ? compactPath(currentCwd) : language === 'zh' ? '未选择工作目录' : 'No project cwd',
         onSelect: () => void browseSessionCwd(),
-        title: currentCwd ? `Change working directory · ${currentCwd}` : 'Choose working directory',
+        title: currentCwd
+          ? language === 'zh'
+            ? `更改工作目录 · ${currentCwd}`
+            : `Change working directory · ${currentCwd}`
+          : language === 'zh'
+            ? '选择工作目录'
+            : 'Choose working directory',
         variant: 'action'
       },
       {
@@ -218,7 +251,7 @@ export function useStatusbarItems({
         icon: <GitBranch className="size-3" />,
         id: 'branch',
         label: currentBranch,
-        title: currentBranch ? `Current branch: ${currentBranch}` : undefined,
+        title: currentBranch ? (language === 'zh' ? `当前分支：${currentBranch}` : `Current branch: ${currentBranch}`) : undefined,
         variant: 'text'
       }
     ],
@@ -231,6 +264,7 @@ export function useStatusbarItems({
       currentCwd,
       currentModel,
       currentProvider,
+      language,
       sessionStartedAt,
       turnStartedAt
     ]

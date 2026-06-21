@@ -15,8 +15,10 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { SessionInfo } from '@/hermes'
+import { dt } from '@/lib/i18n'
 import { Brain, ChevronDown, Layers3, MessageCircle, Pin, Plus, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $desktopLanguage, type DesktopLanguage } from '@/store/language'
 import {
   $pinnedSessionIds,
   $sidebarOpen,
@@ -34,17 +36,19 @@ import type { SidebarNavItem } from '../../types'
 
 import { SidebarSessionRow } from './session-row'
 
-const SIDEBAR_NAV: SidebarNavItem[] = [
-  {
-    id: 'new-session',
-    label: 'New chat',
-    icon: Plus,
-    action: 'new-session'
-  },
-  { id: 'skills', label: 'Skills', icon: Brain, route: SKILLS_ROUTE },
-  { id: 'messaging', label: 'Messaging', icon: MessageCircle, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: 'Artifacts', icon: Layers3, route: ARTIFACTS_ROUTE }
-]
+function sidebarNav(language: DesktopLanguage): SidebarNavItem[] {
+  return [
+    {
+      id: 'new-session',
+      label: dt(language, 'newChat', 'New chat'),
+      icon: Plus,
+      action: 'new-session'
+    },
+    { id: 'skills', label: dt(language, 'skills', 'Skills'), icon: Brain, route: SKILLS_ROUTE },
+    { id: 'messaging', label: dt(language, 'messaging', 'Messaging'), icon: MessageCircle, route: MESSAGING_ROUTE },
+    { id: 'artifacts', label: dt(language, 'artifacts', 'Artifacts'), icon: Layers3, route: ARTIFACTS_ROUTE }
+  ]
+}
 
 const sidebarNavItemClass =
   'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-sm font-medium text-muted-foreground transition-colors duration-300 ease-out hover:border-[color-mix(in_srgb,var(--dt-border)_60%,transparent)] hover:bg-[color-mix(in_srgb,var(--dt-card)_78%,transparent)] hover:text-foreground hover:transition-none'
@@ -71,6 +75,7 @@ export function ChatSidebar({
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const recentsOpen = useStore($sidebarRecentsOpen)
+  const desktopLanguage = useStore($desktopLanguage)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
   const sessions = useStore($sessions)
@@ -116,11 +121,11 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 pl-4 pr-2 pb-2 pt-[calc(var(--titlebar-height)+0.25rem)]">
           <SidebarGroupLabel className="flex h-auto items-center gap-2 px-2 pb-1 pt-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-midground/75">
             <span aria-hidden="true" className="dither inline-block size-2 shrink-0 rounded-[1px] text-midground" />
-            Workspace
+            {dt(desktopLanguage, 'workspace', 'Workspace')}
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {SIDEBAR_NAV.map(item => {
+              {sidebarNav(desktopLanguage).map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
@@ -154,13 +159,17 @@ export function ChatSidebar({
 
         {sidebarOpen && showSessionSections && (
           <SidebarGroup className="shrink-0 pl-4 pr-2 pb-1 pt-0">
-            <SidebarSectionHeader label="Pinned" onToggle={() => setSidebarPinsOpen(!pinsOpen)} open={pinsOpen} />
+            <SidebarSectionHeader
+              label={dt(desktopLanguage, 'pinned', 'Pinned')}
+              onToggle={() => setSidebarPinsOpen(!pinsOpen)}
+              open={pinsOpen}
+            />
             {pinsOpen && (
               <SidebarGroupContent className="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1">
                 {pinnedSessions.length === 0 && (
                   <div className="flex min-h-8 items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground/80">
                     <Pin size={14} />
-                    <span>Pin important chats from the ••• menu</span>
+                    <span>{dt(desktopLanguage, 'pinHint', 'Pin important chats from the ••• menu')}</span>
                   </div>
                 )}
                 {pinnedSessions.map(session => (
@@ -185,7 +194,11 @@ export function ChatSidebar({
             <SidebarSectionHeader
               action={
                 <Button
-                  aria-label={sessionsLoading ? 'Refreshing sessions' : 'Refresh sessions'}
+                  aria-label={
+                    sessionsLoading
+                      ? dt(desktopLanguage, 'refreshingSessions', 'Refreshing sessions')
+                      : dt(desktopLanguage, 'refreshSessions', 'Refresh sessions')
+                  }
                   className="size-4 rounded-sm p-0 text-muted-foreground opacity-10 hover:bg-accent hover:text-foreground hover:opacity-100 focus-visible:opacity-100 disabled:opacity-35 [&_svg]:size-3!"
                   disabled={sessionsLoading}
                   onClick={event => {
@@ -199,7 +212,7 @@ export function ChatSidebar({
                   <RefreshCw className={cn(sessionsLoading && 'animate-spin')} />
                 </Button>
               }
-              label="Recent chats"
+              label={dt(desktopLanguage, 'recentChats', 'Recent chats')}
               onToggle={() => setSidebarRecentsOpen(!recentsOpen)}
               open={recentsOpen}
             />
@@ -207,7 +220,9 @@ export function ChatSidebar({
             {recentsOpen && (
               <SidebarGroupContent className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75">
                 {showSessionSkeletons && <SidebarSessionSkeletons />}
-                {!showSessionSkeletons && recentSessions.length === 0 && <SidebarAllPinnedState />}
+                {!showSessionSkeletons && recentSessions.length === 0 && (
+                  <SidebarAllPinnedState language={desktopLanguage} />
+                )}
                 {recentSessions.map(session => (
                   <SidebarSessionRow
                     isPinned={false}
@@ -281,10 +296,10 @@ function SidebarSessionSkeletons() {
   )
 }
 
-function SidebarAllPinnedState() {
+function SidebarAllPinnedState({ language }: { language: DesktopLanguage }) {
   return (
     <div className="grid min-h-24 place-items-center rounded-lg px-3 text-center text-xs text-muted-foreground">
-      Everything here is pinned. Unpin a chat to show it in recents.
+      {dt(language, 'unpinHint', 'Everything here is pinned. Unpin a chat to show it in recents.')}
     </div>
   )
 }

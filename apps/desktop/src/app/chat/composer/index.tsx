@@ -225,7 +225,7 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const showHelpHint = draft === '?'
 
-  const placeholder = disabled ? 'Starting Hermes…' : 'Ask anything'
+  const placeholder = disabled ? 'Starting 元话 Agent…' : 'Ask anything'
 
   const focusInput = () => window.requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
 

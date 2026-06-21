@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { Check, Eye, EyeOff, Save, Settings2, Trash2, X, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $desktopLanguage } from '@/store/language'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -27,6 +29,7 @@ interface EnvActionsProps {
   varKey: string
   info: EnvVarInfo
   saving: string | null
+  language: 'zh' | 'en'
   onEdit: () => void
   onClear: (key: string) => void
   onReveal: (key: string) => void
@@ -38,6 +41,7 @@ function EnvActions({
   varKey,
   info,
   saving,
+  language,
   onEdit,
   onClear,
   onReveal,
@@ -47,9 +51,9 @@ function EnvActions({
   return (
     <div className="flex shrink-0 items-center gap-1.5">
       {info.url && (
-        <Button asChild size="xs" title="Open provider docs" variant="ghost">
+        <Button asChild size="xs" title={language === 'zh' ? '打开提供商文档' : 'Open provider docs'} variant="ghost">
           <a href={info.url} rel="noreferrer" target="_blank">
-            Docs
+            {language === 'zh' ? '文档' : 'Docs'}
           </a>
         </Button>
       )}
@@ -57,21 +61,21 @@ function EnvActions({
         <Button
           onClick={() => onReveal(varKey)}
           size="icon-xs"
-          title={isRevealed ? 'Hide value' : 'Reveal value'}
+          title={language === 'zh' ? (isRevealed ? '隐藏密钥值' : '显示密钥值') : isRevealed ? 'Hide value' : 'Reveal value'}
           variant="ghost"
         >
           {isRevealed ? <EyeOff /> : <Eye />}
         </Button>
       )}
       <Button onClick={onEdit} size="xs" variant="outline">
-        {info.is_set ? 'Replace' : 'Set'}
+        {language === 'zh' ? (info.is_set ? '替换' : '设置') : info.is_set ? 'Replace' : 'Set'}
       </Button>
       {info.is_set && (
         <Button
           disabled={saving === varKey}
           onClick={() => onClear(varKey)}
           size="icon-xs"
-          title="Clear value"
+          title={language === 'zh' ? '清除密钥值' : 'Clear value'}
           variant="ghost"
         >
           <Trash2 />
@@ -87,6 +91,7 @@ function EnvVarRow({
   edits,
   revealed,
   saving,
+  language,
   setEdits,
   onSave,
   onClear,
@@ -112,6 +117,7 @@ function EnvVarRow({
           onEdit={startEdit}
           onReveal={onReveal}
           saving={saving}
+          language={language}
           showReveal={false}
           varKey={varKey}
         />
@@ -127,7 +133,7 @@ function EnvVarRow({
             <span className="font-mono text-xs font-medium">{varKey}</span>
             <Pill tone={info.is_set ? 'primary' : 'muted'}>
               {info.is_set && <Check className="size-3" />}
-              {info.is_set ? 'Set' : 'Not set'}
+              {language === 'zh' ? (info.is_set ? '已设置' : '未设置') : info.is_set ? 'Set' : 'Not set'}
             </Pill>
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{info.description}</p>
@@ -139,6 +145,7 @@ function EnvVarRow({
           onEdit={startEdit}
           onReveal={onReveal}
           saving={saving}
+          language={language}
           varKey={varKey}
         />
       </div>
@@ -160,17 +167,17 @@ function EnvVarRow({
             autoFocus
             className={cn('min-w-56 flex-1 font-mono', CONTROL_TEXT)}
             onChange={e => setEdits(c => ({ ...c, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? 'Replace current value' : 'Enter value'}
+            placeholder={language === 'zh' ? (info.is_set ? '替换当前值' : '输入值') : info.is_set ? 'Replace current value' : 'Enter value'}
             type={info.is_password ? 'password' : 'text'}
             value={edits[varKey]}
           />
           <Button disabled={saving === varKey || !edits[varKey]} onClick={() => onSave(varKey)} size="sm">
             <Save />
-            {saving === varKey ? 'Saving' : 'Save'}
+            {language === 'zh' ? (saving === varKey ? '正在保存' : '保存') : saving === varKey ? 'Saving' : 'Save'}
           </Button>
           <Button onClick={() => setEdits(c => withoutKey(c, varKey))} size="sm" variant="outline">
             <X />
-            Cancel
+            {language === 'zh' ? '取消' : 'Cancel'}
           </Button>
         </div>
       )}
@@ -186,6 +193,7 @@ function EnvProviderGroup({
   rowProps: Omit<EnvRowProps, 'varKey' | 'info'>
 }) {
   const [expanded, setExpanded] = useState(false)
+  const language = rowProps.language
   const setCount = group.entries.filter(([, info]) => info.is_set).length
 
   return (
@@ -198,11 +206,13 @@ function EnvProviderGroup({
         <span className="flex min-w-0 items-center gap-2">
           <Zap className="size-4 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-medium">
-            {group.name === 'Other' ? 'Other providers' : group.name}
+            {group.name === 'Other' ? (language === 'zh' ? '其他提供商' : 'Other providers') : group.name}
           </span>
-          {setCount > 0 && <Pill tone="primary">{setCount} set</Pill>}
+          {setCount > 0 && <Pill tone="primary">{language === 'zh' ? `已设置 ${setCount} 个` : `${setCount} set`}</Pill>}
         </span>
-        <span className="text-xs text-muted-foreground">{group.entries.length} keys</span>
+        <span className="text-xs text-muted-foreground">
+          {language === 'zh' ? `${group.entries.length} 个密钥` : `${group.entries.length} keys`}
+        </span>
       </button>
       {expanded && (
         <div className="grid gap-2 bg-muted/20 p-3">
@@ -216,6 +226,7 @@ function EnvProviderGroup({
 }
 
 export function KeysSettings({ query }: SearchProps) {
+  const language = useStore($desktopLanguage)
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
@@ -254,12 +265,12 @@ export function KeysSettings({ query }: SearchProps) {
           setVars(next)
         }
       } catch (err) {
-        notifyError(err, 'API keys failed to load')
+        notifyError(err, language === 'zh' ? 'API 密钥加载失败' : 'API keys failed to load')
       }
     })()
 
     return () => void (cancelled = true)
-  }, [])
+  }, [language])
 
   const filterEnv = useCallback(
     (info: EnvVarInfo, key: string, q: string, cat: string, extra?: string) => {
@@ -328,9 +339,26 @@ export function KeysSettings({ query }: SearchProps) {
         .filter(([key, info]) => filterEnv(info, key, q, cat))
         .sort(([a], [b]) => a.localeCompare(b))
 
-      return entries.length === 0 ? [] : [{ category: cat, label: labels[cat] ?? prettyName(cat), entries }]
+      return entries.length === 0
+        ? []
+        : [
+            {
+              category: cat,
+              label:
+                language === 'zh'
+                  ? cat === 'tool'
+                    ? '工具'
+                    : cat === 'messaging'
+                      ? '消息平台'
+                      : cat === 'setting'
+                        ? '设置'
+                        : prettyName(cat)
+                  : labels[cat] ?? prettyName(cat),
+              entries
+            }
+          ]
     })
-  }, [filterEnv, query, vars])
+  }, [filterEnv, language, query, vars])
 
   function patchVar(key: string, patch: EnvPatch) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
@@ -354,16 +382,20 @@ export function KeysSettings({ query }: SearchProps) {
       await setEnvVar(key, value)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${key} updated.` })
+      notify({
+        kind: 'success',
+        title: language === 'zh' ? '凭据已保存' : 'Credential saved',
+        message: language === 'zh' ? `${key} 已更新。` : `${key} updated.`
+      })
     } catch (err) {
-      notifyError(err, `Failed to save ${key}`)
+      notifyError(err, language === 'zh' ? `保存 ${key} 失败` : `Failed to save ${key}`)
     } finally {
       setSaving(null)
     }
   }
 
   async function handleClear(key: string) {
-    if (!window.confirm(`Remove ${key} from .env?`)) {
+    if (!window.confirm(language === 'zh' ? `从 .env 中移除 ${key}？` : `Remove ${key} from .env?`)) {
       return
     }
 
@@ -373,9 +405,13 @@ export function KeysSettings({ query }: SearchProps) {
       await deleteEnvVar(key)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${key} removed.` })
+      notify({
+        kind: 'success',
+        title: language === 'zh' ? '凭据已移除' : 'Credential removed',
+        message: language === 'zh' ? `${key} 已移除。` : `${key} removed.`
+      })
     } catch (err) {
-      notifyError(err, `Failed to remove ${key}`)
+      notifyError(err, language === 'zh' ? `移除 ${key} 失败` : `Failed to remove ${key}`)
     } finally {
       setSaving(null)
     }
@@ -392,12 +428,12 @@ export function KeysSettings({ query }: SearchProps) {
       const result = await revealEnvVar(key)
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
-      notifyError(err, `Failed to reveal ${key}`)
+      notifyError(err, language === 'zh' ? `显示 ${key} 失败` : `Failed to reveal ${key}`)
     }
   }
 
   if (!vars) {
-    return <LoadingState label="Loading API keys and credentials..." />
+    return <LoadingState label={language === 'zh' ? '正在加载 API 密钥和凭据...' : 'Loading API keys and credentials...'} />
   }
 
   const rowProps = {
@@ -407,7 +443,8 @@ export function KeysSettings({ query }: SearchProps) {
     setEdits,
     onSave: handleSave,
     onClear: handleClear,
-    onReveal: handleReveal
+    onReveal: handleReveal,
+    language
   }
 
   const configuredCount = providerGroups.filter(g => g.hasAnySet).length
@@ -416,15 +453,19 @@ export function KeysSettings({ query }: SearchProps) {
     <SettingsContent>
       <div className="mb-4 flex justify-end">
         <Button onClick={() => setShowAdvanced(s => !s)} size="sm" variant="outline">
-          {showAdvanced ? 'Hide advanced' : 'Show advanced'}
+          {language === 'zh' ? (showAdvanced ? '隐藏高级项' : '显示高级项') : showAdvanced ? 'Hide advanced' : 'Show advanced'}
         </Button>
       </div>
 
       <div className="mb-6">
         <SectionHeading
           icon={Zap}
-          meta={`${configuredCount} of ${providerGroups.length} configured`}
-          title="LLM providers"
+          meta={
+            language === 'zh'
+              ? `${configuredCount} / ${providerGroups.length} 个已配置`
+              : `${configuredCount} of ${providerGroups.length} configured`
+          }
+          title={language === 'zh' ? '大模型提供商' : 'LLM providers'}
         />
         <div className="grid gap-2">
           {providerGroups.map(group => (
@@ -437,7 +478,11 @@ export function KeysSettings({ query }: SearchProps) {
         <div className="mb-6" key={group.category}>
           <SectionHeading
             icon={Settings2}
-            meta={`${group.entries.filter(([, i]) => i.is_set).length} of ${group.entries.length} set`}
+            meta={
+              language === 'zh'
+                ? `${group.entries.filter(([, i]) => i.is_set).length} / ${group.entries.length} 个已设置`
+                : `${group.entries.filter(([, i]) => i.is_set).length} of ${group.entries.length} set`
+            }
             title={group.label}
           />
           <div className="grid gap-2">

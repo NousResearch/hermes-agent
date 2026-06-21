@@ -47,7 +47,7 @@ _FALLBACK_PATTERNS = re.compile(
 )
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
-_TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_TASK_DESCRIPTION = "metakina-agent Gateway - Messaging Platform Integration"
 
 
 # ---------------------------------------------------------------------------

@@ -3397,11 +3397,13 @@ class TestNewEndpoints:
         if skills:
             assert "name" in skills[0]
             assert "enabled" in skills[0]
+            assert "source" in skills[0]
 
     def test_skills_list_includes_disabled_skills(self, monkeypatch):
         import tools.skills_tool as skills_tool
         import hermes_cli.skills_config as skills_config
         import hermes_cli.web_server as web_server
+        import tools.skill_usage as skill_usage
 
         def _fake_find_all_skills(*, skip_disabled=False):
             if skip_disabled:
@@ -3416,6 +3418,8 @@ class TestNewEndpoints:
         monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
         monkeypatch.setattr(skills_config, "get_disabled_skills", lambda config: {"disabled-skill"})
         monkeypatch.setattr(web_server, "load_config", lambda: {"skills": {"disabled": ["disabled-skill"]}})
+        monkeypatch.setattr(skill_usage, "is_bundled", lambda name: name == "disabled-skill")
+        monkeypatch.setattr(skill_usage, "is_hub_installed", lambda name: False)
 
         resp = self.client.get("/api/skills")
 
@@ -3426,12 +3430,14 @@ class TestNewEndpoints:
                 "description": "active",
                 "category": "demo",
                 "enabled": True,
+                "source": "custom",
             },
             {
                 "name": "disabled-skill",
                 "description": "disabled",
                 "category": "demo",
                 "enabled": False,
+                "source": "bundled",
             },
         ]
 

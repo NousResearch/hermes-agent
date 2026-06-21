@@ -24,15 +24,52 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 const SKILLS_MODES = ['skills', 'toolsets'] as const
 type SkillsMode = (typeof SKILLS_MODES)[number]
 
+const SKILL_SOURCE_FILTERS = ['all', 'custom', 'bundled'] as const
+type SkillSourceFilter = (typeof SKILL_SOURCE_FILTERS)[number]
+
+function skillSourceFor(skill: SkillInfo): Exclude<SkillInfo['source'], 'hub' | undefined> | 'hub' {
+  if (skill.source === 'bundled' || skill.source === 'hub') {
+    return skill.source
+  }
+  return 'custom'
+}
+
+function matchesSkillSource(skill: SkillInfo, sourceFilter: SkillSourceFilter): boolean {
+  if (sourceFilter === 'all') {
+    return true
+  }
+  return skillSourceFor(skill) === sourceFilter
+}
+
+function skillSourceLabel(skill: SkillInfo): string {
+  const source = skillSourceFor(skill)
+  if (source === 'bundled') {
+    return 'Bundled'
+  }
+  if (source === 'hub') {
+    return 'Hub'
+  }
+  return 'Custom'
+}
+
 function categoryFor(skill: SkillInfo): string {
   return asText(skill.category) || 'general'
 }
 
-function filteredSkills(skills: SkillInfo[], query: string, category: string | null): SkillInfo[] {
+function filteredSkills(
+  skills: SkillInfo[],
+  query: string,
+  category: string | null,
+  sourceFilter: SkillSourceFilter
+): SkillInfo[] {
   const q = query.trim().toLowerCase()
 
   return skills
     .filter(skill => {
+      if (!matchesSkillSource(skill, sourceFilter)) {
+        return false
+      }
+
       if (category && categoryFor(skill) !== category) {
         return false
       }
@@ -80,10 +117,16 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
+  const [sourceFilter, setSourceFilter] = useState<SkillSourceFilter>('all')
   const [refreshing, setRefreshing] = useState(false)
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
   const [savingToolset, setSavingToolset] = useState<string | null>(null)
   const [expandedToolset, setExpandedToolset] = useState<string | null>(null)
+
+  const skillsForSource = useMemo(
+    () => (skills ? skills.filter(skill => matchesSkillSource(skill, sourceFilter)) : []),
+    [skills, sourceFilter]
+  )
 
   const refreshCapabilities = useCallback(async () => {
     setRefreshing(true)
@@ -112,13 +155,13 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   }, [refreshCapabilities])
 
   const categories = useMemo(() => {
-    if (!skills) {
+    if (!skillsForSource) {
       return []
     }
 
     const counts = new Map<string, number>()
 
-    for (const skill of skills) {
+    for (const skill of skillsForSource) {
       const key = categoryFor(skill)
       counts.set(key, (counts.get(key) || 0) + 1)
     }
@@ -126,11 +169,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     return Array.from(counts.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, count]) => ({ key, count }))
-  }, [skills])
+  }, [skillsForSource])
 
   const visibleSkills = useMemo(
-    () => (skills ? filteredSkills(skills, query, mode === 'skills' ? activeCategory : null) : []),
-    [activeCategory, mode, query, skills]
+    () => (skills ? filteredSkills(skills, query, mode === 'skills' ? activeCategory : null, sourceFilter) : []),
+    [activeCategory, mode, query, skills, sourceFilter]
   )
 
   const visibleToolsets = useMemo(() => (toolsets ? filteredToolsets(toolsets, query) : []), [query, toolsets])
@@ -147,6 +190,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   }, [visibleSkills])
 
   const totalSkills = skills?.length || 0
+  const customSkills = skills?.filter(skill => skillSourceFor(skill) === 'custom').length || 0
+  const bundledSkills = skills?.filter(skill => skillSourceFor(skill) === 'bundled').length || 0
   const enabledToolsets = toolsets?.filter(toolset => toolset.enabled).length || 0
 
   async function handleToggleSkill(skill: SkillInfo, enabled: boolean) {
@@ -194,8 +239,32 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       filters={
         mode === 'skills' && categories.length > 0 ? (
           <>
-            <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
+            <TextTab
+              active={sourceFilter === 'all' && activeCategory === null}
+              onClick={() => {
+                setSourceFilter('all')
+                setActiveCategory(null)
+              }}
+            >
               {t.skills.all} <TextTabMeta>{totalSkills}</TextTabMeta>
+            </TextTab>
+            <TextTab
+              active={sourceFilter === 'custom'}
+              onClick={() => {
+                setSourceFilter('custom')
+                setActiveCategory(null)
+              }}
+            >
+              Custom <TextTabMeta>{customSkills}</TextTabMeta>
+            </TextTab>
+            <TextTab
+              active={sourceFilter === 'bundled'}
+              onClick={() => {
+                setSourceFilter('bundled')
+                setActiveCategory(null)
+              }}
+            >
+              Bundled <TextTabMeta>{bundledSkills}</TextTabMeta>
             </TextTab>
             {categories.map(category => (
               <TextTab
@@ -260,7 +329,19 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                         key={skill.name}
                       >
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">{skill.name}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="truncate text-sm font-medium">{skill.name}</div>
+                            <Badge
+                              className={cn(
+                                'shrink-0',
+                                skillSourceFor(skill) === 'custom'
+                                  ? 'bg-(--ui-accent-subtle) text-(--ui-accent-strong)'
+                                  : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'
+                              )}
+                            >
+                              {skillSourceLabel(skill)}
+                            </Badge>
+                          </div>
                           <p className="mt-0.5 text-xs text-muted-foreground">
                             {asText(skill.description) || t.skills.noDescription}
                           </p>

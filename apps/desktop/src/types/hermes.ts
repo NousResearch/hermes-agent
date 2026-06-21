@@ -540,6 +540,7 @@ export interface SkillInfo {
   description: string
   enabled: boolean
   name: string
+  source?: 'bundled' | 'custom' | 'hub'
 }
 
 export interface ToolsetInfo {

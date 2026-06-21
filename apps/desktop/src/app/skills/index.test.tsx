@@ -40,10 +40,10 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function renderSkills() {
+function renderSkills(initialEntry = '/skills?tab=toolsets') {
   return import('./index').then(({ SkillsView }) =>
     render(
-      <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <SkillsView />
       </MemoryRouter>
     )
@@ -99,5 +99,27 @@ describe('SkillsView toolset management', () => {
     fireEvent.click(configureBtn)
 
     await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledWith('web'))
+  })
+})
+
+
+describe('SkillsView skill provenance filters', () => {
+  it('filters to custom skills and shows provenance badges', async () => {
+    getSkills.mockResolvedValue([
+      { name: 'ours', description: 'custom', category: 'custom-agent-systems', enabled: true, source: 'custom' },
+      { name: 'builtin', description: 'bundled', category: 'software-development', enabled: true, source: 'bundled' }
+    ])
+
+    await renderSkills('/skills?tab=skills')
+
+    expect(await screen.findByText('ours')).toBeTruthy()
+    expect(screen.getByText('builtin')).toBeTruthy()
+    expect(screen.getAllByText('Custom').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Bundled').length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Custom/i })[0]!)
+
+    await waitFor(() => expect(screen.getByText('ours')).toBeTruthy())
+    expect(screen.queryByText('builtin')).toBeNull()
   })
 })

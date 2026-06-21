@@ -10264,11 +10264,19 @@ class SkillToggle(BaseModel):
 async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
+    from tools.skill_usage import is_bundled, is_hub_installed
     with _profile_scope(profile):
         config = load_config()
         disabled = get_disabled_skills(config)
         skills = _find_all_skills(skip_disabled=True)
     for s in skills:
+        name = str(s.get("name") or "")
+        if is_hub_installed(name):
+            s["source"] = "hub"
+        elif is_bundled(name):
+            s["source"] = "bundled"
+        else:
+            s["source"] = "custom"
         s["enabled"] = s["name"] not in disabled
     return skills
 

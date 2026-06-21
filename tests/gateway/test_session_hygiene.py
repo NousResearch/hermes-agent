@@ -741,7 +741,7 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
 async def test_session_hygiene_honors_configurable_hard_message_limit(
     monkeypatch, tmp_path
 ):
-    """compression.hygiene_hard_message_limit overrides the 400-message default.
+    """compression.hygiene_hard_message_limit overrides the default.
 
     Regression for user-reported fix: a gateway session with a small
     transcript (12 messages) should not hit hygiene compression by default,
@@ -799,7 +799,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
-    # 12 messages: below 400 default → no compression without override,
+    # 12 messages: below default → no compression without override,
     # but above the configured limit of 10 → should compress.
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
     runner.session_store.has_any_sessions.return_value = True
@@ -860,7 +860,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     monkeypatch, tmp_path
 ):
     """Sanity check for the companion test above: without config override,
-    12 messages must NOT trigger the 400-message hard limit.  If this test
+    12 messages must NOT trigger the default hard limit.  If this test
     passes without changes, the override test's finding is meaningful."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -883,7 +883,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     fake_run_agent.AIAgent = FakeCompressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    # No config.yaml — use defaults (hard_limit=400)
+    # No config.yaml — use defaults (hard_limit=5000)
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
@@ -947,7 +947,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # No compression agent instantiated — 12 messages well under 400 default.
+    # No compression agent instantiated — 12 messages well under 5000 default.
     assert FakeCompressAgent.last_instance is None, (
-        "Compression should NOT fire at 12 messages with default hard_limit=400"
+        "Compression should NOT fire at 12 messages with default hard_limit=5000"
     )

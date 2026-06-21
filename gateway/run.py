@@ -9019,7 +9019,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_model = "anthropic/claude-sonnet-4.6"
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
-            _hyg_hard_msg_limit = 400
+            _hyg_hard_msg_limit = 5000
             _hyg_config_context_length = None
             _hyg_provider = None
             _hyg_base_url = None
@@ -9141,8 +9141,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # extreme, regardless of token estimates.  This breaks the
                 # death spiral where API disconnects prevent token data
                 # collection, which prevents compression, which causes more
-                # disconnects.  400 messages is well above normal sessions
-                # but catches runaway growth before it becomes unrecoverable.
+                # disconnects.  5000 messages is far above any normal session
+                # but catches truly runaway growth before it becomes
+                # unrecoverable.  Set well clear of legitimate large-context
+                # (1M+) sessions doing thousands of short turns — those
+                # compress on the token threshold, not this count-based floor.
                 # Threshold is configurable via
                 # compression.hygiene_hard_message_limit.
                 # (#2153)

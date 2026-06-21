@@ -567,6 +567,21 @@ def compress_context(
                 old_title = agent._session_db.get_session_title(agent.session_id)
                 agent._session_db.end_session(agent.session_id, "compression")
                 old_session_id = agent.session_id
+                # Preserve the ORIGIN (pre-first-rotation) session id so that any
+                # downstream consumer of the session id which must remain stable
+                # across compaction can read it. The rotation below mints a fresh
+                # auto id and opens a child session (parent_session_id =
+                # old_session_id), so without this capture a request-metadata
+                # stamp keyed on agent.session_id (e.g. an OpenAI-wire gateway
+                # forwarding it as the Langfuse trace sessionId) would switch to
+                # the child id post-compaction, splitting one logical run across a
+                # tagged trace plus an untagged continuation. Captured once (first
+                # rotation only) so it stays the root id through repeated
+                # compactions. If the rotation below is reverted on error this
+                # equals the still-current agent.session_id, so an origin-or-current
+                # read resolves to the same value either way.
+                if not getattr(agent, "_origin_session_id", None):
+                    agent._origin_session_id = old_session_id
                 agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Ordering contract: the agent thread updates the contextvar here;
                 # the gateway propagates to SessionEntry after run_in_executor returns.

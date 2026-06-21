@@ -1374,6 +1374,37 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     return resolved
 
 
+def _set_session_cwd_for_agent(sid: str, cwd: str) -> dict:
+    """Agent-facing workspace setter — bypasses the running guard.
+
+    The renderer-facing @method('session.cwd.set') refuses when the session
+    is running (code 4009). Agents legitimately want to move their OWN session
+    while running, so this path skips the guard, calls _set_session_cwd, emits
+    session.info so the sidebar re-groups live, and returns {cwd, branch}.
+    """
+    if not cwd or not cwd.strip():
+        return {"error": "cwd required"}
+    if sid not in _sessions:
+        return {"error": f"session not found: {sid}"}
+    session = _sessions[sid]
+    try:
+        resolved = _set_session_cwd(session, cwd.strip())
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.warning("Failed to set session cwd for agent: %s", e, exc_info=True)
+        return {"error": f"internal error: {e}"}
+    # Emit session.info so the desktop sidebar re-groups the session live.
+    agent = session.get("agent")
+    info = _session_info(agent, session) if agent is not None else {
+        "cwd": resolved,
+        "branch": _git_branch_for_cwd(resolved),
+        "lazy": True,
+    }
+    _emit("session.info", sid, info)
+    return {"cwd": resolved, "branch": _git_branch_for_cwd(resolved)}
+
+
 # ── Config I/O ────────────────────────────────────────────────────────
 
 
@@ -3215,6 +3246,9 @@ def _agent_cbs(sid: str) -> dict:
             {k: v for k, v in (("start", start), ("count", count)) if v is not None},
             timeout=30,
         ),
+        # set_workspace tool: agent can rebind its own session's cwd (workspace).
+        # Direct gateway call, no renderer round-trip — _set_session_cwd_for_agent
+        "set_workspace_callback": lambda cwd: _set_session_cwd_for_agent(sid, cwd),
     }
 
 

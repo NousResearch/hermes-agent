@@ -1122,6 +1122,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
+        elif function_name == "set_workspace":
+            def _execute(next_args: dict) -> Any:
+                from tools.workspace_tool import set_workspace_tool as _set_workspace_tool
+                return _set_workspace_tool(
+                    cwd=next_args.get("cwd"),
+                    callback=getattr(agent, "set_workspace_callback", None),
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('set_workspace', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

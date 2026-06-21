@@ -571,6 +571,9 @@ def init_agent(
     # models to "give up" prematurely on complex tasks (#7915).
     agent._budget_exhausted_injected = False
     agent._budget_grace_call = False
+    # True only during the one post-budget grace turn; read by the tool
+    # dispatchers to refuse side-effecting tools then (Guard D-core).
+    agent._in_budget_grace = False
 
     # Activity tracking — updated on each API call, tool execution, and
     # stream chunk.  Used by the gateway timeout handler to report what the

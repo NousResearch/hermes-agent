@@ -29,6 +29,11 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.budget_grace_gate import (
+    grace_block_message,
+    grace_block_result,
+    is_readonly_grace_tool,
+)
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -326,7 +331,30 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
-        if _ts_scope_block is not None:
+        if getattr(agent, "_in_budget_grace", False) and not is_readonly_grace_tool(function_name):
+            # Budget-grace turn: deny-by-default side-effect lockout (Guard
+            # D-core). Only the read-only allowlist may run; everything else —
+            # including unknown/future tools — is refused so a runaway worker
+            # cannot take a side-effecting action past its exhausted budget.
+            # Use the shared grace_block_result() so the model-visible JSON
+            # carries the budget_grace_block metadata key (the shape asserted in
+            # test_block_message_and_result_shape) — both dispatch paths emit the
+            # same structure. middleware_trace mirrors the sibling block paths.
+            _grace_msg = grace_block_message(function_name)
+            block_result = grace_block_result(function_name)
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="budget_grace_block",
+                error_message=_grace_msg,
+                middleware_trace=list(middleware_trace),
+            )
+        elif _ts_scope_block is not None:
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
             block_result = _ts_scope_block
             _emit_terminal_post_tool_call(
@@ -829,7 +857,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
-        if _ts_scope_block is not None:
+        if getattr(agent, "_in_budget_grace", False) and not is_readonly_grace_tool(function_name):
+            # Budget-grace turn: deny-by-default side-effect lockout (Guard
+            # D-core). Mirror of the concurrent path — only read-only tools run.
+            _block_msg = grace_block_message(function_name)
+            _block_error_type = "budget_grace_block"
+        elif _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
         else:
@@ -930,7 +963,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
-            function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+            # The budget-grace block uses the shared grace_block_result() so its
+            # model-visible JSON carries the budget_grace_block metadata key
+            # (the shape asserted in test_block_message_and_result_shape) — the
+            # same structure the concurrent path emits.
+            if _block_error_type == "budget_grace_block":
+                function_result = grace_block_result(function_name)
+            else:
+                function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
             _emit_terminal_post_tool_call(
                 agent,

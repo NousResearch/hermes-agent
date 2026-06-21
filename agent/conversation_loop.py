@@ -590,8 +590,20 @@ def run_conversation(
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
         # this iteration regardless of outcome.
+        #
+        # ``_in_budget_grace`` is recomputed every iteration (default False) and
+        # set True ONLY for the grace turn. The tool dispatchers read it to
+        # refuse side-effecting tools during the grace turn (deny-by-default,
+        # read-only allowlist) — see ``agent/budget_grace_gate.py`` (Guard
+        # D-core). Refusing a call must NOT re-arm ``_budget_grace_call``: the
+        # flag is already cleared here, so the loop exits after this iteration
+        # whether the model's tool calls execute or are refused. A
+        # deny-that-loops would itself be a runaway, so the gate only blocks
+        # execution; it never extends the loop.
+        agent._in_budget_grace = False
         if agent._budget_grace_call:
             agent._budget_grace_call = False
+            agent._in_budget_grace = True
         elif not agent.iteration_budget.consume():
             _turn_exit_reason = "budget_exhausted"
             if not agent.quiet_mode:

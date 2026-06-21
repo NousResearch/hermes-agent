@@ -706,6 +706,14 @@ def _strip_anthropic_release_date(name: str) -> Optional[str]:
 
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
+    """Resolve a route to a static official-docs pricing entry, most-specific first.
+
+    Lookup precedence (first hit wins, so a more-specific entry never loses to a
+    fallback): exact ``(provider, model)`` → for Anthropic, the dot-normalized
+    name (e.g. ``opus-4.7`` → ``opus-4-7``) → then the date-stripped base of a
+    versioned new-scheme id (``claude-haiku-4-5-20251001`` → ``claude-haiku-4-5``).
+    Returns None when no entry matches at any tier.
+    """
     model = route.model.lower()
     # Direct lookup first
     entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))

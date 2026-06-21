@@ -165,8 +165,10 @@ class TestTerminalIntegration:
     def test_blocklisted_var_blocked_by_default(self):
         from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
 
-        # Pick a var we know is in the blocklist
-        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        # Pick a var we know is in the blocklist. sorted() so the probed
+        # var is deterministic across runs (frozenset iteration order
+        # varies with PYTHONHASHSEED). See 2d978bf44.
+        blocked_var = sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)[0]
         env = {blocked_var: "secret_value", "PATH": "/usr/bin"}
         result = _sanitize_subprocess_env(env)
         assert blocked_var not in result
@@ -182,7 +184,9 @@ class TestTerminalIntegration:
             _HERMES_PROVIDER_ENV_BLOCKLIST,
         )
 
-        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        # sorted() so the probed var is deterministic across runs
+        # (frozenset iteration order varies with PYTHONHASHSEED).
+        blocked_var = sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)[0]
         # Attempt to register — must be silently refused (logged warning).
         register_env_passthrough([blocked_var])
 
@@ -203,7 +207,9 @@ class TestTerminalIntegration:
             _HERMES_PROVIDER_ENV_BLOCKLIST,
         )
 
-        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        # sorted() so the probed var is deterministic across runs
+        # (frozenset iteration order varies with PYTHONHASHSEED).
+        blocked_var = sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)[0]
         os.environ[blocked_var] = "secret_value"
         try:
             # Without passthrough — blocked

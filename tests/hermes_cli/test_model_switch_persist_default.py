@@ -1,11 +1,11 @@
-"""Tests for persist-by-default model switching.
+"""Tests for session-default model switching.
 
 Covers:
 - ``parse_model_flags`` recognises ``--session`` (and keeps ``--global``).
 - ``resolve_persist_behavior`` applies the config-gated default and the
   ``--session`` / ``--global`` overrides.
-- The default (no flags) persists, which is the user-facing fix: a plain
-  ``/model <name>`` survives across sessions.
+- The default (no flags) is session-only: a plain ``/model <name>`` does
+  NOT persist to config.yaml. Use ``--global`` to persist for new sessions.
 """
 
 from unittest.mock import patch
@@ -73,10 +73,10 @@ class TestResolvePersistBehavior:
         with _config({"model": {"persist_switch_by_default": False}}):
             assert resolve_persist_behavior(True, False) is True
 
-    def test_default_persists_when_config_missing(self):
-        # No model section at all → built-in default (True).
+    def test_default_session_only_when_config_missing(self):
+        # No model section at all → built-in default (False = session-only).
         with _config({}):
-            assert resolve_persist_behavior(False, False) is True
+            assert resolve_persist_behavior(False, False) is False
 
     def test_default_persists_when_key_true(self):
         with _config({"model": {"persist_switch_by_default": True}}):
@@ -86,10 +86,10 @@ class TestResolvePersistBehavior:
         with _config({"model": {"persist_switch_by_default": False}}):
             assert resolve_persist_behavior(False, False) is False
 
-    def test_default_when_model_is_flat_string(self):
-        # Fresh install: ``model: ""`` (not a dict) → built-in default True.
+    def test_default_session_only_when_model_is_flat_string(self):
+        # Fresh install: ``model: ""`` (not a dict) → built-in default False.
         with _config({"model": ""}):
-            assert resolve_persist_behavior(False, False) is True
+            assert resolve_persist_behavior(False, False) is False
 
     def test_session_overrides_global_when_both_set(self):
         # --session is the explicit opt-out and wins over --global.

@@ -368,12 +368,13 @@ def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
     1. ``--session`` explicitly opts out → ``False`` (this session only).
     2. ``--global`` explicitly opts in → ``True``.
     3. Otherwise defer to ``model.persist_switch_by_default`` in
-       ``config.yaml`` (defaults to ``True``, so a plain ``/model <name>``
-       survives across sessions — the behavior users expect).
+       ``config.yaml`` (defaults to ``False``, so a plain ``/model <name>``
+       is session-only — only ``/model --global`` or ``hermes model``
+       changes the config for new sessions).
 
     The config read is defensive: on a fresh install ``model`` may be a
     flat string rather than a dict, in which case the built-in default
-    (``True``) applies.
+    (``False``) applies.
     """
     if is_session:
         return False
@@ -384,10 +385,10 @@ def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
 
         model_cfg = load_config().get("model")
         if isinstance(model_cfg, dict):
-            return bool(model_cfg.get("persist_switch_by_default", True))
+            return bool(model_cfg.get("persist_switch_by_default", False))
     except Exception:
         pass
-    return True
+    return False
 
 
 # ---------------------------------------------------------------------------

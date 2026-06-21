@@ -2558,6 +2558,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session model locks: caches the model string a session first
+        # resolved from config, so that subsequent config.yaml changes (e.g.
+        # `hermes model` or /model --global in another session) don't hijack
+        # an already-running session's model. Only an explicit /model in this
+        # session or a /new (new session) picks up the new config default.
+        self._session_model_locks: Dict[str, str] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -3267,6 +3273,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        # Lock in the model for this session on first resolution so that
+        # subsequent config.yaml changes (hermes model, /model --global in
+        # another session) don't hijack an already-running session. Only
+        # an explicit /model in this session or a /new picks up the new
+        # config default.
+        if resolved_session_key and not override:
+            locked = self._session_model_locks.get(resolved_session_key)
+            if locked:
+                model = locked
+            else:
+                self._session_model_locks[resolved_session_key] = model
         if override:
             override_model = override.get("model", model)
             override_runtime = {

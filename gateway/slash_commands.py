@@ -116,6 +116,10 @@ class GatewaySlashCommandsMixin:
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
+        # Also clear the model lock so the new session picks up the current
+        # config default (e.g. if the user ran `hermes model` in between).
+        if hasattr(self, "_session_model_locks"):
+            self._session_model_locks.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -1034,9 +1038,9 @@ class GatewaySlashCommandsMixin:
 
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
-          /model <name>                       — switch model (persists by default)
+          /model <name>                       — switch model (session only)
           /model <name> --session             — switch for this session only
-          /model <name> --global              — switch and persist (explicit)
+          /model <name> --global              — switch and persist to config
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
@@ -1210,6 +1214,9 @@ class GatewaySlashCommandsMixin:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        # Update the model lock to match the explicit switch.
+                        if hasattr(_self, "_session_model_locks"):
+                            _self._session_model_locks[_session_key] = result.new_model
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -1399,6 +1406,10 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            # Update the model lock to match so a subsequent /new or agent
+            # rebuild picks up the explicitly-switched model, not a stale lock.
+            if hasattr(self, "_session_model_locks"):
+                self._session_model_locks[session_key] = result.new_model
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.

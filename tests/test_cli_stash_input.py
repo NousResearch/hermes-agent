@@ -138,18 +138,26 @@ def test_maybe_restore_app_not_running_is_safe():
     assert buf.text == ""  # not restored because app not running
 
 
-def test_stash_clears_on_regular_message():
-    """When a non-slash message is sent, the stash should be cleared.
+def test_stash_persists_across_regular_message():
+    """When a non-slash message is sent, the stash should NOT be cleared.
 
-    This is tested by verifying the process_loop logic: after
-    self.chat() is called, _stashed_input should be None. We simulate
-    the key line that runs before chat: self._stashed_input = None.
+    The stash persists across regular messages — user can stash a draft,
+    send a quick question, and when the agent is done, the draft is
+    restored to the input bar. The restore happens in process_loop after
+    self.chat() returns, via _maybe_restore_stashed_input().
     """
     cli = _make_cli()
     cli._stashed_input = "draft I was writing"
-    # Simulate what the process_loop does before calling self.chat()
-    cli._stashed_input = None
-    assert cli._stashed_input is None
+    # Simulate what the process_loop does BEFORE calling self.chat():
+    # (previously this cleared the stash, but now it does NOT)
+    assert cli._stashed_input == "draft I was writing"  # still there
+    # After chat() returns, _maybe_restore_stashed_input is called
+    buf = _FakeBuffer()
+    cli._app = _FakeApp(buf)
+    cli._maybe_restore_stashed_input()
+    cli._app.loop.flush()
+    assert buf.text == "draft I was writing"
+    assert cli._stashed_input is None  # consumed by the restore
 
 
 def test_stash_toggle_cycle():

@@ -7113,14 +7113,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         Supports:
           /model                              — show current model + usage hints
-          /model <name>                       — switch model (persists by default)
+          /model <name>                       — switch model (session only)
           /model <name> --session             — switch for this session only
-          /model <name> --global              — switch and persist (explicit)
+          /model <name> --global              — switch and persist to config
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
 
-        Persistence defaults to on (``model.persist_switch_by_default`` in
-        config.yaml, default True). Use ``--session`` for a one-off switch.
+        Persistence defaults to off (``model.persist_switch_by_default`` in
+        config.yaml, default False). Use ``--global`` to persist for new sessions.
         """
         from hermes_cli.model_switch import (
             switch_model,
@@ -7143,8 +7143,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ) = parse_model_flags(raw_args)
         # Resolve the effective persistence once: --session overrides the
         # config-gated default, --global forces persist, otherwise defer to
-        # model.persist_switch_by_default (defaults to True so /model survives
-        # across sessions).
+        # model.persist_switch_by_default (defaults to False so /model is
+        # session-only by default).
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: wipe the on-disk picker cache before building the
@@ -7193,8 +7193,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not providers:
                 _cprint("  No authenticated providers found.")
                 _cprint("")
-                _cprint("  /model <name>                        switch model (persists)")
+                _cprint("  /model <name>                        switch model (session only)")
                 _cprint("  /model <name> --session              switch for this session only")
+                _cprint("  /model <name> --global               switch and persist to config")
                 _cprint("  /model --provider <slug>             switch provider")
                 _cprint("  /model --refresh                     re-fetch live model lists")
                 return
@@ -14197,8 +14198,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
                     # Regular chat - run agent
-                    # Clear stashed input — user has sent a real message
-                    self._stashed_input = None
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
 
@@ -14248,6 +14247,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 self._pending_input.put(_synth)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
+
+                        # Restore stashed input (Ctrl+S) after agent responds.
+                        # The stash persists across regular messages too — user
+                        # can stash a draft, send a quick question, and when the
+                        # agent is done the draft is back in the input bar.
+                        self._maybe_restore_stashed_input()
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)

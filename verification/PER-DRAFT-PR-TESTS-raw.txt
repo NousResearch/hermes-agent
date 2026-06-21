@@ -1,0 +1,37 @@
+PR       HEAD_SHA    #tests  RESULT
+----------------------------------------------------------------------
+#49915   e33e4f781   0       (no test files in diff — code-only PR)
+#49916   1da02f748   0       (no test files in diff — code-only PR)
+#49917   6bc37d8f4   6       106 passed, 3 warnings in 7.95s
+#50021   80ce95201   0       (no test files in diff — code-only PR)
+#50022   6f6ab5839   0       (no test files in diff — code-only PR)
+#50031   1bdae0a13   1       1 failed, 4 passed in 2.50s
+#50032   122087da9   1       4 passed in 0.25s
+#50033   afb0a4e83   0       (no test files in diff — code-only PR)
+#50038   cf14b5731   1       58 passed in 14.34s
+#50039   b78ea6e93   4       22 skipped in 0.09s
+#50040   25b495a06   0       (no test files in diff — code-only PR)
+#50041   f3288ad35   1       68 passed, 3 warnings in 15.72s
+#50042   a54e706a7   2       77 passed in 1.78s
+#50045   5a12f857a   3       316 passed in 6.40s
+#50046   0d226f1ee   3       24 passed in 0.82s
+#50047   b3695d09a   0       (no test files in diff — code-only PR)
+#50048   001b549c6   1       21 passed in 0.72s
+#50049   e4e34884d   1       30 passed in 0.67s
+#50053   d0ffb661c   0       (no test files in diff — code-only PR)
+#50054   352b13184   0       (no test files in diff — code-only PR)
+#50055   35da28816   0       (no test files in diff — code-only PR)
+#50056   c219bded8   3       517 passed, 3 warnings in 69.31s (0:01:09)
+#50064   6369374af   14      no tests ran in 0.00s
+#50066   37a76f469   2       328 passed, 3 warnings in 36.91s
+#50068   123efe8be   0       (no test files in diff — code-only PR)
+#50073   a12d4aebd   1       9 passed, 3 warnings in 3.05s
+#50078   6be7d8231   8       6 failed, 924 passed, 3 warnings in 77.96s (0:01:17)
+#50080   e5e4a8b13   2       20 passed, 3 warnings in 4.06s
+#50086   c7e2620c9   1       307 passed, 3 warnings in 31.14s
+#50146   b674df630   1       6 passed in 1.10s
+#50155   02e537931   1       6 passed in 0.24s
+#50296   7af74fc2d   1       13 passed in 0.40s
+#50457   843292f50   63      no tests ran in 0.00s
+----------------------------------------------------------------------
+draft PRs: green=20  no-tests(code-only)=11  has-failures=2

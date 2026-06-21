@@ -96,6 +96,34 @@ class TestParseSchedule:
         assert result["kind"] == "cron"
         assert result["expr"] == "0 9 * * *"
 
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "0 9 * * MON",          # weekday by name
+            "0 9 * * mon-fri",      # range over weekday names
+            "0 9 * * mon,wed,fri",  # list of weekday names
+            "30 9 * JAN *",         # month by name
+            "0 0 L * *",            # last-day-of-month special
+            "0 9 * * 5#2",          # nth-weekday special
+            "*/30 * * * * *",       # 6-field form (with seconds)
+        ],
+    )
+    def test_cron_expression_with_names_and_specials(self, expr):
+        # croniter accepts day/month names and the L/W/# specials; the parser
+        # must recognize these as cron rather than rejecting them with a
+        # generic "Invalid schedule" error (regression guard).
+        pytest.importorskip("croniter")
+        result = parse_schedule(expr)
+        assert result["kind"] == "cron"
+        assert result["expr"] == expr
+
+    def test_prose_is_not_treated_as_cron(self):
+        # A free-form sentence that happens to have 5-6 words must not be
+        # misread as a (malformed) cron expression — the numeric minute-field
+        # check keeps it on the generic-schedule error path.
+        with pytest.raises(ValueError):
+            parse_schedule("tell me about the weather now")
+
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")
         assert result["kind"] == "once"

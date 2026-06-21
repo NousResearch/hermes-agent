@@ -333,11 +333,25 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "display": f"every {minutes}m"
         }
     
-    # Check for cron expression (5 or 6 space-separated fields)
-    # Cron fields: minute hour day month weekday [year]
+    # Check for cron expression (5 classic, or 6 with seconds/year fields).
+    # Cron fields: minute hour day month weekday [year].
+    #
+    # The minute field is always numeric — digits plus the ``* , - /``
+    # operators — so requiring it to match the strict numeric shape reliably
+    # tells a cron attempt apart from free-form prose (which would otherwise
+    # be misread as a malformed cron). The remaining fields accept the full
+    # grammar croniter understands, including day/month NAMES ("MON", "JAN"),
+    # ranges and lists over those names ("mon-fri", "mon,wed,fri"), and the
+    # ``L`` / ``W`` / ``#`` / ``?`` specials. A prior char-class pre-filter
+    # only allowed ``[\d*,-/]`` in every field, which silently rejected these
+    # perfectly valid expressions (e.g. "0 9 * * MON") and surfaced them to
+    # the user as a generic "Invalid schedule" error. croniter remains the
+    # authoritative validator for whatever clears this structural check.
     parts = schedule.split()
-    if len(parts) >= 5 and all(
-        re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
+    if (
+        5 <= len(parts) <= 6
+        and re.match(r'^[\d*,/-]+$', parts[0])
+        and all(re.match(r'^[A-Za-z0-9*,/?#-]+$', p) for p in parts[1:])
     ):
         if not HAS_CRONITER:
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")

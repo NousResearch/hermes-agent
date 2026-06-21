@@ -3647,9 +3647,9 @@ class TestRunConversation:
             {"role": "assistant", "content": "old answer"},
         ]
 
-        # 6 responses: original + 2 prefill + 3 retries after prefill exhaustion
+        # 7 responses: original + 3 prefill + 3 retries after prefill exhaustion
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp] * 6),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp] * 7),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3659,23 +3659,23 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        # #34452: the bare "(empty)" sentinel is now replaced by a
-        # user-visible end-of-turn explanation so the failure isn't silent.
+        # Reasoning text is surfaced as the response instead of "(empty)"
+        # when the model returns reasoning_content with empty content.
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert result["final_response"] == "reasoning only"
         assert result["turn_exit_reason"] == "empty_response_exhausted"
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        assert result["api_calls"] == 7  # 1 original + 3 prefill + 3 retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
-        """Structured reasoning-only triggers prefill (2), then retries (3), then (empty)."""
+        """Structured reasoning-only triggers prefill (3), then retries (3), then reasoning fallback."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        # 6 responses: 1 original + 2 prefill + 3 retries after prefill exhaustion
-        agent.client.chat.completions.create.side_effect = [empty_resp] * 6
+        # 7 responses: 1 original + 3 prefill + 3 retries after prefill exhaustion
+        agent.client.chat.completions.create.side_effect = [empty_resp] * 7
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3683,10 +3683,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        # #34452: explanation replaces the bare "(empty)" sentinel.
+        # Reasoning text is surfaced instead of "(empty)".
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        assert result["final_response"] == "structured reasoning answer"
+        assert result["api_calls"] == 7  # 1 original + 3 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
         """When prefill continuation produces content, it becomes the final response."""

@@ -46,15 +46,31 @@ def _load_config() -> dict:
     """
     from hermes_constants import get_hermes_home
 
+    hermes_home = get_hermes_home()
     config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "host": os.environ.get("MEM0_HOST", ""),
+        "auth_mode": os.environ.get("MEM0_AUTH_MODE", "auto"),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
     }
 
-    config_path = get_hermes_home() / "mem0.json"
+    yaml_config_path = hermes_home / "config.yaml"
+    if yaml_config_path.exists():
+        try:
+            import yaml
+
+            ycfg = yaml.safe_load(yaml_config_path.read_text(encoding="utf-8")) or {}
+            mem0_cfg = (ycfg.get("memory") or {}).get("mem0") or {}
+            if isinstance(mem0_cfg, dict):
+                config.update({k: v for k, v in mem0_cfg.items()
+                               if v is not None and v != ""})
+        except Exception:
+            pass
+
+    config_path = hermes_home / "mem0.json"
     if config_path.exists():
         try:
             file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
@@ -64,6 +80,73 @@ def _load_config() -> dict:
             pass
 
     return config
+
+
+class _RestMem0Client:
+    """Tiny client for self-hosted Mem0 REST APIs."""
+
+    def __init__(self, host: str, api_key: str = "", auth_mode: str = "auto"):
+        self._host = host.rstrip("/")
+        self._api_key = api_key
+        self._auth_mode = (auth_mode or "auto").strip().lower()
+
+    def _headers(self) -> dict[str, str]:
+        if self._auth_mode in {"", "none", "disabled", "off"}:
+            return {}
+        if not self._api_key:
+            return {}
+        if self._auth_mode == "bearer":
+            return {"Authorization": f"Bearer {self._api_key}"}
+        if self._auth_mode == "token":
+            return {"Authorization": f"Token {self._api_key}"}
+        return {"X-API-Key": self._api_key}
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        import httpx
+
+        response = httpx.request(
+            method,
+            f"{self._host}{path}",
+            headers=self._headers(),
+            json=json_body,
+            params={k: v for k, v in (params or {}).items() if v is not None},
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        return response.json()
+
+    def search(
+        self,
+        *,
+        query: str,
+        filters: dict[str, Any] | None = None,
+        rerank: bool = False,
+        top_k: int = 10,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "query": query,
+            "top_k": top_k,
+        }
+        if filters:
+            payload["filters"] = filters
+        return self._request("POST", "/search", json_body=payload)
+
+    def get_all(self, *, filters: dict[str, Any] | None = None) -> Any:
+        return self._request("GET", "/memories", params=filters or {})
+
+    def add(self, messages: list[dict[str, Any]], **kwargs) -> Any:
+        payload = {"messages": messages}
+        payload.update({k: v for k, v in kwargs.items() if v is not None})
+        return self._request("POST", "/memories", json_body=payload)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +207,8 @@ class Mem0MemoryProvider(MemoryProvider):
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
+        self._host = ""
+        self._auth_mode = "auto"
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
@@ -141,7 +226,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _load_config()
-        return bool(cfg.get("api_key"))
+        return bool(cfg.get("api_key") or cfg.get("host"))
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -161,6 +246,8 @@ class Mem0MemoryProvider(MemoryProvider):
     def get_config_schema(self):
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Self-hosted Mem0 REST API base URL", "default": ""},
+            {"key": "auth_mode", "description": "REST auth mode", "default": "auto", "choices": ["auto", "none", "x-api-key", "bearer", "token"]},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -170,6 +257,13 @@ class Mem0MemoryProvider(MemoryProvider):
         """Thread-safe client accessor with lazy initialization."""
         with self._client_lock:
             if self._client is not None:
+                return self._client
+            if self._host:
+                self._client = _RestMem0Client(
+                    host=self._host,
+                    api_key=self._api_key,
+                    auth_mode=self._auth_mode,
+                )
                 return self._client
             try:
                 from mem0 import MemoryClient
@@ -204,6 +298,8 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
+        self._auth_mode = self._config.get("auth_mode", "auto")
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")

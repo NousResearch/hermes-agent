@@ -45,6 +45,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "0x0sec@gmail.com": "kn8-codes",  # PR #48422 salvage (rich messages opt-in default off)
     "liaoshiwu@gmail.com": "de1tydev",  # PR #10158 salvage (poll read-only for notify_on_complete watcher; #10156)
     "szzhoujiarui@gmail.com": "szzhoujiarui-sketch",  # cron model.default salvage co-author (#45550)
     "rayjun0412@gmail.com": "rayjun",  # cron model.default salvage co-author (#43952)

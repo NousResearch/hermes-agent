@@ -193,9 +193,10 @@ def _build_requester_with_responses(responses):
     given outcomes in order, one per call. Returns ``(requester, call_log)``.
 
     ``call_log`` is a list of the option-id lists offered to each request,
-    so tests can assert that ``allow_session`` is surfaced and that
-    subsequent edits skip the prompt entirely (call_log shorter than the
-    number of edits proposed).
+    with one entry per requester call. Skipped prompts (where the session
+    opt-in short-circuited before scheduling a permission request) record an
+    empty list, so ``call_log`` stays the same length as the number of edits
+    proposed while still showing which calls actually surfaced options.
     """
 
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -215,14 +216,18 @@ def _build_requester_with_responses(responses):
         side_effect=_schedule,
     )
     patcher.start()
+    # The patch must stay active for the lifetime of the requester so repeated
+    # calls within a test exercise the same _schedule shim; callers stop it via
+    # ``requester._patcher``. But if construction itself raises, stop the patch
+    # here so it does not leak into other tests and cause order-dependent
+    # failures.
     try:
         requester = make_acp_edit_approval_requester(
             request_permission, loop, session_id="s1", timeout=1.0,
         )
-    finally:
-        # Keep the patch active for the lifetime of the requester so that
-        # repeated calls within a test exercise the same _schedule shim.
-        pass
+    except BaseException:
+        patcher.stop()
+        raise
 
     original = requester
 

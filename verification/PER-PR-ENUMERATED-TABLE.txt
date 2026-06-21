@@ -1,0 +1,45 @@
+PR       REBASE           #FILES TEST    PASS FAIL CLASSIFICATION               BRANCH
+----------------------------------------------------------------------------------------------------------------------------------
+#48024   REBASED_CLEAN         5 PASS     181    0                              feat/expose-reasoning-api-server
+#48057   REBASED_CLEAN         2 PASS      49    0                              feat/drop-empty-name-tools
+#48065   REBASED_CLEAN         2 PASS       8    0                              fix/context-engine-tool-schema-doublewrap
+#48069   REBASED_CONFLICT      2 none       0    0 KNOWN_DRIFT                  fix/mcp-keepalive-inflight-race
+#48101   REBASED_CLEAN         5 PASS      19    0                              feat/per-model-system-prompt-prelude
+#49184   REBASED_CLEAN         5 PASS      13    0                              feat/copilot-claude-v1messages-routing
+#49449   REBASED_CLEAN         2 PASS      15    0                              feat/copilot-codex-true-limits-pr
+#49644   REBASED_CLEAN        10 PASS      10    0                              feat/reasoning-max-effort
+#49915   REBASED_CLEAN         1 none       0    0                              feat/tui-ctrlc-interrupt-vscode
+#49916   REBASED_CLEAN         1 none       0    0                              fix/tui-yolo-badge-approval-mode
+#49917   REBASED_CLEAN        20 PASS     106    0                              fix/tui-notify-autodispatch-gate
+#50021   REBASED_CLEAN         2 none       0    0                              feat/tool-timing-sidecar
+#50022   REBASED_CLEAN         1 none       0    0                              feat/model-router-proxy-tool
+#50031   REBASED_CLEAN         2 FAIL       4    1 LIVE_TEST_REQUIRES_CREDENTIA feat/copilot-auto-mode-router
+#50032   REBASED_CLEAN         5 PASS       4    0                              feat/source-accelerator
+#50033   REBASED_CLEAN         3 none       0    0                              feat/gemini-cli-user-agent
+#50038   REBASED_CLEAN         6 PASS      58    0                              feat/codex-cli-identity
+#50039   REBASED_CLEAN         9 PASS       0    0                              feat/agy-cli-provider
+#50040   REBASED_CLEAN         1 none       0    0                              feat/delegate-task-persona
+#50041   REBASED_CLEAN         2 PASS      68    0                              fix/doctor-optional-integrations
+#50042   REBASED_CLEAN         3 PASS      77    0                              feat/file-tools-read-guards
+#50045   REBASED_CLEAN         7 PASS     316    0                              feat/skills-hub-tool-guard
+#50046   REBASED_CLEAN         6 PASS      24    0                              feat/stable-tag-update-check
+#50047   REBASED_CLEAN         2 none       0    0                              fix/gateway-liveness-and-root-guard
+#50048   REBASED_CLEAN         2 none       0    0                              feat/send-plain-text-directive
+#50049   REBASED_CLEAN         2 PASS      30    0                              fix/subdir-hints-expanduser-guard
+#50053   REBASED_CLEAN         1 none       0    0                              feat/context-engine-grounding-hooks
+#50054   REBASED_CLEAN         1 none       0    0                              feat/plugin-register-command-override
+#50055   REBASED_CLEAN         1 none       0    0                              fix/copilot-assistant-prefill-trailing-user
+#50056   REBASED_CONFLICT      5 FAIL     506    6 PREEXISTING_UPSTREAM         feat/sqlite-driver-selection
+#50064   REBASED_CLEAN        21 PASS     555    0                              feat/copilot-cli-identity-claude-vision
+#50066   REBASED_CLEAN         2 FAIL     322    6 PREEXISTING_UPSTREAM         tests/bedrock-region-sessions-pagination
+#50068   REBASED_CLEAN         4 none       0    0                              feat/tui-autopilot-yolo-status-badges
+#50073   REBASED_CLEAN         5 PASS       9    0                              feat/compression-oversized-message-offload
+#50078   REBASED_CLEAN         9 FAIL     919    6 CROSS_PR_DEPENDENCY_MISCLASS tests/orphan-test-catchup-and-discord-max
+#50080   REBASED_CLEAN         2 PASS      20    0                              tests/context-engine-unwrap-and-compression-runtime
+#50086   REBASED_CLEAN         2 FAIL     301    6 PREEXISTING_UPSTREAM         fix/web-server-profiles-sessions-dedupe
+#50111   REBASED_CLEAN        81 none       0    0                              deferred/residual-lines-on-v0.17.0
+#50146   REBASED_CLEAN         2 PASS       6    0                              feat/gateway-media-image-classification
+#50155   REBASED_CLEAN         2 PASS       6    0                              feat/cmx-grounding-enforcement-hook
+#50296   REBASED_CLEAN         5 PASS      13    0                              fix/background-review-session-isolation
+----------------------------------------------------------------------------------------------------------------------------------
+#50111   (tracker)             ? n/a        -    - NOT-FOR-MERGE deferred+verif deferred/residual-lines-on-v0.17.0

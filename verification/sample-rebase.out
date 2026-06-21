@@ -1,0 +1,10 @@
+=== SAMPLE rebase+build+test of 6 previously-untested PRs onto fresh v0.17.0 ===
+PR       REBASE       BUILD      TEST     relevant_test
+#50021   CLEAN        OK         5 passed  tests/run_agent/test_tool_executor_contextvar_propagation.py
+#50033   CLEAN        OK         20 passed  tests/agent/test_gemini_native_adapter.py
+#50040   CLEAN        OK         5 passed  tests/tools/test_delegate_toolset_scope.py
+#50053   CLEAN        OK         19 passed  tests/agent/test_context_engine.py
+#50047   CLEAN        OK         59 passed  tests/gateway/test_status.py
+#50054   CLEAN        OK         86 passed  tests/hermes_cli/test_plugins.py
+
+RESULT: PASS — all sampled untested PRs rebase clean, build OK, relevant tests pass

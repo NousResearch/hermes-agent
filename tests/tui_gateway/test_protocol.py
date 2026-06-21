@@ -1458,6 +1458,30 @@ def test_dispatch_long_handler_exception_produces_error_response(capture):
     assert "kaboom" in written["error"]["message"]
 
 
+def test_dispatch_inline_handler_exception_produces_error_response(server):
+    """An exception inside an inline (non-long) handler must return a JSON-RPC
+    error rather than propagating.
+
+    The inline path is reached bare from tui_gateway.entry's stdin loop, so an
+    unguarded exception (e.g. int() over a malformed `cols` in terminal.resize)
+    would unwind out of the loop and kill the whole gateway subprocess, taking
+    the live Ink TUI session with it. dispatch() must convert it to an error
+    response, the same as the pool path does for long handlers.
+    """
+
+    def boom(rid, params):
+        raise ValueError("invalid literal for int() with base 10: 'abc'")
+
+    server._methods["terminal.resize"] = boom
+
+    resp = server.dispatch({"id": "r5", "method": "terminal.resize", "params": {"cols": "abc"}})
+
+    assert resp is not None
+    assert resp["id"] == "r5"
+    assert resp["error"]["code"] == -32000
+    assert "abc" in resp["error"]["message"]
+
+
 def test_dispatch_unknown_long_method_still_goes_inline(server):
     """Method name not in _LONG_HANDLERS takes the sync path even if handler is slow."""
     server._methods["some.method"] = lambda rid, params: server._ok(rid, {"ok": True})

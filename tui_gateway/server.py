@@ -916,7 +916,17 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 
         _rid, method, _params = normalized
         if method not in _LONG_HANDLERS:
-            return handle_request(req)
+            try:
+                return handle_request(req)
+            except Exception as exc:
+                # The inline path runs on the dispatcher loop in
+                # tui_gateway.entry, which calls dispatch() bare. An unguarded
+                # handler exception (e.g. int() over a malformed client param in
+                # terminal.resize / session.create) would unwind out of the
+                # stdin loop and kill the whole gateway subprocess — for the Ink
+                # TUI that drops the live session and any in-flight turn. Convert
+                # it to a JSON-RPC error, matching the pool path below.
+                return _err(_rid, -32000, f"handler error: {exc}")
 
         # Snapshot the context so the pool worker sees the bound transport.
         ctx = contextvars.copy_context()

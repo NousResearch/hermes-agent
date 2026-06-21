@@ -126,6 +126,16 @@ class RegistryFull(Exception):
     pass
 
 
+async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:
+    """Periodically reap idle/dead keep-alive sessions. Cancelled on shutdown."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await registry.reap_idle()
+        except Exception:
+            pass
+
+
 class PtySessionRegistry:
     def __init__(self, *, ttl: float, max_sessions: int,
                  buffer_cap: int, read_timeout: float) -> None:

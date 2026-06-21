@@ -204,9 +204,14 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+    # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
+    pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+
     try:
         yield
     finally:
+        pty_reaper_task.cancel()
+        await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
 
@@ -12541,7 +12546,7 @@ _PTY_READ_CHUNK_TIMEOUT = 0.2
 
 # Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
 # bound to a process that survives disconnect/refresh and is reattachable.
-from hermes_cli.pty_session import PtySessionRegistry, RegistryFull  # noqa: E402
+from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, run_reaper  # noqa: E402
 
 PTY_REGISTRY = PtySessionRegistry(
     ttl=30 * 60,

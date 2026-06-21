@@ -358,8 +358,10 @@ def run_dump(args):
     for env_var, label in api_keys:
         val = os.getenv(env_var, "")
         # `gh` and GitHub Actions also accept GH_TOKEN; mirror that so the dump
-        # doesn't read "not set" when only GH_TOKEN is exported.
-        if not val and label == "github":
+        # doesn't read "not set" when only GH_TOKEN is exported. Key off the
+        # env-var name, not the display label, so a label rename can't silently
+        # drop the fallback.
+        if not val and env_var == "GITHUB_TOKEN":
             val = os.getenv("GH_TOKEN", "")
         if show_keys and val:
             display = _redact(val)

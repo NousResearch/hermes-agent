@@ -29,7 +29,7 @@ def test_dump_reads_github_from_gh_token_when_github_token_unset(monkeypatch, ca
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setenv("GH_TOKEN", "ghp_exampletoken")
 
-    with patch("hermes_cli.dump.load_hermes_dotenv"):
+    with patch("hermes_cli.dump.load_hermes_dotenv", autospec=True):
         dump.run_dump(SimpleNamespace(show_keys=False))
 
     line = _github_line(capsys.readouterr().out)
@@ -44,7 +44,7 @@ def test_dump_reports_github_not_set_when_neither_var_present(monkeypatch, capsy
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
 
-    with patch("hermes_cli.dump.load_hermes_dotenv"):
+    with patch("hermes_cli.dump.load_hermes_dotenv", autospec=True):
         dump.run_dump(SimpleNamespace(show_keys=False))
 
     assert _github_line(capsys.readouterr().out).endswith("not set")
@@ -57,7 +57,7 @@ def test_dump_still_reads_github_token_directly(monkeypatch, capsys):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_directtoken")
     monkeypatch.delenv("GH_TOKEN", raising=False)
 
-    with patch("hermes_cli.dump.load_hermes_dotenv"):
+    with patch("hermes_cli.dump.load_hermes_dotenv", autospec=True):
         dump.run_dump(SimpleNamespace(show_keys=False))
 
     line = _github_line(capsys.readouterr().out)

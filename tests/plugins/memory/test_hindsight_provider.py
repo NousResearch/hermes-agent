@@ -22,6 +22,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _normalize_bank_id_list,
     _normalize_bank_routes,
     _normalize_retain_tags,
     _resolve_bank_route,
@@ -44,6 +45,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_RECALL_EXTRA_BANK_IDS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -155,6 +157,13 @@ def test_normalize_retain_tags_accepts_json_array_string():
     assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
 
 
+def test_normalize_bank_id_list_sanitizes_and_dedupes():
+    assert _normalize_bank_id_list("hermes, Astra Sanctuary!, hermes") == [
+        "hermes",
+        "Astra-Sanctuary",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------
@@ -201,6 +210,8 @@ class TestConfig:
         assert provider._recall_max_input_chars == 800
         assert provider._tags is None
         assert provider._recall_tags is None
+        assert provider._recall_extra_bank_ids == []
+        assert provider._recall_bank_ids == ["test-bank"]
         # Default recall narrowed to observation-only; world/experience are
         # aggregate facts that often crowd out concrete-event signal during
         # auto-recall. Users opt back in via the recall_types config key.
@@ -526,6 +537,42 @@ class TestToolHandlers:
         p.handle_tool_call("hindsight_recall", {"query": "test"})
         call_kwargs = p._client.arecall.call_args.kwargs
         assert call_kwargs["types"] == ["world", "experience"]
+
+    def test_recall_searches_active_bank_then_extra_banks(self, provider_with_config):
+        p = provider_with_config(
+            bank_id="astra_work",
+            recall_extra_bank_ids=["hermes", "astra_work"],
+        )
+
+        async def _recall(**kwargs):
+            return SimpleNamespace(
+                results=[SimpleNamespace(text=f"{kwargs['bank_id']} memory")]
+            )
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+
+        assert p._recall_bank_ids == ["astra_work", "hermes"]
+        assert "[astra_work] astra_work memory" in result["result"]
+        assert "[hermes] hermes memory" in result["result"]
+        assert [call.kwargs["bank_id"] for call in p._client.arecall.await_args_list] == [
+            "astra_work",
+            "hermes",
+        ]
+
+    def test_retain_still_writes_only_active_bank_with_extra_recall_bank(self, provider_with_config):
+        p = provider_with_config(
+            bank_id="astra_work",
+            recall_extra_bank_ids=["hermes"],
+        )
+
+        p.handle_tool_call("hindsight_retain", {"content": "work room fact"})
+
+        call_kwargs = p._client.aretain.call_args.kwargs
+        assert call_kwargs["bank_id"] == "astra_work"
 
     def test_recall_no_results(self, provider):
         provider._client.arecall.return_value = SimpleNamespace(results=[])
@@ -1285,7 +1332,7 @@ class TestConfigSchema:
         expected_keys = {
             "mode", "api_url", "api_key", "llm_provider", "llm_api_key",
             "llm_model", "bank_id", "bank_routes", "bank_id_template",
-            "bank_mission", "bank_retain_mission",
+            "recall_extra_bank_ids", "bank_mission", "bank_retain_mission",
             "recall_budget", "memory_mode", "recall_prefetch_method",
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",

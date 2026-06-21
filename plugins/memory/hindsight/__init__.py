@@ -21,6 +21,7 @@ Config via environment variables:
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
   HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
+  HINDSIGHT_RECALL_EXTRA_BANK_IDS  — comma-separated shared banks to search after the active room bank
 
 Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
 ~/.hindsight/config.json (legacy, shared) for backward compatibility.
@@ -329,6 +330,7 @@ def _load_config() -> dict:
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
         "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
         "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
+        "recall_extra_bank_ids": os.environ.get("HINDSIGHT_RECALL_EXTRA_BANK_IDS", ""),
         "banks": {
             "hermes": {
                 "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
@@ -373,6 +375,19 @@ def _normalize_retain_tags(value: Any) -> List[str]:
             continue
         seen.add(tag)
         normalized.append(tag)
+    return normalized
+
+
+def _normalize_bank_id_list(value: Any) -> list[str]:
+    """Normalize configured bank IDs to a deduplicated safe list."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in _normalize_retain_tags(value):
+        bank_id = _sanitize_bank_segment(item)
+        if not bank_id or bank_id in seen:
+            continue
+        seen.add(bank_id)
+        normalized.append(bank_id)
     return normalized
 
 
@@ -599,6 +614,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url = _DEFAULT_API_URL
         self._bank_id = "hermes"
         self._bank_routes: dict[str, str] = {}
+        self._recall_extra_bank_ids: list[str] = []
+        self._recall_bank_ids: list[str] = ["hermes"]
         self._budget = "mid"
         self._mode = "cloud"
         self._llm_base_url = ""
@@ -936,6 +953,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_routes and bank_id_template do not match)", "default": "hermes"},
             {"key": "bank_routes", "description": "Optional map of current room/channel IDs to semantic bank IDs. Keys may be raw chat IDs, platform-prefixed IDs, or most-specific platform:chat:thread keys. Example: {\"matrix:!room:server\": \"astra_work\"}", "default": {}},
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically when bank_routes does not match. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}, {chat}, {room}, {thread}. Example: hermes-{profile}", "default": ""},
+            {"key": "recall_extra_bank_ids", "description": "Additional shared banks to search after the active bank during recall. Retain writes still go only to the active bank.", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
@@ -1253,6 +1271,14 @@ class HindsightMemoryProvider(MemoryProvider):
             chat=self._chat_id,
             thread=self._thread_id,
         )
+        self._recall_extra_bank_ids = _normalize_bank_id_list(
+            self._config.get("recall_extra_bank_ids")
+            or os.environ.get("HINDSIGHT_RECALL_EXTRA_BANK_IDS", "")
+        )
+        self._recall_bank_ids = [self._bank_id]
+        for bank_id in self._recall_extra_bank_ids:
+            if bank_id and bank_id not in self._recall_bank_ids:
+                self._recall_bank_ids.append(bank_id)
         budget = self._config.get("recall_budget") or self._config.get("budget") or banks.get("budget", "mid")
         self._budget = budget if budget in _VALID_BUDGETS else "mid"
 
@@ -1313,8 +1339,12 @@ class HindsightMemoryProvider(MemoryProvider):
             _client_version = pkg_version("hindsight-client")
         except Exception:
             pass
-        logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
-                     self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, _client_version)
+        logger.info(
+            "Hindsight initialized: mode=%s, api_url=%s, bank=%s, recall_banks=%s, "
+            "budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
+            self._mode, self._api_url, self._bank_id, self._recall_bank_ids,
+            self._budget, self._memory_mode, self._prefetch_method, _client_version,
+        )
         if self._bank_id_template:
             logger.debug("Hindsight bank resolved from template %r: profile=%s workspace=%s platform=%s user=%s -> bank=%s",
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
@@ -1377,11 +1407,15 @@ class HindsightMemoryProvider(MemoryProvider):
             t.start()
 
     def system_prompt_block(self) -> str:
+        recall_suffix = ""
+        if len(self._recall_bank_ids) > 1:
+            recall_suffix = f" Recall also searches: {', '.join(self._recall_bank_ids[1:])}."
         if self._memory_mode == "context":
             return (
                 f"# Hindsight Memory\n"
                 f"Active (context mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
                 f"Relevant memories are automatically injected into context."
+                f"{recall_suffix}"
             )
         if self._memory_mode == "tools":
             return (
@@ -1389,6 +1423,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 f"Active (tools mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
                 f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
                 f"hindsight_retain to store facts."
+                f"{recall_suffix}"
             )
         return (
             f"# Hindsight Memory\n"
@@ -1396,7 +1431,67 @@ class HindsightMemoryProvider(MemoryProvider):
             f"Relevant memories are automatically injected into context. "
             f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
             f"hindsight_retain to store facts."
+            f"{recall_suffix}"
         )
+
+    def _build_recall_kwargs(self, *, bank_id: str, query: str) -> dict[str, Any]:
+        recall_kwargs: dict[str, Any] = {
+            "bank_id": bank_id,
+            "query": query,
+            "budget": self._budget,
+            "max_tokens": self._recall_max_tokens,
+        }
+        if self._recall_tags:
+            recall_kwargs["tags"] = self._recall_tags
+            recall_kwargs["tags_match"] = self._recall_tags_match
+        if self._recall_types:
+            recall_kwargs["types"] = self._recall_types
+        return recall_kwargs
+
+    def _recall_results(self, query: str) -> list[tuple[str, Any]]:
+        """Recall from the active bank and configured shared banks."""
+        results: list[tuple[str, Any]] = []
+        errors: list[tuple[str, Exception]] = []
+        seen_text: set[str] = set()
+        bank_ids = self._recall_bank_ids or [self._bank_id]
+        for bank_id in bank_ids:
+            recall_kwargs = self._build_recall_kwargs(bank_id=bank_id, query=query)
+            try:
+                logger.debug(
+                    "Hindsight recall: bank=%s, query_len=%d, budget=%s",
+                    bank_id, len(query), self._budget,
+                )
+                resp = self._run_hindsight_operation(
+                    lambda client, kwargs=recall_kwargs: client.arecall(**kwargs)
+                )
+            except Exception as exc:
+                errors.append((bank_id, exc))
+                logger.debug("Hindsight recall failed for bank=%s: %s", bank_id, exc, exc_info=True)
+                continue
+            for item in resp.results or []:
+                text = str(getattr(item, "text", "") or "")
+                if not text or text in seen_text:
+                    continue
+                seen_text.add(text)
+                results.append((bank_id, item))
+
+        if not results and errors:
+            bank_id, exc = errors[0]
+            raise RuntimeError(f"recall failed for bank {bank_id}: {exc}") from exc
+        return results
+
+    def _format_recall_text(self, results: list[tuple[str, Any]], *, numbered: bool) -> str:
+        show_bank = len(self._recall_bank_ids or []) > 1
+        lines: list[str] = []
+        for index, (bank_id, item) in enumerate(results, 1):
+            text = str(getattr(item, "text", "") or "")
+            if not text:
+                continue
+            if show_bank:
+                text = f"[{bank_id}] {text}"
+            prefix = f"{index}. " if numbered else "- "
+            lines.append(f"{prefix}{text}")
+        return "\n".join(lines)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
@@ -1437,21 +1532,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
                     text = resp.text or ""
                 else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
+                    results = self._recall_results(query)
+                    num_results = len(results)
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = self._format_recall_text(results, numbered=False)
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1659,24 +1743,12 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
-                }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
+                results = self._recall_results(query)
+                num_results = len(results)
                 logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
+                if not results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                return json.dumps({"result": self._format_recall_text(results, numbered=True)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")

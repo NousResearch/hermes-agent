@@ -83,8 +83,11 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
+
+        from agent.codex_version import get_codex_cli_version
+
         resp = httpx.get(
-            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+            f"https://chatgpt.com/backend-api/codex/models?client_version={get_codex_cli_version()}",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10,
         )

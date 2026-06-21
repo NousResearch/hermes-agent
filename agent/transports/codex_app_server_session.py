@@ -246,10 +246,21 @@ class CodexAppServerSession:
             self._client = self._client_factory(
                 codex_bin=self._codex_bin, codex_home=self._codex_home
             )
+        # Local JSON-RPC handshake to the spawned codex sub-process. These
+        # strings are codex-side telemetry only, they are NOT forwarded to
+        # chatgpt.com, but we present a codex-shaped client identity so
+        # codex's own logs/diagnostics see a plausible peer rather than a
+        # placeholder. ``client_name`` stays "hermes" because some codex
+        # versions branch on the LSP-style name for host-specific behavior;
+        # ``client_title`` / ``client_version`` are free-form and safe to
+        # normalize. Source of truth for the version mirrors the cloudflare
+        # User-Agent we send to /backend-api/codex (see agent.codex_version).
+        from agent.codex_version import get_codex_cli_version
+
         self._client.initialize(
             client_name="hermes",
-            client_title="Hermes Agent",
-            client_version=_get_hermes_version(),
+            client_title="codex",
+            client_version=get_codex_cli_version(),
         )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
@@ -864,13 +875,3 @@ def _has_turn_aborted_marker(text: str) -> bool:
         if marker in text:
             return True
     return False
-
-
-def _get_hermes_version() -> str:
-    """Best-effort Hermes version string for codex's userAgent line."""
-    try:
-        from importlib.metadata import version
-
-        return version("hermes-agent")
-    except Exception:  # pragma: no cover
-        return "0.0.0"

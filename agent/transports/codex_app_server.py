@@ -141,23 +141,49 @@ class CodexAppServerClient:
 
     def initialize(
         self,
-        client_name: str = "hermes",
-        client_title: str = "Hermes Agent",
-        client_version: str = "0.1",
+        client_name: str = "codex",
+        client_title: str = "codex",
+        client_version: Optional[str] = None,
         capabilities: Optional[dict] = None,
         timeout: float = 10.0,
     ) -> dict:
         """Send `initialize` + `initialized` handshake. Returns the server's
-        InitializeResponse (userAgent, codexHome, platformFamily, platformOs)."""
+        InitializeResponse (userAgent, codexHome, platformFamily, platformOs).
+
+        Defaults present a codex-shaped client identity to the spawned codex
+        sub-process (its own logs/diagnostics see a plausible peer rather
+        than a placeholder string). ``client_name`` stays "hermes" because
+        some codex versions branch on the LSP-style name for host-specific
+        behavior; ``client_title`` / ``client_version`` are free-form. The
+        version, when omitted, is resolved via ``agent.codex_version`` so
+        we mirror the same semver advertised on chatgpt.com backend calls.
+        """
+        if client_version is None:
+            from agent.codex_version import get_codex_cli_version
+
+            client_version = get_codex_cli_version()
         if self._initialized:
             raise RuntimeError("already initialized")
+        # 2026-06-04 (Worker-B RE of openai.chatgpt extension): the official
+        # Codex VS Code extension always sends `experimentalApi: true` and
+        # `requestAttestation: false` in its initialize handshake. These do
+        # NOT unlock higher token limits (per Worker-B's evidence the cap is
+        # server-side per-plan), but they DO enable the modern
+        # thread/start.permissions profile shape and skip an attestation
+        # round-trip that some app-server builds gate optional features on.
+        # Callers can still override either by passing `capabilities=`.
+        default_caps = {
+            "experimentalApi": True,
+            "requestAttestation": False,
+        }
+        merged_caps = {**default_caps, **(capabilities or {})}
         params = {
             "clientInfo": {
                 "name": client_name,
                 "title": client_title,
                 "version": client_version,
             },
-            "capabilities": capabilities or {},
+            "capabilities": merged_caps,
         }
         result = self.request("initialize", params, timeout=timeout)
         self.notify("initialized")

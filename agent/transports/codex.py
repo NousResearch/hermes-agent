@@ -124,7 +124,13 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
+        # Clamp efforts the OpenAI/Codex Responses API does not accept.
+        # Supported: none, minimal, low, medium, high, xhigh.  "max" is an
+        # Anthropic-only level: sending it here returns HTTP 400
+        # invalid_value, which (e.g. on a Codex fallback from an Anthropic
+        # primary configured with effort=max) kills the request.  "minimal"
+        # is mapped to "low" for older deployments that reject it.
+        _effort_clamp = {"minimal": "low", "max": "xhigh"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)

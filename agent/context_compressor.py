@@ -1849,6 +1849,23 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx += 1
         return idx
 
+    def _effective_protect_first_n(self) -> int:
+        """``protect_first_n`` decayed across compression cycles.
+
+        ``protect_first_n`` keeps the first N non-system messages verbatim so
+        the original task framing survives the FIRST compaction. But applying
+        it on every subsequent pass fossilizes those early turns — they're
+        re-copied into each child session and never summarized away, so old
+        user messages become immortal and grow the head unboundedly across a
+        long session (#11996). Once the session has been compressed at least
+        once, the early turns are already captured in the handoff summary, so
+        there's no need to keep re-protecting them: decay to 0 (the system
+        prompt is still always protected separately by _protect_head_size).
+        """
+        if self.compression_count >= 1 or self._previous_summary:
+            return 0
+        return self.protect_first_n
+
     def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
         """Total count of head messages to protect.
 
@@ -1860,14 +1877,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         the ``messages`` list (e.g. the gateway ``/compress`` handler
         strips it before calling compress()).
 
-        Examples:
+        The ``protect_first_n`` portion DECAYS after the first compression
+        (see _effective_protect_first_n) so early user turns don't fossilize
+        across repeated compactions (#11996).
+
+        Examples (first compaction):
           protect_first_n=0 → system prompt only (or nothing if no system msg)
           protect_first_n=3 → system + first 3 non-system messages
+        After the first compaction: system prompt only.
         """
         head = 0
         if messages and messages[0].get("role") == "system":
             head = 1
-        return head + self.protect_first_n
+        return head + self._effective_protect_first_n()
 
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a

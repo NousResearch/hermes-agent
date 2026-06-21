@@ -5343,6 +5343,7 @@ class DiscordAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         pending_text_injection: Optional[str] = None
+        skipped_attachments: list[str] = []
         for att in all_attachments:
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
@@ -5389,12 +5390,22 @@ class DiscordAdapter(BasePlatformAdapter):
                         "[Discord] Unsupported document type '%s' (%s), skipping",
                         ext or "unknown", content_type,
                     )
+                    fname = att.filename or "unknown"
+                    skipped_attachments.append(
+                        fname + " (type not supported; set discord.allow_any_attachment: true to receive)"
+                    )
                 else:
                     max_doc_bytes = self._discord_max_attachment_bytes()
                     if max_doc_bytes and att.size and att.size > max_doc_bytes:
                         logger.warning(
                             "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
                             att.size, max_doc_bytes, att.filename,
+                        )
+                        size_mb = att.size / (1024 * 1024)
+                        cap_mb = max_doc_bytes / (1024 * 1024)
+                        fname = att.filename or "unknown"
+                        skipped_attachments.append(
+                            f"{fname} ({size_mb:.1f} MiB > {cap_mb:.0f} MiB cap; increase discord.max_attachment_bytes to receive)"
                         )
                     else:
                         try:
@@ -5453,6 +5464,11 @@ class DiscordAdapter(BasePlatformAdapter):
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+        if skipped_attachments:
+            count = len(skipped_attachments)
+            details = "; ".join(skipped_attachments)
+            skip_note = f"[Discord skipped {count} attachment{'s' if count > 1 else ''}: {details}]"
+            event_text = f"{skip_note}\n\n{event_text}" if event_text else skip_note
 
         # ── History backfill ─────────────────────────────────────────
         # When require_mention is active, the bot only processes messages

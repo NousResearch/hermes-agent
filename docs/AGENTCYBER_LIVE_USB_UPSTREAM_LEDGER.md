@@ -188,7 +188,8 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 - Pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force.
 - Verified local and remote branch tips matched after push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `b5d015abe3aedcd22849a44ff4db77bf6e14b540`.
 - Post-push drift: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `68`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
-- This ledger was updated after push with the commit SHA and remote verification; a ledger-only follow-up commit/push will record that final ledger state.
+- This ledger was updated after push with the commit SHA and remote verification, then committed as ledger-only follow-up `92734946969460a7c6b28ef1c7b32ac1c48d1465` (`docs: record AgentCyber live USB log redaction verification`).
+- Verified after that follow-up push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `92734946969460a7c6b28ef1c7b32ac1c48d1465`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`; `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `69`.
 
 **Next lane**
 

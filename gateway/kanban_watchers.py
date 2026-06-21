@@ -2000,14 +2000,22 @@ class GatewayKanbanWatchersMixin:
 
     def _convergence_already_notified(self, board_slug: str) -> bool:
         """True iff a convergence summary was already injected for *board_slug*
-        AND no task_events have arrived since.
+        AND no state-changing event has arrived since.
 
-        Anchored on the most recent ``task_loop_closed`` event: if any
-        non-closed event exists past it, the board saw fresh activity and a
-        future re-convergence is a legitimately new notification. Returns
-        ``False`` on any DB error so a transient glitch never permanently
-        silences a converged board.
+        Only terminal / state-changing kinds re-arm the notification —
+        completed/blocked/crashed/gave_up/timed_out/unblocked (status moves),
+        created/remediation_created (new work), verification_failed, archived.
+        Process events (claimed/spawned/heartbeat/promoted/commented/linked)
+        do NOT change convergence, so a busy dispatcher re-spawning workers
+        cannot re-fire the convergence summary every tick. Returns ``False``
+        on any DB error so a transient glitch never permanently silences a
+        converged board.
         """
+        _REARM_KINDS = (
+            "completed", "blocked", "crashed", "gave_up", "timed_out",
+            "unblocked", "created", "remediation_created",
+            "verification_failed", "archived",
+        )
         try:
             from hermes_cli import kanban_db as _kb
             conn = _kb.connect(board=board_slug)
@@ -2019,10 +2027,11 @@ class GatewayKanbanWatchersMixin:
                 closed_id = row["m"] if row else None
                 if not closed_id:
                     return False
+                placeholders = ",".join("?" for _ in _REARM_KINDS)
                 after = conn.execute(
                     "SELECT COUNT(*) AS n FROM task_events "
-                    "WHERE id > ? AND kind != 'task_loop_closed'",
-                    (closed_id,),
+                    "WHERE id > ? AND kind IN (" + placeholders + ")",
+                    (closed_id, *_REARM_KINDS),
                 ).fetchone()
                 return int(after["n"]) == 0
             finally:

@@ -1050,6 +1050,11 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
+        # Undo the fallback's identity rewrite so the prompt is
+        # byte-identical to the stored copy again (prefix cache match).
+        from agent.chat_completion_helpers import rewrite_prompt_model_identity
+        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
@@ -1384,6 +1389,21 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         client = GeminiCloudCodeClient(**safe_kwargs)
         _ra().logger.info(
             "Gemini Cloud Code Assist client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
+    if agent.provider == "google-antigravity" or str(client_kwargs.get("base_url", "")).startswith("antigravity-pa://"):
+        from agent.antigravity_cloudcode_adapter import AntigravityCloudCodeClient
+
+        safe_kwargs = {
+            k: v for k, v in client_kwargs.items()
+            if k in {"api_key", "base_url", "default_headers", "project_id", "timeout"}
+        }
+        client = AntigravityCloudCodeClient(**safe_kwargs)
+        _ra().logger.info(
+            "Antigravity Code Assist client created (%s, shared=%s) %s",
             reason,
             shared,
             agent._client_log_context(),

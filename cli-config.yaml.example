@@ -98,7 +98,9 @@ model:
 # ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
 # wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
 # unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
-# HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
+# HERMES_API_CALL_STALE_TIMEOUT=90s, native Anthropic 900s). The
+# implicit non-stream stale detector is auto-disabled for local endpoints
+# and can scale upward for very large contexts.
 #
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
@@ -164,6 +166,16 @@ model:
 #
 # worktree: true    # Always create a worktree when in a git repo
 # worktree: false   # Default — only create when -w flag is passed
+#
+# By default a new worktree branches from the freshly-fetched remote tip
+# (the current branch's upstream, else the remote's default branch) so it
+# starts current with the project instead of from the local clone's
+# (possibly stale) HEAD. Set worktree_sync: false to branch from local HEAD
+# instead — useful when offline or when you deliberately want the clone's
+# exact current state as the base.
+#
+# worktree_sync: true   # Default — branch from the fetched remote tip
+# worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
 # Terminal Tool Configuration
@@ -483,6 +495,10 @@ prompt_caching:
 #                           # reasoning controls:
 #                           # extra_body:
 #                           #   enable_thinking: false
+#                           # Some vLLM/Qwen deployments expect this nested:
+#                           # extra_body:
+#                           #   chat_template_kwargs:
+#                           #     enable_thinking: false
 
 # =============================================================================
 # Persistent Memory
@@ -724,7 +740,7 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
-#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default true, set false to force legacy MarkdownV2
+#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -803,7 +819,7 @@ platform_toolsets:
 # =============================================================================
 # Connect to external MCP servers to add tools from the MCP ecosystem.
 # Each server's tools are automatically discovered and registered.
-# See docs/mcp.md for full documentation.
+# See website/docs/user-guide/features/mcp.md for full documentation.
 #
 # Stdio servers (spawn a subprocess):
 #   command: the executable to run
@@ -817,6 +833,10 @@ platform_toolsets:
 # Optional per-server settings:
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
+#   keepalive_interval: liveness ping cadence in seconds (default: 180).
+#     Lower it below the server's session TTL for servers that expire idle
+#     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
+#     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
 #
 # mcp_servers:
 #   time:

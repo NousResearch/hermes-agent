@@ -523,6 +523,10 @@ def init_agent(
     # models to "give up" prematurely on complex tasks (#7915).
     agent._budget_exhausted_injected = False
     agent._budget_grace_call = False
+    # Guard against infinite grace-call chaining when the model
+    # consistently responds with tool calls on every grace iteration.
+    # Set to True after the first grace follow-up; cleared at turn start.
+    agent._grace_followup_attempted = False
 
     # Activity tracking — updated on each API call, tool execution, and
     # stream chunk.  Used by the gateway timeout handler to report what the

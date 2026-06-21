@@ -605,6 +605,10 @@ def run_conversation(
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
         # this iteration regardless of outcome.
+        # Snapshot BEFORE consumption so post-tool-execution logic
+        # can detect that this iteration originated from a grace call
+        # and decide whether the loop exit would orphan tool results.
+        _was_grace_call = agent._budget_grace_call
         if agent._budget_grace_call:
             agent._budget_grace_call = False
         elif not agent.iteration_budget.consume():
@@ -4137,6 +4141,27 @@ def run_conversation(
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
+                
+                # Grace-call follow-up: when the iteration budget was
+                # exhausted and the grace call produced tool calls, the
+                # loop would exit on the next condition check without
+                # ever letting the model process the tool results.
+                # Grant ONE additional API call to give the model a
+                # chance to produce a final answer.  The follow-up flag
+                # prevents infinite re-grace chaining (#XXXXX).
+                if _was_grace_call and not agent.iteration_budget.remaining:
+                    if not agent._grace_followup_attempted:
+                        agent._budget_grace_call = True
+                        agent._grace_followup_attempted = True
+                    else:
+                        # Already attempted a grace follow-up — don't
+                        # chain further grace calls (#XXXXX).
+                        agent._buffer_status(
+                            "⚠️ Grace follow-up already attempted — "
+                            "returning partial result. Increase the "
+                            "iteration budget or break tasks into "
+                            "smaller steps."
+                        )
                 
                 # Continue loop for next response
                 continue

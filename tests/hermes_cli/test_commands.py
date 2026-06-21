@@ -1192,6 +1192,34 @@ class TestTelegramMenuCommands:
         menu_names = {name for name, _ in menu}
         assert "lcm" in menu_names
 
+    def test_quickadd_plugin_commands_survive_visible_menu_cap(self, tmp_path, monkeypatch):
+        """High-frequency PIM quick-add plugin commands should stay visible."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "pim-quickadd"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: pim-quickadd\nversion: 0.1.0\ndescription: PIM quick add\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('todo', lambda args: 'ok', description='Add todo')\n"
+            "    ctx.register_command('note', lambda args: 'ok', description='Add note')\n"
+            "    ctx.register_command('event', lambda args: 'ok', description='Add event')\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - pim-quickadd\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, hidden = telegram_menu_commands(max_commands=30)
+
+        menu_names = {name for name, _ in menu}
+        assert {"todo", "note", "event"} <= menu_names
+        assert hidden > 0
+
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
         from unittest.mock import patch

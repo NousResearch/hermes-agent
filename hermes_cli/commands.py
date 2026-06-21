@@ -570,6 +570,10 @@ _TELEGRAM_MENU_PRIORITY = (
     "update",
     "verbose",
     "commands",
+    # PIM quick-add plugin commands are high-frequency mobile actions.
+    "todo",
+    "note",
+    "event",
     # Mid-turn session control.
     "approve",
     "deny",

@@ -17560,6 +17560,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        # Authorized built-in override (register_command(override=True)):
+        # an operator-approved plugin command that shadows the built-in wins
+        # BEFORE built-in dispatch, so override precedence is identical to CLI
+        # and TUI. Non-override / unauthorized plugin commands are not returned
+        # here and keep reaching the post-built-in plugin fallback below.
+        if command:
+            try:
+                from hermes_cli.plugins import get_plugin_command_override_handler
+                # Telegram autocomplete sends underscores; plugin commands
+                # register with hyphens (mirrors the fallback normalization).
+                _override_handler = get_plugin_command_override_handler(
+                    canonical.replace("_", "-") if canonical else canonical
+                )
+                if _override_handler is None and command != canonical:
+                    _override_handler = get_plugin_command_override_handler(
+                        command.replace("_", "-")
+                    )
+            except Exception:
+                _override_handler = None
+            if _override_handler is not None:
+                try:
+                    user_args = event.get_command_args().strip()
+                    result = _override_handler(user_args)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    return str(result) if result else None
+                except Exception as e:
+                    logger.warning("Plugin command override dispatch failed: %s", e)
+                    return f"Plugin command error: {e}"
+
         if canonical == "pause":
             return await self._handle_pause_command(event)
 

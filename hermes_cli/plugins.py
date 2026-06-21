@@ -102,6 +102,14 @@ class PluginToolOverrideError(PermissionError):
     """
 
 
+class PluginCommandOverrideError(PermissionError):
+    """Raised when a plugin attempts to override a built-in slash command
+    without operator opt-in via
+    ``plugins.entries.<plugin_id>.allow_command_override`` (or the
+    ``commands.override`` granted capability).
+    """
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1968,6 +1976,32 @@ class PluginContext:
         # manager's home, never the active profile's (#65593 constraint).
         return plugin_capability_granted(plugin_id, "tools.override", config=cfg)
 
+    def _command_override_allowed(self, command_name: str) -> bool:
+        """Return True if this plugin is authorized to shadow a built-in command.
+
+        Mirrors :meth:`_tool_override_allowed` exactly so command overrides get
+        the SAME fail-closed operator opt-in as tool overrides. Bundled plugins
+        are trusted; every other source must be granted the ``commands.override``
+        capability — satisfied by EITHER the consent-flow grant
+        (``plugins.entries.<plugin_id>.granted_capabilities``) OR the deprecated
+        legacy key ``allow_command_override: true``. Any failure to read consent
+        state returns False (fail closed).
+        """
+        source = getattr(self.manifest, "source", "") or ""
+        if source == "bundled":
+            return True
+        try:
+            from hermes_cli.config import load_config
+
+            with _plugin_home_scope(self._manager.home_path):
+                cfg = load_config() or {}
+        except Exception:
+            # If we can't load config, fail closed — better to break the
+            # override than silently grant it.
+            return False
+        plugin_id = self.manifest.key or self.manifest.name
+        return plugin_capability_granted(plugin_id, "commands.override", config=cfg)
+
     # -- message injection --------------------------------------------------
 
     def inject_message(
@@ -2109,6 +2143,7 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        override: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -2126,7 +2161,18 @@ class PluginContext:
         parameterless in Discord and still accept trailing text when invoked
         as free-form chat.
 
-        Names conflicting with built-in commands are rejected with a warning.
+        Names conflicting with built-in commands are rejected with a warning,
+        unless ``override=True`` is passed, in which case the plugin command
+        shadows the built-in on every surface (CLI, gateway, TUI). Use this to
+        enhance or wrap a built-in command from a plugin (e.g. add lineage
+        metadata to ``/new``).
+
+        ``override=True`` against a built-in command requires the operator to
+        opt in via ``plugins.entries.<plugin_id>.allow_command_override: true``
+        in config.yaml (or the ``commands.override`` granted capability) —
+        mirrors the fail-closed trust gate that ``register_tool(override=True)``
+        already enforces. Without that gate any enabled plugin could silently
+        replace a privileged built-in like ``/model`` or ``/config``.
         """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
@@ -2136,16 +2182,37 @@ class PluginContext:
             )
             return
 
-        # Reject if it conflicts with a built-in command
+        # Resolve built-in collision. Without override=True the plugin command
+        # is rejected (unchanged). With override=True it may shadow the built-in
+        # — but ONLY when the operator has opted this plugin in, fail-closed
+        # (mirrors the register_tool override gate).
+        overrides_builtin = False
         try:
             from hermes_cli.commands import resolve_command
             if resolve_command(clean) is not None:
+                if not override:
+                    logger.warning(
+                        "Plugin '%s' tried to register command '/%s' which conflicts "
+                        "with a built-in command. Skipping.",
+                        self.manifest.name, clean,
+                    )
+                    return
+                if not self._command_override_allowed(clean):
+                    plugin_id = self.manifest.key or self.manifest.name
+                    raise PluginCommandOverrideError(
+                        f"Plugin {self.manifest.name!r} cannot override built-in "
+                        f"command '/{clean}'. Set "
+                        f"plugins.entries.{plugin_id}.allow_command_override: true "
+                        f"in config.yaml to allow this plugin to shadow built-in "
+                        f"commands."
+                    )
+                overrides_builtin = True
                 logger.warning(
-                    "Plugin '%s' tried to register command '/%s' which conflicts "
-                    "with a built-in command. Skipping.",
+                    "Plugin '%s' is OVERRIDING built-in command '/%s'.",
                     self.manifest.name, clean,
                 )
-                return
+        except PluginCommandOverrideError:
+            raise
         except Exception:
             pass  # If commands module isn't available, skip the check
 
@@ -2156,6 +2223,9 @@ class PluginContext:
             "plugin": self.manifest.name,
             "plugin_key": self.manifest.key or self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            # Authorized shadow of a built-in — every surface consults this flag
+            # so precedence is identical on CLI, gateway and TUI.
+            "override_builtin": overrides_builtin,
         }
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(
@@ -2168,7 +2238,10 @@ class PluginContext:
                 self._manager._plugin_commands, clean, entry, replacement
             ),
         )
-        logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
+        logger.debug(
+            "Plugin %s registered command: /%s%s",
+            self.manifest.name, clean, " (override)" if overrides_builtin else "",
+        )
         return handle
 
     # -- tool dispatch -------------------------------------------------------
@@ -6458,6 +6531,23 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_command_override_handler(name: str) -> Optional[Callable]:
+    """Return the handler for a plugin command that is an AUTHORIZED override
+    of a built-in, or ``None``.
+
+    Every dispatch surface (CLI, gateway, TUI) calls this BEFORE resolving the
+    built-in so an operator-approved ``register_command(override=True)`` wins
+    consistently. A plugin command that merely shares a name without the
+    ``override_builtin`` flag (i.e. it was registered before the built-in
+    existed, or without authorization) is NOT returned here, so built-ins keep
+    their normal precedence in every other case.
+    """
+    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
+    if entry and entry.get("override_builtin"):
+        return entry["handler"]
+    return None
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

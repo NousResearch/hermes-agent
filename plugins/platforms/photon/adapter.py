@@ -98,6 +98,34 @@ _DEFAULT_MENTION_PATTERNS = [
 # ---------------------------------------------------------------------------
 # Module-level helpers — also used by check_fn / standalone send
 
+# Substring patterns that indicate the sidecar/upstream call FAILED but the
+# message MAY have already been delivered to iMessage. Retrying these double-
+# or triple-posts. Matched case-insensitively against the error string.
+_AMBIGUOUS_DELIVERY_PATTERNS = (
+    "remote refused stream reset",
+    "stream reset",
+    "internal sidecar error",
+    "sidecar /send returned 500",
+    "sidecar /send-attachment returned 500",
+    "upstream connect error",
+    "upstream connect failure",
+    "disconnect/reset before headers",
+)
+
+
+def _is_ambiguous_delivery_error(error: Any) -> bool:
+    """True when an error MAY have still resulted in delivery to iMessage.
+
+    Used by ``_send_with_retry`` to skip the retry + plain-text fallback that
+    would otherwise double-post the same message. See spam root-cause note in
+    that method.
+    """
+    if not error:
+        return False
+    lowered = str(error).lower()
+    return any(pat in lowered for pat in _AMBIGUOUS_DELIVERY_PATTERNS)
+
+
 def _coerce_port(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -1217,6 +1245,22 @@ class PhotonAdapter(BasePlatformAdapter):
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
         if not is_network and self._is_timeout_error(error_str):
+            return result
+
+        # Ambiguous-delivery guard: sidecar may return 500 after the message
+        # already reached iMessage when the upstream gRPC stream is reset
+        # mid-flight (envoy "remote refused stream reset" / spectrum-ts
+        # "internal sidecar error" with a successful underlying send). Retrying
+        # in that case double- or triple-posts the same content to the user
+        # (root cause of the photon spam, 2026-06-21). Bail without retry; the
+        # caller will see a failed SendResult but the user only sees the one
+        # actually-delivered copy.
+        if _is_ambiguous_delivery_error(error_str):
+            logger.warning(
+                "[photon] Send returned %s — treating as ambiguous delivery "
+                "(message may have reached iMessage); skipping retry to avoid spam",
+                error_str[:200],
+            )
             return result
 
         if is_network:

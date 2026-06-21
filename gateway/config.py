@@ -1901,6 +1901,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # noisy retry-forever errors.  ``_platform_status`` was already fixed
     # for the same bug class in commit 7849a3d73; this is the runtime
     # counterpart.
+    # Adapter ``check_fn``s lazy-install their SDK on first call. Resolving
+    # config must be side-effect-free: a status/liveness probe loads the
+    # gateway config on every poll, and an uninstallable env (sealed venv,
+    # no pip) would re-run the pip/ensurepip ladder each time. Suppress
+    # installs for this pass so check_fn degrades to a read-only presence
+    # check (FeatureUnavailable, which check_fn already treats as "no").
+    from tools.lazy_deps import installs_suppressed
+    _install_guard = installs_suppressed()
+    _install_guard.__enter__()
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
@@ -2022,6 +2031,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
+    finally:
+        _install_guard.__exit__(None, None, None)
 
     # Relay (generic connector-fronted platform, EXPERIMENTAL). Enabled when a
     # connector relay URL is configured via GATEWAY_RELAY_URL (env) or

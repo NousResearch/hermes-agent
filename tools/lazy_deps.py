@@ -51,6 +51,8 @@ Adding a new backend:
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import os
 import re
@@ -59,9 +61,35 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
+
+# When set, :func:`ensure` refuses to install and raises FeatureUnavailable
+# instead. Read-only call sites (config resolution, liveness probes) enter
+# ``installs_suppressed()`` so a presence check never shells out to pip/uv.
+# A contextvar (not a plain global) keeps the suppression scoped to the
+# current task/thread, so a concurrent legitimate install isn't blocked.
+_installs_suppressed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "lazy_deps_installs_suppressed", default=False
+)
+
+
+@contextlib.contextmanager
+def installs_suppressed() -> Iterator[None]:
+    """Within this scope, :func:`ensure` never installs — it raises instead.
+
+    For code paths that legitimately probe feature availability but must not
+    incur a (potentially failing, always slow) install: e.g. resolving gateway
+    config for a status/liveness response. Missing deps degrade to
+    FeatureUnavailable, which existing ``check_fn`` callers already treat as
+    "not available".
+    """
+    token = _installs_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _installs_suppressed.reset(token)
 
 
 # =============================================================================
@@ -450,6 +478,13 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     missing = feature_missing(feature)
     if not missing:
         return
+
+    # Read-only scope (e.g. resolving config for a status/liveness response):
+    # never shell out to an installer just to answer "is this available?".
+    if _installs_suppressed.get():
+        raise FeatureUnavailable(
+            feature, missing, "installs suppressed in read-only scope"
+        )
 
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.

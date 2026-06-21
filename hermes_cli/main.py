@@ -1650,6 +1650,64 @@ def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     return bundled if bundled.is_file() else None
 
 
+def _restore_tui_workspace(tui_dir: Path) -> bool:
+    """Try to restore a missing ``ui-tui/`` from git, returning True on success.
+
+    On Windows an antivirus / NTFS filter driver can leave tracked ``ui-tui/``
+    files deleted in the working tree after ``hermes update`` (HEAD stays
+    intact; the files just vanish — see issue #49145). Those files are tracked,
+    so ``git restore`` puts them back deterministically. Best-effort: returns
+    False (rather than raising) when git is unavailable, this isn't a checkout,
+    or the restore leaves the directory still missing — the caller then prints
+    the manual-recovery message.
+    """
+    git = shutil.which("git")
+    if not git or not (tui_dir.parent / ".git").exists():
+        return False
+    try:
+        subprocess.run(
+            [git, "restore", "--", tui_dir.name],
+            cwd=str(tui_dir.parent),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return tui_dir.is_dir()
+
+
+def _ensure_tui_workspace(tui_dir: Path) -> None:
+    """Ensure ``ui-tui/`` exists before any npm/node subprocess uses it as cwd.
+
+    Without this, a missing workspace falls through to ``subprocess.run(...,
+    cwd=<missing ui-tui>)``, which crashes with ``NotADirectoryError``
+    (``WinError 267`` on Windows) instead of a usable message (#49145). We
+    first try to self-heal via ``git restore``; only if that can't recover the
+    directory do we abort with concrete manual-recovery steps.
+    """
+    if tui_dir.is_dir():
+        return
+
+    if _restore_tui_workspace(tui_dir):
+        if not os.environ.get("HERMES_QUIET"):
+            print(f"Restored missing TUI workspace: {tui_dir}")
+        return
+
+    print(
+        "Error: the TUI workspace is missing from this Hermes checkout.\n"
+        f"Expected directory: {tui_dir}\n"
+        "This usually means `hermes update` left tracked ui-tui files deleted.\n"
+        "Recovery:\n"
+        "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
+        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  3. Retry `hermes --tui`\n"
+        "If the checkout is still inconsistent, run `hermes update --force`.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -1682,6 +1740,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if not ext_dir:
+        _ensure_tui_workspace(tui_dir)
 
     # 1. Prebuilt bundle (nix / packaged release): just run it.
     if not tui_dev:
@@ -5938,6 +5999,43 @@ def _kill_stale_dashboard_processes(
 _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
+def _atomic_replace_dir(src: str, dst: str) -> None:
+    """Replace directory *dst* with *src* without leaving *dst* half-deleted.
+
+    The naive ``rmtree(dst); copytree(src, dst)`` has a destructive window: if
+    the copy fails partway (common on the Windows ZIP-update path, which only
+    runs because file I/O is already flaky on that machine), the old directory
+    is already gone and nothing replaced it — the install is left with a
+    deleted tree (issue #49145, where ``ui-tui/`` vanished and broke the TUI).
+
+    Instead, stage the new copy into a sibling temp dir first; only once that
+    fully succeeds do we swap it in. A failure during staging raises with the
+    original *dst* still intact.
+    """
+    staging = f"{dst}.hermes-update-staging"
+    backup = f"{dst}.hermes-update-old"
+    # Clear any leftovers from a previously-interrupted update.
+    for leftover in (staging, backup):
+        if os.path.exists(leftover):
+            shutil.rmtree(leftover, ignore_errors=True)
+
+    # 1. Stage the new copy. If this fails, dst is untouched.
+    shutil.copytree(src, staging)
+    # 2. Swap: move the live dir aside, move staging into place. Both moves are
+    #    same-filesystem renames; if the second fails we restore the backup.
+    if os.path.exists(dst):
+        os.rename(dst, backup)
+    try:
+        os.rename(staging, dst)
+    except OSError:
+        if os.path.exists(backup) and not os.path.exists(dst):
+            os.rename(backup, dst)  # roll back to the original
+        raise
+    # 3. New dir is in place; drop the old one (best-effort — never fatal).
+    if os.path.exists(backup):
+        shutil.rmtree(backup, ignore_errors=True)
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -6023,9 +6121,9 @@ def _update_via_zip(args):
             src = os.path.join(extracted, item)
             dst = os.path.join(str(PROJECT_ROOT), item)
             if os.path.isdir(src):
-                if os.path.exists(dst):
-                    shutil.rmtree(dst)
-                shutil.copytree(src, dst)
+                # Atomic-ish replace: never leave dst half-deleted if the copy
+                # fails partway (the failure mode behind #49145 on Windows).
+                _atomic_replace_dir(src, dst)
             else:
                 shutil.copy2(src, dst)
             update_count += 1

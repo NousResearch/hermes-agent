@@ -16,6 +16,7 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error
+from agent.auxiliary_client import call_llm, _get_task_timeout, _is_connection_error
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -1310,6 +1311,31 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
+    def _call_summary_llm_with_hard_timeout(self, call_kwargs: Dict[str, Any]) -> Any:
+        """Bound how long compression summary generation can block the caller.
+
+        ``call_llm()`` already forwards ``auxiliary.compression.timeout`` to
+        the provider client, but the dashboard/gateway still waits
+        synchronously for that call to return. Run it in a worker thread and
+        stop waiting after the configured compression timeout so the normal
+        fallback summary path can keep the process responsive.
+        """
+        hard_timeout = max(1.0, float(_get_task_timeout("compression")))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(call_llm, **call_kwargs)
+        try:
+            return future.result(timeout=hard_timeout)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(
+                f"Context compression hard-timed out after {hard_timeout:g}s"
+            ) from exc
+        finally:
+            # Do not wait for a stuck network stack to unwind in the caller's
+            # thread. The timed-out summary attempt is being abandoned in
+            # favor of the existing deterministic compression fallback.
+            pool.shutdown(wait=False, cancel_futures=True)
+
     def _generate_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -1519,7 +1545,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
+            response = self._call_summary_llm_with_hard_timeout(call_kwargs)
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):

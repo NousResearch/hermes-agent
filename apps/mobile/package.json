@@ -9,7 +9,8 @@
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "cap:sync": "cap sync",
-    "cap:android": "cap sync android && cap open android"
+    "cap:android": "cap sync android && cap open android",
+    "cap:ios": "cap sync ios && cap open ios"
   },
   "dependencies": {
     "@capacitor-community/safe-area": "^8.0.1",
@@ -29,6 +30,7 @@
   "devDependencies": {
     "@capacitor/android": "^8.4.1",
     "@capacitor/assets": "^3.0.5",
-    "@capacitor/cli": "^8.4.1"
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/ios": "^8.4.1"
   }
 }

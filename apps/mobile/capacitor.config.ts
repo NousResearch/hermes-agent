@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli'
 
 const config: CapacitorConfig = {
-  appId: 'co.agpt.hermes.mobile',
+  appId: 'com.nousresearch.hermesagent.mobile',
   appName: 'Hermes',
   webDir: 'dist',
   // CapacitorHttp routes the bridge's REST calls (login + ws-ticket) through
@@ -43,6 +43,9 @@ const config: CapacitorConfig = {
     // flip this back to `https` and drop the cleartext allowance in
     // android/app/src/main/res/xml/network_security_config.xml.
     androidScheme: 'http',
+    // Same mixed-content rationale as androidScheme — the chat WebSocket is
+    // `ws://` to a LAN/Tailscale gateway. An https app origin would block it.
+    iosScheme: 'http',
     // Permit cleartext to the LAN/Tailscale gateway. Scope is narrowed in the
     // Android network-security config; this is the Capacitor-level enable.
     cleartext: true,

@@ -2,6 +2,6 @@
 <resources>
     <string name="app_name">Hermes</string>
     <string name="title_activity_main">Hermes</string>
-    <string name="package_name">co.agpt.hermes.mobile</string>
-    <string name="custom_url_scheme">co.agpt.hermes.mobile</string>
+    <string name="package_name">com.nousresearch.hermesagent.mobile</string>
+    <string name="custom_url_scheme">com.nousresearch.hermesagent.mobile</string>
 </resources>

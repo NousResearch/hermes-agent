@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace = "co.agpt.hermes.mobile"
+    namespace = "com.nousresearch.hermesagent.mobile"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "co.agpt.hermes.mobile"
+        applicationId "com.nousresearch.hermesagent.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

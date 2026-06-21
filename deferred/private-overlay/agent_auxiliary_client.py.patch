@@ -1,0 +1,430 @@
+diff --git a/agent/auxiliary_client.py b/agent/auxiliary_client.py
+index d6af62210..539fad1ad 100644
+--- a/agent/auxiliary_client.py
++++ b/agent/auxiliary_client.py
+@@ -438,16 +438,20 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
+     a 403 with ``cf-mitigated: challenge`` regardless of auth correctness.
+ 
+     We pin ``originator: codex_cli_rs`` to match the upstream codex-rs CLI, set
+-    ``User-Agent`` to a codex_cli_rs-shaped string (beats SDK fingerprinting),
+-    and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
+-    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
++    ``User-Agent`` to a codex_cli_rs-shaped string mirroring the published
++    ``@openai/codex`` release on npm (so the originator allowlist sees a
++    plausible CLI version, not a placeholder), and extract
++    ``ChatGPT-Account-ID`` (canonical casing, from codex-rs ``auth.rs``) out
++    of the OAuth JWT's ``chatgpt_account_id`` claim.
+ 
+     Malformed tokens are tolerated — we drop the account-ID header rather than
+     raise, so a bad token still surfaces as an auth error (401) instead of a
+     crash at client construction.
+     """
++    from agent.codex_version import get_codex_cli_version
++
+     headers = {
+-        "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
++        "User-Agent": f"codex_cli_rs/{get_codex_cli_version()}",
+         "originator": "codex_cli_rs",
+     }
+     if not isinstance(access_token, str) or not access_token.strip():
+@@ -953,6 +957,45 @@ class AsyncCodexAuxiliaryClient:
+         self._real_client = sync_wrapper._real_client
+ 
+ 
++class _AsyncSyncCompletionsAdapter:
++    """Async facade for sync chat.completions clients.
++
++    Copilot ACP is a subprocess-backed sync facade. Async auxiliary users
++    (session_search, web tools, async plugins) still expect an awaitable
++    .chat.completions.create(). Run the sync call in a worker thread so the
++    event loop is not blocked and async_call_llm can await it normally.
++    """
++
++    def __init__(self, sync_completions: Any):
++        self._sync = sync_completions
++
++    async def create(self, **kwargs) -> Any:
++        import asyncio
++        return await asyncio.to_thread(self._sync.create, **kwargs)
++
++
++class _AsyncSyncChatShim:
++    def __init__(self, sync_completions: Any):
++        self.completions = _AsyncSyncCompletionsAdapter(sync_completions)
++
++
++class AsyncCopilotACPAuxiliaryClient:
++    """Async-compatible wrapper for the subprocess-backed Copilot ACP client."""
++
++    def __init__(self, sync_wrapper: Any):
++        self._sync_wrapper = sync_wrapper
++        self.chat = _AsyncSyncChatShim(sync_wrapper.chat.completions)
++        self.api_key = getattr(sync_wrapper, "api_key", "copilot-acp")
++        self.base_url = getattr(sync_wrapper, "base_url", "acp://copilot")
++        self._acp_command = getattr(sync_wrapper, "_acp_command", None)
++        self._acp_args = getattr(sync_wrapper, "_acp_args", None)
++
++    def close(self) -> None:
++        close = getattr(self._sync_wrapper, "close", None)
++        if callable(close):
++            close()
++
++
+ class _AnthropicCompletionsAdapter:
+     """OpenAI-client-compatible adapter for Anthropic Messages API."""
+ 
+@@ -1064,6 +1107,25 @@ class AnthropicAuxiliaryClient:
+         if callable(close_fn):
+             close_fn()
+ 
++    @property
++    def embeddings(self):
++        """OpenAI-wire embeddings passthrough.
++
++        The Anthropic chat wrapper speaks Messages, but endpoints that also serve
++        embeddings (Copilot's /embeddings, /anthropic gateways behind an OpenAI
++        proxy) expose them OpenAI-wire on the SAME base_url. Force-wrapping
++        copilot+claude to Anthropic (the 1M-window/prefill fix) otherwise strips
++        ``.embeddings`` and silently degrades any caller that needs vectors
++        (HermesEmbedder → cmx semantic retrieval falls back to lexical-only).
++        Lazily build a plain OpenAI client so ``.embeddings.create(...)`` keeps
++        working regardless of the chat transport."""
++        emb = getattr(self, "_embeddings_client", None)
++        if emb is None:
++            from openai import OpenAI
++            emb = OpenAI(base_url=str(self.base_url), api_key=str(self.api_key))
++            self._embeddings_client = emb
++        return emb.embeddings
++
+ 
+ class _AsyncAnthropicCompletionsAdapter:
+     def __init__(self, sync_adapter: _AnthropicCompletionsAdapter):
+@@ -1161,12 +1223,26 @@ def _maybe_wrap_anthropic(
+     except ImportError:
+         pass
+ 
+-    # Explicit non-anthropic api_mode wins over URL heuristics.
+-    if api_mode and api_mode != "anthropic_messages":
++    # Copilot serves Claude on BOTH /chat/completions (168k clamp, assistant-prefill
++    # REJECTED) and /v1/messages (genuine 1M input window, prefill OK). Claude on Copilot
++    # MUST ride Anthropic Messages, force it even over an explicit chat_completions
++    # api_mode, mirroring agent_init's copilot+claude override, so the aux/compression
++    # path never misroutes to the 168k clamp (the "1M -> snap to 168k + assistant-prefill
++    # 400" failure). build_anthropic_client (below) reuses the copilot token here and
++    # attaches the full identity headers (Copilot-Integration-Id, Editor-Version,
++    # X-Copilot-Agent-Slug) + the 1M anthropic-beta triplet.
++    _force_copilot_claude = (
++        base_url_host_matches(base_url, "api.githubcopilot.com")
++        and "claude" in (model or "").lower()
++    )
++
++    # Explicit non-anthropic api_mode wins over URL heuristics, except Copilot+Claude.
++    if not _force_copilot_claude and api_mode and api_mode != "anthropic_messages":
+         return client_obj
+ 
+     should_wrap = (
+-        api_mode == "anthropic_messages"
++        _force_copilot_claude
++        or api_mode == "anthropic_messages"
+         or _endpoint_speaks_anthropic_messages(base_url)
+     )
+     if not should_wrap:
+@@ -2144,7 +2220,16 @@ _AUTO_PROVIDER_LABELS = {
+     "_resolve_api_key_provider": "api-key",
+ }
+ 
+-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
++_MAIN_RUNTIME_FIELDS = (
++    "provider",
++    "model",
++    "resolved_model",
++    "requested_model",
++    "base_url",
++    "api_key",
++    "api_mode",
++    "auth_mode",
++)
+ 
+ 
+ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+@@ -2883,6 +2968,7 @@ def _try_payment_fallback(
+     failed_provider: str,
+     task: str = None,
+     reason: str = "payment error",
++    extra_skip_labels: Optional[set[str]] = None,
+ ) -> Tuple[Optional[Any], Optional[str], str]:
+     """Try alternative providers after a payment/credit or connection error.
+ 
+@@ -2906,6 +2992,13 @@ def _try_payment_fallback(
+                        "custom": "local/custom", "local/custom": "local/custom"}
+     skip_chain_labels = {_alias_to_label.get(s, s) for s in skip_labels}
+ 
++    if extra_skip_labels:
++        skip_chain_labels.update(
++            _alias_to_label.get(_normalize_chain_label(s), _normalize_chain_label(s))
++            for s in extra_skip_labels
++            if s
++        )
++
+     tried = []
+     for label, try_fn in _get_provider_chain():
+         if label in skip_chain_labels:
+@@ -3075,7 +3168,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
+     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+     runtime = _normalize_main_runtime(main_runtime)
+     runtime_provider = runtime.get("provider", "")
+-    runtime_model = str(runtime.get("model") or "")
++    runtime_model = str(runtime.get("resolved_model") or runtime.get("model") or "")
+     runtime_base_url = str(runtime.get("base_url") or "")
+     runtime_api_key = runtime.get("api_key", "")
+     runtime_api_mode = str(runtime.get("api_mode") or "")
+@@ -3213,7 +3306,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
+     try:
+         from agent.copilot_acp_client import CopilotACPClient
+         if isinstance(sync_client, CopilotACPClient):
+-            return sync_client, model
++            return AsyncCopilotACPAuxiliaryClient(sync_client), model
+     except ImportError:
+         pass
+ 
+@@ -3228,7 +3321,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
+         from hermes_cli.copilot_auth import copilot_request_headers
+ 
+         async_kwargs["default_headers"] = copilot_request_headers(
+-            is_agent_turn=True, is_vision=is_vision
++            is_agent_turn=True, is_vision=is_vision, model=model
+         )
+     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
+         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+@@ -3521,7 +3614,7 @@ def resolve_provider_client(
+             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
+                 from hermes_cli.copilot_auth import copilot_request_headers
+                 extra["default_headers"] = copilot_request_headers(
+-                    is_agent_turn=True, is_vision=is_vision
++                    is_agent_turn=True, is_vision=is_vision, model=model
+                 )
+             elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
+                 extra["default_headers"] = build_nvidia_nim_headers(custom_base)
+@@ -3766,7 +3859,7 @@ def resolve_provider_client(
+             from hermes_cli.copilot_auth import copilot_request_headers
+ 
+             headers.update(copilot_request_headers(
+-                is_agent_turn=True, is_vision=is_vision
++                is_agent_turn=True, is_vision=is_vision, model=model
+             ))
+         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+             headers.update(build_nvidia_nim_headers(base_url))
+@@ -3816,10 +3909,30 @@ def resolve_provider_client(
+         creds = resolve_external_process_provider_credentials(provider)
+         final_model = _normalize_resolved_model(
+             model
++            or (main_runtime.get("resolved_model") if main_runtime else None)
+             or (main_runtime.get("model") if main_runtime else None)
+             or _read_main_model(),
+             provider,
+         )
++        if final_model.lower() == "auto":
++            fallback_model = str(
++                (main_runtime or {}).get("resolved_model")
++                or (main_runtime or {}).get("model")
++                or ""
++            ).strip()
++            if fallback_model and fallback_model.lower() != "auto":
++                final_model = _normalize_resolved_model(fallback_model, provider)
++            else:
++                try:
++                    from hermes_cli.models import provider_model_ids
++
++                    for candidate in provider_model_ids("copilot") or []:
++                        candidate = str(candidate or "").strip()
++                        if candidate and candidate.lower() != "auto":
++                            final_model = candidate
++                            break
++                except Exception:
++                    pass
+         if provider == "copilot-acp":
+             api_key = str(creds.get("api_key", "")).strip()
+             base_url = str(creds.get("base_url", "")).strip()
+@@ -3837,6 +3950,13 @@ def resolve_provider_client(
+                     "process credentials are incomplete"
+                 )
+                 return None, None
++            auth_facts = {
++                "provider": provider,
++                "base_url": base_url,
++                "command": command,
++                "args": list(args or []),
++                "source": str(creds.get("source") or "process"),
++            }
+             from agent.copilot_acp_client import CopilotACPClient
+ 
+             client = CopilotACPClient(
+@@ -3844,6 +3964,9 @@ def resolve_provider_client(
+                 base_url=base_url,
+                 command=command,
+                 args=args,
++                provider=provider,
++                model=final_model,
++                auth_facts=auth_facts,
+             )
+             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+@@ -5356,32 +5479,63 @@ def call_llm(
+             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
+                         task or "call", reason, resolved_provider, first_err)
+ 
+-            # Fallback order (#26882, #26803):
+-            #   1. User-configured fallback_chain (per-task) if set
+-            #   2. Main agent model (last-resort safety net)
+-            # For auto users (no explicit aux provider), use the full
+-            # auto-detection chain instead — its Step 1 IS the main agent
+-            # model, so users on `auto` already get main-model fallback.
+-            fb_client, fb_model, fb_label = (None, None, "")
+-            if is_auto:
+-                fb_client, fb_model, fb_label = _try_payment_fallback(
+-                    resolved_provider, task, reason=reason)
+-            else:
+-                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+-                    task, resolved_provider or "auto", reason=reason)
++            # Fallback order (#26882, #26803 plus local recovery hardening):
++            #   * auto users iterate the auto-detection chain, skipping any
++            #     fallback labels that also fail with recoverable capacity errors
++            #     (for example depleted OpenRouter 402 before a working Nous lane).
++            #   * explicit-provider users try configured fallback_chain first,
++            #     then the main agent model. Recoverable failure in the selected
++            #     fallback advances to the next layer instead of masking the
++            #     original recovery path.
++            fallback_skip_labels: set[str] = set()
++            while True:
++                fb_client, fb_model, fb_label = (None, None, "")
++                if is_auto:
++                    fb_client, fb_model, fb_label = _try_payment_fallback(
++                        resolved_provider,
++                        task,
++                        reason=reason,
++                        extra_skip_labels=fallback_skip_labels,
++                    )
++                else:
++                    if "configured-fallback-chain" not in fallback_skip_labels:
++                        fb_client, fb_model, fb_label = _try_configured_fallback_chain(
++                            task, resolved_provider or "auto", reason=reason)
++                        fallback_skip_labels.add("configured-fallback-chain")
++                    if fb_client is None and "main-agent" not in fallback_skip_labels:
++                        fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
++                            resolved_provider, task, reason=reason)
++                        fallback_skip_labels.add("main-agent")
++
+                 if fb_client is None:
+-                    fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+-                        resolved_provider, task, reason=reason)
++                    break
++                if fb_label:
++                    fallback_skip_labels.add(fb_label)
+ 
+-            if fb_client is not None:
+                 fb_kwargs = _build_call_kwargs(
+                     fb_label, fb_model, messages,
+                     temperature=temperature, max_tokens=max_tokens,
+                     tools=tools, timeout=effective_timeout,
+                     extra_body=effective_extra_body,
+                     base_url=str(getattr(fb_client, "base_url", "") or ""))
+-                return _validate_llm_response(
+-                    fb_client.chat.completions.create(**fb_kwargs), task)
++                try:
++                    return _validate_llm_response(
++                        fb_client.chat.completions.create(**fb_kwargs), task)
++                except Exception as fb_err:
++                    if not (
++                        _is_payment_error(fb_err)
++                        or _is_connection_error(fb_err)
++                        or _is_rate_limit_error(fb_err)
++                    ):
++                        raise
++                    if _is_payment_error(fb_err) and fb_label:
++                        _mark_provider_unhealthy(fb_label)
++                    logger.warning(
++                        "Auxiliary %s: fallback %s failed after %s (%s); trying next fallback",
++                        task or "call", fb_label, reason, fb_err,
++                    )
++                    continue
++
+             # All fallback layers exhausted — emit a single user-visible
+             # warning so the operator knows aux task is about to fail.
+             # (#26882) The error itself is re-raised below.
+@@ -5780,23 +5934,34 @@ async def async_call_llm(
+             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
+                         task or "call", reason, resolved_provider, first_err)
+ 
+-            # Fallback order (#26882, #26803):
+-            #   1. User-configured fallback_chain (per-task) if set
+-            #   2. Main agent model (last-resort safety net)
+-            # Auto users get the full auto-detection chain instead — its
+-            # Step 1 IS the main agent model.
+-            fb_client, fb_model, fb_label = (None, None, "")
+-            if is_auto:
+-                fb_client, fb_model, fb_label = _try_payment_fallback(
+-                    resolved_provider, task, reason=reason)
+-            else:
+-                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+-                    task, resolved_provider or "auto", reason=reason)
++            # Fallback order mirrors sync call_llm, including local recovery
++            # hardening for fallback candidates that themselves fail with
++            # recoverable capacity errors.
++            fallback_skip_labels: set[str] = set()
++            while True:
++                fb_client, fb_model, fb_label = (None, None, "")
++                if is_auto:
++                    fb_client, fb_model, fb_label = _try_payment_fallback(
++                        resolved_provider,
++                        task,
++                        reason=reason,
++                        extra_skip_labels=fallback_skip_labels,
++                    )
++                else:
++                    if "configured-fallback-chain" not in fallback_skip_labels:
++                        fb_client, fb_model, fb_label = _try_configured_fallback_chain(
++                            task, resolved_provider or "auto", reason=reason)
++                        fallback_skip_labels.add("configured-fallback-chain")
++                    if fb_client is None and "main-agent" not in fallback_skip_labels:
++                        fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
++                            resolved_provider, task, reason=reason)
++                        fallback_skip_labels.add("main-agent")
++
+                 if fb_client is None:
+-                    fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+-                        resolved_provider, task, reason=reason)
++                    break
++                if fb_label:
++                    fallback_skip_labels.add(fb_label)
+ 
+-            if fb_client is not None:
+                 fb_kwargs = _build_call_kwargs(
+                     fb_label, fb_model, messages,
+                     temperature=temperature, max_tokens=max_tokens,
+@@ -5809,8 +5974,24 @@ async def async_call_llm(
+                 )
+                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):
+                     fb_kwargs["model"] = async_fb_model
+-                return _validate_llm_response(
+-                    await async_fb.chat.completions.create(**fb_kwargs), task)
++                try:
++                    return _validate_llm_response(
++                        await async_fb.chat.completions.create(**fb_kwargs), task)
++                except Exception as fb_err:
++                    if not (
++                        _is_payment_error(fb_err)
++                        or _is_connection_error(fb_err)
++                        or _is_rate_limit_error(fb_err)
++                    ):
++                        raise
++                    if _is_payment_error(fb_err) and fb_label:
++                        _mark_provider_unhealthy(fb_label)
++                    logger.warning(
++                        "Auxiliary %s (async): fallback %s failed after %s (%s); trying next fallback",
++                        task or "call", fb_label, reason, fb_err,
++                    )
++                    continue
++
+             # All fallback layers exhausted — warn before re-raising. (#26882)
+             logger.warning(
+                 "Auxiliary %s (async): %s on %s and all fallbacks exhausted "

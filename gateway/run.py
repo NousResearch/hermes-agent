@@ -1661,6 +1661,7 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
+    build_recall_scope_key,
     build_session_key,
     is_shared_multi_user_session,
 )
@@ -10327,6 +10328,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 session_id=session_entry.session_id,
                 session_key=session_key,
+                recall_scope_key=context.recall_scope_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
@@ -13520,6 +13522,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            recall_scope_key=context.recall_scope_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             async_delivery=_async_delivery,
         )
@@ -15195,6 +15198,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
         session_id: str,
         session_key: str = None,
+        recall_scope_key: str = None,
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
@@ -15215,7 +15219,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
+                session_key=session_key, recall_scope_key=recall_scope_key,
+                run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
@@ -15226,7 +15231,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         with _profile_runtime_scope(profile_home):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
+                session_key=session_key, recall_scope_key=recall_scope_key,
+                run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
@@ -15256,6 +15262,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
         session_id: str,
         session_key: str = None,
+        recall_scope_key: str = None,
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
@@ -15291,6 +15298,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from run_agent import AIAgent
         import queue
+
+        if not recall_scope_key:
+            _profile = None
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                _profile = source.profile
+            recall_scope_key = build_recall_scope_key(source, profile=_profile)
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -16102,20 +16115,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
-            # session_key is propagated via contextvars in _set_session_env()
-            # (_SESSION_KEY) and via set_current_session_key() (_approval_session_key)
-            # below — both concurrency-safe and inherited by tool worker threads.
-            # We deliberately do NOT write os.environ["HERMES_SESSION_KEY"] here:
-            # os.environ is process-global, so concurrent gateway sessions (e.g.
-            # two Discord threads) would clobber each other's value, and a tool
-            # thread whose contextvar is unset would fall back to os.environ and
-            # read the wrong session key — misrouting command-approval prompts to
-            # the wrong thread (#24100). The non-gateway surfaces don't depend on
-            # this write: CLI and cron bind the session via contextvars
-            # (set_current_session_key / session context), and only the TUI
-            # slash-worker *subprocess* exports HERMES_SESSION_KEY (from its own
-            # --session-key argv, a separate process) — so removing this in-process
-            # gateway write does not affect any of them.
+            # session_key and recall_scope_key are propagated via contextvars in
+            # _set_session_env() (_SESSION_KEY / _RECALL_SCOPE_KEY) and session_key
+            # is also bound for approvals via set_current_session_key() below — both
+            # paths are concurrency-safe and inherited by tool worker threads.
+            #
+            # Deliberately do NOT write HERMES_SESSION_KEY or HERMES_RECALL_SCOPE_KEY
+            # to os.environ here: os.environ is process-global, so concurrent gateway
+            # sessions (e.g. two Discord threads) would clobber each other's values,
+            # and a tool thread whose contextvar is unset could read the wrong scope
+            # and route approvals/session_search to the wrong chat (#24100). CLI/cron
+            # bind session state outside this gateway path; the TUI slash-worker
+            # subprocess exports its own session env from argv in a separate process.
 
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -16355,6 +16366,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Refresh agent max_iterations from current config
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
+                            agent._gateway_recall_scope_key = recall_scope_key
                             logger.debug("Reusing cached agent for session %s", session_key)
 
             # Lock released — now schedule cleanup of any cross-process-evicted
@@ -16408,6 +16420,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    gateway_recall_scope_key=recall_scope_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )

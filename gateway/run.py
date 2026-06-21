@@ -49,6 +49,13 @@ from gateway.context_dump import (
     write_context_dump_text,
 )
 from gateway.context_layers import ContextLayer, layers_to_payload
+from gateway.route_banner import BASE_CONTEXT_VERSION, format_context_window_token_line
+from gateway.startup_context import (
+    discord_api_context_row,
+    discord_api_timeout,
+    discord_context_channel_id,
+    render_reply_chain_payload,
+)
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -4985,57 +4992,13 @@ class GatewayRunner:
             return None
 
     def _discord_context_channel_id(self, event, source) -> str:
-        raw_channel = getattr(getattr(event, "raw_message", None), "channel", None)
-        raw_channel_id = str(getattr(raw_channel, "id", "") or "")
-        source_chat_id = str(getattr(source, "chat_id", "") or "")
-        parent_chat_id = str(getattr(source, "parent_chat_id", "") or "")
-        if (
-            getattr(source, "thread_id", None)
-            and parent_chat_id
-            and raw_channel_id == parent_chat_id
-            and raw_channel_id != source_chat_id
-        ):
-            return parent_chat_id
-        return source_chat_id or parent_chat_id
+        return discord_context_channel_id(event, source)
 
     def _discord_api_timeout(self) -> float:
-        try:
-            return max(0.25, min(float(os.getenv("HERMES_DISCORD_CONTEXT_API_TIMEOUT", "2.0")), 8.0))
-        except (TypeError, ValueError):
-            return 2.0
+        return discord_api_timeout()
 
     def _discord_api_context_row(self, module, message):
-        content = (getattr(message, "content", None) or "").strip()
-        if not content:
-            attachments = getattr(message, "attachments", None) or []
-            if attachments:
-                first = attachments[0]
-                content = f"(attachment: {getattr(first, 'filename', 'file')})"
-        author_obj = getattr(message, "author", None)
-        author = (
-            getattr(author_obj, "display_name", None)
-            or getattr(author_obj, "name", None)
-            or "someone"
-        )
-        reference = getattr(message, "reference", None)
-        reply_to_id = getattr(reference, "message_id", None) if reference else None
-        timestamp = getattr(message, "created_at", None)
-        if hasattr(timestamp, "isoformat"):
-            timestamp = timestamp.isoformat()
-        row = module.external_context_row(
-            message_id=getattr(message, "id", ""),
-            channel_id=getattr(getattr(message, "channel", None), "id", ""),
-            author_id=getattr(author_obj, "id", ""),
-            author=author,
-            content=content,
-            timestamp=str(timestamp or ""),
-            reply_to_id=reply_to_id,
-            is_bot=bool(getattr(author_obj, "bot", False)),
-            username=getattr(author_obj, "name", None),
-        )
-        if module.is_noise(row):
-            return None
-        return row
+        return discord_api_context_row(module, message)
 
     async def _fetch_discord_recent_context_api(self, event, source, module, limit: int = 20) -> list[dict] | None:
         if source.platform != Platform.DISCORD:
@@ -5180,17 +5143,7 @@ class GatewayRunner:
         chain = payload.get("reply_chain") or []
         if not chain:
             return ""
-        lines = [
-            "## Discord Reply Chain",
-            "The user is replying to this chain. Use it to disambiguate the current request.",
-        ]
-        for msg in chain:
-            lines.append(
-                f"- [{msg.get('timestamp')}] {msg.get('author')} ({msg.get('id')}): {msg.get('content')}"
-            )
-        if payload.get("reply_chain_truncated"):
-            lines.append("- [older reply-chain messages omitted]")
-        return "\n".join(lines)
+        return render_reply_chain_payload(payload)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -11799,7 +11752,7 @@ class GatewayRunner:
                 "schema": "hermes.context_dump.v2",
                 "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                 "capture_mode": "zero_inference_current_context",
-                "base_context_version": "gateway-context-v1",
+                "base_context_version": BASE_CONTEXT_VERSION,
                 "loaded_skill_names": [],
                 "session_key": session_key,
                 "session_id": session_entry.session_id,
@@ -11914,10 +11867,19 @@ class GatewayRunner:
             except Exception:
                 threshold = 0
             if context_length > 0:
-                pct = min(999.0, approx_tokens / context_length * 100)
-                threshold_part = f", compress at ~{threshold:,}" if threshold else ""
-                return f"🧮 Context loaded: ~{approx_tokens:,} / {context_length:,} prompt tokens ({pct:.0f}%{threshold_part})."
-            return f"🧮 Context loaded: ~{approx_tokens:,} tokens."
+                return format_context_window_token_line(
+                    approx_tokens=approx_tokens,
+                    context_length=context_length,
+                    threshold_tokens=threshold,
+                    base_context_version=BASE_CONTEXT_VERSION,
+                    loaded_skill_names=[],
+                )
+            return format_context_window_token_line(
+                approx_tokens=approx_tokens,
+                context_length=0,
+                base_context_version=BASE_CONTEXT_VERSION,
+                loaded_skill_names=[],
+            )
         except Exception as exc:
             logger.debug("Failed to estimate startup context tokens for %s: %s", session_key, exc, exc_info=True)
             return None

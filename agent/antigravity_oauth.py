@@ -41,6 +41,26 @@ ENV_CLIENT_ID = "HERMES_ANTIGRAVITY_CLIENT_ID"
 ENV_CLIENT_SECRET = "HERMES_ANTIGRAVITY_CLIENT_SECRET"
 ENV_CLI_PATH = "HERMES_ANTIGRAVITY_CLI_PATH"
 
+# Public Antigravity CLI desktop OAuth client. Like Google's gemini-cli
+# credentials (see agent/google_oauth.py), this is a DESKTOP OAuth client and
+# its "secret" is not confidential — installed-app clients have no
+# secret-keeping requirement (PKCE provides the security), and these creds are
+# baked into every copy of the Antigravity CLI. Shipping them as a fallback
+# lets users without `agy` installed authenticate directly. Split into parts
+# with explicit comments per the convention in google_oauth.py.
+_PUBLIC_CLIENT_ID_PROJECT_NUM = "1071006060591"
+_PUBLIC_CLIENT_ID_HASH = "tmhssin2h21lcre235vtolojh4g403ep"
+_PUBLIC_CLIENT_SECRET_SUFFIX = "K58FWR486LdLJ1mLB8sXC4z6qDAf"
+
+_DEFAULT_CLIENT_ID = (
+    f"{_PUBLIC_CLIENT_ID_PROJECT_NUM}-{_PUBLIC_CLIENT_ID_HASH}"
+    ".apps.googleusercontent.com"
+)
+_DEFAULT_CLIENT_SECRET = f"GOCSPX-{_PUBLIC_CLIENT_SECRET_SUFFIX}"
+
+# Fallback project ID when Code Assist project discovery fails entirely.
+DEFAULT_PROJECT_ID = "rising-fact-p41fc"
+
 _CLIENT_ID_PATTERN = re.compile(
     r"([0-9]{8,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com)"
 )
@@ -335,7 +355,9 @@ def _get_client_id() -> str:
     if env_val:
         return env_val
     discovered, _ = _discover_client_credentials()
-    return discovered
+    if discovered:
+        return discovered
+    return _DEFAULT_CLIENT_ID
 
 
 def _get_client_secret() -> str:
@@ -343,7 +365,9 @@ def _get_client_secret() -> str:
     if env_val:
         return env_val
     _, discovered = _discover_client_credentials()
-    return discovered
+    if discovered:
+        return discovered
+    return _DEFAULT_CLIENT_SECRET
 
 
 def _iter_client_credential_candidates() -> list[Tuple[str, str]]:
@@ -354,15 +378,26 @@ def _iter_client_credential_candidates() -> list[Tuple[str, str]]:
 
     _discover_client_credentials()
     cached = _discovered_creds_cache.get("candidates")
+    candidates: list[Tuple[str, str]] = []
     if isinstance(cached, list):
-        return [
+        candidates = [
             (str(client_id), str(client_secret))
             for client_id, client_secret in cached
             if client_id and client_secret
         ]
-    client_id = str(_discovered_creds_cache.get("client_id") or "")
-    client_secret = str(_discovered_creds_cache.get("client_secret") or "")
-    return [(client_id, client_secret)] if client_id and client_secret else []
+    else:
+        client_id = str(_discovered_creds_cache.get("client_id") or "")
+        client_secret = str(_discovered_creds_cache.get("client_secret") or "")
+        if client_id and client_secret:
+            candidates = [(client_id, client_secret)]
+
+    # Always include the public baked-in default as a last-resort candidate so
+    # users without `agy` installed can still authenticate. De-dupe in case
+    # discovery already surfaced the same client.
+    default_pair = (_DEFAULT_CLIENT_ID, _DEFAULT_CLIENT_SECRET)
+    if default_pair not in candidates:
+        candidates.append(default_pair)
+    return candidates
 
 
 def _require_client_id() -> str:

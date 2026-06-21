@@ -146,10 +146,20 @@ def resolve_project_context(
     if env_project_id:
         return ProjectContext(project_id=env_project_id, source="env")
     info = load_code_assist(access_token)
+    if info.project_id:
+        return ProjectContext(
+            project_id=info.project_id,
+            managed_project_id=info.project_id,
+            source="discovered",
+        )
+    # Discovery returned no project (common on fresh consumer accounts that
+    # haven't been onboarded). Fall back to the public default project so the
+    # call chain still succeeds — mirrors the Antigravity CLI reference flow.
+    from agent.antigravity_oauth import DEFAULT_PROJECT_ID
     return ProjectContext(
-        project_id=info.project_id,
-        managed_project_id=info.project_id,
-        source="discovered" if info.project_id else "unknown",
+        project_id=DEFAULT_PROJECT_ID,
+        managed_project_id=DEFAULT_PROJECT_ID,
+        source="default",
     )
 
 

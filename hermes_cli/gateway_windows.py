@@ -758,6 +758,12 @@ def install(
     """Install the gateway as a Windows Scheduled Task (with Startup fallback). Idempotent — we
     always reconcile; ``force`` exists for API parity with launchd/systemd."""
     _assert_windows()
+
+    # Prefer Windows Service if already registered
+    if is_service_registered():
+        print("✓ Windows Service already registered")
+        return
+
     start_now, start_on_login = _prompt_install_choices(start_now, start_on_login)
 
     if not start_on_login:
@@ -988,6 +994,11 @@ def _print_next_steps() -> None:
 def uninstall() -> None:
     """Remove both the Scheduled Task and the Startup-folder fallback, if present."""
     _assert_windows()
+
+    if is_service_registered():
+        uninstall_service()
+        return
+
     task_name = get_task_name()
     script_path = get_task_script_path()
 
@@ -1028,6 +1039,306 @@ def uninstall() -> None:
         print(f"⚠ Scheduled Task still registered: {task_name}")
 
 
+# ---------------------------------------------------------------------------
+# Windows Service backend (pywin32 + SCM RecoveryActions)
+# ---------------------------------------------------------------------------
+
+# Recovery actions: quadratic backoff (Tailscale pattern)
+_RECOVERY_DELAYS_MS = [1000, 2000, 4000, 9000, 16000, 25000, 36000, 49000, 64000]
+_RECOVERY_RESET_PERIOD_S = 60
+
+
+def get_service_name() -> str:
+    """Service name, scoped per profile."""
+    from hermes_cli.gateway import _profile_suffix
+
+    suffix = _profile_suffix()
+    if not suffix:
+        return "HermesGateway"
+    return f"HermesGateway-{suffix}"
+
+
+def is_service_registered() -> bool:
+    """Check if the Windows Service is registered with SCM."""
+    try:
+        import win32service
+
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, get_service_name(), win32service.SERVICE_QUERY_STATUS
+            )
+            win32service.CloseServiceHandle(svc)
+            return True
+        except Exception:
+            return False
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception:
+        return False
+
+
+def install_service(force: bool = False) -> None:
+    """Install as Windows Service with SCM RecoveryActions."""
+    _assert_windows()
+    try:
+        import win32service
+    except ImportError:
+        print("⚠ pywin32 not available — falling back to Scheduled Task")
+        install(force=force)
+        return
+
+    service_name = get_service_name()
+    script_path = _write_service_script()
+    python_exe = _resolve_service_python()
+
+    # Build binPath: pythonw.exe _hermes_gateway_service.py
+    bin_path = f'"{python_exe}" "{script_path}"'
+
+    try:
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CREATE_SERVICE
+        )
+        try:
+            # Delete existing service if present
+            try:
+                existing = win32service.OpenService(
+                    scm, service_name, win32service.SERVICE_ALL_ACCESS
+                )
+                win32service.DeleteService(existing)
+                win32service.CloseServiceHandle(existing)
+                time.sleep(1)  # Let SCM process the deletion
+            except Exception:
+                pass
+
+            # Create the service
+            svc = win32service.CreateService(
+                scm,
+                service_name,
+                service_name,
+                win32service.SERVICE_ALL_ACCESS,
+                win32service.SERVICE_WIN32_OWN_PROCESS,
+                win32service.SERVICE_AUTO_START,
+                win32service.SERVICE_ERROR_NORMAL,
+                bin_path,
+                None,  # loadOrderGroup
+                None,  # tagId
+                None,  # dependencies
+                None,  # serviceStartName
+                None,  # password
+            )
+
+            # Configure recovery actions
+            action_tuples = [
+                (1, d) for d in _RECOVERY_DELAYS_MS
+            ]  # 1 = SC_ACTION_RESTART
+            win32service.ChangeServiceConfig2(
+                svc,
+                win32service.SERVICE_CONFIG_FAILURE_ACTIONS,
+                (_RECOVERY_RESET_PERIOD_S, None, None, action_tuples),
+            )
+            win32service.ChangeServiceConfig2(
+                svc,
+                win32service.SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+                {"fFailureActionsOnNonCrashFailures": True},
+            )
+            win32service.ChangeServiceConfig2(
+                svc,
+                win32service.SERVICE_CONFIG_DESCRIPTION,
+                (
+                    "Hermes Agent AI gateway \u2014 messaging platform integration, "
+                    "cron scheduler, and session management."
+                ),
+            )
+
+            win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+
+        print(f"✓ Windows Service registered: {service_name}")
+        print(f"  RecoveryActions: quadratic backoff restart on failure")
+        print(f"  Start type: AUTO_START (starts at boot)")
+    except Exception as exc:
+        print(f"⚠ Service install failed: {exc}")
+        print("  Falling back to Scheduled Task...")
+        install(force=force)
+
+
+def uninstall_service() -> None:
+    """Remove the Windows Service."""
+    _assert_windows()
+    try:
+        import win32service
+    except ImportError:
+        return
+
+    service_name = get_service_name()
+    try:
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, service_name, win32service.SERVICE_ALL_ACCESS
+            )
+            try:
+                # Stop the service first
+                try:
+                    win32service.ControlService(
+                        svc, win32service.SERVICE_CONTROL_STOP
+                    )
+                    time.sleep(2)
+                except Exception:
+                    pass
+                win32service.DeleteService(svc)
+                print(f"✓ Windows Service removed: {service_name}")
+            finally:
+                win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception as exc:
+        print(f"⚠ Service uninstall: {exc}")
+
+
+def start_service() -> None:
+    """Start the Windows Service."""
+    _assert_windows()
+    try:
+        import win32service
+    except ImportError:
+        start()
+        return
+
+    service_name = get_service_name()
+    try:
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, service_name, win32service.SERVICE_START
+            )
+            try:
+                win32service.StartService(svc, None)
+                print(f"✓ Windows Service started: {service_name}")
+            finally:
+                win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception as exc:
+        print(f"⚠ Service start failed: {exc}")
+        start()
+
+
+def stop_service() -> None:
+    """Stop the Windows Service."""
+    _assert_windows()
+    try:
+        import win32service
+    except ImportError:
+        stop()
+        return
+
+    service_name = get_service_name()
+    try:
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, service_name, win32service.SERVICE_STOP
+            )
+            try:
+                win32service.ControlService(
+                    svc, win32service.SERVICE_CONTROL_STOP
+                )
+                print(f"✓ Windows Service stopped: {service_name}")
+            finally:
+                win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception as exc:
+        print(f"⚠ Service stop: {exc}")
+
+
+def service_status() -> None:
+    """Print Windows Service status."""
+    _assert_windows()
+    try:
+        import win32service
+    except ImportError:
+        status()
+        return
+
+    service_name = get_service_name()
+    try:
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, service_name, win32service.SERVICE_QUERY_STATUS
+            )
+            try:
+                info = win32service.QueryServiceStatus(svc)
+                state = info[1]
+                state_names = {
+                    1: "STOPPED",
+                    2: "START_PENDING",
+                    3: "STOP_PENDING",
+                    4: "RUNNING",
+                    5: "CONTINUE_PENDING",
+                    6: "PAUSE_PENDING",
+                    7: "PAUSED",
+                }
+                print(f"✓ Windows Service: {service_name}")
+                print(f"  State: {state_names.get(state, state)}")
+                print(f"  PID: {info[5]}")
+            finally:
+                win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception:
+        print(f"✗ Windows Service not registered: {service_name}")
+
+
+def restart_service() -> None:
+    """Restart the Windows Service."""
+    stop_service()
+    time.sleep(2)
+    start_service()
+
+
+def _write_service_script() -> Path:
+    """Write the service wrapper script. Return its path."""
+    from hermes_constants import get_hermes_home
+
+    script_dir = Path(get_hermes_home()) / "gateway-service"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    script_path = script_dir / "_hermes_gateway_service.py"
+
+    # Copy the service script from the package
+    import hermes_cli._hermes_gateway_service as svc_module
+
+    source = Path(svc_module.__file__)
+
+    tmp = script_path.with_suffix(".tmp")
+    tmp.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    tmp.replace(script_path)
+    return script_path
+
+
+def _resolve_service_python() -> str:
+    """Get the pythonw.exe path for the service binary."""
+    python_exe = sys.executable
+    pythonw = Path(python_exe).with_name("pythonw.exe")
+    if pythonw.exists():
+        return str(pythonw)
+    return python_exe
+
+
 # ── Status / start / stop / restart
 
 def is_task_registered() -> bool:
@@ -1041,6 +1352,8 @@ def is_startup_entry_installed() -> bool:
 
 def is_installed() -> bool:
     """True when either the schtasks entry or the Startup fallback is present."""
+    if is_service_registered():
+        return True
     return is_task_registered() or is_startup_entry_installed()
 
 
@@ -1192,6 +1505,11 @@ def status(deep: bool = False) -> None:
     """Print a status report for the Windows gateway service."""
     _assert_windows()
     _print_start_attestation_warning()   # once: a gateway that died after a previous ✓
+
+    if is_service_registered():
+        service_status()
+        return
+
     task_name = get_task_name()
     task_installed = is_task_registered()
     startup_installed = is_startup_entry_installed()
@@ -1226,6 +1544,11 @@ def start() -> None:
     """Start the gateway using the canonical detached Windows launch path."""
     _assert_windows()
     _print_start_attestation_warning()   # once: the LAST start's ✓ turned out to be false
+
+    if is_service_registered():
+        start_service()
+        return
+
     running_pids = _gateway_pids()
     if running_pids:
         _report_already_running(running_pids)
@@ -1331,6 +1654,11 @@ def stop() -> None:
     ``resume_pending`` (Windows asyncio can't receive SIGTERM — the marker is our only IPC), then
     ``schtasks /End``, then a bounded hard-kill of known PIDs."""
     _assert_windows()
+
+    if is_service_registered():
+        stop_service()
+        return
+
     from gateway.status import get_running_pid
 
     # A user-initiated stop is a planned death: don't later report it as a silent crash.
@@ -1382,6 +1710,10 @@ def restart() -> None:
     ``start()``'s "already running" guard sees the draining process and no-ops, and nothing
     replaces it when it exits (a silent outage). Fails loudly on either side."""
     _assert_windows()
+
+    if is_service_registered():
+        restart_service()
+        return
 
     stop()
 

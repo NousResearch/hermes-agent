@@ -88,6 +88,9 @@ def build_gateway_parser(
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service")
     _flag(gateway_install, "--force", help="Force reinstall")
+    gateway_install.add_argument("--service-type",
+        choices=["scheduled-task", "service"], default=None,
+        help="Windows only: install as Scheduled Task (default) or Windows Service (requires admin)")
     _flag(gateway_install, "--system",
         help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user",

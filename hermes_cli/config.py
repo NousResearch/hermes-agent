@@ -5468,23 +5468,44 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     ``model.*`` key is empty — they never override an existing value.
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
+
+    Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the
+    intuitive name OpenAI-SDK / LiteLLM users reach for, and ``hermes config set``
+    blindly accepts any dotted key — so ``model.api_base`` got written, confirmed,
+    and then silently ignored by the runtime resolver (which reads only
+    ``model.base_url``), causing requests to fall back to OpenRouter. We migrate
+    the alias to the canonical key (fallback-only — never override an explicit
+    ``base_url``) and drop the alias so it can't confuse later loads.
     """
-    # Only act if there are root-level keys to migrate
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
-    if not has_root:
+    # Only act if there are root-level keys (or an api_base alias) to migrate
+    model_in = config.get("model")
+    model_has_alias = isinstance(model_in, dict) and model_in.get("api_base")
+    has_root = any(
+        config.get(k) for k in ("provider", "base_url", "context_length", "api_base")
+    )
+    if not has_root and not model_has_alias:
         return config
 
     config = dict(config)
     model = config.get("model")
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
-        config["model"] = model
+    else:
+        model = dict(model)
+    config["model"] = model
 
     for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
         if root_val and not model.get(key):
             model[key] = root_val
         config.pop(key, None)
+
+    # api_base is an alias for base_url, at the root OR inside model.
+    for alias_val in (config.get("api_base"), model.get("api_base")):
+        if alias_val and not model.get("base_url"):
+            model["base_url"] = alias_val
+    config.pop("api_base", None)
+    model.pop("api_base", None)
 
     return config
 
@@ -6778,7 +6799,15 @@ def set_config_value(key: str, value: str):
         value = float(value)
 
     _set_nested(user_config, key, value)
-    
+    # Normalize the api_base → base_url alias at set-time too (issue #8919),
+    # so a fresh `hermes config set model.api_base ...` lands on the canonical
+    # key the runtime resolver actually reads, instead of being silently
+    # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
+    _alias_norm = key.strip().lower()
+    if _alias_norm in ("model.api_base", "api_base"):
+        user_config = _normalize_root_model_keys(user_config)
+        key = "model.base_url"
+        print("  (note: 'api_base' is an alias — saved as model.base_url)")
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write

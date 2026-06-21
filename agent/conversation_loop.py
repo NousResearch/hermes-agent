@@ -4714,6 +4714,59 @@ def run_conversation(
                 )
 
                 _ack_mode = intent_ack_continuation_mode(agent)
+
+                # ── Leaked tool-call recovery ───────────────────────
+                # The turn ended as plain text, but the visible body is
+                # really a complete <invoke …>…</invoke> tool-call block
+                # the model emitted as prose instead of through the
+                # tool-call channel. Surfacing it confuses the user and,
+                # once persisted, becomes a bad few-shot that makes later
+                # turns imitate it. Do NOT show it and do NOT delete it
+                # silently: re-prompt for a real tool call, bounded by a
+                # small retry budget. On exhaustion fall through and
+                # surface the raw text honestly rather than loop forever.
+                if (
+                    agent.valid_tool_names
+                    and agent._leaked_tool_call_retries < 2
+                    and agent._looks_like_leaked_tool_call(final_response)
+                ):
+                    agent._leaked_tool_call_retries += 1
+                    logger.warning(
+                        "Assistant emitted a tool-call block as plain text "
+                        "(no tool_calls) — re-prompting for a real tool call "
+                        "(%d/2) model=%s provider=%s",
+                        agent._leaked_tool_call_retries, agent.model, agent.provider,
+                    )
+                    agent._buffer_status(
+                        f"⚠️ Tool call written as text — re-prompting "
+                        f"({agent._leaked_tool_call_retries}/2)"
+                    )
+                    # Append a NEUTRAL placeholder (never the raw XML) so the
+                    # leaked block can't enter durable history as a bad
+                    # few-shot, while keeping role alternation valid
+                    # (assistant → user). Flag it synthetic so the
+                    # trailing-scaffolding pop below unwinds it cleanly on
+                    # the eventual final-text path.
+                    _leak_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    _leak_msg["content"] = "(tool call not executed)"
+                    _leak_msg["_leaked_tool_call_synthetic"] = True
+                    messages.append(_leak_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous message contained a tool call written "
+                            "as plain text instead of being issued through the "
+                            "tool-call interface, so it did NOT run. Re-issue it now "
+                            "as a real tool call. If you did not intend to call a "
+                            "tool, reply with your final answer as normal prose "
+                            "containing no tool-call markup."
+                        ),
+                        "_leaked_tool_call_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    continue
+
+
                 if (
                     _ack_mode != "off"
                     and agent.valid_tool_names
@@ -4764,6 +4817,7 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_leaked_tool_call_synthetic")
                     )
                 ):
                     messages.pop()

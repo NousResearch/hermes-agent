@@ -1366,6 +1366,109 @@ class AIAgent:
             return True
         return False
 
+    @staticmethod
+    def _strip_code_spans_for_invoke_scan(text: str) -> str:
+        """Blank out fenced and inline code before scanning for leaked
+        tool-call XML.
+
+        A model legitimately *showing* a ``<invoke ...>`` block as a
+        documentation example wraps it in backticks; that must never be
+        mistaken for a real leaked tool call. The returned text is only
+        ever scanned, never displayed or persisted.
+        """
+        if not text:
+            return ""
+        # Whole fenced blocks ```...``` (including ```lang), multi-line.
+        without_fences = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+        # A dangling/unclosed fence (half-streamed example): drop from it
+        # onward so the unterminated example can't trip the scan either.
+        if "```" in without_fences:
+            without_fences = without_fences.split("```", 1)[0]
+        # Inline `code`.
+        return re.sub(r"`[^`\n]*`", " ", without_fences)
+
+    @staticmethod
+    def _text_is_essentially_tool_call(text: str) -> bool:
+        """Core leak test on already-visible text (think blocks removed).
+
+        Returns True only when, after exempting code spans, a fully
+        closed ``<invoke ...>...</invoke>`` block is present AND the
+        residual non-XML prose is negligible — i.e. the block *is*
+        essentially the whole message rather than an aside inside a real
+        answer. Conservative by construction to avoid suppressing
+        genuine replies that merely mention or quote tool-call XML.
+        """
+        if not isinstance(text, str) or not text.strip():
+            return False
+        # Cheap pre-filter: no invoke tag at all → definitely not leakage.
+        if "<invoke" not in text.lower():
+            return False
+        scan = AIAgent._strip_code_spans_for_invoke_scan(text)
+        invoke_re = r"<invoke\b[^>]*>.*?</invoke\s*>"
+        if not re.search(invoke_re, scan, re.DOTALL | re.IGNORECASE):
+            # Every invoke block was inside a code span → legitimate example.
+            return False
+        # Remove the complete invoke block(s), then drop bare leaked wrapper
+        # labels/tags and any orphan XML fragments. Whatever prose is left is
+        # what the user WOULD have seen had this been surfaced.
+        residual = re.sub(invoke_re, " ", scan, flags=re.DOTALL | re.IGNORECASE)
+        kept = []
+        for line in residual.splitlines():
+            token = line.strip()
+            if not token:
+                continue
+            if re.match(
+                r"^(?:course|call|tool_call|tool_calls|function_call|"
+                r"function_calls|/?function_calls|antml:function_calls)$",
+                token,
+                re.IGNORECASE,
+            ):
+                continue
+            kept.append(token)
+        residual_prose = re.sub(r"<[^>]+>", " ", " ".join(kept)).strip()
+        # Primary signal: the block IS essentially the whole message — only a
+        # negligible amount of incidental prose surrounds it.
+        if len(residual_prose) <= 24:
+            return True
+        # Secondary signal: substantial prose PRECEDES the block, but the
+        # message still ENDS with a complete, unfenced ``<invoke …></invoke>``
+        # block (trailing whitespace allowed). A genuine final answer never
+        # terminates in a bare ``</invoke>``; this is the "preamble + leaked
+        # call" shape — the model writes a sentence or two announcing what it
+        # is about to do ("消息已发。现在用一个探针…"), then emits the call as
+        # prose instead of through the tool-call channel. Claude Opus 4.x
+        # (especially 4.8) is particularly prone to this because it likes to
+        # narrate its next action first. Code spans were already blanked in
+        # ``scan`` above, so a fenced/inline ``<invoke>`` documentation example
+        # placed at the end of a real answer is NOT matched here (its XML is
+        # already gone from ``scan``).
+        ends_with_invoke = re.search(
+            r"<invoke\b[^>]*>.*?</invoke\s*>\s*\Z",
+            scan,
+            re.DOTALL | re.IGNORECASE,
+        )
+        return bool(ends_with_invoke)
+
+    def _looks_like_leaked_tool_call(self, content: str) -> bool:
+        """Detect an assistant turn that ended as plain text but whose body
+        is really a complete tool-call block the model emitted as prose
+        instead of through the tool-call channel.
+
+        This is a DETECT signal only. The conversation loop responds by
+        re-prompting for a real tool call (bounded by a retry budget) and
+        never by deleting content — surfacing the raw XML to the user
+        confuses them and, once persisted, turns into a bad few-shot that
+        makes later turns imitate it. See skill ``hermes-agent`` reference
+        ``tool-call-xml-leakage-20260621.md`` for the evidence trail.
+        """
+        if not isinstance(content, str):
+            return False
+        # Strip reasoning/think blocks first so a leak hiding after a long
+        # <think>…</think> preamble is still caught (mirrors how
+        # _should_treat_stop_as_truncated derives visible text).
+        visible = self._strip_think_blocks(content)
+        return AIAgent._text_is_essentially_tool_call(visible)
+
     def _is_ollama_glm_backend(self) -> bool:
         """Detect Ollama-hosted GLM models affected by stop misreports.
 
@@ -1559,6 +1662,20 @@ class AIAgent:
         providers silently reject (returns empty content), causing the
         empty-retry loop to fire forever. (issue number to be backfilled once filed)
         """
+        # Pre-pass: strip leaked-tool-call recovery scaffolding (the neutral
+        # placeholder + re-prompt nudge appended by the conversation loop).
+        # Unlike empty-response scaffolding these must NOT engage the
+        # tool-result rewind below: a mid-loop leak is preceded by REAL
+        # completed tool work that has to be preserved. Popping them here
+        # also avoids a ``user(nudge), user(next)`` protocol violation if the
+        # turn is interrupted mid-recovery and later resumed.
+        while (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("_leaked_tool_call_synthetic")
+        ):
+            messages.pop()
+
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
         while (

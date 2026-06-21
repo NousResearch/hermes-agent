@@ -1,0 +1,285 @@
+=== HUNK-LEVEL ATTRIBUTION: git diff v0.16.0(3c231eb)..src-HEAD, every hunk -> PR# + SHA ===
+src HEAD=94cef895327d  v0.16.0=3c231eb3979a  method: each hunk's added lines must each be
+present in some covering PR's file content (PR was cut off origin/main) OR in #50111 deferred.
+
+agent/agent_init.py
+    hunks=7  covering=#50296@7af74fc2d,#50073@a12d4aebd,#49917@6bc37d8f4,#49184@d684ef808,#48065@ea7e64f46
+agent/agent_runtime_helpers.py
+    hunks=4  covering=#49184@d684ef808
+agent/agy_cli_client.py
+    hunks=1  covering=#50039@b78ea6e93
+agent/anthropic_adapter.py
+    hunks=15  covering=#50064@6369374af,#48024@c5346ea34
+agent/auto_router.py
+    hunks=1  covering=#50031@1bdae0a13
+agent/autopilot/__init__.py
+    hunks=1  covering=#49917@6bc37d8f4
+agent/autopilot/council_gate.py
+    hunks=1  covering=#49917@6bc37d8f4
+agent/autopilot/driver.py
+    hunks=1  covering=#49917@6bc37d8f4
+agent/auxiliary_client.py
+    hunks=18  covering=#50064@6369374af,#49184@d684ef808
+agent/background_review.py
+    hunks=1  covering=#50296@7af74fc2d
+agent/chat_completion_helpers.py
+    hunks=5  covering=#50055@35da28816
+agent/codex_version.py
+    hunks=1  covering=#50038@cf14b5731
+agent/context_engine.py
+    hunks=1  covering=#50053@d0ffb661c
+agent/conversation_loop.py
+    hunks=17  covering=#50155@02e537931,#50073@a12d4aebd,#49917@6bc37d8f4,#49184@d684ef808
+agent/copilot_acp_client.py
+    hunks=6  covering=#50064@6369374af
+agent/gemini_cloudcode_adapter.py
+    hunks=2  covering=#50033@afb0a4e83
+agent/gemini_native_adapter.py
+    hunks=2  covering=#50033@afb0a4e83
+agent/google_user_agent.py
+    hunks=1  covering=#50033@afb0a4e83
+agent/model_metadata.py
+    hunks=12  covering=#50064@6369374af
+agent/models_dev.py
+    hunks=2  covering=#49449@cd27defe2
+agent/prompt_builder.py
+    hunks=1  covering=#49917@6bc37d8f4
+agent/subdirectory_hints.py
+    hunks=1  covering=#50049@e4e34884d
+agent/system_prompt.py
+    hunks=7  covering=#49917@6bc37d8f4,#48101@af2016d1e
+agent/system_prompt_prelude.py
+    hunks=1  covering=#48101@af2016d1e
+agent/tool_executor.py
+    hunks=3  covering=#50021@80ce95201,#49917@6bc37d8f4
+agent/tool_trace_sidecar.py
+    hunks=1  covering=#50021@80ce95201
+agent/transports/chat_completions.py
+    hunks=2  covering=#49644@9ea0cab9a
+agent/transports/codex.py
+    hunks=1  covering=#50038@cf14b5731
+agent/transports/codex_app_server.py
+    hunks=1  covering=#50038@cf14b5731
+agent/transports/codex_app_server_session.py
+    hunks=2  covering=#50038@cf14b5731
+agent/usage_pricing.py
+    hunks=1  covering=#48024@c5346ea34
+batch_runner.py
+    hunks=2  covering=#49644@9ea0cab9a
+cli.py
+    hunks=6  covering=#49917@6bc37d8f4
+gateway/platforms/api_server.py
+    hunks=25  covering=#48024@c5346ea34
+gateway/run.py
+    hunks=6  covering=#50146@b674df630,#49644@9ea0cab9a
+gateway/status.py
+    hunks=1  covering=#50047@b3695d09a
+hermes_cli/_parser.py
+    hunks=1  covering=#49917@6bc37d8f4
+hermes_cli/auth.py
+    hunks=1  covering=#50039@b78ea6e93
+hermes_cli/banner.py
+    hunks=7  covering=#50046@0d226f1ee
+hermes_cli/codex_models.py
+    hunks=1  covering=#50038@cf14b5731
+hermes_cli/commands.py
+    hunks=1  covering=#49917@6bc37d8f4,#49644@9ea0cab9a
+hermes_cli/config.py
+    hunks=4  covering=#50073@a12d4aebd,#50046@0d226f1ee,#49917@6bc37d8f4
+hermes_cli/copilot_auth.py
+    hunks=12  covering=#50064@6369374af
+hermes_cli/doctor.py
+    hunks=5  covering=#50041@f3288ad35
+hermes_cli/gateway.py
+    hunks=1  covering=#50047@b3695d09a
+hermes_cli/inventory.py
+    hunks=2  covering=#50064@6369374af
+hermes_cli/kanban_db.py
+    hunks=1  covering=#50056@c219bded8
+hermes_cli/main.py
+    hunks=5  covering=#49917@6bc37d8f4,#49644@9ea0cab9a
+hermes_cli/models.py
+    hunks=17  covering=#49644@9ea0cab9a
+hermes_cli/plugins.py
+    hunks=4  covering=#50054@352b13184
+hermes_cli/prompt_size.py
+    hunks=2  covering=#48101@af2016d1e
+hermes_cli/runtime_provider.py
+    hunks=1  covering=#50039@b78ea6e93
+hermes_cli/send_cmd.py
+    hunks=2  covering=#50048@001b549c6
+hermes_cli/skills_hub.py
+    hunks=2  covering=#50045@5a12f857a
+hermes_cli/source.py
+    hunks=1  covering=#50032@122087da9
+hermes_cli/stable_update.py
+    hunks=1  covering=#50046@0d226f1ee
+hermes_cli/web_server.py
+    hunks=1  covering=#50086@c7e2620c9
+hermes_constants.py
+    hunks=1  covering=#49644@9ea0cab9a
+hermes_state.py
+    hunks=33  covering=#50296@7af74fc2d,#50056@c219bded8
+plugins/model-providers/agy-cli/__init__.py
+    hunks=1  covering=#50039@b78ea6e93
+plugins/model-providers/agy-cli/plugin.yaml
+    hunks=1  covering=#50039@b78ea6e93
+plugins/model-providers/copilot/__init__.py
+    hunks=1  covering=#50064@6369374af
+plugins/platforms/discord/adapter.py
+    hunks=1  covering=#50078@6be7d8231
+run_agent.py
+    hunks=10  covering=#50296@7af74fc2d,#50073@a12d4aebd,#49644@9ea0cab9a
+tests/agent/conftest.py
+    hunks=1  covering=#50039@b78ea6e93
+tests/agent/test_agy_cli_client_v2.py
+    hunks=1  covering=#50039@b78ea6e93
+tests/agent/test_agy_cli_client_v3.py
+    hunks=1  covering=#50039@b78ea6e93
+tests/agent/test_anthropic_adapter.py
+    hunks=9  covering=#50064@6369374af
+tests/agent/test_autopilot_council_gate.py
+    hunks=1  covering=#49917@6bc37d8f4
+tests/agent/test_autopilot_driver.py
+    hunks=1  covering=#49917@6bc37d8f4
+tests/agent/test_autopilot_e2e_loop.py
+    hunks=1  covering=#49917@6bc37d8f4
+tests/agent/test_auxiliary_client.py
+    hunks=2  covering=#50064@6369374af
+tests/agent/test_auxiliary_main_first.py
+    hunks=2  covering=#50064@6369374af
+tests/agent/test_copilot_claude_anthropic_routing.py
+    hunks=1  covering=#50064@6369374af
+tests/agent/test_copilot_opus_context_fix_2026_06_04.py
+    hunks=1  covering=#50111-deferred
+tests/agent/test_model_metadata.py
+    hunks=3  covering=#50078@6be7d8231
+tests/agent/test_p2_p3_oversized_handling.py
+    hunks=1  covering=#50073@a12d4aebd
+tests/agent/test_subdirectory_hints.py
+    hunks=1  covering=#50049@e4e34884d
+tests/agent/transports/test_codex_app_server_session.py
+    hunks=2  covering=#50038@cf14b5731
+tests/cli/test_autopilot_kick.py
+    hunks=1  covering=#49917@6bc37d8f4
+tests/cli/test_reasoning_command.py
+    hunks=1  covering=#50078@6be7d8231
+tests/gateway/test_api_server.py
+    hunks=2  covering=#48024@c5346ea34
+tests/hermes_cli/test_banner_git_state.py
+    hunks=1  covering=#50046@0d226f1ee
+tests/hermes_cli/test_bedrock_model_picker.py
+    hunks=1  covering=#50066@37a76f469
+tests/hermes_cli/test_copilot_auth.py
+    hunks=3  covering=#50064@6369374af
+tests/hermes_cli/test_copilot_catalog_oauth_fallback.py
+    hunks=1  covering=#50064@6369374af
+tests/hermes_cli/test_copilot_context.py
+    hunks=4  covering=#50064@6369374af
+tests/hermes_cli/test_copilot_token_exchange.py
+    hunks=2  covering=#50064@6369374af
+tests/hermes_cli/test_doctor.py
+    hunks=1  covering=#50041@f3288ad35
+tests/hermes_cli/test_inventory.py
+    hunks=1  covering=#50064@6369374af
+tests/hermes_cli/test_kanban_db.py
+    hunks=5  covering=#50056@c219bded8
+tests/hermes_cli/test_model_switch_copilot_api_mode.py
+    hunks=3  covering=#50064@6369374af
+tests/hermes_cli/test_model_validation.py
+    hunks=1  covering=#50064@6369374af
+tests/hermes_cli/test_send_cmd.py
+    hunks=1  covering=#50048@001b549c6
+tests/hermes_cli/test_stable_update.py
+    hunks=1  covering=#50046@0d226f1ee
+tests/hermes_cli/test_update_check.py
+    hunks=1  covering=#50046@0d226f1ee
+tests/hermes_cli/test_web_server.py
+    hunks=1  covering=#50086@c7e2620c9,#50066@37a76f469
+tests/plugins/test_agy_cli_plugin_v2.py
+    hunks=1  covering=#50039@b78ea6e93
+tests/probe_prelude_e2e.py
+    hunks=1  covering=#50078@6be7d8231
+tests/run_agent/test_agent_guardrails.py
+    hunks=1  covering=#50078@6be7d8231
+tests/run_agent/test_compression_feasibility.py
+    hunks=1  covering=#50080@e5e4a8b13
+tests/run_agent/test_copilot_native_vision_headers.py
+    hunks=5  covering=#50064@6369374af
+tests/run_agent/test_provider_attribution_headers.py
+    hunks=2  covering=#50064@6369374af
+tests/run_agent/test_run_agent.py
+    hunks=2  covering=#50078@6be7d8231
+tests/run_agent/test_run_agent_codex_responses.py
+    hunks=1  covering=#50064@6369374af
+tests/test_anthropic_thinking_display.py
+    hunks=1  covering=#48024@c5346ea34
+tests/test_auto_router_live.py
+    hunks=1  covering=#50031@1bdae0a13
+tests/test_context_engine_tool_wrap.py
+    hunks=1  covering=#50080@e5e4a8b13
+tests/test_hermes_constants.py
+    hunks=1  covering=#50078@6be7d8231
+tests/test_hermes_state.py
+    hunks=13  covering=#50056@c219bded8
+tests/test_hermes_state_wal_fallback.py
+    hunks=1  covering=#50056@c219bded8
+tests/test_system_prompt_prelude.py
+    hunks=1  covering=#50078@6be7d8231
+tests/test_tui_gateway_server.py
+    hunks=2  covering=#50078@6be7d8231
+tests/tools/test_file_read_guards.py
+    hunks=3  covering=#50042@a54e706a7
+tests/tools/test_file_tools.py
+    hunks=1  covering=#50042@a54e706a7
+tests/tools/test_hermes_source_accelerator.py
+    hunks=1  covering=#50032@122087da9
+tests/tools/test_skills_guard.py
+    hunks=2  covering=#50045@5a12f857a
+tests/tools/test_skills_hub.py
+    hunks=2  covering=#50045@5a12f857a
+tests/tools/test_skills_tool.py
+    hunks=1  covering=#50045@5a12f857a
+tests/tui_gateway/test_autopilot_command.py
+    hunks=1  covering=#49917@6bc37d8f4
+tests/tui_gateway/test_notify_autodispatch.py
+    hunks=1  covering=#49917@6bc37d8f4
+tools/delegate_tool.py
+    hunks=7  covering=#50040@25b495a06
+tools/file_tools.py
+    hunks=3  covering=#50042@a54e706a7
+tools/hermes_source.py
+    hunks=1  covering=#50032@122087da9
+tools/mcp_tool.py
+    hunks=6  covering=#48069@4a1fbe9e1
+tools/model_router.py
+    hunks=1  covering=#50022@6f6ab5839
+tools/project_source.py
+    hunks=1  covering=#50032@122087da9
+tools/schema_sanitizer.py
+    hunks=1  covering=#48057@a4589b165
+tools/send_message_tool.py
+    hunks=6  covering=#50048@001b549c6
+tools/skills_guard.py
+    hunks=3  covering=#50045@5a12f857a
+tools/skills_hub.py
+    hunks=2  covering=#50045@5a12f857a
+tools/skills_tool.py
+    hunks=2  covering=#50045@5a12f857a
+toolsets.py
+    hunks=2  covering=#50032@122087da9
+tui_gateway/server.py
+    hunks=10  covering=#49917@6bc37d8f4,#49916@1da02f748
+ui-tui/src/__tests__/appChromeStatusRule.test.tsx
+    hunks=1  covering=#50068@123efe8be
+ui-tui/src/app/useInputHandlers.ts
+    hunks=1  covering=#49915@e33e4f781
+ui-tui/src/components/appChrome.tsx
+    hunks=5  covering=#50068@123efe8be
+ui-tui/src/components/appLayout.tsx
+    hunks=2  covering=#50068@123efe8be
+ui-tui/src/types.ts
+    hunks=2  covering=#50068@123efe8be
+
+total hunks=442  UNMAPPED=0
+RESULT: PASS — 0 unmapped hunks; every hunk attributed to an open PR (with SHA) or #50111

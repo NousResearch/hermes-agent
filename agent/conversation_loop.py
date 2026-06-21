@@ -3624,6 +3624,30 @@ def run_conversation(
                 else:
                     assistant_message.content = str(raw)
 
+            # Post-response grounding enforcement. No-op unless the active context
+            # engine advertises an ``enforce_response`` capability via a
+            # ``capabilities()`` method returning a dict with that key set; the
+            # built-in ContextCompressor and LCM do not, so they are entirely
+            # unaffected. A grounding-aware engine can audit the final answer
+            # against its verbatim record and, if it is ungrounded, return a
+            # replacement. Duck-typed (getattr) so any engine lacking the API is
+            # silently skipped, and fully wrapped so enforcement can never break
+            # the turn.
+            try:
+                _eng = getattr(agent, "context_compressor", None)
+                _content = assistant_message.content
+                _has_tools = bool(getattr(assistant_message, "tool_calls", None))
+                _caps = getattr(_eng, "capabilities", None)
+                if (_eng is not None and not _has_tools
+                        and isinstance(_content, str) and _content.strip()
+                        and callable(_caps) and _caps().get("enforce_response")):
+                    _verdict = _eng.enforce_response(
+                        _content, messages, model=getattr(agent, "model", ""), final=True)
+                    if isinstance(_verdict, dict) and _verdict.get("action") == "replace":
+                        assistant_message.content = _verdict.get("text", _content)
+            except Exception:
+                pass  # enforcement must never break the turn
+
             try:
                 from hermes_cli.plugins import (
                     has_hook,

@@ -43,6 +43,7 @@ NOTIONAL_ANTHROPIC_PROVIDERS = frozenset({
     "claude-api-proxy",
     "claude-bridge",
     "claude-pool",
+    "claude-app",
 })
 
 # claude-api-proxy-f1, claude-bridge-f2, … -f<any integer>. Anchored +

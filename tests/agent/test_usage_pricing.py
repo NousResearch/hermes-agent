@@ -20,6 +20,7 @@ _REPRESENTATIVE_NOTIONAL = [
     "claude-api-proxy",
     "claude-bridge",
     "claude-pool",
+    "claude-app",
     "claude-api-proxy-f1",
     "claude-api-proxy-f2",
     "claude-api-proxy-f5",

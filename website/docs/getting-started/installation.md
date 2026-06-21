@@ -150,6 +150,14 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 | `API key not set` | Run `hermes model` to configure your provider, or `hermes config set OPENROUTER_API_KEY your_key` |
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
 
+### WSL2 Tips
+
+**Where does my data live?** On WSL2, `~/.hermes` is inside the WSL Linux filesystem (`\\wsl.localhost\Ubuntu\home\<user>\.hermes`). Do not move it to `/mnt/c/` — crossing the WSL/Windows filesystem boundary causes a 5-10x slowdown on git operations, npm installs, and database reads.
+
+**How do I access Windows files?** Windows drives mount at `/mnt/c/`, `/mnt/d/`, etc. Use these paths in Hermes when the agent needs to read or write files visible from Windows (e.g., `C:\Users\prata\Downloads\file.pdf` becomes `/mnt/c/Users/prata/Downloads/file.pdf`).
+
+**Python note:** On WSL2, always use `python3` not `python`. The `python` command may not exist. The Hermes installer handles this automatically, but manual Python work should use `python3` explicitly.
+
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
 
 ## Install method auto-detection

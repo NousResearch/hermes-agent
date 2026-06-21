@@ -178,6 +178,41 @@ class TestFormatMessageCodeBlocks:
         assert r"`\\\\server\\share`" in result
 
 
+@pytest.mark.asyncio
+async def test_legacy_send_keeps_chunk_indicators_outside_fenced_code_lines(adapter):
+    """Chunk markers must not corrupt Telegram MarkdownV2 code fences.
+
+    Telegram treats a closing fenced-code line with trailing text, e.g.
+    ````` (1/2)``, as malformed MarkdownV2. The bot then falls back to plain
+    text, which is the user-visible duplicate/malformed preview symptom.
+    """
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(
+        side_effect=[SimpleNamespace(message_id=i) for i in range(1, 20)]
+    )
+    adapter._bot.send_chat_action = AsyncMock()
+    object.__setattr__(adapter, "MAX_MESSAGE_LENGTH", 120)
+    adapter._rich_messages_enabled = False
+
+    content = (
+        "Intro before code block\n"
+        "```text\n"
+        + ("~/.hermes/skills/github/hermes-contribution-workflow/SKILL.md\n" * 8)
+        + "```\n"
+        "After."
+    )
+
+    result = await adapter.send("12345", content, metadata={"expect_edits": True})
+
+    assert result.success is True
+    sent_texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
+    assert len(sent_texts) > 1
+    for text in sent_texts:
+        for line in text.splitlines():
+            assert not re.match(r"^```\s+\\?\(\d+/\d+\\?\)$", line), text
+            assert not re.match(r"^```\s+\(\d+/\d+\)$", line), text
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================

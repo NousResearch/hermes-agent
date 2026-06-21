@@ -3587,11 +3587,13 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running|ready -> done`` and record ``result``.
+    """Transition to ``done`` from any active status and record ``result``.
 
-    Accepts a task that is merely ``ready`` too, so a manual CLI
-    completion (``hermes kanban complete <id>``) works without requiring
-    a claim/start/complete sequence.
+    When ``expected_run_id`` is None (manual completion via CLI or dashboard
+    drag-drop), accepts any status except ``done`` and ``archived``.  When a
+    specific run is expected, the row must be ``running`` or ``ready`` with a
+    matching ``current_run_id`` so a stale worker cannot complete a task that
+    was reclaimed.
 
     ``summary`` and ``metadata`` are stored on the closing run (if any)
     and surfaced to downstream children via :func:`build_worker_context`.
@@ -3646,6 +3648,10 @@ def complete_task(
 
     with write_txn(conn):
         if expected_run_id is None:
+            # Allow completing from any active status (drag-drop from the
+            # dashboard can land on "done" from triage/todo/scheduled/review
+            # — not just running/ready/blocked).  Already-done and archived
+            # rows are excluded to prevent double-completion.
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -3656,7 +3662,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status NOT IN ('done', 'archived')
                 """,
                 (result, now, task_id),
             )

@@ -849,7 +849,7 @@ def _format_edges(skill_name: str) -> str:
             (skill_name, skill_name),
         ).fetchall()
         if not rows:
-            return ""
+            return f"No relations defined for: {skill_name}"
         seen: set[tuple[str, str, str]] = set()
         parts = []
         for src, tgt, rel, props in rows:

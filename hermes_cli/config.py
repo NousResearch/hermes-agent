@@ -6668,45 +6668,66 @@ def set_config_value(key: str, value: str):
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
         'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
-    
+
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
-    
+
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
-    config_path = get_config_path()
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
-        except Exception:
-            user_config = {}
-    
-    # Handle nested keys (e.g., "tts.provider") including numeric list
-    # indices (e.g., "custom_providers.0.api_key").  Delegates to
-    # _set_nested which preserves list-typed nodes; before #17876 the
-    # inline navigation here silently overwrote lists with dicts.
+    # dumping all default values back to the file.
+    # BUG #42089: Acquire _CONFIG_LOCK so concurrent set_config_value
+    # calls (from threads or rapid CLI invocations) cannot race on the
+    # read-modify-write cycle.  Without the lock, two concurrent calls
+    # each read the same on-disk state, each modify a different key, and
+    # the second writer silently drops the first writer's change.
+    with _CONFIG_LOCK:
+        config_path = get_config_path()
+        path_key = str(config_path)
+        user_config = {}
+        if config_path.exists():
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            except Exception:
+                user_config = {}
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+        # Handle nested keys (e.g., "tts.provider") including numeric list
+        # indices (e.g., "custom_providers.0.api_key").  Delegates to
+        # _set_nested which preserves list-typed nodes; before #17876 the
+        # inline navigation here silently overwrote lists with dicts.
 
-    _set_nested(user_config, key, value)
-    
-    # Write only user config back (not the full merged defaults)
-    ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+        # Convert value to appropriate type
+        if value.lower() in {'true', 'yes', 'on'}:
+            value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            value = float(value)
+
+        _set_nested(user_config, key, value)
+
+        # Write only user config back (not the full merged defaults)
+        ensure_hermes_home()
+        from utils import atomic_yaml_write
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
+
+        # BUG #42089: Explicitly invalidate both caches after writing.
+        # The caches rely on stat() seeing a new mtime_ns from
+        # atomic_yaml_write's os.replace().  This normally works, but
+        # fails on filesystems with coarse mtime resolution (e.g. WSL
+        # /mnt/c/ via Plan 9, FAT32 mounts) or when two writes happen
+        # within the same quantization window.  Popping the caches here
+        # guarantees the next read_raw_config()/load_config() call picks
+        # up the freshly-written data.  save_config() (line 5286) also
+        # calls read_raw_config() under _CONFIG_LOCK, so clearing both
+        # caches prevents save_config from merging stale cached data
+        # back into the file on its next write.
+        _RAW_CONFIG_CACHE.pop(path_key, None)
+        _LOAD_CONFIG_CACHE.pop(path_key, None)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

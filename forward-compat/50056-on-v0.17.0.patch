@@ -1,0 +1,560 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index c82d762d5..c67d1bed7 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -77,7 +77,22 @@ import os
+ import re
+ import secrets
+ import shutil
+-import sqlite3
++# Use the same sqlite3 driver hermes_state uses (pysqlite3 when available,
++# stdlib otherwise). Keeps DatabaseError/OperationalError class identity
++# consistent across the two DBs so callers' `except sqlite3.X` / `pytest.raises`
++# work uniformly, and gives kanban_db the FTS5 trigram tokenizer (stdlib 3.26
++# on OL8 lacks it).
++import os as _os_kanban_sqlite_driver
++_sqlite_driver_pref = _os_kanban_sqlite_driver.environ.get("HERMES_SQLITE_DRIVER", "auto").strip().lower()
++if _sqlite_driver_pref in {"stdlib", "sqlite3"}:
++    import sqlite3
++else:
++    try:
++        import pysqlite3 as sqlite3  # type: ignore[no-redef]
++    except ImportError:
++        if _sqlite_driver_pref in {"pysqlite3", "modern"}:
++            raise
++        import sqlite3
+ import subprocess
+ import sys
+ import threading
+diff --git a/hermes_state.py b/hermes_state.py
+index 8847593d4..b37d5a6f8 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -16,13 +16,67 @@ Key design decisions:
+ 
+ import json
+ import logging
++import os
+ import random
+ import re
+-import sqlite3
+ import threading
+ import time
+ from pathlib import Path
+ 
++_sqlite_driver_pref = os.environ.get("HERMES_SQLITE_DRIVER", "auto").strip().lower()
++if _sqlite_driver_pref in {"stdlib", "sqlite3"}:
++    import sqlite3  # type: ignore[no-redef]
++    SQLITE_DRIVER = "stdlib"
++else:
++    try:
++        import pysqlite3 as sqlite3  # type: ignore[no-redef]
++        SQLITE_DRIVER = "pysqlite3"
++    except ImportError:
++        if _sqlite_driver_pref in {"pysqlite3", "modern"}:
++            raise
++        import sqlite3  # type: ignore[no-redef]
++        SQLITE_DRIVER = "stdlib"
++
++# Build a tuple of OperationalError classes covering BOTH the active sqlite3
++# driver AND stdlib sqlite3. Callers may pass connection objects from either
++# driver (e.g. tests with stdlib sqlite3.Connection mocks vs production
++# pysqlite3 connections). A single `except _OperationalErrors` would
++# miss the other driver's exceptions.
++_OperationalErrors: tuple = (sqlite3.OperationalError,)
++try:
++    import sqlite3 as _stdlib_sqlite3  # noqa: F401  - stdlib alias
++    if _stdlib_sqlite3.OperationalError is not sqlite3.OperationalError:
++        _OperationalErrors = (sqlite3.OperationalError, _stdlib_sqlite3.OperationalError)
++except ImportError:  # pragma: no cover - stdlib always available
++    pass
++
++
++def _row_factory_for(conn):
++    """Return the Row class matching ``conn``'s sqlite3 driver.
++
++    SessionDB may receive either a pysqlite3 Connection (production) or a
++    stdlib sqlite3.Connection (tests with custom factories). Setting
++    pysqlite3.Row on a stdlib connection (or vice-versa) corrupts cursor
++    fetch operations because each driver's Row class only accepts cursors
++    from the same driver. Walk the MRO so test-subclass connections (whose
++    own module is e.g. tests.test_hermes_state) still get the right Row
++    class from their actual sqlite3 driver base class.
++    """
++    for cls in type(conn).__mro__:
++        mod = getattr(cls, "__module__", "")
++        if mod.startswith("pysqlite3"):
++            try:
++                import pysqlite3 as _ps3
++                return _ps3.Row
++            except ImportError:
++                break
++        if mod == "sqlite3":
++            import sqlite3 as _stdlib_sqlite3
++            return _stdlib_sqlite3.Row
++    # Last-resort default: stdlib
++    import sqlite3 as _stdlib_sqlite3
++    return _stdlib_sqlite3.Row
++
+ from agent.memory_manager import sanitize_context
+ from hermes_constants import get_hermes_home
+ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+@@ -215,7 +269,7 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
+     """
+     try:
+         row = conn.execute("PRAGMA journal_mode").fetchone()
+-    except sqlite3.OperationalError:
++    except _OperationalErrors:
+         return None
+     if row is None:
+         return None
+@@ -259,13 +313,13 @@ def apply_wal_with_fallback(
+         current_mode = conn.execute("PRAGMA journal_mode").fetchone()
+         if current_mode and current_mode[0] == "wal":
+             return "wal"
+-    except sqlite3.OperationalError:
++    except _OperationalErrors:
+         pass
+ 
+     try:
+         conn.execute("PRAGMA journal_mode=WAL")
+         return "wal"
+-    except sqlite3.OperationalError as exc:
++    except _OperationalErrors as exc:
+         msg = str(exc).lower()
+         if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
+             # Unrelated OperationalError — don't silently swallow.
+@@ -704,7 +758,7 @@ class SessionDB:
+                     timeout=1.0,
+                     isolation_level=None,
+                 )
+-                self._conn.row_factory = sqlite3.Row
++                self._conn.row_factory = _row_factory_for(self._conn)
+                 return
+ 
+             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+@@ -722,7 +776,7 @@ class SessionDB:
+                     # transactions ourselves.
+                     isolation_level=None,
+                 )
+-                self._conn.row_factory = sqlite3.Row
++                self._conn.row_factory = _row_factory_for(self._conn)
+                 apply_wal_with_fallback(self._conn, db_label="state.db")
+                 self._conn.execute("PRAGMA foreign_keys=ON")
+                 self._init_schema()
+@@ -820,7 +874,7 @@ class SessionDB:
+             cursor.execute("CREATE VIRTUAL TABLE temp._hermes_fts5_probe USING fts5(x)")
+             cursor.execute("DROP TABLE temp._hermes_fts5_probe")
+             return True
+-        except sqlite3.OperationalError as exc:
++        except _OperationalErrors as exc:
+             if not self._is_fts5_unavailable_error(exc):
+                 raise
+             self._warn_fts5_unavailable(exc)
+@@ -831,7 +885,7 @@ class SessionDB:
+         for trigger in _FTS_TRIGGERS:
+             try:
+                 cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 pass
+ 
+     @staticmethod
+@@ -875,7 +929,7 @@ class SessionDB:
+         try:
+             cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
+             return True
+-        except sqlite3.OperationalError as exc:
++        except _OperationalErrors as exc:
+             if self._is_fts5_unavailable_error(exc):
+                 # Only disable FTS entirely when the whole module is missing.
+                 # A missing trigram tokenizer only affects trigram searches.
+@@ -903,7 +957,7 @@ class SessionDB:
+             # them to keep message writes working.
+             cursor.executescript(ddl)
+             return True
+-        except sqlite3.OperationalError as exc:
++        except _OperationalErrors as exc:
+             if not self._is_fts5_unavailable_error(exc):
+                 raise
+             # Only disable FTS entirely when the whole FTS5 module is missing.
+@@ -949,7 +1003,7 @@ class SessionDB:
+                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                     self._try_wal_checkpoint()
+                 return result
+-            except sqlite3.OperationalError as exc:
++            except _OperationalErrors as exc:
+                 err_msg = str(exc).lower()
+                 if "locked" in err_msg or "busy" in err_msg:
+                     last_err = exc
+@@ -1076,7 +1130,7 @@ class SessionDB:
+                 rows = cursor.execute(
+                     f'PRAGMA table_info("{table_name}")'
+                 ).fetchall()
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 continue  # Table doesn't exist yet (shouldn't happen after executescript)
+             live_cols = set()
+             for row in rows:
+@@ -1091,7 +1145,7 @@ class SessionDB:
+                         cursor.execute(
+                             f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
+                         )
+-                    except sqlite3.OperationalError as exc:
++                    except _OperationalErrors as exc:
+                         # Expected: "duplicate column name" from a race or
+                         # re-run.  Unexpected: "Cannot add a NOT NULL column
+                         # with default value NULL" from a schema mistake.
+@@ -1134,7 +1188,7 @@ class SessionDB:
+                 "ON messages(session_id, platform_message_id) "
+                 "WHERE platform_message_id IS NOT NULL"
+             )
+-        except sqlite3.OperationalError as exc:
++        except _OperationalErrors as exc:
+             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
+ 
+         # Deferred indexes that reference the reconciler-added ``active``
+@@ -1207,7 +1261,7 @@ class SessionDB:
+                     for _tbl in ("messages_fts", "messages_fts_trigram"):
+                         try:
+                             cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+-                        except sqlite3.OperationalError as exc:
++                        except _OperationalErrors as exc:
+                             if not self._is_fts5_unavailable_error(exc):
+                                 raise
+                             if self._is_trigram_unavailable_error(exc):
+@@ -1265,7 +1319,7 @@ class SessionDB:
+                     cursor.execute(
+                         "UPDATE messages SET active = 1 WHERE active IS NULL"
+                     )
+-                except sqlite3.OperationalError:
++                except _OperationalErrors:
+                     pass
+             if current_version < 16:
+                 # v16: tag delegate subagent rows so pickers stay clean after
+@@ -1291,7 +1345,7 @@ class SessionDB:
+                         "AND NOT EXISTS (SELECT 1 FROM sessions ch "
+                         "                WHERE ch.parent_session_id = sessions.id)"
+                     )
+-                except sqlite3.OperationalError:
++                except _OperationalErrors:
+                     pass
+             if current_version < SCHEMA_VERSION and fts_migrations_complete:
+                 cursor.execute(
+@@ -1305,7 +1359,7 @@ class SessionDB:
+                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+                 "ON sessions(title) WHERE title IS NOT NULL"
+             )
+-        except sqlite3.OperationalError:
++        except _OperationalErrors:
+             pass  # Index already exists
+ 
+         if fts5_available:
+@@ -3568,7 +3622,7 @@ class SessionDB:
+                 with self._lock:
+                     try:
+                         tri_cursor = self._conn.execute(tri_sql, tri_params)
+-                    except sqlite3.OperationalError:
++                    except _OperationalErrors:
+                         # Trigram query failed at runtime — fall through to LIKE.
+                         pass
+                     else:
+@@ -3625,7 +3679,7 @@ class SessionDB:
+             with self._lock:
+                 try:
+                     cursor = self._conn.execute(sql, params)
+-                except sqlite3.OperationalError:
++                except _OperationalErrors:
+                     # FTS5 query syntax error despite sanitization — return empty
+                     return []
+                 else:
+@@ -4425,7 +4479,7 @@ class SessionDB:
+                         "DELETE FROM telegram_dm_topic_bindings WHERE chat_id = ?",
+                         (str(chat_id),),
+                     )
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 # Tables don't exist yet — nothing to disable.
+                 return
+         self._execute_write(_do)
+@@ -4441,7 +4495,7 @@ class SessionDB:
+                     """,
+                     (str(chat_id), str(user_id)),
+                 ).fetchone()
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 return False
+         if row is None:
+             return False
+@@ -4464,7 +4518,7 @@ class SessionDB:
+                     """,
+                     (str(chat_id), str(thread_id)),
+                 ).fetchone()
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 return None
+         return dict(row) if row else None
+ 
+@@ -4485,7 +4539,7 @@ class SessionDB:
+                     "WHERE chat_id = ? ORDER BY updated_at DESC",
+                     (str(chat_id),),
+                 ).fetchall()
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 return []
+         return [dict(row) for row in rows]
+ 
+@@ -4509,7 +4563,7 @@ class SessionDB:
+                     """,
+                     (str(session_id),),
+                 ).fetchone()
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 return None
+         return dict(row) if row else None
+ 
+@@ -4595,7 +4649,7 @@ class SessionDB:
+                     """,
+                     (str(session_id),),
+                 ).fetchone()
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 return False
+         return row is not None
+ 
+@@ -4641,7 +4695,7 @@ class SessionDB:
+                     """,
+                     (str(user_id), int(limit)),
+                 ).fetchall()
+-            except sqlite3.OperationalError:
++            except _OperationalErrors:
+                 # telegram_dm_topic_bindings doesn't exist yet — no bindings
+                 # means every telegram session for this user is "unlinked".
+                 rows = self._conn.execute(
+@@ -4687,7 +4741,7 @@ class SessionDB:
+         try:
+             self._conn.execute(f"SELECT 1 FROM {name} LIMIT 0")
+             return True
+-        except sqlite3.OperationalError:
++        except _OperationalErrors:
+             return False
+ 
+     def optimize_fts(self) -> int:
+@@ -4723,7 +4777,7 @@ class SessionDB:
+                         f"INSERT INTO {tbl}({tbl}) VALUES('optimize')"
+                     )
+                     optimized += 1
+-                except sqlite3.OperationalError as exc:
++                except _OperationalErrors as exc:
+                     logger.warning(
+                         "FTS optimize failed for %s: %s", tbl, exc
+                     )
+diff --git a/tests/hermes_cli/test_kanban_db.py b/tests/hermes_cli/test_kanban_db.py
+index 1386b1ebd..8e2a50406 100644
+--- a/tests/hermes_cli/test_kanban_db.py
++++ b/tests/hermes_cli/test_kanban_db.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ import concurrent.futures
+ import os
+ import sqlite3
++import subprocess
+ import sys
+ import time
+ import types
+@@ -14,6 +15,14 @@ from pathlib import Path
+ import pytest
+ 
+ from hermes_cli import kanban_db as kb
++# Use hermes_state's sqlite3 alias (pysqlite3 when available) so test-side
++# raw connections match the driver kanban_db.connect() uses internally.
++# Stdlib sqlite3 on this OL8 host is 3.26.0 — older error-message format
++# from PRAGMA database_list on torn-extend ("database disk image is
++# malformed" instead of the manual "torn-extend ... page count mismatch"
++# from _check_file_length_invariant), causing regex-match test failures.
++import hermes_state as _hermes_state
++sqlite3 = _hermes_state.sqlite3
+ 
+ 
+ @pytest.fixture
+@@ -2823,7 +2832,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
+     file, where downgrading is safe because nobody else has WAL state
+     yet).
+     """
+-    import sqlite3 as _sqlite3
++    from hermes_state import sqlite3 as _sqlite3
+     from unittest.mock import patch as _patch
+ 
+     home = tmp_path / ".hermes"
+@@ -2935,7 +2944,7 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
+     'duplicate column name: consecutive_failures'.  Without the idempotency
+     guard that crashes the dispatcher on the first tick after every restart.
+     """
+-    import sqlite3
++    from hermes_state import sqlite3
+ 
+     conn = sqlite3.connect(":memory:")
+     conn.row_factory = sqlite3.Row
+@@ -2962,7 +2971,7 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
+ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home):
+     """Full _migrate_add_optional_columns must not raise when columns already
+     exist (issue #21708 race window — two connections migrate concurrently)."""
+-    import sqlite3
++    from hermes_state import sqlite3
+ 
+     # Schema already in fully-migrated state (all optional columns present).
+     conn = sqlite3.connect(":memory:")
+diff --git a/tests/test_hermes_state.py b/tests/test_hermes_state.py
+index 1d727132a..c18e17dd1 100644
+--- a/tests/test_hermes_state.py
++++ b/tests/test_hermes_state.py
+@@ -1,10 +1,18 @@
+ """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
+ 
+-import sqlite3
+ import time
+ import pytest
+ 
+ from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
++# Use the same sqlite3 driver hermes_state uses (pysqlite3 when available),
++# so test Connection subclasses + factory wrappers stay driver-consistent
++# with production code. Stdlib sqlite3 lacks the FTS5 trigram tokenizer that
++# SessionDB schema requires; injecting stdlib connections via the test's
++# factory wrapper would otherwise strip pysqlite3 capabilities and cause
++# spurious "no such tokenizer: trigram" failures even when production has
++# pysqlite3 installed.
++import hermes_state as _hermes_state
++sqlite3 = _hermes_state.sqlite3
+ 
+ 
+ class _NoFtsCursor(sqlite3.Cursor):
+@@ -2269,7 +2277,7 @@ class TestSchemaInit:
+         the old bot should not eagerly mutate the state DB for this feature.
+         """
+         old_db = tmp_path / "old.db"
+-        import sqlite3
++        from hermes_state import sqlite3
+ 
+         conn = sqlite3.connect(old_db)
+         conn.executescript(
+@@ -2336,7 +2344,7 @@ class TestSchemaInit:
+     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
+         """The /topic opt-in path owns the DB migration for Telegram topic mode."""
+         old_db = tmp_path / "old.db"
+-        import sqlite3
++        from hermes_state import sqlite3
+ 
+         conn = sqlite3.connect(old_db)
+         conn.executescript(
+@@ -2500,7 +2508,7 @@ class TestSchemaInit:
+ 
+     def test_migration_from_v2(self, tmp_path):
+         """Simulate a v2 database and verify migration adds title column."""
+-        import sqlite3
++        from hermes_state import sqlite3
+ 
+         db_path = tmp_path / "migrate_test.db"
+         conn = sqlite3.connect(str(db_path))
+@@ -2641,7 +2649,7 @@ class TestSchemaInit:
+         so the new v7 block was skipped and reasoning_content was never
+         created — causing 'no such column' on /continue.
+         """
+-        import sqlite3
++        from hermes_state import sqlite3
+ 
+         db_path = tmp_path / "gap_test.db"
+         conn = sqlite3.connect(str(db_path))
+@@ -3909,7 +3917,7 @@ class TestFTS5ToolCallMigration:
+         """Simulate an existing user: build a v10-shaped DB by hand, insert a
+         row with tool_calls, then open via SessionDB (which runs migrations).
+         After upgrade, the tool_calls token must be searchable."""
+-        import sqlite3
++        from hermes_state import sqlite3
+ 
+         db_path = tmp_path / "legacy.db"
+ 
+@@ -4010,7 +4018,7 @@ class TestApplyWalProbe:
+ 
+     def test_skips_set_pragma_when_already_wal(self, tmp_path):
+         """Already-WAL connection must not trigger the set-pragma."""
+-        import sqlite3
++        from hermes_state import sqlite3
+         from hermes_state import apply_wal_with_fallback
+ 
+         class _TracingConn(sqlite3.Connection):
+@@ -4044,7 +4052,7 @@ class TestApplyWalProbe:
+ 
+     def test_sets_wal_on_fresh_connection(self, tmp_path):
+         """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
+-        import sqlite3
++        from hermes_state import sqlite3
+         from hermes_state import apply_wal_with_fallback
+ 
+         class _TracingConn(sqlite3.Connection):
+@@ -4072,7 +4080,7 @@ class TestApplyWalProbe:
+         """20 threads calling connect() on the same DB must not see disk I/O error."""
+         import sys
+         import threading
+-        import sqlite3
++        from hermes_state import sqlite3
+         from hermes_state import apply_wal_with_fallback
+ 
+         db_path = tmp_path / "concurrent.db"
+@@ -4115,7 +4123,7 @@ class TestApplyWalProbe:
+ 
+     def test_fallback_to_delete_still_works(self, tmp_path):
+         """When set-pragma raises a WAL-incompat error, falls back to DELETE."""
+-        import sqlite3
++        from hermes_state import sqlite3
+         from hermes_state import apply_wal_with_fallback
+ 
+         class _IncompatConn(sqlite3.Connection):
+@@ -4142,7 +4150,7 @@ class TestApplyWalProbe:
+ 
+     def test_probe_failure_falls_through_to_set_pragma(self, tmp_path):
+         """When the read probe raises OperationalError, fall through to set-pragma."""
+-        import sqlite3
++        from hermes_state import sqlite3
+         from hermes_state import apply_wal_with_fallback
+ 
+         class _ProbeFails(sqlite3.Connection):
+@@ -4168,7 +4176,7 @@ class TestApplyWalProbe:
+ 
+     def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
+         """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
+-        import sqlite3
++        from hermes_state import sqlite3
+         import pytest
+         from hermes_state import apply_wal_with_fallback
+ 
+@@ -4195,7 +4203,7 @@ class TestApplyWalProbe:
+ 
+     def test_returns_wal_not_delete_from_probe(self, tmp_path):
+         """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
+-        import sqlite3
++        from hermes_state import sqlite3
+         from hermes_state import apply_wal_with_fallback
+ 
+         class _TracingConn(sqlite3.Connection):
+diff --git a/tests/test_hermes_state_wal_fallback.py b/tests/test_hermes_state_wal_fallback.py
+index 5678e3ff4..35e6c514d 100644
+--- a/tests/test_hermes_state_wal_fallback.py
++++ b/tests/test_hermes_state_wal_fallback.py
+@@ -13,12 +13,17 @@ See: https://www.sqlite.org/wal.html — "WAL does not work over a network
+ filesystem".
+ """
+ 
+-import sqlite3
+ from unittest.mock import patch
+ 
+ import pytest
+ 
+ import hermes_state
++# Use the same sqlite3 driver hermes_state uses (pysqlite3 when available), so
++# test Connection subclasses + factory wrappers stay driver-consistent with
++# production code. Stdlib sqlite3 lacks FTS5 trigram tokenizer required by
++# SessionDB schema; using stdlib here would cause spurious "no such tokenizer"
++# failures even though pysqlite3 is installed.
++sqlite3 = hermes_state.sqlite3
+ from hermes_state import (
+     SessionDB,
+     apply_wal_with_fallback,

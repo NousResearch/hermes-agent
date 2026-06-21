@@ -1,0 +1,281 @@
+diff --git a/tests/tools/test_mcp_keepalive_inflight_race.py b/tests/tools/test_mcp_keepalive_inflight_race.py
+new file mode 100644
+index 000000000..a535517ca
+--- /dev/null
++++ b/tests/tools/test_mcp_keepalive_inflight_race.py
+@@ -0,0 +1,122 @@
++"""Regression tests for the MCP keepalive / in-flight tool-call race.
++
++Background
++==========
++An MCP stdio session is a SINGLE JSON-RPC stream. The idle keepalive
++(``list_tools`` / ``send_ping``) could fire WHILE a normal ``call_tool`` was
++in flight, wedging the stream so the in-flight call timed out. That timeout
++triggered a false reconnect, and the SDK does not always fail the pending
++``call_tool`` when its streams close — so its ``run_coroutine_threadsafe``
++future never resolved and the calling agent thread polled to the full
++``tool_timeout`` (up to hours).
++
++The fix:
++  * the keepalive skips a cycle when a call is in flight (and otherwise runs
++    under the same ``_rpc_lock`` tool calls use, so the two can't overlap);
++  * a reconnect/shutdown teardown calls ``_fail_inflight_calls`` to cancel the
++    pending call tasks; and
++  * ``_call`` converts that deliberate cancellation into a clean, retryable
++    error so the agent recovers on the freshly rebuilt session.
++
++These tests exercise the in-flight bookkeeping and the teardown behavior
++directly (no live MCP server required).
++"""
++
++from __future__ import annotations
++
++import asyncio
++
++
++def test_new_server_starts_with_empty_inflight_state():
++    from tools.mcp_tool import MCPServerTask
++
++    server = MCPServerTask("init-test")
++    assert server._inflight_tasks == set()
++    assert server._reconnecting is False
++
++
++def test_fail_inflight_calls_is_noop_when_nothing_in_flight():
++    from tools.mcp_tool import MCPServerTask
++
++    server = MCPServerTask("noop-test")
++    # No in-flight tasks: must not flip the teardown flag (so a later genuine
++    # cancel isn't misread as a deliberate reconnect).
++    server._fail_inflight_calls("reconnect")
++    assert server._reconnecting is False
++
++
++def test_fail_inflight_calls_cancels_pending_and_flags_teardown():
++    from tools.mcp_tool import MCPServerTask
++
++    server = MCPServerTask("cancel-test")
++
++    async def drive():
++        async def _long():
++            await asyncio.sleep(3600)
++
++        task = asyncio.create_task(_long())
++        server._inflight_tasks.add(task)
++        await asyncio.sleep(0)  # let the task start
++
++        server._fail_inflight_calls("reconnect")
++        assert server._reconnecting is True
++
++        # The pending task must have been cancelled.
++        try:
++            await asyncio.wait_for(task, timeout=1.0)
++        except asyncio.CancelledError:
++            return "cancelled"
++        except asyncio.TimeoutError:
++            return "still_running"
++        return "completed"
++
++    assert asyncio.run(drive()) == "cancelled"
++
++
++def test_inflight_task_tracking_add_and_discard():
++    """The in-flight set tracks a running task and discards it on completion,
++    mirroring the add/finally-discard bookkeeping in ``_call``."""
++    from tools.mcp_tool import MCPServerTask
++
++    server = MCPServerTask("track-test")
++
++    async def drive():
++        async def _work():
++            task = asyncio.current_task()
++            server._inflight_tasks.add(task)
++            try:
++                assert task in server._inflight_tasks
++            finally:
++                server._inflight_tasks.discard(task)
++
++        await asyncio.create_task(_work())
++        return server._inflight_tasks
++
++    assert asyncio.run(drive()) == set()
++
++
++def test_reconnecting_flag_distinguishes_deliberate_teardown():
++    """``_reconnecting`` is the signal ``_call`` reads to convert a cancellation
++    into a retryable error vs. re-raising a genuine (external) cancel."""
++    from tools.mcp_tool import MCPServerTask
++
++    server = MCPServerTask("flag-test")
++    assert server._reconnecting is False
++    # Simulate what a teardown does when there IS an in-flight task.
++
++    async def drive():
++        async def _long():
++            await asyncio.sleep(3600)
++
++        task = asyncio.create_task(_long())
++        server._inflight_tasks.add(task)
++        await asyncio.sleep(0)
++        server._fail_inflight_calls("shutdown")
++        task.cancel()
++        try:
++            await task
++        except asyncio.CancelledError:
++            pass
++        return server._reconnecting
++
++    assert asyncio.run(drive()) is True
+diff --git a/tools/mcp_tool.py b/tools/mcp_tool.py
+index 69917ec6a..9d6829477 100644
+--- a/tools/mcp_tool.py
++++ b/tools/mcp_tool.py
+@@ -1410,6 +1410,7 @@ class MCPServerTask:
+         "_sampling", "_elicitation",
+         "_registered_tool_names", "_auth_type", "_refresh_lock",
+         "_rpc_lock", "_pending_refresh_tasks",
++        "_inflight_tasks", "_reconnecting",
+         "_pending_call_context",
+         "initialize_result", "_ping_unsupported",
+     )
+@@ -1443,6 +1444,16 @@ class MCPServerTask:
+         # transports for conservative per-server ordering.
+         self._rpc_lock = asyncio.Lock()
+         self._pending_refresh_tasks: set[asyncio.Task] = set()
++        # In-flight tool-call tasks (asyncio.Task running session.call_tool on
++        # the MCP loop). Tracked so a reconnect/shutdown can FAIL them cleanly
++        # instead of orphaning their run_coroutine_threadsafe futures. An
++        # orphaned future makes the calling agent thread poll to the full
++        # tool_timeout (hours). Also used to suppress the keepalive while a call
++        # is active (a busy server is provably alive). Single-loop access, so
++        # no lock needed. ``_reconnecting`` flags a deliberate teardown so the
++        # cancelled call surfaces a retryable error rather than a raw cancel.
++        self._inflight_tasks: set = set()
++        self._reconnecting: bool = False
+         # contextvars snapshot of the agent task that's currently in
+         # session.call_tool(). The MCP recv loop dispatches incoming
+         # elicitation/create requests on a SEPARATE asyncio task whose
+@@ -1696,6 +1707,12 @@ class MCPServerTask:
+             float(self._config.get("keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL)),
+         )
+ 
++        # Entering a healthy wait state means the session is established and
++        # ready, so clear any lingering "deliberate teardown" flag from a prior
++        # cycle. New in-flight calls on this fresh session must not be treated
++        # as reconnect casualties.
++        self._reconnecting = False
++
+         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
+         try:
+@@ -1717,8 +1734,25 @@ class MCPServerTask:
+                 # in that case fall back to the pre-ping ``list_tools`` probe
+                 # for the rest of this connection rather than reconnect-looping.
+                 if self.session:
++                    # CRITICAL: never keepalive while a tool call is in flight.
++                    # The stdio transport is a SINGLE JSON-RPC stream; a
++                    # concurrent list_tools/ping wedges the in-flight call,
++                    # which then times out -> false reconnect -> the call is
++                    # orphaned and the agent hangs to tool_timeout (root cause
++                    # of multi-thousand-second hangs). A server actively serving
++                    # a call is provably alive, so skip this cycle. We also wrap
++                    # the keepalive in the SAME _rpc_lock that tool calls use, so
++                    # a call starting concurrently can't overlap the keepalive.
++                    if self._rpc_lock.locked() or self._inflight_tasks:
++                        continue
+                     try:
+-                        await self._keepalive_probe()
++                        # Wrap the probe in the SAME _rpc_lock tool calls use so
++                        # a call starting concurrently can't overlap the
++                        # keepalive on the single JSON-RPC stream. _keepalive_probe
++                        # itself does not lock (it's also called from paths that
++                        # already hold the lock), so we acquire it here.
++                        async with self._rpc_lock:
++                            await self._keepalive_probe()
+                     except Exception as exc:
+                         logger.warning(
+                             "MCP server '%s' keepalive failed, "
+@@ -1737,10 +1771,37 @@ class MCPServerTask:
+                         pass
+ 
+         if self._shutdown_event.is_set():
++            self._fail_inflight_calls("shutdown")
+             return "shutdown"
+         self._reconnect_event.clear()
++        self._fail_inflight_calls("reconnect")
+         return "reconnect"
+ 
++    def _fail_inflight_calls(self, reason: str) -> None:
++        """Cancel in-flight tool-call tasks before the session is torn down.
++
++        The MCP session is about to close (reconnect/shutdown). Any pending
++        ``session.call_tool`` await would otherwise be orphaned: the SDK does
++        not always fail the call when its streams close, so the
++        ``run_coroutine_threadsafe`` future never resolves and the calling
++        agent thread polls to the full ``tool_timeout`` (up to hours). We flag
++        a deliberate teardown and cancel the tasks; ``_call`` converts that
++        cancellation into a clean, retryable error so the agent recovers and
++        the next call runs on the freshly rebuilt session (self-healing).
++        Runs on the MCP event loop, same as the call tasks, so no lock needed.
++        """
++        if not self._inflight_tasks:
++            return
++        self._reconnecting = True
++        pending = [t for t in self._inflight_tasks if not t.done()]
++        if pending:
++            logger.warning(
++                "MCP server '%s': failing %d in-flight call(s) due to %s",
++                self.name, len(pending), reason,
++            )
++        for task in pending:
++            task.cancel()
++
+     async def _run_stdio(self, config: dict):
+         """Run the server using stdio transport."""
+         if not _MCP_AVAILABLE:
+@@ -3150,16 +3211,35 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+             }, ensure_ascii=False)
+ 
+         async def _call():
+-            async with server._rpc_lock:
+-                # Snapshot the agent's context so an elicitation callback
+-                # triggered during this call (fired on the MCP recv loop
+-                # task, which doesn't inherit our contextvars) can replay
+-                # it and detect the gateway platform / session for routing.
+-                server._pending_call_context = contextvars.copy_context()
+-                try:
+-                    result = await server.session.call_tool(tool_name, arguments=args)
+-                finally:
+-                    server._pending_call_context = None
++            task = asyncio.current_task()
++            inflight = getattr(server, "_inflight_tasks", None)
++            if task is not None and inflight is not None:
++                inflight.add(task)
++            try:
++                async with server._rpc_lock:
++                    # Snapshot the agent's context so an elicitation callback
++                    # triggered during this call (fired on the MCP recv loop
++                    # task, which doesn't inherit our contextvars) can replay
++                    # it and detect the gateway platform / session for routing.
++                    server._pending_call_context = contextvars.copy_context()
++                    try:
++                        result = await server.session.call_tool(tool_name, arguments=args)
++                    finally:
++                        server._pending_call_context = None
++            except asyncio.CancelledError:
++                # A deliberate reconnect/shutdown teardown cancelled us
++                # (see _fail_inflight_calls). Convert to a clean, retryable
++                # error instead of propagating a raw cancellation, so the agent
++                # then retries on the freshly rebuilt session.
++                if getattr(server, "_reconnecting", False):
++                    raise RuntimeError(
++                        f"MCP server '{server_name}' reconnected during the "
++                        f"call (transport reset); retry the tool."
++                    ) from None
++                raise
++            finally:
++                if task is not None and inflight is not None:
++                    inflight.discard(task)
+             # MCP CallToolResult has .content (list of content blocks) and .isError
+             if result.isError:
+                 error_text = ""

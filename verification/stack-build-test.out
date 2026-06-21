@@ -1,0 +1,18 @@
+=== STEP 1: cherry-pick 40 PRs onto v0.17.0 ===
+cherry-pick: applied-clean=37  conflict-resolved=3  [#48069 #48101 #50056]
+
+=== STEP 2: build (byte-compile all .py on the stacked tree) ===
+  build: OK (0 compile errors)
+
+=== STEP 3: test slice on STACKED tree ===
+  (10/10 slice files present on stacked tree)
+  STACKED: 672 passed, 1 warning in 62.17s (0:01:02)
+
+=== STEP 4: SAME slice on ./src baseline (files that exist in src) ===
+  (7/10 slice files present in src; the rest are PR-added new files)
+  SRC BASELINE: 604 passed, 1 warning in 56.01s
+
+=== COMPARISON ===
+  stacked-on-v0.17.0 : 672 passed, 1 warning in 62.17s (0:01:02)
+  src-baseline       : 604 passed, 1 warning in 56.01s
+=== DONE ===

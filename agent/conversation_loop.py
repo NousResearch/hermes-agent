@@ -586,6 +586,58 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Autopilot: reset per-turn goal-chasing state (continuation count and
+    # no-progress tracking) once at the start of each user turn, before the loop.
+    try:
+        from agent import autopilot as _autopilot_mod
+        _autopilot_mod.reset_turn_state(agent)
+    except Exception:  # noqa: BLE001 autopilot must never block a normal turn
+        pass
+
+    def _autopilot_reenter(_final, _kind):
+        """Belt-and-suspenders re-entry for abnormal loop exits that bypass
+        Seam B (the no-tool-calls autopilot gate at the bottom of this loop).
+
+        Empty-response and partial-stream / prior-turn-content recovery all
+        ``break`` out of the no-tool-calls branch BEFORE Seam B runs, so a
+        transient bad turn would silently end an autopilot run mid-goal. This
+        re-uses the SAME gate (``reenter_after_abnormal_exit`` -> the Council
+        judge, with the no-progress + user-cap safeties) and, when it says keep
+        going, injects the synthetic directive and returns True so the caller
+        can ``continue`` instead of breaking. Returns False (deliver/stop as
+        before) when autopilot is inactive, interrupted, the goal is verifiably
+        complete, or anything errors.
+        """
+        nonlocal _turn_exit_reason
+        try:
+            from agent import autopilot as _ap
+            directive = _ap.reenter_after_abnormal_exit(
+                agent, messages, _final, original_user_message,
+                exit_kind=_kind, interrupted=interrupted,
+            )
+        except Exception as _exc:  # noqa: BLE001
+            logger.debug("autopilot reenter guard failed (%s): %s", _kind, _exc)
+            return False
+        if not directive:
+            return False
+        # Preserve a valid role sequence. The directive is a USER turn, so the
+        # transcript must not already end on a user turn (or a bare tool result),
+        # otherwise downstream message-sequence repair collapses the pair and the
+        # directive is lost. Record whatever the model produced this turn (real
+        # recovered text, or the "(empty)" sentinel) as the preceding assistant
+        # turn when one isn't already present.
+        _last = messages[-1] if messages else None
+        if not (isinstance(_last, dict) and _last.get("role") == "assistant"):
+            messages.append({"role": "assistant", "content": _final or "(empty)"})
+        messages.append({
+            "role": "user",
+            "content": directive,
+            "_autopilot_synthetic": True,
+        })
+        agent._session_messages = messages
+        _turn_exit_reason = f"autopilot_continue({_kind})"
+        return True
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
@@ -597,6 +649,18 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
+
+        # Autopilot: keep the iteration budget ahead of usage so a long
+        # goal-chasing run is never silently terminated by budget exhaustion
+        # (which exits the loop BEFORE the no-tool-calls branch where the
+        # autopilot continuation gate lives). The goal gate / no-progress
+        # detector / optional user cap remain the real terminators. No-op when
+        # autopilot is inactive.
+        try:
+            from agent import autopilot as _autopilot_mod
+            _autopilot_mod.keep_budget_ahead(agent)
+        except Exception:  # noqa: BLE001
+            pass
         
         api_call_count += 1
         agent._api_call_count = api_call_count
@@ -4176,6 +4240,8 @@ def run_conversation(
                         )
                         final_response = _recovered
                         agent._response_was_previewed = True
+                        if _autopilot_reenter(final_response, "partial_stream_recovery"):
+                            continue
                         break
 
                     # If the previous turn already delivered real content alongside
@@ -4202,6 +4268,8 @@ def run_conversation(
                         # fallback text as the final response and break.
                         final_response = agent._strip_think_blocks(fallback).strip()
                         agent._response_was_previewed = True
+                        if _autopilot_reenter(final_response, "fallback_prior_turn_content"):
+                            continue
                         break
 
                     # ── Post-tool-call empty response nudge ───────────
@@ -4411,6 +4479,8 @@ def run_conversation(
                         )
 
                     final_response = "(empty)"
+                    if _autopilot_reenter(final_response, "empty_response"):
+                        continue
                     break
                 
                 # Reset retry counter/signature on successful content
@@ -4473,7 +4543,31 @@ def run_conversation(
                     messages.pop()
 
                 messages.append(final_msg)
-                
+
+                # ── Autopilot: engine-enforced goal-chasing ──────────────
+                # Before delivering, ask the independent judge (Hermes Council)
+                # whether the GOAL is verifiably complete. If not, inject a
+                # synthetic directive and keep working instead of stopping.
+                # Termination is governed by the goal quality-gate, not a turn
+                # count. Fails open (delivers) on any error.
+                try:
+                    from agent import autopilot as _autopilot_mod
+                    if _autopilot_mod.is_autopilot_active(agent):
+                        _ap_directive = _autopilot_mod.maybe_continue(
+                            agent, messages, final_response, original_user_message
+                        )
+                        if _ap_directive:
+                            messages.append({
+                                "role": "user",
+                                "content": _ap_directive,
+                                "_autopilot_synthetic": True,
+                            })
+                            agent._session_messages = messages
+                            _turn_exit_reason = "autopilot_continue"
+                            continue
+                except Exception as _ap_exc:  # noqa: BLE001
+                    logger.debug("autopilot continuation check failed: %s", _ap_exc)
+
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

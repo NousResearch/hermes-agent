@@ -1982,6 +1982,20 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+    # Autopilot: engine-enforced goal-chasing (agent/autopilot/). When enabled,
+    # the agent keeps working until an independent Hermes Council pass confirms
+    # the goal is verifiably complete, and clarify questions are auto-answered
+    # with the most-recommended choice. Distinct from "goals" above: autopilot is
+    # engine-level (works in CLI, gateway, cron, delegation) and Council-judged;
+    # "goals" is the CLI standing-goal loop with a lightweight auxiliary judge.
+    "autopilot": {
+        "enabled": False,          # same effect as --autopilot / HERMES_AUTOPILOT=1
+        "max_continuations": 0,    # 0 = unlimited; the goal gate governs termination
+        "no_progress_k": 3,        # stop after this many continuations with no progress
+        "council_model": "",       # "" = use the main model via the Council hermes lane
+        "verify_on_complete": "low_confidence",  # low_confidence | always
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.

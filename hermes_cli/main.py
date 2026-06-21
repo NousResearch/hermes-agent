@@ -2256,6 +2256,14 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
+    # --autopilot: inject system-prompt rules telling the model NEVER to ask
+    # the user clarifying questions. See agent/prompt_builder.py
+    # AUTOPILOT_GUIDANCE. Implies --yolo for unattended ergonomics (no point
+    # bypassing the model's questions if the bash sandbox still prompts).
+    if getattr(args, "autopilot", False):
+        os.environ["HERMES_AUTOPILOT"] = "1"
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
     # --safe-mode: troubleshooting mode that disables ALL customizations.
     # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
     # pristine environment to isolate whether a problem comes from the user's
@@ -12590,6 +12598,16 @@ def main():
     # list, gateway status, mcp add, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
+
+    # Universal --autopilot / --yolo env wiring. The `chat` subcommand sets these
+    # in cmd_chat(), but the top-level -z/--oneshot path (and any other non-chat
+    # entry) bypasses it. Without this, `hermes -z "..." --autopilot` would not
+    # activate the autopilot engine. Idempotent; safe to set again in cmd_chat.
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+    if getattr(args, "autopilot", False):
+        os.environ["HERMES_AUTOPILOT"] = "1"
+        os.environ["HERMES_YOLO_MODE"] = "1"
 
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.

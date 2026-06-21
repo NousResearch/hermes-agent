@@ -276,6 +276,11 @@ def init_agent(
 
     agent.model = model
     agent.max_iterations = max_iterations
+    # Autopilot (engine-enforced goal-chasing): this attribute also gates the
+    # AUTOPILOT_GUIDANCE system-prompt block. The --autopilot CLI flag and the
+    # /autopilot session toggle both flow through HERMES_AUTOPILOT; agent/autopilot
+    # reads the live state via is_autopilot_active().
+    agent.autopilot_mode = os.environ.get("HERMES_AUTOPILOT", "").strip().lower() in ("1", "true", "yes", "on")
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)

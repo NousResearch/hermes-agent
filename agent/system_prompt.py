@@ -41,6 +41,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    AUTOPILOT_GUIDANCE,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -254,6 +255,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+
+    # AUTOPILOT: injected when the agent is run unattended. The model is
+    # told to NEVER ask the user clarifying / confirmation questions and to
+    # proceed with documented best-judgment assumptions. Triggered by:
+    #   * env: HERMES_AUTOPILOT=1 / true / yes / on
+    #   * agent attr: agent.autopilot_mode (set by --autopilot flag or
+    #     /autopilot toggle)
+    #   * agent attr: agent.kanban_worker (kanban workers always autopilot)
+    # Pairs with /yolo (which only bypasses dangerous-command approvals).
+    import os as _os
+    _autopilot = (
+        getattr(agent, "autopilot_mode", False)
+        or getattr(agent, "_kanban_worker_guidance", None) is not None
+        or _os.environ.get("HERMES_AUTOPILOT", "").strip().lower() in ("1", "true", "yes", "on")
+    )
+    if _autopilot:
+        stable_parts.append(AUTOPILOT_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:

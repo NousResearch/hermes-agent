@@ -2682,6 +2682,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,
+        "autopilot": bool(getattr(agent, "autopilot_mode", False)),
         "tools": {},
         "skills": {},
         "cwd": cwd,
@@ -3542,6 +3543,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     finally:
         _clear_session_context(tokens)
     session["agent"] = new_agent
+    _apply_autopilot_to_agent(session, new_agent)
     session["config_model_seen"] = _config_model_target()
     session["attached_images"] = []
     session["edit_snapshots"] = {}
@@ -9748,6 +9750,72 @@ def _(rid, params: dict) -> dict:
 # ── Methods: slash.exec ──────────────────────────────────────────────
 
 
+def _kick_autopilot_turn(sid: str, session: dict) -> bool:
+    """Start a resume turn when /autopilot is enabled on an idle TUI session.
+
+    Autopilot is reactive (the engine engages at the end of a running turn), so
+    flipping it on while idle would otherwise do nothing. This injects a resume
+    turn using the same autonomous-turn mechanism as the process-notification
+    poller. No-op when there's no agent, nothing to resume, or a turn is already
+    running. Returns True if a turn was started.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return False
+    goal = (session.get("autopilot_goal") or "").strip()
+    history = session.get("history") or []
+    # Fresh session with no history: only start if an autopilot goal was set
+    # (e.g. `/autopilot goal <text>`): start ON the goal. With neither history
+    # nor a goal there is nothing to resume.
+    if not history and not goal:
+        return False
+    with session["history_lock"]:
+        if session.get("running") or isinstance(session.get("inflight_turn"), dict):
+            return False
+        session["running"] = True
+    if not history and goal:
+        # Cold start from `/autopilot goal <text>`: drive the goal itself as the
+        # opening task (parity with `/goal <text>`), instead of a generic resume
+        # nudge that has no prior work to build on.
+        kick = goal
+    else:
+        target = f" toward this goal: {goal}" if goal else ""
+        kick = (
+            f"[Autopilot] Resume and keep working{target} until it is verifiably "
+            "complete. Take the next concrete action now. Do not stop, "
+            "summarize-and-wait, or ask the user; make the most defensible decision "
+            "from context and act on it."
+        )
+    rid = f"__autopilot__{int(time.time() * 1000)}"
+    try:
+        _emit("message.start", sid)
+        _run_prompt_submit(rid, sid, session, kick)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        with session["history_lock"]:
+            session["running"] = False
+        print(f"[tui_gateway] autopilot kick failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _apply_autopilot_to_agent(session: dict, agent) -> None:
+    """Apply the session's autopilot state to a (re)built live agent.
+
+    Autopilot state lives on the session dict so it survives agent rebuilds
+    (e.g. model switch). The engine reads ``agent.autopilot_mode`` /
+    ``agent._autopilot_goal`` via ``is_autopilot_active`` / ``resolve_goal``.
+    """
+    if agent is None:
+        return
+    try:
+        agent.autopilot_mode = bool(session.get("autopilot", False))
+        # Assign unconditionally so a cleared goal ("") also propagates to the
+        # live agent (and to a rebuilt agent after a model switch).
+        agent._autopilot_goal = session.get("autopilot_goal", "") or ""
+    except Exception:
+        pass
+
+
 def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
@@ -9791,6 +9859,49 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
             _emit("session.info", sid, _session_info(agent, session))
+        elif name == "autopilot" and agent:
+            # Autopilot is engine-enforced goal-chasing read live from
+            # ``agent.autopilot_mode`` by agent/autopilot. The /autopilot slash
+            # runs in the persistent _SlashWorker subprocess, so its os.environ /
+            # self.agent mutations never reach this live gateway agent, we must
+            # mirror the toggle here (same reason /fast is mirrored). State is
+            # held on the session dict so it survives agent rebuilds (model
+            # switch) via _apply_autopilot_to_agent.
+            #
+            # Parser parity with the classic CLI (_toggle_autopilot): the goal is
+            # set ONLY via the explicit ``goal`` subcommand. A bare positional is
+            # NOT a goal (that overload made ``/autopilot off now`` enable with
+            # goal "off now"). Unknown args leave state unchanged.
+            toks = command.lstrip("/").split(None, 2)
+            sub = toks[1].strip().lower() if len(toks) > 1 else ""
+            rest = toks[2].strip() if len(toks) > 2 else ""
+            was_on = bool(session.get("autopilot", False))
+            if sub in {"status", "?"}:
+                pass  # query only, no state change
+            elif sub == "clear":
+                session["autopilot_goal"] = ""
+            elif sub == "goal":
+                if rest and rest.lower() != "clear":
+                    session["autopilot_goal"] = rest
+                    session["autopilot"] = True
+                elif rest.lower() == "clear":
+                    session["autopilot_goal"] = ""
+                # bare `/autopilot goal` → query only, no change
+            elif sub in {"on", "enable", "1", "true", "yes"}:
+                session["autopilot"] = True
+            elif sub in {"off", "disable", "0", "false", "no"}:
+                session["autopilot"] = False
+            elif sub == "":
+                session["autopilot"] = not was_on
+            else:
+                pass  # unknown argument: leave state unchanged
+            _apply_autopilot_to_agent(session, agent)
+            _emit("session.info", sid, _session_info(agent, session))
+            # Enable-kick: if autopilot just turned ON and the session is idle
+            # with history, start a resume turn so it actually drives (parity
+            # with the classic CLI _maybe_kick_autopilot).
+            if session.get("autopilot") and not was_on:
+                _kick_autopilot_turn(sid, session)
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
         elif name == "stop":

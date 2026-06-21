@@ -3663,6 +3663,27 @@ class SessionDB:
             return None
         return row["value"] if isinstance(row, sqlite3.Row) else row[0]
 
+    def list_meta_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        """List (key, value) pairs from state_meta whose key starts with ``prefix``.
+
+        Read-only helper for the API server's ``GET /v1/goals`` surface (Jean-Billie managed
+        background missions read ``goal:%`` here). LIKE metacharacters in ``prefix`` are escaped so a
+        fixed caller prefix (e.g. ``"goal:"``) is matched literally.
+        """
+        pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\' ORDER BY key",
+                (pattern,),
+            ).fetchall()
+        out: list[tuple[str, str]] = []
+        for row in rows:
+            if isinstance(row, sqlite3.Row):
+                out.append((row["key"], row["value"]))
+            else:
+                out.append((row[0], row[1]))
+        return out
+
     def set_meta(self, key: str, value: str) -> None:
         """Write a value to the state_meta key/value store."""
         def _do(conn):

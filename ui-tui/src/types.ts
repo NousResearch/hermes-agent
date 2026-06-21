@@ -148,6 +148,7 @@ export interface McpServerStatus {
 }
 
 export interface SessionInfo {
+  autopilot?: boolean
   cwd?: string
   fast?: boolean
   lazy?: boolean
@@ -164,6 +165,7 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+  yolo?: boolean
 }
 
 export interface Usage {

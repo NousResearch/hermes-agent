@@ -151,6 +151,23 @@ body {
   display: none !important;
 }
 
+/* Page filter chips (e.g. Skills' ~20 category chips) wrap into a dense wall on a
+   phone. Make the row a single horizontal-scroll strip — one swipeable line of
+   tappable chips instead of a cramped block. */
+[data-page-filters] {
+  flex-wrap: nowrap !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+[data-page-filters]::-webkit-scrollbar {
+  display: none;
+}
+[data-page-filters] > * {
+  flex: 0 0 auto;
+}
+
 /*
  * Overlay screens (Settings / Skills / Profiles …) — native mobile master-detail.
  * The desktop two-pane split would cram both panes on a phone, so instead:

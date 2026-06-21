@@ -133,7 +133,7 @@ gateway:
     no_resume:             "재개할 목표가 없습니다."
     resumed:               "▶ 목표 재개: {goal}\n메시지를 보내 계속하거나 기다려 주세요 — 다음 차례에 다음 단계를 진행하겠습니다."
     invalid:               "잘못된 목표: {error}"
-    set:                   "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ 목표 설정됨: {goal}\n목표가 완료되거나, 일시정지/삭제하거나, {budget}회 안전 한도에 도달할 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes 명령**\n"

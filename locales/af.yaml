@@ -133,7 +133,7 @@ gateway:
     no_resume:             "Geen doelwit om voort te sit nie."
     resumed:               "▶ Doelwit hervat: {goal}\nStuur enige boodskap om voort te gaan, of wag — ek sal die volgende stap met die volgende beurt neem."
     invalid:               "Ongeldige doelwit: {error}"
-    set:                   "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Doelwit gestel: {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die {budget}-beurt-veiligheidsperk bereik word.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes-opdragte**\n"

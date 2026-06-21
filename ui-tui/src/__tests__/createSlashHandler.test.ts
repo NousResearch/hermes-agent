@@ -705,7 +705,7 @@ describe('createSlashHandler', () => {
             if (method === 'slash.exec') {
               return Promise.resolve({
                 message: 'complete all the steps and provide a final report',
-                notice: '⊙ Goal set (20-turn budget): complete all the steps and provide a final report',
+                notice: '⊙ Goal set: complete all the steps and provide a final report\nI\'ll keep working until the goal is done, you pause/clear it, or the 20-turn safety cap is reached.',
                 type: 'send'
               })
             }
@@ -722,7 +722,7 @@ describe('createSlashHandler', () => {
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        '⊙ Goal set (20-turn budget): complete all the steps and provide a final report'
+        '⊙ Goal set: complete all the steps and provide a final report\nI\'ll keep working until the goal is done, you pause/clear it, or the 20-turn safety cap is reached.'
       )
     })
     expect(ctx.transcript.send).toHaveBeenCalledWith('complete all the steps and provide a final report')

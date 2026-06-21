@@ -133,7 +133,7 @@ gateway:
     no_resume:             "Kein Ziel zum Fortsetzen."
     resumed:               "▶ Ziel fortgesetzt: {goal}\nSenden Sie eine Nachricht zum Fortfahren oder warten Sie — ich übernehme den nächsten Schritt im nächsten Zug."
     invalid:               "Ungültiges Ziel: {error}"
-    set:                   "⊙ Ziel gesetzt ({budget}-Zug-Budget): {goal}\nIch arbeite weiter, bis das Ziel erreicht ist, Sie es pausieren/löschen oder das Budget aufgebraucht ist.\nSteuerung: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Ziel gesetzt: {goal}\nIch arbeite weiter, bis das Ziel erreicht ist, Sie es pausieren/löschen oder die Sicherheitsgrenze von {budget} Zügen erreicht ist.\nSteuerung: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes-Befehle**\n"

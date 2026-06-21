@@ -133,7 +133,7 @@ gateway:
     no_resume:             "Aucun objectif à reprendre."
     resumed:               "▶ Objectif repris : {goal}\nEnvoyez un message pour continuer, ou attendez — je passerai à l'étape suivante au prochain tour."
     invalid:               "Objectif invalide : {error}"
-    set:                   "⊙ Objectif défini (budget de {budget} tours) : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que le budget soit épuisé.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Objectif défini : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que la limite de sécurité de {budget} tours soit atteinte.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Commandes Hermes**\n"

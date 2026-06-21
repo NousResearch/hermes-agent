@@ -8890,8 +8890,9 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
         notice = (
-            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            f"⊙ Goal set: {state.goal}\n"
+            f"I'll keep working until the goal is done, you pause/clear it, or the "
+            f"{state.max_turns}-turn safety cap is reached.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
         # Send the goal text as the kickoff prompt. The TUI client sees

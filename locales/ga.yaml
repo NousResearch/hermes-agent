@@ -137,7 +137,7 @@ gateway:
     no_resume:             "Níl aon sprioc le hatosú."
     resumed:               "▶ Sprioc atosaithe: {goal}\nSeol teachtaireacht ar bith chun leanúint, nó fan — déanfaidh mé an chéad chéim eile sa chéad seal eile."
     invalid:               "Sprioc neamhbhailí: {error}"
-    set:                   "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Sprioc socraithe: {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go mbainfear an teorainn sábháilteachta {budget} seal amach.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Orduithe Hermes**\n"

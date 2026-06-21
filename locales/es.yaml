@@ -133,7 +133,7 @@ gateway:
     no_resume:             "No hay objetivo para reanudar."
     resumed:               "▶ Objetivo reanudado: {goal}\nEnvía cualquier mensaje para continuar, o espera — daré el siguiente paso en el próximo turno."
     invalid:               "Objetivo no válido: {error}"
-    set:                   "⊙ Objetivo establecido (presupuesto de {budget} turnos): {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se agote el presupuesto.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Objetivo establecido: {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se alcance el límite de seguridad de {budget} turnos.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Comandos de Hermes**\n"

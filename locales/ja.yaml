@@ -133,7 +133,7 @@ gateway:
     no_resume:             "再開する目標がありません。"
     resumed:               "▶ 目標を再開しました: {goal}\nメッセージを送って続行するか、お待ちください — 次のターンで続きを進めます。"
     invalid:               "無効な目標: {error}"
-    set:                   "⊙ 目標を設定しました ({budget} ターンの予算): {goal}\n目標が完了するか、一時停止/解除されるか、予算が尽きるまで作業を続けます。\nコントロール: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ 目標を設定しました: {goal}\n目標が完了するか、一時停止/解除されるか、{budget} ターンの安全上限に達するまで作業を続けます。\nコントロール: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes コマンド**\n"

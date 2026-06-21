@@ -133,7 +133,7 @@ gateway:
     no_resume:             "没有可恢复的目标。"
     resumed:               "▶ 目标已恢复：{goal}\n发送任意消息继续，或等待 — 我会在下一轮继续推进。"
     invalid:               "无效目标：{error}"
-    set:                   "⊙ 目标已设置（{budget} 轮预算）：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ 目标已设置：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或达到 {budget} 轮安全上限。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes 命令**\n"

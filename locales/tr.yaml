@@ -133,7 +133,7 @@ gateway:
     no_resume:             "Devam ettirilecek hedef yok."
     resumed:               "▶ Hedef devam ettirildi: {goal}\nDevam etmek için herhangi bir mesaj gönderin veya bekleyin — bir sonraki turda adımı atacağım."
     invalid:               "Geçersiz hedef: {error}"
-    set:                   "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Hedef ayarlandı: {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya {budget} turluk güvenlik sınırına ulaşılana kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes Komutları**\n"

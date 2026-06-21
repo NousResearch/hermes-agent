@@ -148,7 +148,7 @@ gateway:
     no_resume:             "No goal to resume."
     resumed:               "▶ Goal resumed: {goal}\nSend any message to continue, or wait — I'll take the next step on the next turn."
     invalid:               "Invalid goal: {error}"
-    set:                   "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+    set:                   "⊙ Goal set: {goal}\nI'll keep working until the goal is done, you pause/clear it, or the {budget}-turn safety cap is reached.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes Commands**\n"

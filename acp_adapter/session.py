@@ -461,10 +461,31 @@ class SessionManager:
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # Replace stored messages with current history atomically so a
-            # mid-rewrite failure rolls back and the previously persisted
-            # conversation is preserved (salvaged from #13675).
-            db.replace_messages(state.session_id, state.history)
+            # When the agent owns persistence to this same SessionDB it has
+            # already flushed the live transcript incrementally during
+            # run_conversation (append_message), and it preserves pre-compaction
+            # turns non-destructively via archive_and_compact() — keeping them on
+            # disk as searchable active=0/compacted=1 rows. Calling
+            # replace_messages() here would then be a redundant double-write that
+            # DELETEs exactly those archived rows (and, after a compression-driven
+            # id rotation where agent.session_id no longer equals
+            # state.session_id, clobbers the ended parent transcript) — silent
+            # data loss for any ACP conversation long enough to compress.
+            #
+            # Only fall back to the destructive atomic replace when the agent is
+            # NOT persisting itself to this DB (e.g. a test agent factory, or a
+            # fresh create/fork whose copied history the agent has not flushed
+            # yet). That path still rolls back on a mid-rewrite failure so the
+            # previously persisted conversation survives (salvaged from #13675).
+            agent = state.agent
+            agent_db = getattr(agent, "_session_db", None)
+            agent_owns_persistence = (
+                agent_db is not None
+                and agent_db is db
+                and bool(getattr(agent, "_session_db_created", False))
+            )
+            if not agent_owns_persistence:
+                db.replace_messages(state.session_id, state.history)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 

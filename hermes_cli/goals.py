@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Constants & defaults
 # ──────────────────────────────────────────────────────────────────────
 
-DEFAULT_MAX_TURNS = 20
+DEFAULT_MAX_TURNS = 400
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
@@ -66,8 +66,13 @@ JUDGE_SYSTEM_PROMPT = (
     "A goal is DONE only when:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
     "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
+    "- The response asks for specific user input that is genuinely required "
+    "and states no further autonomous step is possible.\n\n"
+    "A goal is NOT done when the response merely claims the task is "
+    "impossible, blocked by resource limits, killed by host policy, or needs "
+    "a different machine. Treat those unsupported blocker claims as "
+    "CONTINUE, especially when the goal tells the agent to solve blockers "
+    "itself.\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
     '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'

@@ -471,6 +471,7 @@ if _config_path.exists():
                 "backend": "TERMINAL_ENV",
                 "cwd": "TERMINAL_CWD",
                 "timeout": "TERMINAL_TIMEOUT",
+                "max_foreground_timeout": "TERMINAL_MAX_FOREGROUND_TIMEOUT",
                 "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
                 "docker_image": "TERMINAL_DOCKER_IMAGE",
                 "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
@@ -484,6 +485,7 @@ if _config_path.exists():
                 "ssh_key": "TERMINAL_SSH_KEY",
                 "container_cpu": "TERMINAL_CONTAINER_CPU",
                 "container_memory": "TERMINAL_CONTAINER_MEMORY",
+                "container_memory_swap": "TERMINAL_CONTAINER_MEMORY_SWAP",
                 "container_disk": "TERMINAL_CONTAINER_DISK",
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
@@ -2537,6 +2539,17 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
+        # quarantined-install: read admin reason from state file (set BEFORE
+        # `systemctl --user restart hermes-gateway` via:
+        #   echo "<reason>" > /home/hermes/.hermes/.restart-reason
+        # restart-notify.sh deletes the file on the post-start hook.
+        def _load_restart_reason_qi():
+            try:
+                with open("/home/hermes/.hermes/.restart-reason") as _rf:
+                    return _rf.read().strip()[:200]
+            except Exception:
+                return ""
+        _reason_qi = _load_restart_reason_qi()
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
             "Your current task will be interrupted. "
@@ -2544,7 +2557,10 @@ class GatewayRunner:
             if self._restart_requested
             else "Your current task will be interrupted."
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        if _reason_qi:
+            msg = f"⚠️ Gateway {action} — Reason: {_reason_qi}. {hint}"
+        else:
+            msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -4858,6 +4874,314 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    def _route_announcement_enabled(self) -> bool:
+        return (os.getenv("HERMES_ROUTE_ANNOUNCE", "true") or "").lower() in ("1", "true", "yes")
+
+    def _chat_route_budget_mode_for_source(self, source) -> str:
+        user_id = str(getattr(source, "user_id", "") or "").strip()
+        if not user_id or user_id.startswith("cron:"):
+            return "paid"
+        try:
+            cap = float(os.getenv("CHAT_USER_CAP_USD", "0.10"))
+        except (TypeError, ValueError):
+            cap = 0.10
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        try:
+            override_path = Path(os.getenv("BUDGET_OVERRIDE_FILE", "/home/hermes/budget-override.json"))
+            if override_path.exists():
+                override = json.loads(override_path.read_text())
+                if override.get("date") == today:
+                    cap *= float(override.get("multiplier", 1.0))
+        except Exception:
+            logger.debug("Failed to read budget override for route announcement", exc_info=True)
+        try:
+            state_path = Path(os.getenv("DISCORD_LIMITS_STATE_FILE", "/home/hermes/discord-limits/state.json"))
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+            bucket = state.get(today, {}) if isinstance(state, dict) else {}
+            spend = float((bucket.get("user_spend") or {}).get(user_id, 0.0))
+        except Exception:
+            logger.debug("Failed to read spend state for route announcement", exc_info=True)
+            spend = 0.0
+        return "free" if spend >= cap else "paid"
+
+    def _format_chat_route_announcement_preview(self, budget_mode: str) -> Optional[str]:
+        router_dir = str(Path(os.getenv("OPENROUTER_ROUTER_DIR", "/home/hermes/openrouter-router")))
+        if router_dir not in sys.path:
+            sys.path.insert(0, router_dir)
+        try:
+            import importlib
+            free_picker = importlib.import_module("free_picker")
+            route = free_picker.get_chat_route_preview(budget_mode)
+            return free_picker.format_chat_route_announcement(route)
+        except Exception:
+            logger.debug("Failed to format chat route announcement", exc_info=True)
+            return None
+
+    async def _send_chat_route_announcement_if_needed(
+        self,
+        source,
+        session_key: str,
+        is_new_session: bool,
+        context_token_line: Optional[str] = None,
+    ) -> None:
+        if not is_new_session or not self._route_announcement_enabled():
+            return
+        if source.platform != Platform.DISCORD:
+            return
+        sent = getattr(self, "_chat_route_announcement_sent", None)
+        if sent is None:
+            sent = set()
+            self._chat_route_announcement_sent = sent
+        if session_key in sent:
+            return
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        budget_mode = self._chat_route_budget_mode_for_source(source)
+        content = self._format_chat_route_announcement_preview(budget_mode)
+        if not content:
+            return
+        if context_token_line:
+            content = f"{content}\n{context_token_line}"
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+        try:
+            result = await adapter.send(source.chat_id, content, metadata=metadata)
+        except Exception:
+            logger.debug("Failed to send chat route announcement", exc_info=True)
+            return
+        if getattr(result, "success", True):
+            sent.add(session_key)
+            logger.info(
+                "sent chat route announcement: session=%s mode=%s thread=%s",
+                session_key, budget_mode, getattr(source, "thread_id", None),
+            )
+
+    def _load_chat_context_module(self):
+        cached = getattr(self, "_chat_context_module_cache", None)
+        if cached is not None:
+            return cached
+        server_path = Path(os.getenv("HERMES_CHAT_CONTEXT_HELPER", "/home/hermes/chat-mcp/startup_context.py"))
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_hermes_chat_mcp_context", str(server_path))
+            if spec is None or spec.loader is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self._chat_context_module_cache = module
+            return module
+        except Exception:
+            logger.debug("Failed to load chat context helper from %s", server_path, exc_info=True)
+            return None
+
+    def _discord_context_channel_id(self, event, source) -> str:
+        raw_channel = getattr(getattr(event, "raw_message", None), "channel", None)
+        raw_channel_id = str(getattr(raw_channel, "id", "") or "")
+        source_chat_id = str(getattr(source, "chat_id", "") or "")
+        parent_chat_id = str(getattr(source, "parent_chat_id", "") or "")
+        if (
+            getattr(source, "thread_id", None)
+            and parent_chat_id
+            and raw_channel_id == parent_chat_id
+            and raw_channel_id != source_chat_id
+        ):
+            return parent_chat_id
+        return source_chat_id or parent_chat_id
+
+    def _discord_api_timeout(self) -> float:
+        try:
+            return max(0.25, min(float(os.getenv("HERMES_DISCORD_CONTEXT_API_TIMEOUT", "2.0")), 8.0))
+        except (TypeError, ValueError):
+            return 2.0
+
+    def _discord_api_context_row(self, module, message):
+        content = (getattr(message, "content", None) or "").strip()
+        if not content:
+            attachments = getattr(message, "attachments", None) or []
+            if attachments:
+                first = attachments[0]
+                content = f"(attachment: {getattr(first, 'filename', 'file')})"
+        author_obj = getattr(message, "author", None)
+        author = (
+            getattr(author_obj, "display_name", None)
+            or getattr(author_obj, "name", None)
+            or "someone"
+        )
+        reference = getattr(message, "reference", None)
+        reply_to_id = getattr(reference, "message_id", None) if reference else None
+        timestamp = getattr(message, "created_at", None)
+        if hasattr(timestamp, "isoformat"):
+            timestamp = timestamp.isoformat()
+        row = module.external_context_row(
+            message_id=getattr(message, "id", ""),
+            channel_id=getattr(getattr(message, "channel", None), "id", ""),
+            author_id=getattr(author_obj, "id", ""),
+            author=author,
+            content=content,
+            timestamp=str(timestamp or ""),
+            reply_to_id=reply_to_id,
+            is_bot=bool(getattr(author_obj, "bot", False)),
+            username=getattr(author_obj, "name", None),
+        )
+        if module.is_noise(row):
+            return None
+        return row
+
+    async def _fetch_discord_recent_context_api(self, event, source, module, limit: int = 20) -> list[dict] | None:
+        if source.platform != Platform.DISCORD:
+            return None
+        raw_message = getattr(event, "raw_message", None)
+        raw_channel = getattr(raw_message, "channel", None)
+        channel_id = self._discord_context_channel_id(event, source)
+        if not channel_id or not str(channel_id).isdigit():
+            return None
+
+        async def _fetch() -> list[dict]:
+            channel = raw_channel
+            if str(getattr(channel, "id", "") or "") != str(channel_id):
+                adapter = self.adapters.get(Platform.DISCORD)
+                client = getattr(adapter, "_client", None) if adapter else None
+                if client is None:
+                    return []
+                channel = client.get_channel(int(channel_id))
+                if channel is None:
+                    channel = await client.fetch_channel(int(channel_id))
+            before = raw_message if str(getattr(raw_channel, "id", "") or "") == str(channel_id) else None
+            rows: list[dict] = []
+            async for message in channel.history(limit=limit * 4, before=before, oldest_first=False):
+                row = self._discord_api_context_row(module, message)
+                if row is None:
+                    continue
+                rows.append(row)
+                if len(rows) >= limit:
+                    break
+            return list(reversed(rows))
+
+        try:
+            return await asyncio.wait_for(_fetch(), timeout=self._discord_api_timeout())
+        except Exception:
+            logger.debug("Discord API recent-context fetch failed", exc_info=True)
+            return None
+
+    async def _fetch_discord_reply_chain_api(self, event, source, module, limit: int = 12) -> tuple[list[dict], bool] | None:
+        reply_to_id = str(getattr(event, "reply_to_message_id", "") or "")
+        if source.platform != Platform.DISCORD or not reply_to_id:
+            return None
+        raw_message = getattr(event, "raw_message", None)
+        channel = getattr(raw_message, "channel", None)
+        if channel is None:
+            return None
+
+        async def _fetch() -> tuple[list[dict], bool]:
+            current = int(reply_to_id)
+            rows: list[dict] = []
+            seen: set[int] = set()
+            truncated = False
+            while current and current not in seen:
+                seen.add(current)
+                message = await channel.fetch_message(current)
+                row = self._discord_api_context_row(module, message)
+                if row is not None:
+                    rows.append(row)
+                reference = getattr(message, "reference", None)
+                parent = getattr(reference, "message_id", None) if reference else None
+                if len(rows) >= limit:
+                    truncated = bool(parent)
+                    break
+                current = int(parent) if parent else 0
+            return list(reversed(rows)), truncated
+
+        try:
+            return await asyncio.wait_for(_fetch(), timeout=self._discord_api_timeout())
+        except Exception:
+            logger.debug("Discord API reply-chain fetch failed", exc_info=True)
+            return None
+
+    async def _build_discord_startup_context_prompt(self, event, source, is_new_session: bool) -> str:
+        if not is_new_session or source.platform != Platform.DISCORD:
+            return ""
+        channel_id = self._discord_context_channel_id(event, source)
+        if not channel_id or not str(channel_id).isdigit():
+            return ""
+        module = self._load_chat_context_module()
+        if module is None:
+            return ""
+        api_recent = await self._fetch_discord_recent_context_api(event, source, module, limit=20)
+        if api_recent is not None:
+            payload = {
+                "channel_id": str(channel_id),
+                "message_id": str(getattr(source, "message_id", "") or "") or None,
+                "reply_to_message_id": None,
+                "recent_count": len(api_recent),
+                "reply_chain_count": 0,
+                "reply_chain_truncated": False,
+                "recent_messages": api_recent,
+                "reply_chain": [],
+            }
+            return module.render_payload(payload)
+        try:
+            payload = module.build_payload(
+                channel_id=str(channel_id),
+                message_id=str(getattr(source, "message_id", "") or "") or None,
+                reply_to_message_id=None,
+                limit=20,
+                reply_chain_limit=12,
+            )
+            if isinstance(payload, dict):
+                return str(payload.get("rendered") or "")
+        except Exception:
+            logger.debug("Failed to build Discord startup context", exc_info=True)
+        return ""
+
+    async def _build_discord_reply_chain_prompt(self, event, source) -> str:
+        reply_to_id = str(getattr(event, "reply_to_message_id", "") or "")
+        if source.platform != Platform.DISCORD or not reply_to_id:
+            return ""
+        channel_id = self._discord_context_channel_id(event, source)
+        if not channel_id or not str(channel_id).isdigit():
+            return ""
+        module = self._load_chat_context_module()
+        if module is None:
+            return ""
+        api_chain = await self._fetch_discord_reply_chain_api(event, source, module, limit=12)
+        if api_chain is not None:
+            chain, truncated = api_chain
+            if chain:
+                payload = {
+                    "reply_chain": chain,
+                    "reply_chain_truncated": truncated,
+                    "recent_messages": [],
+                }
+                rendered = module.render_payload(payload)
+                return rendered.replace("## Surrounding Discord Context", "## Discord Reply Chain", 1)
+        try:
+            payload = module.build_payload(
+                channel_id=str(channel_id),
+                message_id=None,
+                reply_to_message_id=reply_to_id,
+                limit=1,
+                reply_chain_limit=12,
+            )
+        except Exception:
+            logger.debug("Failed to build Discord reply chain context", exc_info=True)
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        chain = payload.get("reply_chain") or []
+        if not chain:
+            return ""
+        lines = [
+            "## Discord Reply Chain",
+            "The user is replying to this chain. Use it to disambiguate the current request.",
+        ]
+        for msg in chain:
+            lines.append(
+                f"- [{msg.get('timestamp')}] {msg.get('author')} ({msg.get('id')}): {msg.get('content')}"
+            )
+        if payload.get("reply_chain_truncated"):
+            lines.append("- [older reply-chain messages omitted]")
+        return "\n".join(lines)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5633,6 +5957,9 @@ class GatewayRunner:
         if canonical == "debug":
             return await self._handle_debug_command(event)
 
+        if canonical == "context-dump":
+            return await self._handle_context_dump_command(event)
+
         if canonical == "title":
             return await self._handle_title_command(event)
 
@@ -5840,10 +6167,12 @@ class GatewayRunner:
                     except Exception:
                         session_entry = None
                     if session_entry is not None:
-                        self._post_turn_goal_continuation(
-                            session_entry=session_entry,
-                            source=source,
-                            final_response=_final_text,
+                        asyncio.create_task(
+                            self._post_turn_goal_continuation_async(
+                                session_entry=session_entry,
+                                source=source,
+                                final_response=_final_text,
+                            )
                         )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
@@ -6008,14 +6337,14 @@ class GatewayRunner:
                 message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            # Prefer the full Discord reply chain from the message index. Fall
+            # back to the direct quoted text when the chain is not indexed yet.
+            reply_chain_prompt = await self._build_discord_reply_chain_prompt(event, source)
+            if reply_chain_prompt:
+                message_text = f"{reply_chain_prompt}\n\n{message_text}"
+            else:
+                reply_snippet = event.reply_to_text[:500]
+                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:
@@ -6133,7 +6462,6 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
@@ -6150,6 +6478,9 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        _startup_context_prompt = await self._build_discord_startup_context_prompt(event, source, _is_new_session)
+        if _startup_context_prompt:
+            context_prompt = f"{context_prompt}\n\n{_startup_context_prompt}"
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -6253,6 +6584,20 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+
+        _startup_context_token_line = None
+        if _is_new_session and source.platform == Platform.DISCORD:
+            _startup_context_token_line = await self._format_context_window_token_line(
+                event,
+                session_entry,
+                session_key,
+            )
+        await self._send_chat_route_announcement_if_needed(
+            source,
+            session_key,
+            _is_new_session,
+            context_token_line=_startup_context_token_line,
+        )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -8315,6 +8660,54 @@ class GatewayRunner:
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
     # ────────────────────────────────────────────────────────────────
+    def _goal_default_max_turns(self) -> int:
+        """Resolve the configured /goal turn budget for gateway sessions."""
+        fallback = 400
+        try:
+            from hermes_cli.goals import DEFAULT_MAX_TURNS
+
+            fallback = int(DEFAULT_MAX_TURNS or fallback)
+        except Exception:
+            pass
+
+        goals_cfg = {}
+        try:
+            cfg_obj = self.config or {}
+            if isinstance(cfg_obj, dict):
+                goals_cfg = cfg_obj.get("goals") or {}
+            else:
+                goals_cfg = getattr(cfg_obj, "goals", None) or {}
+        except Exception:
+            goals_cfg = {}
+
+        if not isinstance(goals_cfg, dict) or not goals_cfg:
+            try:
+                from hermes_cli.config import load_config
+
+                full_cfg = load_config() or {}
+                loaded_goals_cfg = full_cfg.get("goals") or {}
+                if isinstance(loaded_goals_cfg, dict):
+                    goals_cfg = loaded_goals_cfg
+            except Exception as exc:
+                logger.debug("goal manager: config lookup failed: %s", exc)
+
+        try:
+            return int(goals_cfg.get("max_turns", fallback) or fallback)
+        except Exception:
+            return fallback
+
+    @staticmethod
+    def _normalize_goal_command_args(args: str, event: "MessageEvent") -> str:
+        """Drop legacy slash option labels that Discord can surface as text."""
+        cleaned = (args or "").strip()
+        if not cleaned:
+            return ""
+        if getattr(event, "message_type", None) != MessageType.COMMAND:
+            return cleaned
+
+        match = re.match(r"^(args|text)\s*:\s*(.+)$", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        return match.group(2).strip() if match else cleaned
+
     def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.
 
@@ -8334,15 +8727,7 @@ class GatewayRunner:
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:
             return None, None
-        try:
-            goals_cfg = (
-                (self.config or {}).get("goals", {})
-                if isinstance(self.config, dict)
-                else getattr(self.config, "goals", {}) or {}
-            )
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-        except Exception:
-            max_turns = 20
+        max_turns = self._goal_default_max_turns()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
@@ -8356,7 +8741,7 @@ class GatewayRunner:
         agent starts working on it immediately — the post-turn
         continuation hook then takes over from there.
         """
-        args = (event.get_command_args() or "").strip()
+        args = self._normalize_goal_command_args(event.get_command_args() or "", event)
         lower = args.lower()
 
         mgr, session_entry = self._get_goal_manager_for_event(event)
@@ -8415,6 +8800,83 @@ class GatewayRunner:
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
 
+    async def _post_turn_goal_continuation_async(
+        self,
+        *,
+        session_entry: Any,
+        source: Any,
+        final_response: str,
+    ) -> None:
+        """Run post-turn goal continuation without blocking the gateway loop.
+
+        The judge model call is synchronous, so only that part runs in an
+        executor. Discord sends and FIFO mutation must stay on the gateway
+        event loop; aiohttp/discord.py sessions are bound to that loop.
+        """
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            logger.debug("goal continuation: goals module unavailable: %s", exc)
+            return
+
+        sid = getattr(session_entry, "session_id", None) or ""
+        if not sid:
+            return
+
+        mgr = GoalManager(session_id=sid, default_max_turns=self._goal_default_max_turns())
+        if not mgr.is_active():
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            decision = await loop.run_in_executor(
+                None,
+                lambda: mgr.evaluate_after_turn(final_response or "", user_initiated=True),
+            )
+        except Exception as exc:
+            logger.debug("goal continuation: judge failed: %s", exc)
+            return
+
+        msg = decision.get("message") or ""
+        if msg and source is not None:
+            try:
+                adapter = self.adapters.get(source.platform)
+                if adapter is not None and hasattr(adapter, "send"):
+                    thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=msg,
+                        metadata=thread_meta,
+                    )
+            except Exception as exc:
+                logger.debug("goal continuation: status send failed: %s", exc)
+
+        if not decision.get("should_continue"):
+            return
+
+        prompt = decision.get("continuation_prompt") or ""
+        if not prompt or source is None:
+            return
+
+        try:
+            adapter = self.adapters.get(source.platform)
+            _quick_key = self._session_key_for_source(source)
+            if adapter and _quick_key:
+                cont_event = MessageEvent(
+                    text=prompt,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=None,
+                    channel_prompt=None,
+                    internal=True,
+                )
+                if hasattr(adapter, "handle_message"):
+                    await adapter.handle_message(cont_event)
+                else:
+                    self._enqueue_fifo(_quick_key, cont_event, adapter)
+        except Exception as exc:
+            logger.debug("goal continuation: enqueue failed: %s", exc)
+
     def _post_turn_goal_continuation(
         self,
         *,
@@ -8442,17 +8904,7 @@ class GatewayRunner:
         if not sid:
             return
 
-        try:
-            goals_cfg = (
-                (self.config or {}).get("goals", {})
-                if isinstance(self.config, dict)
-                else getattr(self.config, "goals", {}) or {}
-            )
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-        except Exception:
-            max_turns = 20
-
-        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        mgr = GoalManager(session_id=sid, default_max_turns=self._goal_default_max_turns())
         if not mgr.is_active():
             return
 
@@ -11194,6 +11646,403 @@ class GatewayRunner:
 
         return await loop.run_in_executor(None, _collect_and_upload)
 
+    def _context_dump_dir(self) -> Path:
+        raw = os.getenv("HERMES_CONTEXT_DUMP_DIR", "").strip()
+        return Path(raw).expanduser() if raw else (_hermes_home / "context-dumps")
+
+    @staticmethod
+    def _context_dump_slug(session_key: Optional[str]) -> str:
+        slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(session_key or "unknown")).strip("._")
+        return slug[:180] or "unknown"
+
+    def _context_dump_path(self, session_key: Optional[str]) -> Path:
+        return self._context_dump_dir() / f"{self._context_dump_slug(session_key)}.json"
+
+    def _context_dump_text_path(self, session_key: Optional[str]) -> Path:
+        return self._context_dump_dir() / f"{self._context_dump_slug(session_key)}.message.txt"
+
+    def _write_context_dump_payload(
+        self,
+        session_key: Optional[str],
+        payload: Dict[str, Any],
+    ) -> Optional[Path]:
+        try:
+            dump_dir = self._context_dump_dir()
+            dump_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path = self._context_dump_path(session_key)
+            tmp_path = path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+                fh.write("\n")
+            os.replace(tmp_path, path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            return path
+        except Exception as exc:
+            logger.debug("Failed to write context dump for %s: %s", session_key, exc)
+            return None
+
+    def _write_context_dump_text(
+        self,
+        session_key: Optional[str],
+        payload: Dict[str, Any],
+    ) -> Optional[Path]:
+        try:
+            dump_dir = self._context_dump_dir()
+            dump_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path = self._context_dump_text_path(session_key)
+            tmp_path = path.with_suffix(".txt.tmp")
+            lines = [
+                "# Hermes Raw Context Dump",
+                "",
+                f"Captured: {payload.get('captured_at', '')}",
+                f"Mode: {payload.get('capture_mode', payload.get('phase', ''))}",
+                f"Session key: {payload.get('session_key', '')}",
+                f"Session id: {payload.get('session_id', '')}",
+                f"Model: {payload.get('resolved_model') or payload.get('model') or ''}",
+                f"Provider: {payload.get('provider') or ''}",
+                "",
+                "## Raw API Messages",
+                "",
+                json.dumps(payload.get("api_messages", []), ensure_ascii=False, indent=2, default=str),
+                "",
+                "## Tool Schemas",
+                "",
+                json.dumps(payload.get("tools", []), ensure_ascii=False, indent=2, default=str),
+                "",
+                "## Debug Metadata",
+                "",
+                json.dumps(
+                    {k: v for k, v in payload.items() if k not in {"api_messages", "tools"}},
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                ),
+                "",
+            ]
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(lines))
+            os.replace(tmp_path, path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            return path
+        except Exception as exc:
+            logger.debug("Failed to write context dump text for %s: %s", session_key, exc)
+            return None
+
+    def _agent_history_for_context_dump(self, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        agent_history: List[Dict[str, Any]] = []
+        for msg in history:
+            role = msg.get("role")
+            if not role or role == "session_meta" or role == "system":
+                continue
+            has_tool_calls = "tool_calls" in msg
+            has_tool_call_id = "tool_call_id" in msg
+            is_tool_message = role == "tool"
+            if has_tool_calls or has_tool_call_id or is_tool_message:
+                agent_history.append({k: v for k, v in msg.items() if k != "timestamp"})
+                continue
+            content = msg.get("content")
+            if content:
+                if msg.get("mirror"):
+                    mirror_src = msg.get("mirror_source", "another session")
+                    content = f"[Delivered from {mirror_src}] {content}"
+                entry = {"role": role, "content": content}
+                if role == "assistant":
+                    for _rkey in ("reasoning", "reasoning_details", "codex_reasoning_items"):
+                        _rval = msg.get(_rkey)
+                        if _rval:
+                            entry[_rkey] = _rval
+                agent_history.append(entry)
+        return agent_history
+
+    async def _build_current_context_dump_payload(
+        self,
+        event: MessageEvent,
+        session_entry,
+        session_key: str,
+        debug_user_content: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        source = event.source
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(source.platform)
+        context = build_session_context(source, self.config, session_entry)
+        env_tokens = self._set_session_env(context)
+        tmp_agent = None
+        try:
+            try:
+                _redact_pii = bool((user_config.get("privacy") or {}).get("redact_pii", False))
+            except Exception:
+                _redact_pii = False
+            context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+            startup_context_prompt = await self._build_discord_startup_context_prompt(event, source, False)
+            if startup_context_prompt:
+                context_prompt = f"{context_prompt}\n\n{startup_context_prompt}"
+
+            channel_prompt = (getattr(event, "channel_prompt", None) or "").strip()
+            combined_ephemeral = context_prompt or ""
+            if channel_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + channel_prompt).strip()
+            if self._ephemeral_system_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+
+            history = self.session_store.load_transcript(session_entry.session_id)
+            agent_history = self._agent_history_for_context_dump(history)
+
+            from hermes_cli.tools_config import _get_platform_tools
+            from run_agent import AIAgent
+
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            agent_cfg_local = user_config.get("agent") or {}
+            disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=user_config,
+            )
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source,
+                session_key=session_key,
+            )
+            service_tier = self._load_service_tier()
+            tmp_agent = AIAgent(
+                model=model,
+                **runtime_kwargs,
+                max_iterations=1,
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                ephemeral_system_prompt=combined_ephemeral or None,
+                prefill_messages=self._prefill_messages or None,
+                reasoning_config=reasoning_config,
+                service_tier=service_tier,
+                session_id=session_entry.session_id,
+                platform=platform_key,
+                user_id=source.user_id,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                gateway_session_key=session_key,
+                session_db=self._session_db,
+                fallback_model=self._fallback_model,
+            )
+            base_system_prompt = tmp_agent._build_system_prompt(None)
+            effective_system_prompt = base_system_prompt
+            if combined_ephemeral:
+                effective_system_prompt = (effective_system_prompt + "\n\n" + combined_ephemeral).strip()
+
+            api_messages: List[Dict[str, Any]] = []
+            if effective_system_prompt:
+                api_messages.append({"role": "system", "content": effective_system_prompt})
+            api_messages.extend([m.copy() for m in (self._prefill_messages or [])])
+            api_messages.extend(agent_history)
+            api_messages.append({
+                "role": "user",
+                "content": debug_user_content or "[Context dump requested: this marker is not sent to inference.]",
+            })
+
+            return {
+                "schema": "hermes.context_dump.v2",
+                "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "capture_mode": "zero_inference_current_context",
+                "session_key": session_key,
+                "session_id": session_entry.session_id,
+                "source": {
+                    "platform": getattr(source.platform, "value", str(source.platform)),
+                    "chat_id": source.chat_id,
+                    "chat_name": source.chat_name,
+                    "chat_type": source.chat_type,
+                    "thread_id": source.thread_id,
+                    "user_id": source.user_id,
+                    "user_name": source.user_name,
+                },
+                "model": model,
+                "resolved_model": getattr(tmp_agent, "model", model),
+                "provider": runtime_kwargs.get("provider"),
+                "base_url": runtime_kwargs.get("base_url"),
+                "service_tier": service_tier,
+                "reasoning_config": reasoning_config,
+                "context_prompt": context_prompt,
+                "channel_prompt": channel_prompt,
+                "ephemeral_system_prompt": self._ephemeral_system_prompt,
+                "combined_ephemeral_system_prompt": combined_ephemeral,
+                "agent_cached_system_prompt": base_system_prompt,
+                "api_messages": api_messages,
+                "prefill_messages": self._prefill_messages or [],
+                "conversation_history": agent_history,
+                "history_message_count": len(agent_history),
+                "context_length": getattr(getattr(tmp_agent, "context_compressor", None), "context_length", 0) or 0,
+                "threshold_tokens": getattr(getattr(tmp_agent, "context_compressor", None), "threshold_tokens", 0) or 0,
+                "tools": getattr(tmp_agent, "tools", []) or [],
+                "notes": [
+                    "Generated by /context-dump without calling inference.",
+                    "The final debug user marker is not sent to a model; it marks where the next user turn would appear.",
+                    "API keys and transport-only credentials are intentionally omitted.",
+                ],
+            }
+        finally:
+            self._clear_session_env(env_tokens)
+            self._cleanup_agent_resources(tmp_agent)
+
+    def _estimate_context_dump_tokens(self, payload: Dict[str, Any]) -> int:
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            return estimate_request_tokens_rough(
+                payload.get("api_messages", []) or [],
+                tools=payload.get("tools", []) or None,
+            )
+        except Exception:
+            messages = payload.get("api_messages", []) or []
+            tools = payload.get("tools", []) or []
+            return (len(str(messages)) + len(str(tools)) + 3) // 4
+
+    async def _format_context_window_token_line(
+        self,
+        event: MessageEvent,
+        session_entry,
+        session_key: str,
+    ) -> Optional[str]:
+        if os.getenv("HERMES_ROUTE_ANNOUNCE_CONTEXT_TOKENS", "true").strip().lower() not in (
+            "1", "true", "yes", "on",
+        ):
+            return None
+        try:
+            user_config = _load_gateway_config()
+            context = build_session_context(event.source, self.config, session_entry)
+            try:
+                _redact_pii = bool((user_config.get("privacy") or {}).get("redact_pii", False))
+            except Exception:
+                _redact_pii = False
+            context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+            startup_context_prompt = await self._build_discord_startup_context_prompt(
+                event,
+                event.source,
+                True,
+            )
+            if startup_context_prompt:
+                context_prompt = f"{context_prompt}\n\n{startup_context_prompt}"
+            if getattr(event, "channel_prompt", None):
+                context_prompt = f"{context_prompt}\n\n{event.channel_prompt}".strip()
+            if self._ephemeral_system_prompt:
+                context_prompt = f"{context_prompt}\n\n{self._ephemeral_system_prompt}".strip()
+
+            soul_text = ""
+            try:
+                from agent.prompt_builder import load_soul_md
+
+                soul_text = load_soul_md() or ""
+            except Exception:
+                soul_path = _hermes_home / "SOUL.md"
+                if soul_path.exists():
+                    soul_text = soul_path.read_text(encoding="utf-8", errors="replace")
+
+            history = self.session_store.load_transcript(session_entry.session_id)
+            prompt_chars = (
+                len(soul_text)
+                + len(context_prompt)
+                + len(str(self._prefill_messages or []))
+                + len(str(history or []))
+                + len(event.text or "")
+            )
+            approx_tokens = (prompt_chars + 3) // 4
+
+            context_length = 0
+            threshold = 0
+            try:
+                model_cfg = user_config.get("model") or {}
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx:
+                    context_length = int(raw_ctx)
+            except Exception:
+                context_length = 0
+            if context_length <= 0:
+                context_length = int(os.getenv("HERMES_ROUTE_ANNOUNCE_CONTEXT_LENGTH", "128000"))
+            try:
+                compression_cfg = user_config.get("compression") or {}
+                threshold_pct = float(compression_cfg.get("threshold", 0.8) or 0.8)
+                threshold = int(context_length * threshold_pct)
+            except Exception:
+                threshold = 0
+            if context_length > 0:
+                pct = min(999.0, approx_tokens / context_length * 100)
+                threshold_part = f", compress at ~{threshold:,}" if threshold else ""
+                return f"🧮 Context loaded: ~{approx_tokens:,} / {context_length:,} prompt tokens ({pct:.0f}%{threshold_part})."
+            return f"🧮 Context loaded: ~{approx_tokens:,} tokens."
+        except Exception as exc:
+            logger.debug("Failed to estimate startup context tokens for %s: %s", session_key, exc, exc_info=True)
+            return None
+
+    def _is_context_dump_allowed(self, event: MessageEvent) -> bool:
+        source = event.source
+        if source.platform == Platform.DISCORD:
+            owners_raw = os.getenv("DISCORD_SLASH_OWNER_IDS", "").strip()
+            if owners_raw:
+                owners = {x.strip() for x in owners_raw.split(",") if x.strip()}
+                return str(source.user_id or "") in owners
+        return True
+
+    async def _handle_context_dump_command(self, event: MessageEvent) -> str:
+        """Handle /context-dump — send the last captured model context payload."""
+        if not self._is_context_dump_allowed(event):
+            return "Context dump is owner-only."
+
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        try:
+            payload = await self._build_current_context_dump_payload(event, session_entry, session_key)
+            path = self._write_context_dump_payload(session_key, payload)
+            text_path = self._write_context_dump_text(session_key, payload)
+        except Exception as exc:
+            logger.warning("Failed to build current context dump for %s: %s", session_key, exc, exc_info=True)
+            path = self._context_dump_path(session_key)
+            text_path = self._context_dump_text_path(session_key)
+            if not path.exists() and not text_path.exists():
+                return f"Failed to build context dump: {exc}"
+        send_path = text_path if text_path and text_path.exists() else path
+        path = self._context_dump_path(session_key)
+        if not send_path or not send_path.exists():
+            return "No context dump could be created for this session."
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter or not hasattr(adapter, "send_document"):
+            return f"Context dump is available on disk: `{send_path}`"
+
+        metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        target_chat_id = (
+            source.thread_id
+            if source.platform == Platform.DISCORD and source.thread_id
+            else source.chat_id
+        )
+        caption = (
+            "🧾 Context dump for this session. "
+            "Includes the zero-inference raw API message window and tool schemas."
+        )
+        try:
+            result = await adapter.send_document(
+                chat_id=target_chat_id,
+                file_path=str(send_path),
+                caption=caption,
+                file_name=send_path.name,
+                reply_to=event.message_id,
+                metadata=metadata,
+            )
+            if getattr(result, "success", False):
+                return "Sent the current zero-inference context dump."
+            error = getattr(result, "error", None) or "unknown send error"
+            return f"Failed to send context dump: {error}\nPath: `{send_path}`"
+        except Exception as exc:
+            logger.warning("Failed to send context dump for %s: %s", session_key, exc)
+            return f"Failed to send context dump: {exc}\nPath: `{send_path}`"
+
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.
 
@@ -12089,9 +12938,10 @@ class GatewayRunner:
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
                     _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+                    _unknown_exit = bool(getattr(session, "exit_status_unknown", False)) or session.exit_code is None
+                    _exit_label = "exit status unknown" if _unknown_exit else f"exit code {session.exit_code}"
                     synth_text = (
-                        f"[IMPORTANT: Background process {session_id} completed "
-                        f"(exit code {session.exit_code}).\n"
+                        f"[IMPORTANT: Background process {session_id} stopped with {_exit_label}.\n"
                         f"Command: {session.command}\n"
                         f"Output:\n{_out}]"
                     )
@@ -12138,16 +12988,23 @@ class GatewayRunner:
 
                 # --- Normal text-only notification ---
                 # Decide whether to notify based on mode
+                _unknown_exit = bool(getattr(session, "exit_status_unknown", False)) or session.exit_code is None
                 should_notify = (
                     notify_mode in ("all", "result")
-                    or (notify_mode == "error" and session.exit_code not in (0, None))
+                    or (notify_mode == "error" and (_unknown_exit or session.exit_code not in (0, None)))
                 )
                 if should_notify:
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                    message_text = (
-                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                        f"Here's the final output:\n{new_output}]"
-                    )
+                    if _unknown_exit:
+                        message_text = (
+                            f"[Background process {session_id} stopped with exit status unknown~ "
+                            f"Here's the final output:\n{new_output}]"
+                        )
+                    else:
+                        message_text = (
+                            f"[Background process {session_id} finished with exit code {session.exit_code}~ "
+                            f"Here's the final output:\n{new_output}]"
+                        )
                     adapter = None
                     for p, a in self.adapters.items():
                         if p.value == platform_name:
@@ -13403,8 +14260,23 @@ class GatewayRunner:
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
+        # quarantined-install: don't spam Discord with internal retry/compression
+        # diagnostics. These are useful in the journal but noise to users.
+        _STATUS_NOISE_PREFIXES = (
+            "⚠️ Empty response from model",
+            "⚠️ Model returned empty after tool calls",
+            "❌ Model returned no content after all retries",
+            "⟳ compacting context",
+            "📦 Preflight compression",
+            "⚡ Interrupted during API call",
+        )
+
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            # Suppress journal-only diagnostics so users don't see the noise
+            if any(message.lstrip().startswith(p) for p in _STATUS_NOISE_PREFIXES):
+                logger.debug("suppressed status to discord: %s", message[:80])
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -13989,6 +14861,43 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
+                _context_dump_payload = {
+                    "schema": "hermes.context_dump.v1",
+                    "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "phase": "before_run",
+                    "session_key": session_key,
+                    "session_id": session_id,
+                    "source": {
+                        "platform": getattr(source.platform, "value", str(source.platform)),
+                        "chat_id": source.chat_id,
+                        "chat_name": source.chat_name,
+                        "chat_type": source.chat_type,
+                        "thread_id": source.thread_id,
+                        "user_id": source.user_id,
+                        "user_name": source.user_name,
+                    },
+                    "model": turn_route.get("model"),
+                    "provider": turn_route.get("runtime", {}).get("provider"),
+                    "base_url": turn_route.get("runtime", {}).get("base_url"),
+                    "request_overrides": turn_route.get("request_overrides") or {},
+                    "service_tier": self._service_tier,
+                    "reasoning_config": reasoning_config,
+                    "context_prompt": context_prompt,
+                    "channel_prompt": event_channel_prompt,
+                    "ephemeral_system_prompt": self._ephemeral_system_prompt,
+                    "combined_ephemeral_system_prompt": combined_ephemeral,
+                    "prefill_messages": self._prefill_messages or [],
+                    "conversation_history": agent_history,
+                    "user_message": _run_message,
+                    "native_image_paths": _native_imgs,
+                    "tools": tools_holder[0] or [],
+                    "notes": [
+                        "Captured immediately before AIAgent.run_conversation.",
+                        "API keys and transport-only credentials are intentionally omitted.",
+                    ],
+                }
+                self._write_context_dump_payload(session_key, _context_dump_payload)
+
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
@@ -14014,6 +14923,27 @@ class GatewayRunner:
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            try:
+                _context_dump_payload["phase"] = "after_run"
+                _context_dump_payload["agent_cached_system_prompt"] = (
+                    getattr(_agent, "_cached_system_prompt", None) if _agent else None
+                )
+                _context_dump_payload["resolved_model"] = _resolved_model
+                _context_dump_payload["token_metadata"] = {
+                    "last_prompt_tokens": _last_prompt_toks,
+                    "input_tokens": _input_toks,
+                    "output_tokens": _output_toks,
+                    "context_length": _context_length,
+                }
+                _context_dump_payload["result_summary"] = {
+                    "api_calls": result.get("api_calls", 0),
+                    "message_count": len(result.get("messages", []) or []),
+                    "failed": bool(result.get("failed", False)),
+                    "compression_exhausted": bool(result.get("compression_exhausted", False)),
+                }
+                self._write_context_dump_payload(session_key, _context_dump_payload)
+            except Exception as _dump_exc:
+                logger.debug("Failed to finalize context dump for %s: %s", session_key, _dump_exc)
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
@@ -15133,14 +16063,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()
-    cron_thread = threading.Thread(
-        target=_start_cron_ticker,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
-        daemon=True,
-        name="cron-ticker",
-    )
-    cron_thread.start()
+    # quarantined-install: skip in-gateway cron ticker when running under
+    # an external scheduler (separate hermes-cron.timer systemd unit).
+    if os.getenv("HERMES_DISABLE_CRON_TICKER", "").lower() in ("1", "true", "yes"):
+        logger.info("HERMES_DISABLE_CRON_TICKER set; skipping in-gateway cron thread")
+        cron_thread = None
+    else:
+        cron_thread = threading.Thread(
+            target=_start_cron_ticker,
+            args=(cron_stop,),
+            kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+            daemon=True,
+            name="cron-ticker",
+        )
+        cron_thread.start()
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
@@ -15152,7 +16088,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Stop cron ticker cleanly
     cron_stop.set()
-    cron_thread.join(timeout=5)
+    (cron_thread.join(timeout=5) if cron_thread is not None else None)
 
     # Close MCP server connections
     try:

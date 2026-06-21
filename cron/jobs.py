@@ -721,6 +721,16 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                # quarantined-install: consecutive-failure circuit breaker
+                _cf = int(job.get("consecutive_failures") or 0)
+                _cf = 0 if success else _cf + 1
+                job["consecutive_failures"] = _cf
+                if _cf >= 3 and job.get("enabled", True):
+                    job["enabled"] = False
+                    job["state"] = "disabled"
+                    job["paused_at"] = now
+                    job["paused_reason"] = f"auto-disabled after {_cf} consecutive failures: {error}"
+                    logger.error("CRON CIRCUIT-BREAKER: job %s auto-disabled after %d consecutive failures", job_id, _cf)
                 
                 # Increment completed count
                 if job.get("repeat"):

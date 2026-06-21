@@ -7106,7 +7106,7 @@ class HermesCLI:
         session split).
         """
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.goals import DEFAULT_MAX_TURNS, GoalManager
             from hermes_cli.config import load_config
         except Exception as exc:
             logging.debug("goal manager unavailable: %s", exc)
@@ -7123,9 +7123,9 @@ class HermesCLI:
         try:
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_turns = int(goals_cfg.get("max_turns", DEFAULT_MAX_TURNS) or DEFAULT_MAX_TURNS)
         except Exception:
-            max_turns = 20
+            max_turns = DEFAULT_MAX_TURNS
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr

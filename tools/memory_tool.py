@@ -65,6 +65,12 @@ ENTRY_DELIMITER = "\n§\n"
 # ---------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
+    # quarantined-install: reject persisting UNCONDITIONAL behavioural overrides
+    # (the std::Gurt "regardless of context" class). Legit prefs like
+    # "user wants every reply short" must still pass.
+    (r"regardless of (?:context|what.{0,30}(?:said|asked|told|want))", "override-regardless"),
+    (r"\b(?:always|must|never|every (?:reply|response|message))\b.{0,40}\b(?:regardless of|no matter what|in all cases|whatever (?:the|you|i))\b", "override-unconditional"),
+
     # Prompt injection
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
     (r'you\s+are\s+now\s+', "role_hijack"),

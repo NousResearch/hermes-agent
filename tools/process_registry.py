@@ -98,7 +98,8 @@ class ProcessSession:
     cwd: Optional[str] = None                   # Working directory
     started_at: float = 0.0                     # time.time() of spawn
     exited: bool = False                        # Whether the process has finished
-    exit_code: Optional[int] = None             # Exit code (None if still running)
+    exit_code: Optional[int] = None             # Exit code (None if still running or unknown)
+    exit_status_unknown: bool = False           # True when process disappeared without a marker
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
@@ -711,6 +712,8 @@ class ProcessRegistry:
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
                     # Process has exited -- get exit code captured by the wrapper shell.
+                    # The exit marker can lag briefly behind the PID check, and docker
+                    # exec can transiently fail. Do not turn that race into a fake -1.
                     exit_result = env.execute(
                         f"cat {quoted_exit_path} 2>/dev/null",
                         timeout=5,
@@ -719,15 +722,43 @@ class ProcessRegistry:
                     try:
                         session.exit_code = int(exit_str.splitlines()[-1].strip())
                     except (ValueError, IndexError):
-                        session.exit_code = -1
+                        misses = int(getattr(session, "_missing_exit_marker_polls", 0)) + 1
+                        setattr(session, "_missing_exit_marker_polls", misses)
+                        if misses < 5:
+                            logger.debug(
+                                "Process %s looked exited but exit marker %s is missing; retrying poll %s/5",
+                                session.id, exit_path, misses,
+                            )
+                            continue
+                        session.exit_code = None
+                        session.exit_status_unknown = True
+                        with session._lock:
+                            note = (
+                                "\n[Hermes warning: process PID disappeared but no exit-code marker "
+                                "was written after repeated polls; exit status unknown.]"
+                            )
+                            session.output_buffer = (session.output_buffer or "") + note
                     session.exited = True
                     self._move_to_finished(session)
                     return
 
-            except Exception:
-                # Environment might be gone (sandbox reaped, etc.)
+            except Exception as exc:
+                # Docker/remote exec can fail transiently while the sandbox is still alive.
+                # Keep polling a few times before declaring the background process lost.
+                errors = int(getattr(session, "_env_poll_errors", 0)) + 1
+                setattr(session, "_env_poll_errors", errors)
+                logger.debug("Process %s env poll failed %s/5: %s", session.id, errors, exc)
+                if errors < 5:
+                    continue
                 session.exited = True
-                session.exit_code = -1
+                session.exit_code = None
+                session.exit_status_unknown = True
+                with session._lock:
+                    note = (
+                        f"\n[Hermes warning: stopped polling background process after repeated "
+                        f"environment errors: {type(exc).__name__}; exit status unknown.]"
+                    )
+                    session.output_buffer = (session.output_buffer or "") + note
                 self._move_to_finished(session)
                 return
 
@@ -1254,6 +1285,7 @@ class ProcessRegistry:
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
+                            "exit_status_unknown": s.exit_status_unknown,
                         })
             
             # Atomic write to avoid corruption on crash
@@ -1317,6 +1349,7 @@ class ProcessRegistry:
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
                     watch_patterns=entry.get("watch_patterns", []),
+                    exit_status_unknown=entry.get("exit_status_unknown", False),
                 )
                 with self._lock:
                     self._running[session.id] = session

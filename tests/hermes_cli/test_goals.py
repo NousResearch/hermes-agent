@@ -191,6 +191,23 @@ class TestGoalManager:
         assert not mgr.has_goal()
         assert "No active goal" in mgr.status_line()
 
+    def test_default_turn_budget_is_400(self, hermes_home):
+        from hermes_cli.goals import DEFAULT_MAX_TURNS, GoalManager, GoalState
+
+        assert DEFAULT_MAX_TURNS == 400
+        assert GoalState(goal="from dataclass default").max_turns == 400
+
+        mgr = GoalManager(session_id="default-budget-sid")
+        state = mgr.set("use the default budget")
+        assert mgr.default_max_turns == 400
+        assert state.max_turns == 400
+
+    def test_missing_persisted_max_turns_uses_default_400(self, hermes_home):
+        from hermes_cli.goals import GoalState
+
+        state = GoalState.from_json('{"goal": "legacy state without a budget"}')
+        assert state.max_turns == 400
+
     def test_set_then_status(self, hermes_home):
         from hermes_cli.goals import GoalManager
 

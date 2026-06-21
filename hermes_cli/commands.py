@@ -197,6 +197,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
+    CommandDef("context-dump", "Upload the last model context payload for this session", "Info",
+               gateway_only=True, aliases=("dump-context", "ctxdump")),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",

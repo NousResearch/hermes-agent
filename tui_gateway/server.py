@@ -666,6 +666,24 @@ def _load_cfg() -> dict:
     return {}
 
 
+def _goal_default_max_turns() -> int:
+    fallback = 400
+    try:
+        from hermes_cli.goals import DEFAULT_MAX_TURNS
+
+        fallback = int(DEFAULT_MAX_TURNS or fallback)
+    except Exception:
+        pass
+
+    try:
+        goals_cfg = (_load_cfg().get("goals") or {})
+        if isinstance(goals_cfg, dict):
+            return int(goals_cfg.get("max_turns", fallback) or fallback)
+    except Exception:
+        pass
+    return fallback
+
+
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
     import yaml
@@ -3006,14 +3024,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
                     sid_key = session.get("session_key") or ""
                     if sid_key:
-                        try:
-                            goals_cfg = (_load_cfg().get("goals") or {})
-                            goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-                        except Exception:
-                            goal_max_turns = 20
                         goal_mgr = GoalManager(
                             session_id=sid_key,
-                            default_max_turns=goal_max_turns,
+                            default_max_turns=_goal_default_max_turns(),
                         )
                         if goal_mgr.is_active():
                             decision = goal_mgr.evaluate_after_turn(
@@ -4334,12 +4347,7 @@ def _(rid, params: dict) -> dict:
         if not sid_key:
             return _err(rid, 4001, "no session key")
 
-        try:
-            goals_cfg = (_load_cfg().get("goals") or {})
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-        except Exception:
-            max_turns = 20
-        mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
+        mgr = GoalManager(session_id=sid_key, default_max_turns=_goal_default_max_turns())
 
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":

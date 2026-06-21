@@ -290,6 +290,7 @@ class DockerEnvironment(BaseEnvironment):
         timeout: int = 60,
         cpu: float = 0,
         memory: int = 0,
+        memory_swap: int = 0,
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
@@ -324,6 +325,8 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--cpus", str(cpu)])
         if memory > 0:
             resource_args.extend(["--memory", f"{memory}m"])
+        if memory_swap and memory_swap > 0:
+            resource_args.extend(["--memory-swap", f"{memory_swap}m"])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
                 resource_args.extend(["--storage-opt", f"size={disk}m"])

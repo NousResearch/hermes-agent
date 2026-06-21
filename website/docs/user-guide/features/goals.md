@@ -65,10 +65,10 @@ If the judge errors (network blip, malformed response, unavailable aux client), 
 
 ### Turn budget
 
-Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
+Default is 400 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
 
 ```
-⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
+⏸ Goal paused — 400/400 turns used. Use /goal resume to keep going, or /goal clear to stop.
 ```
 
 `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
@@ -96,9 +96,9 @@ Add to `~/.hermes/config.yaml`:
 ```yaml
 goals:
   # Max continuation turns before Hermes auto-pauses and asks you to
-  # /goal resume. Default 20. Lower this if you want tighter loops;
+  # /goal resume. Default 400. Lower this if you want tighter loops;
   # raise it for long-running refactors.
-  max_turns: 20
+  max_turns: 400
 ```
 
 ### Choosing the judge model

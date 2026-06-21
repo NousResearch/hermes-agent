@@ -104,6 +104,60 @@ class TestGetAndPoll:
 
 
 # =========================================================================
+# Env-backed background process polling
+# =========================================================================
+
+class TestEnvPoller:
+    def test_transient_missing_exit_file_does_not_mark_exited_minus_one(
+        self, registry, monkeypatch
+    ):
+        """A stale/briefly missing env PID must not become a fake exit -1.
+
+        Docker/Modal-style background jobs are polled through env.execute().
+        The old poller treated a single failed `kill -0` plus missing exit
+        marker as a completed process with exit_code=-1. Long builds can hit
+        that race while the wrapper shell is still setting up or while docker
+        exec has a transient failure. The poller should keep checking until it
+        sees a real exit marker.
+        """
+
+        class FakeEnv:
+            def __init__(self):
+                self.kill_checks = 0
+
+            def execute(self, command, timeout=0):
+                if command.startswith("cat /tmp/hermes_bg_proc_env.log"):
+                    return {"output": "building\n"}
+                if command.startswith("kill -0"):
+                    self.kill_checks += 1
+                    if self.kill_checks == 1:
+                        return {"output": "1\n"}
+                    if self.kill_checks == 2:
+                        return {"output": "0\n"}
+                    return {"output": "1\n"}
+                if command.startswith("cat /tmp/hermes_bg_proc_env.exit"):
+                    if self.kill_checks == 1:
+                        return {"output": ""}
+                    return {"output": "0\n"}
+                raise AssertionError(f"unexpected command: {command}")
+
+        monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+        s = _make_session(sid="proc_env")
+
+        registry._env_poller_loop(
+            s,
+            FakeEnv(),
+            "/tmp/hermes_bg_proc_env.log",
+            "/tmp/hermes_bg_proc_env.pid",
+            "/tmp/hermes_bg_proc_env.exit",
+        )
+
+        assert s.exited is True
+        assert s.exit_code == 0
+        assert registry.poll(s.id)["exit_code"] == 0
+
+
+# =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
 

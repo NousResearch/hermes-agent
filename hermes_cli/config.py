@@ -515,6 +515,7 @@ DEFAULT_CONFIG = {
         # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
+        "container_memory_swap": 0,     # MB; 0 means Docker default for memory+swap
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
         # Docker volume mounts — share host directories with the container.
@@ -984,7 +985,7 @@ DEFAULT_CONFIG = {
         # asks the user to /goal resume. Protects against judge false
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
-        "max_turns": 20,
+        "max_turns": 400,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.
@@ -4683,10 +4684,12 @@ def set_config_value(key: str, value: str):
         # gateway bridges it in gateway/run.py. Persisting to .env causes
         # stale values to poison child processes.
         "terminal.timeout": "TERMINAL_TIMEOUT",
+        "terminal.max_foreground_timeout": "TERMINAL_MAX_FOREGROUND_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
         "terminal.container_cpu": "TERMINAL_CONTAINER_CPU",
         "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "terminal.container_memory_swap": "TERMINAL_CONTAINER_MEMORY_SWAP",
         "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }

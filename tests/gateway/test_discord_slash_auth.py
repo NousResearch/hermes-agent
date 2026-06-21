@@ -95,6 +95,7 @@ def _isolate_discord_env(monkeypatch):
         "DISCORD_ALLOWED_ROLES",
         "DISCORD_ALLOWED_CHANNELS",
         "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_SLASH_OWNER_IDS",
         "DISCORD_HIDE_SLASH_COMMANDS",
         "DISCORD_ALLOW_BOTS",
     ):
@@ -187,6 +188,40 @@ async def test_no_allowlist_dm_also_allowed(adapter):
     """Same for DMs — no allowlist means no restriction, matching on_message."""
     interaction = _make_interaction("999999999", in_dm=True)
     assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+# ---------------------------------------------------------------------------
+# Owner-only slash gate exception for /goal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_owner_only_gate_allows_goal_for_non_owner(adapter, monkeypatch):
+    """DISCORD_SLASH_OWNER_IDS protects operator slash commands, but /goal
+    remains available to ordinary allowed users."""
+    monkeypatch.setenv("DISCORD_SLASH_OWNER_IDS", "111111111")
+    interaction = _make_interaction("222222222")
+    assert await adapter._check_slash_authorization(interaction, "/goal build the thing") is True
+    interaction.response.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_owner_only_gate_still_blocks_non_goal_for_non_owner(adapter, monkeypatch):
+    """The /goal exception must not open sensitive slash commands."""
+    monkeypatch.setenv("DISCORD_SLASH_OWNER_IDS", "111111111")
+    interaction = _make_interaction("222222222")
+    assert await adapter._check_slash_authorization(interaction, "/restart") is False
+    interaction.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_owner_only_gate_does_not_bypass_channel_policy_for_goal(adapter, monkeypatch):
+    """/goal bypasses only the owner-only overlay, not channel allowlists."""
+    monkeypatch.setenv("DISCORD_SLASH_OWNER_IDS", "111111111")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "333333333")
+    interaction = _make_interaction("222222222", channel_id=444444444)
+    assert await adapter._check_slash_authorization(interaction, "/goal build the thing") is False
+    interaction.response.send_message.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +422,16 @@ def test_visibility_hide_helper_zeroes_perms(adapter):
     assert cmd_b.default_permissions is not None
     assert cmd_a.default_permissions.value == 0
     assert cmd_b.default_permissions.value == 0
+
+
+def test_visibility_hide_helper_leaves_goal_visible(adapter):
+    cmd_goal = SimpleNamespace(name="goal", default_permissions=None)
+    cmd_restart = SimpleNamespace(name="restart", default_permissions=None)
+    tree = SimpleNamespace(get_commands=lambda: [cmd_goal, cmd_restart])
+    adapter._apply_owner_only_visibility(tree)
+    assert cmd_goal.default_permissions is None
+    assert cmd_restart.default_permissions is not None
+    assert cmd_restart.default_permissions.value == 0
 
 
 def test_visibility_hide_tolerates_unsetable_command(adapter, caplog):

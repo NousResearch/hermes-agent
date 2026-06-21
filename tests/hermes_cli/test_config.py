@@ -66,6 +66,8 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["model"] == DEFAULT_CONFIG["model"]
             assert config["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+            assert DEFAULT_CONFIG["goals"]["max_turns"] == 400
+            assert config["goals"]["max_turns"] == 400
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"

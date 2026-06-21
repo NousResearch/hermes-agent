@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -90,6 +91,48 @@ def _make_runner_with_adapter():
     adapter = _RecordingAdapter()
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner, adapter, session_entry, src
+
+
+def test_gateway_goal_manager_uses_default_400_turn_budget(hermes_home):
+    """Gateway-backed /goal sessions must inherit the canonical goal default."""
+    runner, _adapter, session_entry, src = _make_runner_with_adapter()
+    event = MessageEvent(
+        text="/goal ship it",
+        message_type=MessageType.COMMAND,
+        source=src,
+    )
+
+    mgr, returned_session = runner._get_goal_manager_for_event(event)
+
+    assert returned_session is session_entry
+    assert mgr.default_max_turns == 400
+    state = mgr.set("ship it")
+    assert state.max_turns == 400
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_command_strips_legacy_slash_args_label(hermes_home):
+    """Old Discord slash labels must not become part of the saved goal text."""
+    runner, _adapter, session_entry, src = _make_runner_with_adapter()
+    runner._enqueue_fifo = MagicMock()
+
+    event = MessageEvent(
+        text="/goal args:compile linux",
+        message_type=MessageType.COMMAND,
+        source=src,
+    )
+
+    result = await runner._handle_goal_command(event)
+
+    assert "args:" not in result
+    assert "Goal set (400-turn budget): compile linux" in result
+
+    from hermes_cli.goals import GoalManager
+
+    state = GoalManager(session_entry.session_id).state
+    assert state is not None
+    assert state.goal == "compile linux"
+    assert state.max_turns == 400
 
 
 @pytest.mark.asyncio

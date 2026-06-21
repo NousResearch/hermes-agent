@@ -105,7 +105,7 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert result["message"] == "build a rocket"
     assert "notice" in result
     assert "Goal set" in result["notice"]
-    assert "20-turn budget" in result["notice"]
+    assert "400-turn budget" in result["notice"]
 
     # Persisted in SessionDB
     from hermes_cli.goals import GoalManager
@@ -114,6 +114,7 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state is not None
     assert mgr.state.goal == "build a rocket"
     assert mgr.state.status == "active"
+    assert mgr.state.max_turns == 400
 
 
 def test_goal_pause_after_set(server, session):

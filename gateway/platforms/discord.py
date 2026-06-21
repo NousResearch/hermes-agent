@@ -37,6 +37,39 @@ except ImportError:
     Intents = Any
     commands = None
 
+from gateway.platforms import discord_gates as _gates  # quarantined-install
+from gateway.platforms.text_cleaner import clean as _clean_outgoing  # quarantined-install
+from gateway.platforms.text_cleaner import set_allowed_mention_ids as _set_allowed, reset_allowed_mention_ids as _reset_allowed  # quarantined-install
+
+# quarantined-install: runtime-editable reaction emoji loader.
+# Precedence: ~/.hermes/reactions.json > DISCORD_REACTION_<KIND> env > default.
+import json as _json_qi  # quarantined-install
+_REACTIONS_FILE = "/home/hermes/.hermes/reactions.json"
+
+def _load_reaction_emoji(kind: str, default: str) -> str:
+    """kind ∈ {'working', 'success', 'failure'}. Read fresh each call so
+    the bot can update reactions.json via an MCP tool and have it take
+    effect immediately, no restart."""
+    try:
+        with open(_REACTIONS_FILE) as _f:
+            _data = _json_qi.load(_f)
+        v = _data.get(kind)
+        if isinstance(v, str) and v:
+            return v
+    except Exception:
+        pass
+    env_key = f"DISCORD_REACTION_{kind.upper()}"
+    return os.getenv(env_key, default)
+
+import re as _re_qi  # quarantined-install
+_NO_EMBED_RE = _re_qi.compile(r"^\s*\[no[-_]?embed\]\s*", _re_qi.IGNORECASE)  # quarantined-install
+def _strip_no_embed(text):  # quarantined-install
+    """Detect [no-embed] sentinel. Returns (stripped_text, suppress_bool)."""
+    if not isinstance(text, str): return text, False
+    m = _NO_EMBED_RE.match(text)
+    if m: return text[m.end():], True
+    return text, False
+
 import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
@@ -737,6 +770,22 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
+                # quarantined-install: guild allowlist + per-user message rate limit
+                _g_id = str(message.guild.id) if getattr(message, "guild", None) else None
+                _u_id = str(message.author.id)
+                _allow, _reason = _gates.check_inbound(_g_id, _u_id, is_bot_self=False)
+                if not _allow:
+                    if _reason and not isinstance(message.channel, discord.DMChannel):
+                        try:
+                            await message.channel.send(_clean_outgoing(_reason), reference=message, mention_author=False)
+                        except Exception:
+                            pass
+                    elif _reason:
+                        try:
+                            await message.channel.send(_clean_outgoing(_reason))
+                        except Exception:
+                            pass
+                    return
                 await self._handle_message(message)
 
             @self._client.event
@@ -1078,7 +1127,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._add_reaction(message, "👀")
+            # quarantined-install: reaction emoji (file > env > default)
+            await self._add_reaction(message, _load_reaction_emoji("working", "👀"))
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
@@ -1086,11 +1136,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
+            # quarantined-install: reaction emoji (file > env > default)
+            await self._remove_reaction(message, _load_reaction_emoji("working", "👀"))
             if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
+                await self._add_reaction(message, _load_reaction_emoji("success", "✅"))
             elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+                await self._add_reaction(message, _load_reaction_emoji("failure", "❌"))
 
     async def send(
         self,
@@ -1135,6 +1186,12 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
+            # quarantined-install: detect [no-embed] sentinel so the bot can
+            # suppress URL preview embeds per message. Convention: prefix
+            # content with `[no-embed]` (case-insensitive). Stripped before
+            # chunking; flag passed to every channel.send below.
+            content, _suppress_qi = _strip_no_embed(content)
+
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1159,8 +1216,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     chunk_reference = reference if i == 0 else None
                 try:
                     msg = await channel.send(
-                        content=chunk,
+                        content=_clean_outgoing(chunk),
                         reference=chunk_reference,
+                        suppress_embeds=_suppress_qi,  # quarantined-install
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1181,8 +1239,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
                         reference = None
                         msg = await channel.send(
-                            content=chunk,
+                            content=_clean_outgoing(chunk),
                             reference=None,
+                            suppress_embeds=_suppress_qi,  # quarantined-install
                         )
                     else:
                         raise
@@ -1236,7 +1295,7 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(content=_clean_outgoing(chunk))
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -1367,7 +1426,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     content=(caption or "").strip(),
                     file=file,
                 )
-            msg = await channel.send(content=caption if caption else None, file=file)
+            msg = await channel.send(content=_clean_outgoing(caption if caption else None), file=file)
         return SendResult(success=True, message_id=str(msg.id))
 
     async def send_multiple_images(
@@ -1483,7 +1542,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         files=files,
                     )
                 else:
-                    await channel.send(content=content, files=files)
+                    await channel.send(content=_clean_outgoing(content), files=files)
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
@@ -2055,6 +2114,22 @@ class DiscordAdapter(BasePlatformAdapter):
         been responded to).
         """
         allowed, reason = self._evaluate_slash_authorization(interaction)
+        # quarantined-install: owner-only gate. Even if Discord lets a member
+        # invoke the command, refuse here unless the user is in
+        # DISCORD_SLASH_OWNER_IDS. /goal is intentionally exempt so regular
+        # allowed users can run long-lived goals without opening operator
+        # commands such as /restart, /update, /approve, or /deny.
+        _command_name = (command_text or "").strip().split(maxsplit=1)[0].lower()
+        _goal_owner_exempt = _command_name == "/goal"
+        _owner_ids_raw = os.getenv("DISCORD_SLASH_OWNER_IDS", "").strip()
+        _user = getattr(interaction, "user", None)
+        _user_id = str(getattr(_user, "id", "")) if _user else ""
+        if _owner_ids_raw and not _goal_owner_exempt:
+            _owners = {x.strip() for x in _owner_ids_raw.split(",") if x.strip()}
+            if _user_id not in _owners:
+                return await self._reject_slash(
+                    interaction, command_text, reason="owner-only command",
+                )
         if allowed:
             return True
         return await self._reject_slash(
@@ -2235,7 +2310,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
 
                     msg = await channel.send(
-                        content=caption if caption else None,
+                        content=_clean_outgoing(caption if caption else None),
                         file=file,
                     )
                     return SendResult(success=True, message_id=str(msg.id))
@@ -2304,7 +2379,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
 
                     msg = await channel.send(
-                        content=caption if caption else None,
+                        content=_clean_outgoing(caption if caption else None),
                         file=file,
                     )
                     return SendResult(success=True, message_id=str(msg.id))
@@ -2700,6 +2775,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
+        @tree.command(name="goal", description="Set or inspect a standing goal")
+        @discord.app_commands.describe(
+            text="Goal text, or one of: status, pause, resume, clear",
+        )
+        async def slash_goal(interaction: discord.Interaction, text: str = ""):
+            await self._handle_goal_slash(interaction, text)
+
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
         async def slash_queue(interaction: discord.Interaction, prompt: str):
@@ -2830,7 +2912,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._apply_owner_only_visibility(tree)
 
     def _apply_owner_only_visibility(self, tree) -> None:
-        """Set default_member_permissions=0 on every registered slash command.
+        """Set default_member_permissions=0 on every registered slash command except /goal.
 
         Discord interprets ``Permissions(0)`` as "requires no permissions",
         which paradoxically means the command is hidden from every guild
@@ -2852,6 +2934,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         applied = 0
         for cmd in tree.get_commands():
+            if str(getattr(cmd, "name", "")).lower() == "goal":
+                continue
             try:
                 cmd.default_permissions = no_perms
                 applied += 1
@@ -3155,6 +3239,7 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_id: str,
         thread_name: str,
         text: str,
+        message_type: MessageType = MessageType.TEXT,
     ) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
         guild_name = ""
@@ -3183,12 +3268,114 @@ class DiscordAdapter(BasePlatformAdapter):
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=message_type,
             source=source,
             raw_message=interaction,
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
         )
+        await self.handle_message(event)
+
+    def _goal_slash_sets_new_goal(self, command_text: str) -> bool:
+        """Return True when /goal carries new goal text, not a control verb."""
+        parts = (command_text or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if not arg:
+            return False
+        return arg.lower() not in {"status", "pause", "resume", "clear", "stop", "done"}
+
+    def _goal_thread_name(self, command_text: str) -> str:
+        """Derive a short Discord thread name from /goal text."""
+        parts = (command_text or "").strip().split(None, 1)
+        content = parts[1].strip() if len(parts) > 1 else ""
+        content = re.sub(r"<@[!&]?\d+>", "", content)
+        content = re.sub(r"<#\d+>", "", content)
+        content = re.sub(r"\s+", " ", content).strip()
+        if not content:
+            return "Hermes goal"
+        return content[:77] + "..." if len(content) > 80 else content[:80]
+
+    async def _should_auto_thread_slash(self, interaction: discord.Interaction) -> bool:
+        """Mirror Discord auto-thread channel rules for slash commands."""
+        channel = await self._resolve_interaction_channel(interaction)
+        if channel is None:
+            return False
+        if isinstance(channel, (discord.DMChannel, discord.Thread)):
+            return False
+
+        channel_ids = {str(getattr(channel, "id", getattr(interaction, "channel_id", "")))}
+        parent_channel_id = self._get_parent_channel_id(channel)
+        if parent_channel_id:
+            channel_ids.add(parent_channel_id)
+
+        no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
+        no_thread_channels = {
+            ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()
+        }
+        skip_thread = bool(channel_ids & no_thread_channels)
+        auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+
+        auto_thread_chans_raw = os.getenv("DISCORD_AUTO_THREAD_CHANNELS", "")
+        auto_thread_chans = {
+            ch.strip() for ch in auto_thread_chans_raw.split(",") if ch.strip()
+        }
+        if channel_ids & auto_thread_chans:
+            auto_thread = True
+            skip_thread = False
+
+        voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
+        is_voice_linked_channel = str(getattr(channel, "id", "")) in voice_linked_ids
+        return auto_thread and not skip_thread and not is_voice_linked_channel
+
+    async def _handle_goal_slash(self, interaction: discord.Interaction, text: str = "") -> None:
+        """Handle /goal slash commands, creating a thread for new goals when configured."""
+        command_text = f"/goal {text}".strip()
+        if (
+            not self._goal_slash_sets_new_goal(command_text)
+            or not await self._should_auto_thread_slash(interaction)
+        ):
+            await self._run_simple_slash(interaction, command_text)
+            return
+
+        if not await self._check_slash_authorization(interaction, command_text):
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        result = await self._create_thread(
+            interaction,
+            name=self._goal_thread_name(command_text),
+            message="",
+            auto_archive_duration=60,
+            reason_command="/goal",
+        )
+
+        if result.get("success"):
+            thread_id = result.get("thread_id")
+            thread_name = result.get("thread_name") or self._goal_thread_name(command_text)
+            link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
+            try:
+                await interaction.edit_original_response(content=f"Created goal thread {link}")
+            except Exception as e:
+                logger.debug("Discord /goal thread acknowledgement failed: %s", e)
+            if thread_id:
+                self._threads.mark(thread_id)
+                await self._dispatch_thread_session(
+                    interaction,
+                    thread_id,
+                    thread_name,
+                    command_text,
+                    message_type=MessageType.COMMAND,
+                )
+            return
+
+        error = result.get("error", "unknown error")
+        try:
+            await interaction.edit_original_response(
+                content=f"Failed to create goal thread: {error}. Running /goal in this channel."
+            )
+        except Exception as e:
+            logger.debug("Discord /goal thread failure acknowledgement failed: %s", e)
+        event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
 
     def _resolve_channel_skills(self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
@@ -3269,6 +3456,7 @@ class DiscordAdapter(BasePlatformAdapter):
         name: str,
         message: str = "",
         auto_archive_duration: int = 1440,
+        reason_command: str = "/thread",
     ) -> Dict[str, Any]:
         """Create a thread in the current Discord channel.
 
@@ -3295,7 +3483,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return {"error": "Could not determine a parent text channel for the new thread."}
 
         display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
-        reason = f"Requested by {display_name} via /thread"
+        reason = f"Requested by {display_name} via {reason_command}"
         starter_message = (message or "").strip()
 
         try:
@@ -3356,7 +3544,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_name = thread_name[:77] + "..."
 
         try:
-            thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+            thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
             return thread
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -3365,7 +3553,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
                 thread = await seed_msg.create_thread(
                     name=thread_name,
-                    auto_archive_duration=1440,
+                    auto_archive_duration=60,
                     reason=reason,
                 )
                 return thread
@@ -3726,6 +3914,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
+        # quarantined-install: set per-turn allowed mention IDs so the
+        # gateway-side cleaner can strip foreign @-pings the agent emits.
+        # Allowed = the message author + anyone the author themself
+        # @-mentioned in this message. Active when HERMES_STRIP_FOREIGN_MENTIONS=true.
+        try:
+            _allowed_ids = {str(message.author.id)}
+            for _m in (message.mentions or []):
+                _mid = getattr(_m, "id", None)
+                if _mid:
+                    _allowed_ids.add(str(_mid))
+            _set_allowed(_allowed_ids)
+        except Exception:
+            pass
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
@@ -3775,6 +3976,25 @@ class DiscordAdapter(BasePlatformAdapter):
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             if "*" in ignored_channels or (channel_ids & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
+                # quarantined-install: when a user actually @-pings the bot in
+                # a muted channel, send ONE short notice per user per 10min so
+                # they don't think the bot is dead. Silent on non-mention msgs.
+                try:
+                    if mention_prefix:
+                        import time as _time
+                        _MUTE_NOTIFY_TTL = 600  # 10 min per user
+                        _g = globals()
+                        _ts_map = _g.setdefault("_mute_notify_ts", {})
+                        _uid = str(message.author.id)
+                        _now = _time.time()
+                        if _now - _ts_map.get(_uid, 0) > _MUTE_NOTIFY_TTL:
+                            _ts_map[_uid] = _now
+                            await message.channel.send(
+                                f"<@{_uid}> i'm muted in this channel sorry. ping me in #wiseman-home or DM me",
+                                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                            )
+                except Exception as _e:
+                    logger.debug("muted-notice send failed: %s", _e)
                 return
 
             free_channels = self._discord_free_response_channels()
@@ -3792,14 +4012,48 @@ class DiscordAdapter(BasePlatformAdapter):
                 or bool(channel_ids & free_channels)
                 or is_voice_linked_channel
             )
+            is_gateway_slash_command = False
+            if normalized_content.startswith("/"):
+                try:
+                    from hermes_cli.commands import resolve_command
 
-            # Skip the mention check if the message is in a thread where
-            # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._threads
+                    raw_cmd = normalized_content.split(maxsplit=1)[0][1:].lower()
+                    if "@" in raw_cmd:
+                        raw_cmd = raw_cmd.split("@", 1)[0]
+                    is_gateway_slash_command = "/" not in raw_cmd and resolve_command(raw_cmd) is not None
+                except Exception:
+                    is_gateway_slash_command = False
 
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+            # quarantined-install: threads behave like channels — require an
+            # explicit @-mention before responding. Removed the prior
+            # `in_bot_thread` exemption so the bot doesn't auto-reply to
+            # every message in a thread it once posted in. Auto-thread
+            # creation in DISCORD_AUTO_THREAD_CHANNELS still works because
+            # that's a separate code path (above).
+            if require_mention and not is_free_channel:
+                if (
+                    self._client.user not in message.mentions
+                    and not mention_prefix
+                    and not is_gateway_slash_command
+                ):
                     return
+
+            # quarantined-install: spend pre-check (post mention-gate). Only fires
+            # for messages the bot has actually decided to handle, so over-cap users
+            # are only notified when they address the bot, not on every channel msg.
+            _spend_user_id = str(message.author.id)
+            _spend_ok, _spend_msg = _gates.check_spend_pre_invoke(_spend_user_id)
+            if not _spend_ok:
+                if _spend_msg:
+                    try:
+                        await message.channel.send(
+                            _clean_outgoing(_spend_msg),
+                            reference=message,
+                            mention_author=False,
+                        )
+                    except Exception:
+                        pass
+                return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -3810,7 +4064,25 @@ class DiscordAdapter(BasePlatformAdapter):
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            # quarantined-install: per-channel force-auto-thread overrides the
+            # global auto_thread flag. Use for high-traffic channels where the
+            # bot should always reply in a thread to avoid clogging the main
+            # channel (e.g. #gooneral-32).
+            _auto_thread_chans_raw = os.getenv("DISCORD_AUTO_THREAD_CHANNELS", "")
+            _auto_thread_chans = {ch.strip() for ch in _auto_thread_chans_raw.split(",") if ch.strip()}
+            _force_thread_here = bool(channel_ids & _auto_thread_chans)
+            if _force_thread_here:
+                auto_thread = True
+                skip_thread = False
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
+            # Force-thread channels also bypass the reply-message bypass —
+            # otherwise users hitting Discord's "reply" button on the bot's
+            # past messages would still clog the main channel.
+            # Inverted default: when auto-thread is on and the channel is not
+            # in DISCORD_NO_THREAD_CHANNELS, the same bypass applies, so
+            # Discord "reply" presses thread too.
+            if _force_thread_here or (auto_thread and not skip_thread):
+                is_reply_message = False
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
@@ -3985,10 +4257,50 @@ class DiscordAdapter(BasePlatformAdapter):
 
         reply_to_id = None
         reply_to_text = None
-        if message.reference:
+        if message.reference:  # quarantined-install: resolve replied-to msg w/ fetch fallback
             reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+            ref = message.reference.resolved
+            if ref is None and message.reference.message_id:
+                try:
+                    ref = await message.channel.fetch_message(message.reference.message_id)
+                except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                    ref = None
+            if ref is not None and not isinstance(ref, discord.DeletedReferencedMessage):
+                _rc = (getattr(ref, "content", None) or "").strip()
+                _ra = (getattr(getattr(ref, "author", None), "display_name", None)
+                       or getattr(getattr(ref, "author", None), "name", None) or "someone")
+                # quarantined-install: feed the replied-to message's IMAGE
+                # attachments into the same media pipeline a directly-attached
+                # image uses, so "reply to an image, ask what is this" gives
+                # the model the actual image, not just a text note.
+                _ref_imgs = 0
+                for _ratt in (getattr(ref, "attachments", None) or [])[:4]:
+                    _rct = getattr(_ratt, "content_type", None) or ""
+                    if not _rct.startswith("image/"):
+                        continue
+                    try:
+                        _rext = "." + _rct.split("/")[-1].split(";")[0]
+                        if _rext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                            _rext = ".jpg"
+                        _rpath = await self._cache_discord_image(_ratt, _rext)
+                        media_urls.append(_rpath)
+                        media_types.append(_rct)
+                        _ref_imgs += 1
+                        print(f"[Discord] Cached replied-to image: {_rpath}", flush=True)
+                    except Exception as _rie:
+                        media_urls.append(_ratt.url)
+                        media_types.append(_rct)
+                        _ref_imgs += 1
+                        print(f"[Discord] Replied-to image cache failed, URL fallback: {_rie}", flush=True)
+                if not _rc:
+                    if _ref_imgs:
+                        _rc = "(an image they shared — attached above for you to view)"
+                    elif getattr(ref, "attachments", None):
+                        _rc = f"(a file: {ref.attachments[0].filename})"
+                    elif getattr(ref, "embeds", None):
+                        _rc = "(an embed/link)"
+                if _rc:
+                    reply_to_text = f"[{_ra}]: {_rc}"
 
         event = MessageEvent(
             text=event_text,

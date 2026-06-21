@@ -416,6 +416,14 @@ class ChatCompletionsTransport(ProviderTransport):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
+        # quarantined-install: code-level user attribution for OpenRouter spend tracking
+        # Falls back to HERMES_USER_ID_OVERRIDE env var so cron-script invocations
+        # (idle reflector etc.) can tag themselves as cron:<jobname>.
+        import os as _os
+        _user_tag = params.get("user_id") or _os.environ.get("HERMES_USER_ID_OVERRIDE")
+        if _user_tag is not None and str(_user_tag).strip():
+            api_kwargs.setdefault("user", str(_user_tag))
+
         # Request overrides last (service_tier etc.)
         overrides = params.get("request_overrides")
         if overrides:

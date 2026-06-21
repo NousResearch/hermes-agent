@@ -330,6 +330,39 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "vision_analyze",
     "web_extract",
     "web_search",
+    # quarantined-install: read-only MCP tools we ship — safe to fan out
+    # multiple in one round-trip (e.g. fetch 3 article URLs at once,
+    # combine 2 chat lookups). NEVER add tools that mutate state
+    # (set_reminder, add_note, set_reaction_emoji, generate_image).
+    "mcp_research_web_search",
+    "mcp_research_web_fetch",
+    "mcp_research_wikipedia_search",
+    "mcp_research_wikipedia_summary",
+    "mcp_research_arxiv_search",
+    "mcp_research_youtube_transcript",
+    "mcp_chat_search",
+    "mcp_chat_recent",
+    "mcp_chat_messages_around",
+    "mcp_chat_messages_by_user",
+    "mcp_chat_top_users",
+    "mcp_chat_who_is",
+    "mcp_chat_search_users",
+    "mcp_chat_semantic_search",
+    "mcp_chat_co_messages",
+    "mcp_chat_find_quote",
+    "mcp_chat_stats",
+    "mcp_chat_embed_stats",
+    "mcp_budget_budget_report",
+    "mcp_budget_spend_graph",
+    "mcp_budget_spend_graph_image",
+    "mcp_ops_status",
+    "mcp_ops_configuration",
+    "mcp_ops_recent_errors",
+    "mcp_ops_describe",
+    "mcp_ops_recent_routes",
+    "mcp_ops_recent_latency",
+    "mcp_ops_get_reaction_emojis",
+    "mcp_channel_notes_list_notes",
 })
 
 # File tools can run concurrently when they target independent paths.
@@ -8336,7 +8369,8 @@ class AIAgent:
             if ephemeral_out is not None:
                 self._ephemeral_max_output_tokens = None  # consume immediately
             return _transport.build_kwargs(
-                model=self.model,
+                user_id=getattr(self, "_user_id", None),
+            model=self.model,
                 messages=anthropic_messages,
                 tools=self.tools,
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
@@ -8356,7 +8390,8 @@ class AIAgent:
             region = getattr(self, "_bedrock_region", None) or "us-east-1"
             guardrail = getattr(self, "_bedrock_guardrail_config", None)
             return _bt.build_kwargs(
-                model=self.model,
+                user_id=getattr(self, "_user_id", None),
+            model=self.model,
                 messages=api_messages,
                 tools=self.tools,
                 max_tokens=self.max_tokens or 4096,
@@ -8380,7 +8415,8 @@ class AIAgent:
             is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
             _msgs_for_codex = self._prepare_messages_for_non_vision_model(api_messages)
             return _ct.build_kwargs(
-                model=self.model,
+                user_id=getattr(self, "_user_id", None),
+            model=self.model,
                 messages=_msgs_for_codex,
                 tools=self.tools,
                 reasoning_config=self.reasoning_config,
@@ -8466,6 +8502,7 @@ class AIAgent:
         _msgs_for_chat = self._prepare_messages_for_non_vision_model(api_messages)
 
         return _ct.build_kwargs(
+            user_id=getattr(self, "_user_id", None),
             model=self.model,
             messages=_msgs_for_chat,
             tools=self.tools,
@@ -10358,7 +10395,7 @@ class AIAgent:
 
                 if self.api_mode == "anthropic_messages":
                     _tsum = self._get_transport()
-                    _ant_kw = _tsum.build_kwargs(model=self.model, messages=api_messages, tools=None,
+                    _ant_kw = _tsum.build_kwargs(user_id=getattr(self, "_user_id", None), model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                    is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
@@ -10388,7 +10425,7 @@ class AIAgent:
                     final_response = (_cnr_retry.content or "").strip()
                 elif self.api_mode == "anthropic_messages":
                     _tretry = self._get_transport()
-                    _ant_kw2 = _tretry.build_kwargs(model=self.model, messages=api_messages, tools=None,
+                    _ant_kw2 = _tretry.build_kwargs(user_id=getattr(self, "_user_id", None), model=self.model, messages=api_messages, tools=None,
                                     is_oauth=self._is_anthropic_oauth,
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())

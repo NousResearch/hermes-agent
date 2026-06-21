@@ -1190,7 +1190,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
+        # quarantined-install: tag cron-spawned LLM calls with cron:<jobname>
+        # so the openrouter-router proxy attributes spend to the cron bucket.
+        _job_name = (job.get("name") if isinstance(job, dict) else getattr(job, "name", None)) or job_id or "anon"
         agent = AIAgent(
+            user_id=f"cron:{_job_name}",
             model=model,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -1527,6 +1531,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+                # quarantined-install: undelivered result is NOT success
+                if success and delivery_error:
+                    success = False
+                    error = f"delivery failed: {delivery_error}"
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True
 

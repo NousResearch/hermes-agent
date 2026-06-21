@@ -509,7 +509,7 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     message.create_thread.assert_awaited_once()
     call_kwargs = message.create_thread.await_args[1]
     assert call_kwargs["name"] == "Hello world, how are you?"
-    assert call_kwargs["auto_archive_duration"] == 1440
+    assert call_kwargs["auto_archive_duration"] == 60
 
 
 @pytest.mark.asyncio
@@ -589,7 +589,7 @@ async def test_auto_create_thread_falls_back_to_seed_message(adapter):
     message.channel.send.assert_awaited_once_with("🧵 Thread created by Hermes: **Hello**")
     seed_message.create_thread.assert_awaited_once_with(
         name="Hello",
-        auto_archive_duration=1440,
+        auto_archive_duration=60,
         reason="Auto-threaded from mention by Jezza",
     )
 
@@ -650,6 +650,27 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
     )
 
 
+def _fake_interaction(channel, *, user_id=42, display_name="Jezza"):
+    return SimpleNamespace(
+        channel=channel,
+        channel_id=channel.id,
+        user=SimpleNamespace(id=user_id, display_name=display_name, name=display_name),
+        guild=SimpleNamespace(name="TestGuild", id=1),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+
+async def _invoke_goal_slash(adapter, interaction, args: str = ""):
+    goal_cmd = adapter._client.tree.commands["goal"]
+    if hasattr(goal_cmd, "callback"):
+        await goal_cmd.callback(interaction, args=args)
+    else:
+        await goal_cmd(interaction, text=args)
+
+
 @pytest.mark.asyncio
 async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     """When DISCORD_AUTO_THREAD=true, a new thread is created and the event routes there."""
@@ -676,6 +697,57 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     assert event.source.chat_id == "999"  # redirected to thread
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_goal_slash_new_goal_auto_threads_by_default(adapter, monkeypatch):
+    """Setting a new /goal from a normal channel follows Discord auto-thread rules."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    adapter._create_thread = AsyncMock(
+        return_value={"success": True, "thread_id": "999", "thread_name": "compile linux"},
+    )
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+    adapter._register_slash_commands()
+
+    interaction = _fake_interaction(_FakeTextChannel())
+    await _invoke_goal_slash(adapter, interaction, "compile linux")
+
+    adapter._create_thread.assert_awaited_once()
+    _, kwargs = adapter._create_thread.await_args
+    assert kwargs["message"] == ""
+    assert kwargs["auto_archive_duration"] == 60
+    assert kwargs["reason_command"] == "/goal"
+    assert len(captured_events) == 1
+    event = captured_events[0]
+    assert event.text == "/goal compile linux"
+    assert event.message_type.name == "COMMAND"
+    assert event.source.chat_id == "999"
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+    interaction.edit_original_response.assert_awaited_once()
+    assert "<#999>" in interaction.edit_original_response.await_args.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_goal_slash_status_does_not_auto_thread(adapter, monkeypatch):
+    """Control-plane /goal subcommands should keep the existing slash path."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    adapter._create_thread = AsyncMock()
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = _fake_interaction(_FakeTextChannel())
+    await _invoke_goal_slash(adapter, interaction, "status")
+
+    adapter._create_thread.assert_not_awaited()
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/goal status")
 
 
 @pytest.mark.asyncio
@@ -980,4 +1052,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

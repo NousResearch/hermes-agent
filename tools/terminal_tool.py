@@ -105,7 +105,7 @@ def _safe_parse_import_env(
 # Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
 FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
     "TERMINAL_MAX_FOREGROUND_TIMEOUT",
-    600,
+    os.getenv("TERMINAL_TIMEOUT", "600"),
     int,
     "integer",
 )
@@ -1082,6 +1082,7 @@ def _get_env_config() -> Dict[str, Any]:
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
+        "container_memory_swap": _parse_env_var("TERMINAL_CONTAINER_MEMORY_SWAP", "0"),  # MB; 0 = Docker default
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
@@ -1123,6 +1124,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     cc = container_config or {}
     cpu = cc.get("container_cpu", 1)
     memory = cc.get("container_memory", 5120)
+    memory_swap = cc.get("container_memory_swap", 0)
     disk = cc.get("container_disk", 51200)
     persistent = cc.get("container_persistent", True)
     volumes = cc.get("docker_volumes", [])
@@ -1782,6 +1784,7 @@ def terminal_tool(
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
+                                "container_memory_swap": config.get("container_memory_swap", 0),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),

@@ -710,6 +710,27 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _confirm_adapter_delivery(send_result) -> bool:
+    """Return True only if ``send_result`` unambiguously confirms delivery.
+
+    A live adapter that returns ``None`` (e.g. a swallowed exception, a busy
+    platform, or a code path that returns early without producing a
+    ``SendResult``) must NOT be treated as success — doing so causes the
+    scheduler to log ``"delivered to <chat> via live adapter"`` while the
+    gateway never actually sees the message (#47056).
+
+    Likewise, an object missing a ``success`` attribute (e.g. a bare ``dict``
+    or a partial mock) is a contract violation: it does not actually tell us
+    whether the send succeeded.  Require an explicit, truthy ``success``
+    attribute to count as confirmed.
+    """
+    if send_result is None:
+        return False
+    if not hasattr(send_result, "success"):
+        return False
+    return bool(getattr(send_result, "success"))
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -723,11 +744,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     """
     targets = _resolve_delivery_targets(job)
     if not targets:
-        if job.get("deliver", "local") != "local":
-            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
-            logger.warning("Job '%s': %s", job["id"], msg)
-            return msg
-        return None  # local-only jobs don't deliver — not a failure
+        deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+        if deliver_value == "local":
+            return None  # local-only jobs don't deliver — not a failure
+        # deliver=origin with no resolvable origin and no configured home
+        # channels: treat as local rather than reporting an error.  CLI-created
+        # jobs never capture a {platform, chat_id} origin, so failing here would
+        # make every CLI `deliver=origin` (or auto-detect) job emit a spurious
+        # "no delivery target resolved" error on every run (#43014).  The output
+        # is still persisted in last_output for `cron list`/resume.
+        if deliver_value == "origin":
+            logger.info(
+                "Job '%s': deliver=origin but no origin or home channels — "
+                "skipping delivery (output saved in last_output)",
+                job.get("name", job.get("id", "?")),
+            )
+            return None
+        msg = f"no delivery target resolved for deliver={deliver_value}"
+        logger.warning("Job '%s': %s", job["id"], msg)
+        return msg
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -817,6 +852,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
+                timed_out = False
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
                     future = safe_schedule_threadsafe(
@@ -827,19 +863,81 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         adapter_ok = False
                         target_errors.append("live adapter event loop scheduling failed")
                     else:
+                        send_result = None
+                        timeout_handled = False
                         try:
                             send_result = future.result(timeout=60)
-                        except TimeoutError as te:
-                            future.cancel()
-                            target_errors.append(f"live adapter send timed out: {te}")
-                            raise
+                        except TimeoutError:
+                            # #38922: a slow confirmation does NOT necessarily
+                            # mean the send failed — but we must distinguish two
+                            # cases via future.cancel()'s return value:
+                            #
+                            #   cancel() == False -> the coroutine was already
+                            #     running on the gateway loop when the timeout
+                            #     fired; the request is in flight on the wire and
+                            #     cannot be un-sent.  Re-sending via standalone
+                            #     would be a guaranteed DUPLICATE, so treat it as
+                            #     delivered (assume-delivered).
+                            #
+                            #   cancel() == True -> the scheduled callback never
+                            #     started executing (loop wedged/backlogged for
+                            #     the full 60s), so nothing was sent.  We MUST
+                            #     fall through to the standalone path or the
+                            #     message is silently dropped (worse than a
+                            #     duplicate).
+                            cancelled = future.cancel()
+                            if cancelled:
+                                msg = (
+                                    f"live adapter send to {platform_name}:{chat_id} "
+                                    "timed out before the coroutine was dispatched"
+                                )
+                                logger.warning(
+                                    "Job '%s': %s, falling back to standalone",
+                                    job["id"], msg,
+                                )
+                                target_errors.append(msg)
+                                adapter_ok = False  # fall through to standalone path
+                                timeout_handled = True
+                            else:
+                                timed_out = True
+                                timeout_handled = True
+                                logger.warning(
+                                    "Job '%s': live adapter send to %s:%s timed out "
+                                    "after 60s; already dispatched (in flight), "
+                                    "assuming delivered (skipping standalone fallback "
+                                    "to avoid duplicate)",
+                                    job["id"], platform_name, chat_id,
+                                )
                         except Exception as ex:
+                            # A real send error (not a slow confirmation) — fall
+                            # through to the standalone path so the message is
+                            # still delivered.
                             target_errors.append(f"live adapter send failed: {ex}")
                             raise
 
-                        if send_result is None or not getattr(send_result, "success", True):
-                            err = getattr(send_result, "error", "unknown") if send_result else "no response from adapter"
-                            msg = f"live adapter send to {platform_name}:{chat_id} failed: {err}"
+                        if timeout_handled:
+                            # The timeout branch above already decided the
+                            # outcome (assume-delivered if in flight, or
+                            # adapter_ok=False to fall through if never
+                            # dispatched).  send_result is None, so skip the
+                            # confirmation/thread-fallback inspection below.
+                            pass
+                        elif not _confirm_adapter_delivery(send_result):
+                            # A ``None`` return or a result object missing an
+                            # explicit ``success`` attribute is NOT a confirmed
+                            # delivery (#47056): the scheduler would log
+                            # "delivered" while the gateway never saw it.  Fall
+                            # through to the standalone path.
+                            err = (
+                                getattr(send_result, "error", None)
+                                if send_result is not None
+                                else "no response from adapter"
+                            )
+                            shape = type(send_result).__name__ if send_result is not None else "None"
+                            msg = (
+                                f"live adapter send to {platform_name}:{chat_id} "
+                                f"returned unconfirmed result ({shape}, error={err})"
+                            )
                             logger.warning(
                                 "Job '%s': %s, falling back to standalone",
                                 job["id"], msg,
@@ -860,8 +958,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             logger.warning("Job '%s': %s", job["id"], msg)
                             delivery_errors.append(msg)
 
-                # Send extracted media files as native attachments via the live adapter
-                if adapter_ok and media_files:
+                # Send extracted media files as native attachments via the live adapter.
+                # Skip on an in-flight confirmation timeout: the gateway loop is
+                # contended, so each media send would also block its 30s budget,
+                # and the text payload is already assumed delivered (#38922).
+                # Record the skipped attachments so the drop is visible in the
+                # job's delivery error rather than silently lost.
+                if adapter_ok and not timed_out and media_files:
                     _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
@@ -871,6 +974,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         job,
                         platform=platform,
                     )
+                elif timed_out and media_files:
+                    msg = (
+                        f"{len(media_files)} media attachment(s) not delivered to "
+                        f"{platform_name}:{chat_id} (live adapter confirmation timed out)"
+                    )
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    delivery_errors.append(msg)
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)

@@ -791,6 +791,39 @@ def _reply_message(reply_to_id, *, reply_text=None, reply_caption=None, quote_te
     )
 
 
+def _reply_message_with_rich_blocks(
+    reply_to_id,
+    *,
+    blocks,
+    quote_text=None,
+    api_kwargs_factory=dict,
+):
+    """Build a reply whose echoed content lives only in api_kwargs.rich_message."""
+    replied = SimpleNamespace(
+        message_id=int(reply_to_id),
+        text=None,
+        caption=None,
+        api_kwargs=api_kwargs_factory({"rich_message": {"blocks": blocks}}),
+    )
+    quote = SimpleNamespace(text=quote_text) if quote_text is not None else None
+    return SimpleNamespace(
+        message_id=999,
+        chat=SimpleNamespace(id=12345, type="private", title=None, full_name="U"),
+        from_user=SimpleNamespace(
+            id=42, username="u", first_name="U", last_name=None,
+            full_name="U", is_bot=False,
+        ),
+        text="what did this mean?",
+        caption=None,
+        reply_to_message=replied,
+        quote=quote,
+        message_thread_id=None,
+        is_topic_message=False,
+        entities=[],
+        date=None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     """A reply to a rich-sent message resolves the original text via the index."""
@@ -863,3 +896,66 @@ async def test_rich_reply_caption_wins_over_lookup(monkeypatch, tmp_path):
         _reply_message("678", reply_caption="echoed caption"), MessageType.TEXT,
     )
     assert event.reply_to_text == "echoed caption"
+
+
+@pytest.mark.asyncio
+async def test_rich_reply_native_blocks_fill_reply_text_without_index(monkeypatch, tmp_path):
+    """Echoed rich_message blocks should recover reply text natively."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    event = adapter._build_message_event(
+        _reply_message_with_rich_blocks(
+            "678",
+            blocks=[
+                {"type": "paragraph", "text": ["Hello ", {"type": "bold", "text": "world"}]},
+                {"type": "pre", "text": "Line 2"},
+            ],
+        ),
+        MessageType.TEXT,
+    )
+    assert event.reply_to_text == "Hello world\nLine 2"
+
+
+@pytest.mark.asyncio
+async def test_rich_reply_native_blocks_win_over_index(monkeypatch, tmp_path):
+    """Native rich echo should beat the local send-time index fallback."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+    from gateway import rich_sent_store
+
+    rich_sent_store.record("12345", "678", "recorded body")
+    adapter = _make_adapter()
+    event = adapter._build_message_event(
+        _reply_message_with_rich_blocks(
+            "678",
+            blocks=[{"type": "paragraph", "text": ["Echoed ", {"type": "italic", "text": "body"}]}],
+        ),
+        MessageType.TEXT,
+    )
+    assert event.reply_to_text == "Echoed body"
+
+
+@pytest.mark.asyncio
+async def test_rich_reply_native_blocks_support_mappingproxy_like_api_kwargs(monkeypatch, tmp_path):
+    """Duck-type api_kwargs via .get() so mappingproxy-like objects also work."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+
+    class MappingProxyLike(dict):
+        pass
+
+    adapter = _make_adapter()
+    event = adapter._build_message_event(
+        _reply_message_with_rich_blocks(
+            "678",
+            blocks=[
+                {"type": "heading", "text": "Status", "size": 2},
+                {"type": "list", "items": [{"label": "-", "blocks": [{"type": "paragraph", "text": ["done"]}]}]},
+            ],
+            api_kwargs_factory=MappingProxyLike,
+        ),
+        MessageType.TEXT,
+    )
+    assert event.reply_to_text == "Status\n- done"

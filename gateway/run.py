@@ -7742,8 +7742,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
-            _telegram_followup_grace = float(
-                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
+            _telegram_followup_grace = _float_env(
+                "HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0
             )
             _started_at = self._running_agents_ts.get(_quick_key, 0)
             if (

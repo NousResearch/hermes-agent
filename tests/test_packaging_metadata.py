@@ -286,13 +286,18 @@ def test_optional_mcps_catalog_entries_ship_in_wheel():
     missing = []
     for name in on_disk:
         key = f"optional-mcps/{name}"
-        expected = [f"optional-mcps/{name}/manifest.yaml"]
-        if data_files.get(key) != expected:
+        manifest_path = f"optional-mcps/{name}/manifest.yaml"
+        # Assert the target EXISTS and INCLUDES the manifest — not that it
+        # equals exactly one path. An entry may legitimately ship additional
+        # files (README, assets) under the same target; the guard we care
+        # about is that the manifest itself is never dropped from the wheel.
+        targets = data_files.get(key)
+        if not targets or manifest_path not in targets:
             missing.append(key)
     assert not missing, (
-        "pyproject [tool.setuptools.data-files] is missing a wheel target for "
-        f"each on-disk optional-mcps entry (so it would be dropped from the "
-        f"wheel): {missing}"
+        "pyproject [tool.setuptools.data-files] is missing a wheel target "
+        "shipping the manifest for each on-disk optional-mcps entry (so it "
+        f"would be dropped from the wheel): {missing}"
     )
 
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")

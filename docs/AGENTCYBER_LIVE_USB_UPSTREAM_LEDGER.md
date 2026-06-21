@@ -236,9 +236,13 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 **Commit / push**
 
-- Pending: this entry intentionally records pre-commit verification first. After the scoped code/docs commit is pushed, add one bounded ledger-only follow-up with the final commit SHA and remote-tip verification, then stop.
+- Committed scoped Live USB provision guard/tests/ledger changes on the guarded sync branch: `a886bf011f0fed8d1b373d6d44f4c995412d2fec` (`fix: guard AgentCyber live USB provisioning`).
+- Pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force.
+- Verified local and remote branch tips matched after push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `a886bf011f0fed8d1b373d6d44f4c995412d2fec`.
+- Post-push drift: `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`; `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `72`.
+- This is the one bounded ledger-only follow-up recording the post-push facts; after pushing this ledger commit, final verification should check local HEAD equals the remote branch tip and stop rather than amending the ledger again solely to mention the ledger commit SHA.
 
 **Next lane**
 
-- Push the guarded sync branch after the scoped commit, then open/review/merge it into AgentCyber main only after human approval; do not force-push.
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger before taking a new implementation lane.

@@ -35,25 +35,11 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from _hermes_home import display_hermes_home, get_default_hermes_root, get_hermes_home
+from _hermes_home import client_secret_path as _client_secret_path
+from _hermes_home import display_hermes_home, get_hermes_home
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
-
-
-def _client_secret_path() -> Path:
-    """Shared OAuth client secret (host-wide app credential).
-
-    Anchored at the default Hermes root so a gateway running under a named
-    profile sees the one-time host setup; a profile-local copy wins when
-    present. Mirrors hermes_constants.get_default_hermes_root() precedence
-    and the google_chat fix in commit fff056144.
-    """
-    profile_local = get_hermes_home() / "google_client_secret.json"
-    if profile_local.exists():
-        return profile_local
-    return get_default_hermes_root() / "google_client_secret.json"
-
 
 CLIENT_SECRET_PATH = _client_secret_path()
 PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"

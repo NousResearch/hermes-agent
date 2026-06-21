@@ -391,3 +391,27 @@ class TestClientSecretDefaultRoot:
 
         module = self._load_setup(monkeypatch)
         assert module._client_secret_path() == root / "google_client_secret.json"
+
+    def test_profile_local_directory_does_not_shadow_default_root(
+        self, monkeypatch, tmp_path
+    ):
+        """A *directory* named google_client_secret.json must not win precedence.
+
+        ``exists()`` matches directories too, so a same-named directory in the
+        profile dir would shadow the real default-root secret and break the
+        OAuth flow at file-open time. The resolver gates on ``is_file()``, so it
+        skips the directory and falls back to the default-root file.
+        """
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "bot1"
+        profile.mkdir(parents=True)
+        # Real secret lives at the default root.
+        (root / "google_client_secret.json").write_text("{}")
+        # A *directory* of the same name sits in the profile dir.
+        (profile / "google_client_secret.json").mkdir()
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        module = self._load_setup(monkeypatch)
+        assert module._client_secret_path() == root / "google_client_secret.json"

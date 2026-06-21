@@ -477,3 +477,82 @@ class TestSessionRetirementOnRunAgent:
         assert agent._codex_session is None
         assert result["completed"] is False
         assert "codex segfaulted" in result["error"]
+
+
+class TestCodexToolProgressBridge:
+    """#38835: Codex app-server item/started notifications must surface as
+    Hermes tool-progress so gateways show verbose breadcrumbs on this route."""
+
+    def test_mapper_command_execution(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        note = {"method": "item/started", "params": {"item": {
+            "type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}}}
+        name, preview, args = _codex_note_to_tool_progress(note)
+        assert name == "exec_command"
+        assert preview == "ls -la"
+        assert args == {"command": "ls -la", "cwd": "/tmp"}
+
+    def test_mapper_file_change(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        note = {"method": "item/started", "params": {"item": {
+            "type": "fileChange",
+            "changes": [{"path": "a.py"}, {"path": "b.py"}]}}}
+        name, preview, args = _codex_note_to_tool_progress(note)
+        assert name == "apply_patch"
+        assert preview == "a.py, b.py"
+
+    def test_mapper_mcp_and_dynamic_tool_calls(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        mcp = {"method": "item/started", "params": {"item": {
+            "type": "mcpToolCall", "server": "fs", "tool": "read", "arguments": {"p": 1}}}}
+        name, preview, args = _codex_note_to_tool_progress(mcp)
+        assert name == "mcp.fs.read"
+        assert preview == "read"
+        assert args == {"p": 1}
+
+        dyn = {"method": "item/started", "params": {"item": {
+            "type": "dynamicToolCall", "tool": "web_search", "arguments": {"q": "x"}}}}
+        assert _codex_note_to_tool_progress(dyn)[0] == "web_search"
+
+    def test_mapper_ignores_non_tool_items_and_other_methods(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        # agentMessage / reasoning items are not tool-shaped
+        assert _codex_note_to_tool_progress({"method": "item/started", "params": {
+            "item": {"type": "agentMessage", "text": "hi"}}}) is None
+        # non-item/started methods
+        assert _codex_note_to_tool_progress({"method": "item/completed", "params": {}}) is None
+        assert _codex_note_to_tool_progress({}) is None
+
+    def test_session_wired_with_on_event_that_fires_tool_progress(self, monkeypatch):
+        """The session is constructed with an on_event hook that, when fed an
+        item/started note, calls the agent's tool_progress_callback."""
+        captured_init = {}
+        events = []
+
+        def fake_init(self, **kwargs):
+            captured_init.update(kwargs)
+            # minimal attrs so the rest of run_turn stubs work
+            self._client = None
+
+        def fake_run_turn(self, user_input, **kwargs):
+            # Exercise the wired on_event hook with a real item/started note.
+            on_event = captured_init.get("on_event")
+            if on_event:
+                on_event({"method": "item/started", "params": {"item": {
+                    "type": "commandExecution", "command": "pytest", "cwd": "/repo"}}})
+            return TurnResult(final_text="done", projected_messages=[
+                {"role": "assistant", "content": "done"}], turn_id="t1", thread_id="th1")
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        agent.tool_progress_callback = lambda kind, name, preview, args: events.append(
+            (kind, name, preview))
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("run the tests")
+
+        assert "on_event" in captured_init and captured_init["on_event"] is not None
+        assert ("tool.started", "exec_command", "pytest") in events
+

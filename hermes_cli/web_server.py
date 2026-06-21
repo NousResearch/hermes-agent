@@ -333,6 +333,36 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _get_allowed_external_hosts() -> frozenset:
+    """Hostnames from config that are additionally accepted on loopback binds.
+
+    Reads ``dashboard.allowed_external_hosts`` from config.yaml (case-
+    insensitively).  Returns an empty frozenset on any failure (missing
+    config, missing key, wrong type) so a misconfigured config never
+    breaks the Host header check.
+
+    The result is a module-level memo so config is only read once per
+    process — restart the dashboard to pick up config changes.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        hosts: list = cfg.get("dashboard", {}).get(
+            "allowed_external_hosts", []
+        )
+        if isinstance(hosts, list) and all(
+            isinstance(h, str) for h in hosts
+        ):
+            return frozenset(h.lower() for h in hosts)
+    except Exception:
+        pass
+    return frozenset()
+
+
+_ALLOWED_EXTERNAL_HOSTS: frozenset = _get_allowed_external_hosts()
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -384,10 +414,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept the loopback names AND configured external hosts
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        return host_only in _LOOPBACK_HOST_VALUES or host_only in _ALLOWED_EXTERNAL_HOSTS
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc

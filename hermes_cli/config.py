@@ -1762,6 +1762,13 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Hostnames to additionally accept on loopback binds
+        # (127.0.0.1 / localhost) — useful for Cloudflare Tunnel and
+        # other reverse-proxy setups that forward WS connections to a
+        # loopback-bound dashboard with a non-loopback Host header.
+        # Each entry is matched case-insensitively.  Default empty list
+        # keeps the existing loopback-only behavior.
+        "allowed_external_hosts": [],
     },
 
     # Privacy settings

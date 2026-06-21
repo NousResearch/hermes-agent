@@ -495,3 +495,58 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If this guarded branch is merged and no upstream drift or new Live USB gap is found, treat the lane as verification/no-op.
+
+### 2026-06-21T22:57:15Z — sync upstream and document Live USB agent gates in README
+
+**Commands / status**
+
+- `git status --short --branch`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` with a clean worktree at `a5aaa2b24d239433bfd505e14eb7ce279a627882`.
+- `git fetch upstream main --prune && git fetch origin main --prune && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune`: upstream advanced from `624580e83` to `745c4db23`; origin fetched cleanly. The combined tip-print command ended with `fatal: Needed a single revision`, but the fetches and drift counts completed and individual tip checks were rerun successfully.
+- Drift after fetch before merge: `HEAD..upstream/main` -> `1`; `upstream/main..HEAD` -> `84`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `229`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- `git merge --no-ff upstream/main`: merged cleanly with the `ort` strategy; merge commit `ea9567b65bb804f28a748863b51c9b173bf20e2d` with `HEAD^2` equal to upstream `745c4db235bdb09beb19564f66727dc1f43e4fe2`.
+- Post-merge drift before the README/docs lane: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `85`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `2`.
+
+**Changed files**
+
+- Upstream merge changed 5 upstream desktop/i18n files: `apps/desktop/electron/main.cjs`, `apps/desktop/src/i18n/en.ts`, `apps/desktop/src/i18n/ja.ts`, `apps/desktop/src/i18n/zh-hant.ts`, and `apps/desktop/src/i18n/zh.ts`.
+- `README.md`: clarified that manual Live USB shell examples are operator procedures; documented that AgentCyber `live_usb` is disabled by default; `status`/`list_usb` are read-only; `build`/`write`/`provision` require root plus exact operator approval through `HERMES_AGENTCYBER_LIVE_USB_APPROVAL` and `operator_approval`; `write`/`provision` require verified removable Linux block-device metadata and canonical `/dev/...` targets; unattended cron lanes must not set the approval token, run `sudo`, build, write, or provision.
+- `tests/cyber/test_live_usb_docs.py`: added README Live USB docs invariant tests and a regression against root/sudo-alone wording.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- Pre-gap baseline after upstream merge: `uv run --frozen python -m pytest tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/test_desktop_electron_pin.py tests/test_desktop_mac_entitlements.py tests/hermes_cli/test_gui_command.py -q -o addopts= --tb=short` -> `212 passed, 8 warnings in 19.08s`.
+- Pre-gap baseline wrapper: `scripts/run_tests.sh tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/test_desktop_electron_pin.py tests/test_desktop_mac_entitlements.py tests/hermes_cli/test_gui_command.py` -> `212 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` after merge -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: false`, and secret fields as booleans/presence only.
+- `scripts/agentcyber hermes tools list` after merge -> `cyber` enabled and `live_usb` disabled.
+- Conflict marker search for lines starting `<<<<<<< ` or `>>>>>>> ` -> `0` matches.
+- `git diff --check && git diff --cached --check && git diff --check HEAD~1..HEAD` after merge -> passed with no output.
+- Subagent upstream preservation review: `PASS`; required AgentCyber/Live USB files present/tracked, no unmerged/conflict state, and merge changes limited to expected upstream desktop/i18n files.
+- Subagent Live USB next-gap review: `REQUEST_CHANGES`; README Live USB section still implied root/sudo was sufficient for agent `build`/`write` and omitted exact approval/removable metadata guidance from tool-call examples. This was fixed in the README/docs-test lane.
+- Initial docs regression run after adding the test failed as intended on an over-specific test phrase (`canonical /dev/` with Markdown backticks in README); the test was corrected to assert `canonical` and `/dev/` separately.
+- Final focused docs/toolset run: `uv run --frozen python -m pytest tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py -q -o addopts= --tb=short` -> `151 passed, 8 warnings in 15.06s`.
+- `uv run --frozen python -m ruff check tests/cyber/test_live_usb_docs.py` -> `All checks passed!`.
+- Final expanded wrapper: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/test_desktop_electron_pin.py tests/test_desktop_mac_entitlements.py tests/hermes_cli/test_gui_command.py` -> `214 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` after docs changes -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: true` only because README/test/ledger changes were uncommitted, and secret fields as booleans/presence only.
+- `scripts/agentcyber hermes tools list` after docs changes -> `cyber` enabled and `live_usb` disabled.
+- Final pre-commit `git diff --check && git diff --cached --check && git diff --check HEAD~1..HEAD` -> passed with no output.
+- Subagent docs spec re-review: `PASS`.
+- Subagent docs quality review: `APPROVED`; no critical, important, or minor issues.
+
+**Blockers / boundaries**
+
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- Upstream merge commit already created by `git merge`: `ea9567b65bb804f28a748863b51c9b173bf20e2d`.
+- This README/docs-test/ledger lane is ready for a scoped commit and push after final staging review. A bounded ledger-only follow-up may be needed after push to record the exact commit SHA and remote verification, then final verification should stop rather than amending the ledger again solely to mention the ledger-only commit SHA.
+
+**Next lane**
+
+- Commit and push the scoped upstream merge plus README docs-test lane to the guarded sync branch without force, then verify local HEAD equals the remote branch tip.
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.

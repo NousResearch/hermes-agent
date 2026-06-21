@@ -138,6 +138,8 @@ Build a bootable USB that turns any PC into a Hermes cyber operations node. The 
 
 Plug it in, pick a boot mode from the GRUB menu, and the agent starts — no install, no persistent traces on the host.
 
+The examples below are manual operator procedures for an approved maintenance window. Inside AgentCyber, the `live_usb` tool is disabled by default: `status` and `list_usb` are read-only, while `build`, `write`, and `provision` require root plus exact operator approval via `HERMES_AGENTCYBER_LIVE_USB_APPROVAL`/`operator_approval`. `write` and `provision` additionally require verified removable Linux block-device metadata and pass a canonical `/dev/...` target to the scripts. Unattended cron lanes must not set the approval token, run `sudo`, build an ISO, write a USB, or provision media.
+
 **Supported targets:** Any x86-64 PC (UEFI or legacy BIOS) and ARM64 boards (Raspberry Pi 4/5, ARM servers).
 
 ---
@@ -340,14 +342,18 @@ Then ask the agent:
 ```
 "List my USB drives"              → live_usb(action="list_usb")
 "Check if I can build"            → live_usb(action="status")
-"Build an arm64 ISO"              → live_usb(action="build", arch="arm64")
-"Build a headless-scan ISO"       → live_usb(action="build", headless_scan=true)
-"Write it to /dev/sdb"            → live_usb(action="write", device="/dev/sdb")
+"Build an arm64 ISO"              → live_usb(action="build", arch="arm64",
+                                             operator_approval="<matching one-time token>")
+"Build a headless-scan ISO"       → live_usb(action="build", headless_scan=true,
+                                             operator_approval="<matching one-time token>")
+"Write it to /dev/sdb"            → live_usb(action="write", device="/dev/sdb",
+                                             operator_approval="<matching one-time token>")
 "Provision with my config"        → live_usb(action="provision", device="/dev/sdb",
-                                             config=".agentcyber-home")
+                                             config=".agentcyber-home",
+                                             operator_approval="<matching one-time token>")
 ```
 
-The `list_usb` and `status` actions are safe and need no root. `build` and `write` require the agent session to run as root (or pass `sudo` separately).
+The `list_usb` and `status` actions are safe read-only checks and need no root or approval token. `build`, `write`, and `provision` require the agent session to run as root plus an exact operator approval token; set `HERMES_AGENTCYBER_LIVE_USB_APPROVAL` only for the approved maintenance session and pass the exact same value as `operator_approval`. `write` and `provision` also reject targets unless Linux reports verified removable block-device metadata, then use the canonical `/dev/...` target rather than an operator-supplied alias. Root/sudo alone is not sufficient for these agent tool calls, and unattended cron lanes must not perform them.
 
 ---
 

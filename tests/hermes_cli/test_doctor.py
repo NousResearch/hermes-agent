@@ -886,9 +886,10 @@ class TestGitHubTokenCheck:
 
         call_log = []
         def mock_run(cmd, **kwargs):
-            call_log.append(cmd)
-            if cmd[:2] == ["gh", "auth"]:
-                result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            call_log.append((cmd, kwargs))
+            if cmd[:4] == ["gh", "auth", "status", "--json"]:
+                stdout = '{"hosts":{"github.com":[{"state":"success","active":true}]}}'
+                result = types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
             else:
                 result = types.SimpleNamespace(returncode=1, stdout="", stderr="")
             return result
@@ -904,7 +905,7 @@ class TestGitHubTokenCheck:
             run_doctor(Namespace(fix=False))
         out = buf.getvalue()
 
-        assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
+        assert any(c[0][:4] == ["gh", "auth", "status", "--json"] for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 

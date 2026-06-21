@@ -2165,11 +2165,22 @@ def run_doctor(args):
         """Check if gh CLI is authenticated via token file or device flow."""
         try:
             result = subprocess.run(
-                ["gh", "auth", "status", "--json", "authenticated"],
-                capture_output=True, timeout=10,
+                ["gh", "auth", "status", "--json", "hosts", "--hostname", "github.com"],
+                capture_output=True, timeout=10, text=True,
             )
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+            if result.returncode != 0:
+                return False
+
+            import json
+
+            payload = json.loads(result.stdout or "{}")
+            hosts = payload.get("hosts", {})
+            github_accounts = hosts.get("github.com", [])
+            return any(
+                account.get("state") == "success"
+                for account in github_accounts
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError, AttributeError):
             return False
 
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")

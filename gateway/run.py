@@ -11856,6 +11856,24 @@ class GatewayRunner:
     def _estimate_context_dump_tokens(self, payload: Dict[str, Any]) -> int:
         return estimate_context_dump_tokens(payload)
 
+    def _load_actual_context_dump_payload(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
+        path = self._context_dump_path(session_key)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema") != "hermes.context_dump.v2":
+            return None
+        if payload.get("capture_mode") != "actual_agent_run":
+            return None
+        if payload.get("phase") != "after_run":
+            return None
+        return payload
+
     async def _format_context_window_token_line(
         self,
         event: MessageEvent,
@@ -11953,7 +11971,15 @@ class GatewayRunner:
         session_key = session_entry.session_key
         existing_text_path = self._context_dump_text_path(session_key)
         existing_json_path = self._context_dump_path(session_key)
-        if existing_text_path.exists():
+        actual_payload = self._load_actual_context_dump_payload(session_key)
+        if actual_payload is not None:
+            refreshed_text_path = self._write_context_dump_text(session_key, actual_payload)
+            send_path = (
+                refreshed_text_path
+                if refreshed_text_path and refreshed_text_path.exists()
+                else existing_json_path
+            )
+        elif existing_text_path.exists():
             send_path = existing_text_path
         elif existing_json_path.exists():
             send_path = existing_json_path

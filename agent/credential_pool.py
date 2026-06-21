@@ -1055,7 +1055,7 @@ class CredentialPool:
             # may have consumed the refresh token between our proactive sync
             # and the HTTP call.  Re-check auth.json and adopt the fresh tokens
             # if they have rotated since.
-            if self.provider == "openai-codex":
+            if self.provider == "openai-codex" and entry.source == "device_code":
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug(
@@ -1074,10 +1074,11 @@ class CredentialPool:
                     self._persist()
                     return updated
                 # Terminal error: auth.json has no newer tokens — the stored
-                # refresh_token is dead.  Clear it from auth.json so the next
-                # session does not re-seed the same revoked credentials, and
-                # remove all singleton-seeded (device_code) entries from the
-                # in-memory pool.  Mirrors the xAI and Nous quarantine paths.
+                # singleton refresh_token is dead.  Clear it from auth.json so
+                # the next session does not re-seed the same revoked
+                # credentials, and remove all singleton-seeded (device_code)
+                # entries from the in-memory pool.  Independent manual OAuth
+                # entries are handled by the generic exhausted/dead path below.
                 if auth_mod._is_terminal_codex_oauth_refresh_error(exc):
                     logger.debug(
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"

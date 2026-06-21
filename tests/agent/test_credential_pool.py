@@ -3012,6 +3012,84 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     assert refresh_calls["count"] == 1
 
 
+def test_codex_manual_device_code_terminal_failure_does_not_clear_singleton(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "singleton-access",
+                        "refresh_token": "singleton-refresh",
+                    },
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "manual-oauth",
+                        "source": "manual:device_code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "access_token": "manual-access",
+                        "refresh_token": "manual-refresh",
+                    },
+                    {
+                        "id": "singleton-mirror",
+                        "source": "device_code",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "access_token": "singleton-access",
+                        "refresh_token": "singleton-refresh",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "manual-oauth"
+    assert selected.source == "manual:device_code"
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
+
+    assert pool.try_refresh_current() is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    tokens = auth_payload["providers"]["openai-codex"]["tokens"]
+    assert tokens["access_token"] == "singleton-access"
+    assert tokens["refresh_token"] == "singleton-refresh"
+
+    persisted = auth_payload["credential_pool"]["openai-codex"]
+    by_id = {entry["id"]: entry for entry in persisted}
+    assert set(by_id) == {"manual-oauth", "singleton-mirror"}
+    assert by_id["manual-oauth"]["last_status"] == STATUS_EXHAUSTED
+    assert by_id["singleton-mirror"].get("last_status") in {None, "ok"}
+    assert by_id["singleton-mirror"]["refresh_token"] == "singleton-refresh"
+
+
 def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

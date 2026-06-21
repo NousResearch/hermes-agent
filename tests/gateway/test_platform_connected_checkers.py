@@ -93,6 +93,8 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
         mock_config.extra = {"account_id": "123", "token": "***"}
     elif platform == Platform.SIGNAL:
         mock_config.extra = {"http_url": "http://signal:8080"}
+    elif platform == Platform.MATRIX:
+        mock_config.extra = {"homeserver": "https://matrix.org"}
     elif platform == Platform.EMAIL:
         mock_config.extra = {"address": "hermes@example.com"}
     elif platform == Platform.SMS:

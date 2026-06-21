@@ -467,6 +467,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         cfg.extra.get("phone_number_id") and cfg.extra.get("access_token")
     ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
+    Platform.MATRIX: lambda cfg: bool(cfg.token or cfg.extra.get("homeserver")),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(

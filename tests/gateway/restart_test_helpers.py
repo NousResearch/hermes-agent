@@ -60,6 +60,9 @@ def make_restart_runner(
     runner._exit_code = None
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._session_initiated_restart = {}
+    runner._resumed_this_boot = set()
+    runner._replay_marked_during_stop = set()
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._pending_model_notes = {}

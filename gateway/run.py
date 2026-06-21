@@ -514,6 +514,24 @@ def _auto_continue_freshness_window() -> float:
         return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
 
 
+def _restart_loop_threshold() -> int:
+    raw = os.environ.get("HERMES_RESTART_LOOP_THRESHOLD")
+    try:
+        value = int(raw) if raw not in (None, "") else 3
+    except (TypeError, ValueError):
+        value = 3
+    return max(1, min(value, 100))
+
+
+def _restart_loop_window_secs() -> float:
+    raw = os.environ.get("HERMES_RESTART_LOOP_WINDOW_SECS")
+    try:
+        value = float(raw) if raw not in (None, "") else 300.0
+    except (TypeError, ValueError):
+        value = 300.0
+    return max(1.0, min(value, 86400.0))
+
+
 def _float_env(name: str, default: float) -> float:
     """Read an env var as float, falling back to ``default`` on typos/empty.
 
@@ -1248,6 +1266,14 @@ if _config_path.exists():
             if "gateway_auto_continue_freshness" in _agent_cfg:
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
+                )
+            if "restart_loop_threshold" in _agent_cfg:
+                os.environ["HERMES_RESTART_LOOP_THRESHOLD"] = str(
+                    _agent_cfg["restart_loop_threshold"]
+                )
+            if "restart_loop_window_secs" in _agent_cfg:
+                os.environ["HERMES_RESTART_LOOP_WINDOW_SECS"] = str(
+                    _agent_cfg["restart_loop_window_secs"]
                 )
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
@@ -2273,6 +2299,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._session_initiated_restart: Dict[str, bool] = {}
+        self._resumed_this_boot: set[str] = set()
         self._active_session_leases: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
@@ -4164,6 +4192,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    def _resume_reason_for_shutdown_mark(self, session_key: str) -> str:
+        if getattr(self, "_session_initiated_restart", {}).get(session_key):
+            return "restart_consumed"
+        try:
+            entry = self.session_store._entries.get(session_key)
+            if entry and getattr(entry, "resume_reason", None) == "restart_consumed":
+                return "restart_consumed"
+        except Exception:
+            pass
+        return "restart_timeout" if self._restart_requested else "shutdown_timeout"
+
+    def _mark_resume_pending_for_shutdown(self, session_key: str) -> tuple[bool, str, bool]:
+        reason = self._resume_reason_for_shutdown_mark(session_key)
+        alert = False
+        marked_this_stop = getattr(self, "_replay_marked_during_stop", set())
+        if (
+            session_key in getattr(self, "_resumed_this_boot", set())
+            and session_key not in marked_this_stop
+        ):
+            alert = self._record_restart_replay_mark(session_key)
+            try:
+                marked_this_stop.add(session_key)
+            except Exception:
+                pass
+        marked = self.session_store.mark_resume_pending(session_key, reason)
+        return marked, reason, alert
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
@@ -4337,6 +4392,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                 )
 
+    async def _notify_restart_loop_suspended(self, session_key: str) -> None:
+        """Best-effort page when the auto-resume replay breaker arms."""
+        message = (
+            "⚠️ Gateway auto-resume loop breaker armed. "
+            f"Session {session_key} was suspended after repeated restart replays."
+        )
+        notified = False
+        try:
+            entry = self.session_store._entries.get(session_key)
+            source = getattr(entry, "origin", None) if entry else None
+            if source is not None:
+                adapter = self.adapters.get(source.platform)
+                if adapter is not None:
+                    metadata = self._thread_metadata_for_target(
+                        source.platform,
+                        source.chat_id,
+                        source.thread_id,
+                        chat_type=getattr(source, "chat_type", None),
+                        adapter=adapter,
+                    )
+                    await adapter.send(str(source.chat_id), message, metadata=metadata)
+                    notified = True
+        except Exception as exc:
+            logger.debug("Failed to notify replay-loop session %s: %s", session_key, exc)
+
+        if notified:
+            return
+
+        for platform, adapter in list(self.adapters.items()):
+            home = self.config.get_home_channel(platform)
+            if not home or not home.chat_id:
+                continue
+            try:
+                metadata = self._thread_metadata_for_target(
+                    platform,
+                    home.chat_id,
+                    home.thread_id,
+                    adapter=adapter,
+                )
+                await adapter.send(str(home.chat_id), message, metadata=metadata)
+                return
+            except Exception as exc:
+                logger.debug(
+                    "Failed to notify home channel for replay-loop session %s: %s",
+                    session_key,
+                    exc,
+                )
+
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             try:
@@ -4395,6 +4498,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
+    def _restart_failure_counts_path(self) -> Path:
+        return _hermes_home / self._STUCK_LOOP_FILE
+
+    @staticmethod
+    def _decode_restart_failure_entry(value: Any) -> dict:
+        if isinstance(value, dict):
+            try:
+                count = int(value.get("count", 0) or 0)
+            except (TypeError, ValueError):
+                count = 0
+            marks = value.get("replay_marks", [])
+            if not isinstance(marks, list):
+                marks = []
+            clean_marks = []
+            for mark in marks:
+                try:
+                    clean_marks.append(float(mark))
+                except (TypeError, ValueError):
+                    continue
+            return {
+                "count": max(0, count),
+                "replay_marks": clean_marks,
+                "armed": bool(value.get("armed", False)),
+            }
+        try:
+            count = int(value or 0)
+        except (TypeError, ValueError):
+            count = 0
+        return {"count": max(0, count), "replay_marks": [], "armed": False}
+
+    @classmethod
+    def _encode_restart_failure_entry(cls, entry: dict) -> Any:
+        count = int(entry.get("count", 0) or 0)
+        replay_marks = entry.get("replay_marks") or []
+        armed = bool(entry.get("armed", False))
+        if replay_marks or armed:
+            return {
+                "count": count,
+                "replay_marks": replay_marks,
+                "armed": armed,
+            }
+        return count
+
+    def _load_restart_failure_counts(self) -> dict[str, dict]:
+        import json
+
+        path = self._restart_failure_counts_path()
+        try:
+            raw_counts = json.loads(path.read_text()) if path.exists() else {}
+        except Exception:
+            return {}
+        if not isinstance(raw_counts, dict):
+            return {}
+        return {
+            str(key): self._decode_restart_failure_entry(value)
+            for key, value in raw_counts.items()
+        }
+
+    def _save_restart_failure_counts(self, counts: dict[str, dict]) -> None:
+        path = self._restart_failure_counts_path()
+        payload = {
+            key: self._encode_restart_failure_entry(value)
+            for key, value in counts.items()
+            if int(value.get("count", 0) or 0) > 0
+            or value.get("replay_marks")
+            or value.get("armed")
+        }
+        try:
+            if payload:
+                atomic_json_write(path, payload, indent=None)
+            else:
+                path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
         """Increment restart-failure counters for sessions active at shutdown.
 
@@ -4402,25 +4580,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Sessions NOT in active_session_keys are removed (they completed
         successfully, so the loop is broken).
         """
-        import json
-
-        path = _hermes_home / self._STUCK_LOOP_FILE
-        try:
-            counts = json.loads(path.read_text()) if path.exists() else {}
-        except Exception:
-            counts = {}
+        counts = self._load_restart_failure_counts()
 
         # Increment active sessions, remove inactive ones (loop broken)
         new_counts = {}
         for key in active_session_keys:
-            new_counts[key] = counts.get(key, 0) + 1
-        # Keep any entries that are still above 0 even if not active now
-        # (they might become active again next restart)
+            entry = counts.get(key, {"count": 0, "replay_marks": [], "armed": False})
+            entry["count"] = int(entry.get("count", 0) or 0) + 1
+            new_counts[key] = entry
+        for key, entry in counts.items():
+            if key in new_counts:
+                continue
+            replay_marks = entry.get("replay_marks") or []
+            if replay_marks or entry.get("armed"):
+                entry["count"] = 0
+                new_counts[key] = entry
 
-        try:
-            atomic_json_write(path, new_counts, indent=None)
-        except Exception:
-            pass
+        self._save_restart_failure_counts(new_counts)
 
     def _suspend_stuck_loop_sessions(self) -> int:
         """Suspend sessions that have been active across too many restarts.
@@ -4429,19 +4605,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         AFTER suspend_recently_active() to catch the stuck-loop pattern:
         session loads → agent gets stuck → gateway restarts → repeat.
         """
-        import json
-
-        path = _hermes_home / self._STUCK_LOOP_FILE
+        path = self._restart_failure_counts_path()
         if not path.exists():
             return 0
 
-        try:
-            counts = json.loads(path.read_text())
-        except Exception:
-            return 0
+        counts = self._load_restart_failure_counts()
 
         suspended = 0
-        stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
+        stuck_keys = [
+            key
+            for key, value in counts.items()
+            if int(value.get("count", 0) or 0) >= self._STUCK_LOOP_THRESHOLD
+        ]
 
         for session_key in stuck_keys:
             try:
@@ -4452,7 +4627,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning(
                         "Auto-suspended stuck session %s (active across %d "
                         "consecutive restarts — likely a stuck loop)",
-                        session_key, counts[session_key],
+                        session_key, counts[session_key]["count"],
                     )
             except Exception:
                 pass
@@ -4463,34 +4638,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        # Clear the file — counters start fresh after suspension
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        for session_key in stuck_keys:
+            counts.pop(session_key, None)
+        self._save_restart_failure_counts(counts)
 
         return suspended
+
+    def _record_restart_replay_mark(self, session_key: str, *, now: Optional[float] = None) -> bool:
+        """Record an auto-resumed session being drain-marked again.
+
+        Returns True when this call newly arms the replay-loop breaker and
+        should emit the one-per-armed-lifetime alert.
+        """
+        if not session_key:
+            return False
+        timestamp = float(now if now is not None else time.time())
+        window = _restart_loop_window_secs()
+        threshold = _restart_loop_threshold()
+        cutoff = timestamp - window
+        counts = self._load_restart_failure_counts()
+        entry = counts.get(session_key, {"count": 0, "replay_marks": [], "armed": False})
+        marks = [
+            float(mark)
+            for mark in entry.get("replay_marks", [])
+            if isinstance(mark, (int, float)) and float(mark) >= cutoff
+        ]
+        marks.append(timestamp)
+        entry["replay_marks"] = marks
+        alert = False
+        if len(marks) >= threshold:
+            try:
+                session_entry = self.session_store._entries.get(session_key)
+                if session_entry and not session_entry.suspended:
+                    session_entry.suspended = True
+                    self.session_store._save()
+            except Exception:
+                pass
+            if not entry.get("armed", False):
+                alert = True
+            entry["armed"] = True
+            logger.warning(
+                "Auto-suspended replay-loop session %s (%d auto-resume relapse(s) in %.0fs)",
+                session_key,
+                len(marks),
+                window,
+            )
+        counts[session_key] = entry
+        self._save_restart_failure_counts(counts)
+        return alert
+
+    def _clear_restart_replay_marks(self, session_key: str) -> None:
+        counts = self._load_restart_failure_counts()
+        entry = counts.get(session_key)
+        if not entry:
+            return
+        entry["replay_marks"] = []
+        entry["armed"] = False
+        counts[session_key] = entry
+        self._save_restart_failure_counts(counts)
 
     def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear the restart-failure counter for a session that completed OK.
 
         Called after a successful agent turn to signal the loop is broken.
         """
-        import json
-
-        path = _hermes_home / self._STUCK_LOOP_FILE
-        if not path.exists():
+        counts = self._load_restart_failure_counts()
+        if session_key not in counts:
             return
-        try:
-            counts = json.loads(path.read_text())
-            if session_key in counts:
-                del counts[session_key]
-                if counts:
-                    atomic_json_write(path, counts, indent=None)
-                else:
-                    path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        del counts[session_key]
+        self._save_restart_failure_counts(counts)
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil
@@ -4695,6 +4911,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
+        try:
+            from gateway.session_context import get_session_env
+            session_key = get_session_env("HERMES_SESSION_KEY", "")
+            if session_key:
+                self._session_initiated_restart[session_key] = True
+        except Exception:
+            pass
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
@@ -4872,6 +5095,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # first await (where _process_message_background sets the real
             # sentinel) sees the slot as occupied and queues behind it
             # instead of spinning up a duplicate AIAgent (#45456).
+            self._resumed_this_boot.add(entry.session_key)
             self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
             self._running_agents_ts[entry.session_key] = time.time()
 
@@ -6150,16 +6374,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If the process is killed by the service manager during the
             # drain, the durable marker is already written so the next
             # gateway boot can recover in-flight sessions (#27856).
+            self._replay_marked_during_stop = set()
             _pre_drain_keys: list[str] = []
             for _sk, _agent in list(self._running_agents.items()):
                 if _agent is _AGENT_PENDING_SENTINEL:
                     continue
                 try:
-                    self.session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
+                    _marked, _reason, _alert = self._mark_resume_pending_for_shutdown(_sk)
+                    if _marked:
+                        _pre_drain_keys.append(_sk)
+                    if _alert:
+                        await self._notify_restart_loop_suspended(_sk)
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
@@ -6216,14 +6441,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # _interrupt_running_agents() does: their agent hasn't
                 # started yet, there's nothing to interrupt, and the
                 # session shouldn't carry a misleading resume flag.
-                _resume_reason = (
-                    "restart_timeout" if self._restart_requested else "shutdown_timeout"
-                )
                 for _sk, _agent in list(self._running_agents.items()):
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        self.session_store.mark_resume_pending(_sk, _resume_reason)
+                        _marked, _reason, _alert = self._mark_resume_pending_for_shutdown(_sk)
+                        if _alert:
+                            await self._notify_restart_loop_suspended(_sk)
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
@@ -9092,15 +9316,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             # Successful turn — clear any stuck-loop counter for this session.
-            # This ensures the counter only accumulates across CONSECUTIVE
-            # restarts where the session was active (never completed).
+            # This clears the replay-loop breaker window for this session.
+            # The legacy drain-timeout count is independent and is not reset
+            # here.
             #
             # Also clear the resume_pending flag (set by drain-timeout
             # shutdown) — the turn ran to completion, so recovery
             # succeeded and subsequent messages should no longer receive
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
-                self._clear_restart_failure_count(session_key)
+                self._clear_restart_replay_marks(session_key)
+                # Forward-progress gate for the replay-loop breaker (F2): a turn
+                # that completed cleanly is REAL progress, not a relapse. Drop the
+                # session from _resumed_this_boot so a LATER restart-interrupt is
+                # not miscounted as resume→re-interrupt. This is what distinguishes
+                # rapid *legitimate* deploys (each resume finishes work → no mark)
+                # from a true loop (resume never makes progress → keeps marking).
+                try:
+                    self._resumed_this_boot.discard(session_key)
+                except Exception:
+                    pass
                 try:
                     self.session_store.clear_resume_pending(session_key)
                 except Exception as _e:

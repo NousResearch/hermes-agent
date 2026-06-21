@@ -184,10 +184,13 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 **Commit / push**
 
-- Pending at this checkpoint; commit and remote verification will be recorded below after this entry is committed and pushed.
+- Committed upstream merge plus Live USB log-redaction changes on the guarded sync branch: `b5d015abe3aedcd22849a44ff4db77bf6e14b540` (`fix: redact AgentCyber live USB command logs`).
+- Pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force.
+- Verified local and remote branch tips matched after push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `b5d015abe3aedcd22849a44ff4db77bf6e14b540`.
+- Post-push drift: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `68`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- This ledger was updated after push with the commit SHA and remote verification; a ledger-only follow-up commit/push will record that final ledger state.
 
 **Next lane**
 
-- Push the updated guarded sync branch if the focused gates remain clean; do not force-push.
-- Open/review/merge the guarded sync branch into AgentCyber main only after human approval.
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger before taking a new implementation lane.

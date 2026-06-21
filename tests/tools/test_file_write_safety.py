@@ -98,6 +98,29 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
+    def test_private_var_root_blocked(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path("/private/var/root/x") is not None
+
+    def test_macos_user_temp_allowed(self):
+        """macOS $TMPDIR (/var/folders/.. -> /private/var/folders/..) is per-user
+        scratch space, not a system path, and must not be blocked (regression
+        for the /private/var/ blanket-block added in #8734)."""
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path("/var/folders/yz/abc/T/x.txt") is None
+        assert _check_sensitive_path("/private/var/folders/yz/abc/T/x.txt") is None
+        assert _check_sensitive_path("/private/var/folders/yz/abc/C/cache.bin") is None
+
+    def test_real_tmpdir_allowed(self):
+        """A real write target under the live $TMPDIR must be allowed."""
+        import os
+        import tempfile
+
+        from tools.file_tools import _check_sensitive_path
+
+        target = os.path.join(tempfile.gettempdir(), "hermes_safety_probe.txt")
+        assert _check_sensitive_path(target) is None
+
     def test_boot_still_blocked(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None

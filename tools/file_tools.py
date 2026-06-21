@@ -347,6 +347,18 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# macOS per-user scratch space ($TMPDIR / DARWIN_USER_TEMP_DIR /
+# DARWIN_USER_CACHE_DIR) lives under /var/folders/<xx>/<yyyy>/{T,C}/, which
+# os.path.realpath() resolves to /private/var/folders/...  Blanket-blocking
+# /private/var/ (added in #8734 to catch the /etc -> /private/etc symlink
+# bypass) therefore wrongly denies *every* temp-file write on macOS.  These
+# allow-prefixes carve the per-user temp/cache root back out while still
+# blocking genuine system paths like /private/var/db and /private/var/root.
+_SENSITIVE_PATH_ALLOW_PREFIXES = (
+    "/private/var/folders/",
+    "/var/folders/",
+)
+
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
@@ -379,11 +391,20 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+    # macOS per-user temp/cache (/var/folders/... -> /private/var/folders/...)
+    # is not a system location; exempt it from the prefix/exact deny lists so
+    # writes to $TMPDIR work on macOS.  The Hermes-config guard below still runs
+    # unconditionally, so a config file living under a temp dir stays protected.
+    in_user_temp = any(
+        resolved.startswith(allow) or normalized.startswith(allow)
+        for allow in _SENSITIVE_PATH_ALLOW_PREFIXES
+    )
+    if not in_user_temp:
+        for prefix in _SENSITIVE_PATH_PREFIXES:
+            if resolved.startswith(prefix) or normalized.startswith(prefix):
+                return _err
+        if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to

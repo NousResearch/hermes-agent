@@ -73,6 +73,7 @@ def _make_runner_with_adapter(session_id: str = None):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._queued_events = {}
+    runner._goal_retry_tasks = {}
 
     src = _make_source()
     # Default to a unique session_id so xdist parallel runs on the same worker
@@ -149,6 +150,61 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
     assert "Continuing toward goal" in adapter.sends[0]["content"]
     # Continuation prompt enqueued for next turn
     assert adapter._pending_messages, "continuation prompt must be enqueued in pending_messages"
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_dedup_skips_duplicate_pending_prompt(hermes_home):
+    """A second judge pass must not stack duplicate synthetic continuations."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("polish the docs")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "still needs work", False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="partial edit one",
+        )
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="partial edit two",
+        )
+        await asyncio.sleep(0.05)
+
+    assert len(adapter._pending_messages) == 1
+    assert not runner._queued_events.get(build_session_key(src)), "duplicate continuation leaked into overflow queue"
+
+
+@pytest.mark.asyncio
+async def test_goal_rate_limit_schedules_delayed_retry_without_immediate_enqueue(hermes_home):
+    """Provider rate limits should back off instead of immediately re-queuing."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("ship the backend")
+
+    with patch("hermes_cli.goals.judge_goal") as judge_mock:
+        judge_mock.side_effect = AssertionError("rate-limit response should bypass judge")
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.",
+        )
+        await asyncio.sleep(0.05)
+
+    assert len(adapter.sends) == 1
+    assert "Retrying in" in adapter.sends[0]["content"]
+    assert not adapter._pending_messages
+    key = build_session_key(src)
+    task = runner._goal_retry_tasks.get(key)
+    assert task is not None and not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio

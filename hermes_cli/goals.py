@@ -66,6 +66,11 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+# Transient provider failures (rate limits, overloads, timeouts) should never
+# satisfy a standing goal. Back off before retrying so two long-running goals do
+# not hammer the same provider/credential pool into a feedback loop.
+DEFAULT_TRANSIENT_RETRY_BASE_SECONDS = 5 * 60
+DEFAULT_TRANSIENT_RETRY_MAX_SECONDS = 60 * 60
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -102,6 +107,9 @@ JUDGE_SYSTEM_PROMPT = (
     "- The response clearly shows the final deliverable was produced, OR\n"
     "- The response explains the goal is unachievable / blocked / needs "
     "user input (treat this as DONE with reason describing the block).\n\n"
+    "Transient model-provider/API failures are NOT goal completion. If the "
+    "response only says the provider is rate-limiting, overloaded, timed out, "
+    "or failed after retries, return done=false so the caller can retry later.\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
     '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
@@ -153,6 +161,8 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    transient_error_failures: int = 0         # consecutive provider/rate-limit failures
+    retry_after_until: float = 0.0            # epoch seconds; advisory retry backoff
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -181,6 +191,8 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            transient_error_failures=int(data.get("transient_error_failures", 0) or 0),
+            retry_after_until=float(data.get("retry_after_until", 0.0) or 0.0),
             subgoals=subgoals,
         )
 
@@ -315,6 +327,7 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("GoalManager: goal migration failed: %s", exc)
         return False
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -331,6 +344,129 @@ def _truncate(text: str, limit: int) -> str:
 
 
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
+_TRANSIENT_PROVIDER_RESPONSE_RE = re.compile(
+    r"("
+    r"rate[-\s]?limit(?:ed|ing)?"
+    r"|too\s+many\s+requests"
+    r"|\b(?:http\s*)?429\b"
+    r"|temporar(?:y|ily)\s+(?:overloaded|unavailable)"
+    r"|overloaded"
+    r"|failed\s+after\s+retries"
+    r"|timeout|timed\s*out"
+    r"|try\s+again\s+(?:shortly|later|in\s+a\s+moment)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def classify_transient_provider_response(text: str) -> Optional[str]:
+    """Return a normalized transient-provider failure reason, if detected.
+
+    Gateway replies deliberately sanitize raw provider failures into short
+    user-safe messages such as "The model provider is rate-limiting requests".
+    The normal judge prompt can misread those as a completed/blocked goal. This
+    classifier runs before the judge so infrastructure failures stay active and
+    get retried with backoff instead of becoming DONE.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return None
+    # Keep this conservative: only short provider-error envelopes should match,
+    # not a long assistant explanation about how to handle HTTP 429s.
+    if len(body) > 800 or body.count("\n") > 8:
+        return None
+    if not _TRANSIENT_PROVIDER_RESPONSE_RE.search(body):
+        return None
+    lowered = body.lower()
+    if "rate" in lowered or "429" in lowered or "too many requests" in lowered:
+        return "model provider rate limited the request"
+    if "overload" in lowered or "temporar" in lowered:
+        return "model provider is temporarily overloaded"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "model provider timed out"
+    return "model provider failed transiently"
+
+
+def _transient_retry_delay_seconds(failures: int) -> int:
+    """Exponential retry backoff for consecutive transient provider failures."""
+    attempts = max(1, int(failures or 1))
+    delay = DEFAULT_TRANSIENT_RETRY_BASE_SECONDS * (2 ** (attempts - 1))
+    return int(min(delay, DEFAULT_TRANSIENT_RETRY_MAX_SECONDS))
+
+
+def _format_delay(delay_seconds: int) -> str:
+    delay_seconds = max(0, int(delay_seconds or 0))
+    if delay_seconds < 60:
+        return f"{delay_seconds}s"
+    minutes = delay_seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    rem = minutes % 60
+    return f"{hours}h{rem}m" if rem else f"{hours}h"
+
+
+def _goal_pause_decision(state: GoalState, reason: str) -> Dict[str, Any]:
+    """Shared budget-exhaustion decision shape."""
+    state.status = "paused"
+    state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+    return {
+        "status": "paused",
+        "should_continue": False,
+        "continuation_prompt": None,
+        "verdict": "continue",
+        "reason": reason,
+        "message": (
+            f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used. "
+            "Use /goal resume to keep going, or /goal clear to stop."
+        ),
+    }
+
+
+def _goal_continue_decision(
+    state: GoalState,
+    prompt: Optional[str],
+    reason: str,
+    *,
+    retry_after_seconds: int = 0,
+) -> Dict[str, Any]:
+    message = f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
+    if retry_after_seconds > 0:
+        message = (
+            f"↻ Goal still active; provider failure detected. Retrying in "
+            f"{_format_delay(retry_after_seconds)} ({state.turns_used}/{state.max_turns}): {reason}"
+        )
+    return {
+        "status": "active",
+        "should_continue": True,
+        "continuation_prompt": prompt,
+        "verdict": "continue",
+        "reason": reason,
+        "message": message,
+        "retry_after_seconds": retry_after_seconds,
+    }
+
+
+def _goal_done_decision(reason: str) -> Dict[str, Any]:
+    return {
+        "status": "done",
+        "should_continue": False,
+        "continuation_prompt": None,
+        "verdict": "done",
+        "reason": reason,
+        "message": f"✓ Goal achieved: {reason}",
+    }
+
+
+def _goal_inactive_decision(state: Optional[GoalState]) -> Dict[str, Any]:
+    return {
+        "status": state.status if state else None,
+        "should_continue": False,
+        "continuation_prompt": None,
+        "verdict": "inactive",
+        "reason": "no active goal",
+        "message": "",
+    }
 
 
 def _goal_judge_max_tokens() -> int:
@@ -677,24 +813,43 @@ class GoalManager:
         """
         state = self._state
         if state is None or state.status != "active":
-            return {
-                "status": state.status if state else None,
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "inactive",
-                "reason": "no active goal",
-                "message": "",
-            }
+            return _goal_inactive_decision(state)
 
         # Count the turn that just finished.
         state.turns_used += 1
-        state.last_turn_at = time.time()
+        now = time.time()
+        state.last_turn_at = now
+
+        transient_reason = classify_transient_provider_response(last_response)
+        if transient_reason:
+            # Do not ask the judge to interpret infrastructure errors. The judge
+            # is allowed to treat "blocked" as DONE for real task blockers, but
+            # provider rate limits/overloads are retryable execution failures.
+            state.last_verdict = "continue"
+            state.last_reason = transient_reason
+            state.consecutive_parse_failures = 0
+            state.transient_error_failures += 1
+            retry_after = _transient_retry_delay_seconds(state.transient_error_failures)
+            state.retry_after_until = now + retry_after
+            if state.turns_used >= state.max_turns:
+                decision = _goal_pause_decision(state, transient_reason)
+                save_goal(self.session_id, state)
+                return decision
+            save_goal(self.session_id, state)
+            return _goal_continue_decision(
+                state,
+                self.next_continuation_prompt(),
+                transient_reason,
+                retry_after_seconds=retry_after,
+            )
 
         verdict, reason, parse_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None
         )
         state.last_verdict = verdict
         state.last_reason = reason
+        state.transient_error_failures = 0
+        state.retry_after_until = 0.0
 
         # Track consecutive judge parse failures. Reset on any usable reply,
         # including API / transport errors (parse_failed=False) so a flaky
@@ -707,14 +862,7 @@ class GoalManager:
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
-            return {
-                "status": "done",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "done",
-                "reason": reason,
-                "message": f"✓ Goal achieved: {reason}",
-            }
+            return _goal_done_decision(reason)
 
         # Auto-pause when the judge model can't produce the expected JSON
         # verdict N turns in a row. Points the user at the goal_judge config
@@ -747,32 +895,12 @@ class GoalManager:
             }
 
         if state.turns_used >= state.max_turns:
-            state.status = "paused"
-            state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+            decision = _goal_pause_decision(state, reason)
             save_goal(self.session_id, state)
-            return {
-                "status": "paused",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "continue",
-                "reason": reason,
-                "message": (
-                    f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used. "
-                    "Use /goal resume to keep going, or /goal clear to stop."
-                ),
-            }
+            return decision
 
         save_goal(self.session_id, state)
-        return {
-            "status": "active",
-            "should_continue": True,
-            "continuation_prompt": self.next_continuation_prompt(),
-            "verdict": "continue",
-            "reason": reason,
-            "message": (
-                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
-            ),
-        }
+        return _goal_continue_decision(state, self.next_continuation_prompt(), reason)
 
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
@@ -942,10 +1070,13 @@ __all__ = [
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",
+    "DEFAULT_TRANSIENT_RETRY_BASE_SECONDS",
+    "DEFAULT_TRANSIENT_RETRY_MAX_SECONDS",
     "load_goal",
     "save_goal",
     "clear_goal",
     "migrate_goal_to_session",
+    "classify_transient_provider_response",
     "judge_goal",
     "run_kanban_goal_loop",
 ]

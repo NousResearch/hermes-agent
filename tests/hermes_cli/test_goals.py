@@ -286,6 +286,69 @@ class TestGoalManager:
         assert mgr.state.status == "active"
         assert mgr.state.turns_used == 1
 
+    def test_provider_rate_limit_response_stays_active_and_backs_off(self, hermes_home):
+        """A sanitized provider 429 is infrastructure failure, not goal completion."""
+        from hermes_cli import goals
+        from hermes_cli.goals import (
+            DEFAULT_TRANSIENT_RETRY_BASE_SECONDS,
+            GoalManager,
+        )
+
+        mgr = GoalManager(session_id="eval-rate-limit", default_max_turns=5)
+        mgr.set("ship the backend")
+
+        with patch.object(goals, "judge_goal") as judge_mock:
+            judge_mock.side_effect = AssertionError("rate-limit responses must bypass the judge")
+            decision = mgr.evaluate_after_turn(
+                "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+            )
+
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert decision["retry_after_seconds"] == DEFAULT_TRANSIENT_RETRY_BASE_SECONDS
+        assert "provider" in decision["message"].lower()
+        state = mgr.state
+        assert state is not None
+        assert state.status == "active"
+        assert state.last_verdict == "continue"
+        assert state.last_reason is not None and "rate limited" in state.last_reason
+        assert state.transient_error_failures == 1
+        assert state.retry_after_until > 0
+
+    def test_provider_transient_backoff_is_exponential_and_resets_on_progress(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import DEFAULT_TRANSIENT_RETRY_BASE_SECONDS, GoalManager
+
+        mgr = GoalManager(session_id="eval-rate-limit-reset", default_max_turns=10)
+        mgr.set("ship the backend")
+
+        with patch.object(goals, "judge_goal") as judge_mock:
+            judge_mock.side_effect = AssertionError("transient failures bypass judge")
+            d1 = mgr.evaluate_after_turn("HTTP 429 Too Many Requests")
+            d2 = mgr.evaluate_after_turn("rate limited after 3 retries")
+
+        assert d1["retry_after_seconds"] == DEFAULT_TRANSIENT_RETRY_BASE_SECONDS
+        assert d2["retry_after_seconds"] == DEFAULT_TRANSIENT_RETRY_BASE_SECONDS * 2
+        state = mgr.state
+        assert state is not None
+        assert state.transient_error_failures == 2
+
+        with patch.object(goals, "judge_goal", return_value=("continue", "made progress", False)):
+            d3 = mgr.evaluate_after_turn("implemented part of it")
+
+        assert d3["should_continue"] is True
+        state = mgr.state
+        assert state is not None
+        assert state.transient_error_failures == 0
+        assert state.retry_after_until == 0.0
+
+    def test_provider_error_text_classifier_is_conservative(self):
+        from hermes_cli.goals import classify_transient_provider_response
+
+        assert classify_transient_provider_response("HTTP 429 Too Many Requests")
+        assert classify_transient_provider_response("The model provider is temporarily overloaded")
+        assert classify_transient_provider_response("normal progress: wrote tests and pushed code") is None
+
     def test_evaluate_after_turn_budget_exhausted(self, hermes_home):
         """When turn budget hits ceiling, auto-pause instead of continuing."""
         from hermes_cli import goals

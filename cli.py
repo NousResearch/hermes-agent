@@ -35,6 +35,7 @@ import atexit
 import errno
 import tempfile
 import time
+import threading
 import uuid
 import textwrap
 from collections import deque
@@ -8083,6 +8084,62 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._goal_manager = mgr
         return mgr
 
+    @staticmethod
+    def _is_goal_continuation_prompt_text(text: Any) -> bool:
+        return str(text or "").startswith("[Continuing toward your standing goal]\nGoal:")
+
+    def _pending_input_has_goal_continuation(self) -> bool:
+        """Return True if a synthetic /goal continuation is already queued."""
+        pending = getattr(self, "_pending_input", None)
+        if pending is None:
+            return False
+        try:
+            for entry in list(pending.queue):
+                if isinstance(entry, tuple) and entry:
+                    entry = entry[0]
+                if self._is_goal_continuation_prompt_text(entry):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _enqueue_goal_continuation_prompt(self, prompt: str, *, delay_seconds: int = 0) -> None:
+        """Queue a synthetic /goal continuation once, optionally after backoff."""
+        if not prompt:
+            return
+        if self._pending_input_has_goal_continuation():
+            logging.debug("goal continuation enqueue skipped: prompt already pending")
+            return
+        delay_seconds = max(0, int(delay_seconds or 0))
+        if delay_seconds <= 0:
+            self._pending_input.put(prompt)
+            return
+
+        existing = getattr(self, "_goal_retry_timer", None)
+        if existing is not None and existing.is_alive():
+            logging.debug("goal continuation retry already scheduled")
+            return
+
+        session_id = getattr(self, "session_id", None)
+
+        def _delayed_enqueue() -> None:
+            try:
+                if getattr(self, "session_id", None) != session_id:
+                    return
+                mgr = self._get_goal_manager()
+                if mgr is None or not mgr.is_active():
+                    return
+                if self._pending_input_has_goal_continuation():
+                    return
+                self._pending_input.put(prompt)
+            except Exception as exc:
+                logging.debug("delayed goal continuation enqueue failed: %s", exc)
+
+        timer = threading.Timer(delay_seconds, _delayed_enqueue)
+        timer.daemon = True
+        self._goal_retry_timer = timer
+        timer.start()
+
 
 
     def _maybe_continue_goal_after_turn(self) -> None:
@@ -8197,7 +8254,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
-                    self._pending_input.put(prompt)
+                    self._enqueue_goal_continuation_prompt(
+                        prompt,
+                        delay_seconds=int(decision.get("retry_after_seconds") or 0),
+                    )
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 

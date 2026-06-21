@@ -3642,6 +3642,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     queued_events.pop(session_key, None)
         return removed
 
+    def _has_pending_goal_continuation(self, session_key: str, adapter: Any) -> bool:
+        """Return True if a synthetic /goal continuation is already queued."""
+        if not session_key:
+            return False
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if isinstance(pending_slot, dict) and self._is_goal_continuation_event(pending_slot.get(session_key)):
+            return True
+        queued_events = getattr(self, "_queued_events", None)
+        if isinstance(queued_events, dict):
+            for queued_event in queued_events.get(session_key) or []:
+                if self._is_goal_continuation_event(queued_event):
+                    return True
+        return False
+
+    def _enqueue_goal_continuation_once(self, session_key: str, cont_event: Any, adapter: Any) -> bool:
+        """Enqueue a synthetic /goal continuation only if one is not pending."""
+        if not session_key or adapter is None:
+            return False
+        if self._has_pending_goal_continuation(session_key, adapter):
+            logger.info("goal continuation: skipped duplicate pending continuation for %s", session_key)
+            return False
+        self._enqueue_fifo(session_key, cont_event, adapter)
+        return True
+
+    def _schedule_goal_continuation_retry(
+        self,
+        *,
+        session_key: str,
+        session_id: str,
+        cont_event: Any,
+        adapter: Any,
+        delay_seconds: int,
+    ) -> None:
+        """Schedule a delayed /goal continuation after provider backoff."""
+        delay_seconds = max(0, int(delay_seconds or 0))
+        if delay_seconds <= 0:
+            self._enqueue_goal_continuation_once(session_key, cont_event, adapter)
+            return
+        tasks = getattr(self, "_goal_retry_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = {}
+            self._goal_retry_tasks = tasks
+        existing = tasks.get(session_key)
+        if existing is not None and not existing.done():
+            logger.info("goal continuation: retry already scheduled for %s", session_key)
+            return
+
+        async def _delayed_enqueue() -> None:
+            try:
+                await asyncio.sleep(delay_seconds)
+                if not self._goal_still_active_for_session(session_id):
+                    return
+                self._enqueue_goal_continuation_once(session_key, cont_event, adapter)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("goal continuation: delayed enqueue failed: %s", exc)
+            finally:
+                try:
+                    current = getattr(self, "_goal_retry_tasks", {}).get(session_key)
+                    if current is asyncio.current_task():
+                        self._goal_retry_tasks.pop(session_key, None)
+                except Exception:
+                    pass
+
+        tasks[session_key] = asyncio.create_task(_delayed_enqueue())
+
     def _goal_still_active_for_session(self, session_id: str) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""
         if not session_id:
@@ -9922,6 +9989,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                    # The normal post-turn /goal hook lives in the caller and
+                    # only sees this method's return value.  For streamed turns
+                    # we return None below to avoid duplicate delivery, so run
+                    # the hook here while the final response text is still
+                    # available.  Without this, streamed gateway sessions keep
+                    # showing an active goal at 0/N turns but never enqueue the
+                    # next continuation.
+                    try:
+                        await self._post_turn_goal_continuation(
+                            session_entry=session_entry,
+                            source=source,
+                            final_response=response,
+                        )
+                    except Exception as _goal_exc:
+                        logger.debug("goal continuation hook failed after streamed delivery: %s", _goal_exc)
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -10557,7 +10639,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_id=None,
                     channel_prompt=None,
                 )
-                self._enqueue_fifo(_quick_key, cont_event, adapter)
+                self._schedule_goal_continuation_retry(
+                    session_key=_quick_key,
+                    session_id=sid,
+                    cont_event=cont_event,
+                    adapter=adapter,
+                    delay_seconds=int(decision.get("retry_after_seconds") or 0),
+                )
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

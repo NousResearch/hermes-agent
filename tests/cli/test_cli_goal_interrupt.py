@@ -179,6 +179,46 @@ class TestHealthyTurnStillRuns:
         assert "Continuing toward your standing goal" in queued
         assert mgr.state.status == "active"
 
+    def test_duplicate_goal_continuation_is_not_enqueued(self, hermes_home):
+        sid = f"sid-dedup-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        existing = mgr.next_continuation_prompt()
+        assert existing is not None
+        cli._pending_input.put(existing)
+        cli.conversation_history = [
+            {"role": "assistant", "content": "more work remains"},
+        ]
+
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "needs more steps", False),
+        ):
+            cli._maybe_continue_goal_after_turn()
+
+        assert cli._pending_input.qsize() == 1
+
+    def test_rate_limit_response_schedules_retry_instead_of_immediate_enqueue(self, hermes_home):
+        sid = f"sid-rate-limit-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli.conversation_history = [
+            {
+                "role": "assistant",
+                "content": "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.",
+            },
+        ]
+
+        with patch("hermes_cli.goals.judge_goal") as judge_mock:
+            judge_mock.side_effect = AssertionError("rate-limit response should bypass judge")
+            cli._maybe_continue_goal_after_turn()
+
+        assert cli._pending_input.empty()
+        timer = getattr(cli, "_goal_retry_timer", None)
+        assert timer is not None and timer.is_alive()
+        timer.cancel()
+        state = mgr.state
+        assert state is not None
+        assert state.status == "active"
+
     def test_clean_response_marks_done_when_judge_says_done(self, hermes_home):
         sid = f"sid-done-{uuid.uuid4().hex}"
         cli, mgr = _make_cli_with_goal(sid)

@@ -1,0 +1,10 @@
+[reconcile] overlay HEAD: 378b32ef78b8a8bf052f65edaef959eb25230013
+[reconcile] feature PRs:  38
+=== INDEPENDENT RECONCILIATION (v0.16.0..HEAD source delta, 13396 added lines) ===
+  [excluded as non-source generated artifacts: *.bak snapshots, .project-intel/ index]
+  covered-by-open-PR : 11554
+  deferred-in-#50111 : 1830
+  non-substantive    : 12
+  UNACCOUNTED        : 0
+
+RESULT: PASS — 0 unaccounted

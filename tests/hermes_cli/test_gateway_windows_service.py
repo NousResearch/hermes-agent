@@ -287,11 +287,9 @@ class TestSvcStopBehavior:
         # SvcStop should not raise even if marker write fails
         with patch('hermes_cli._hermes_gateway_service.logging') as mock_logging:
             service.SvcStop()
-            # Should log warning
-            mock_logging.warning.assert_any_call(
-                "Failed to write planned-stop marker: %s",
-                mock_logging.warning.call_args_list[0][0][1]
-            )
+            # Should log warning about the marker write failure
+            warning_calls = [str(c) for c in mock_logging.warning.call_args_list]
+            assert any("planned-stop marker" in c for c in warning_calls),                 f"Expected 'planned-stop marker' in warning calls: {warning_calls}"
 
         # stop_event should still be set
         assert service._stop_event.is_set()

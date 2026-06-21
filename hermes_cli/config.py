@@ -1284,9 +1284,17 @@ DEFAULT_CONFIG = {
                                       # at ~136K and waste half the usable context. Set to
                                       # False to opt back down to the global threshold
                                       # (e.g. 0.50) for Codex gpt-5.5 sessions. Only this
-                                      # exact route is affected — gpt-5.5 on OpenAI's
+                                      # exact route is affected -- gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+    },
+
+    "context_handoff": {
+        "enabled": True,
+        "threshold": 0.70,           # create handoff receipts at or above this context ratio
+        "critical_threshold": 0.85,  # reserved for stronger alerts near context exhaustion
+        "message_limit": 300,        # create receipts in very long sessions by message count
+        "max_chars": 6000,           # bound persisted resume prompt/receipt fields
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

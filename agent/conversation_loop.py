@@ -860,6 +860,18 @@ def run_conversation(
             api_messages, tools=agent.tools or None
         )
 
+        try:
+            from agent.session_handoff import maybe_checkpoint_context_pressure
+
+            maybe_checkpoint_context_pressure(
+                agent,
+                messages,
+                used_tokens=approx_request_tokens,
+                reason="pre_api_context_pressure",
+            )
+        except Exception as _handoff_err:
+            logger.debug("context pressure handoff checkpoint failed: %s", _handoff_err)
+
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
         )

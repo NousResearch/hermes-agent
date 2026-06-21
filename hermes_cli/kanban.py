@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli import kanban_evidence as ke
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
@@ -525,8 +526,42 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help="Structured handoff summary for downstream tasks. "
                                  "Falls back to --result if omitted.")
     p_complete.add_argument("--metadata", default=None,
-                            help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
-                                 '"tests_run": 12}\'). Stored on the closing run.')
+                            help='JSON dict of structured evidence (e.g. \'{"changed_files": [...], '
+                                 '"tests": [...], "acceptance": [...]}\' ). Stored on the closing run.')
+    p_complete.add_argument(
+        "--require-evidence",
+        action="store_true",
+        help="Fail completion when summary, acceptance evidence, or real verification is missing.",
+    )
+    p_complete.add_argument(
+        "--no-prompt-next",
+        action="store_true",
+        help="Do not print the automatic prompt-next handoff when evidence blocks completion.",
+    )
+
+    p_check = sub.add_parser(
+        "check",
+        help="Check evidence and print a handoff prompt for the next worker/session",
+    )
+    p_check.add_argument("task_id")
+    p_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return non-zero when required evidence is missing.",
+    )
+    p_check.add_argument(
+        "--no-prompt-next",
+        action="store_true",
+        help="Only print the evidence report; do not append the automatic handoff prompt.",
+    )
+    p_check.add_argument("--json", action="store_true")
+
+    p_prompt_next = sub.add_parser(
+        "prompt-next",
+        help="Print a handoff prompt for the next worker/session on a task",
+    )
+    p_prompt_next.add_argument("task_id")
+    p_prompt_next.add_argument("--json", action="store_true")
 
     p_edit = sub.add_parser(
         "edit",
@@ -937,6 +972,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
             "complete": _cmd_complete,
+            "check":    _cmd_check,
+            "prompt-next": _cmd_prompt_next,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
@@ -1863,6 +1900,78 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _effective_failure_limit(task: kb.Task) -> Optional[int]:
+    if task.max_retries is not None:
+        return int(task.max_retries)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        cfg_val = (cfg.get("kanban", {}) or {}).get("failure_limit")
+        if cfg_val is not None:
+            return int(cfg_val)
+    except Exception:
+        pass
+    return kb.DEFAULT_FAILURE_LIMIT
+
+
+def _latest_run_context(
+    conn,
+    task: kb.Task,
+) -> tuple[Optional[kb.Run], Optional[str], Optional[dict], int]:
+    runs = kb.list_runs(conn, task.id)
+    closed_runs = [r for r in runs if r.ended_at is not None]
+    latest = runs[-1] if runs else None
+    summary = latest.summary if latest and latest.summary else task.result
+    metadata = latest.metadata if latest and latest.metadata else None
+    return latest, summary, metadata, len(closed_runs)
+
+
+def _build_evidence_report(
+    conn,
+    task: kb.Task,
+    *,
+    strict: bool,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    run_id: Optional[int] = None,
+    task_status: Optional[str] = None,
+) -> ke.EvidenceReport:
+    runs = kb.list_runs(conn, task.id)
+    closed_count = sum(1 for r in runs if r.ended_at is not None)
+    return ke.evaluate_evidence(
+        task_id=task.id,
+        task_body=task.body,
+        task_status=task_status if task_status is not None else task.status,
+        summary=summary,
+        metadata=metadata,
+        strict=strict,
+        run_id=run_id,
+        prior_attempts=closed_count,
+        max_attempts=_effective_failure_limit(task),
+    )
+
+
+def _build_prompt_next_from_report(
+    conn,
+    task: kb.Task,
+    *,
+    latest_summary: Optional[str],
+    latest_metadata: Optional[dict],
+    report: ke.EvidenceReport,
+) -> str:
+    worker_context = kb.build_worker_context(conn, task.id)
+    return ke.build_prompt_next(
+        task_id=task.id,
+        title=task.title,
+        body=task.body,
+        status=task.status,
+        latest_summary=latest_summary,
+        latest_metadata=latest_metadata,
+        report=report,
+        worker_context=worker_context,
+    )
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1871,6 +1980,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    require_evidence = bool(getattr(args, "require_evidence", False))
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.
@@ -1879,6 +1989,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             "kanban: --summary / --metadata are per-task and can't be used "
             "with multiple ids (would apply the same handoff to every task). "
             "Complete tasks one at a time, or drop the flags for the bulk close.",
+            file=sys.stderr,
+        )
+        return 2
+    if len(ids) > 1 and require_evidence:
+        print(
+            "kanban: --require-evidence is per-task; complete one task at a time",
             file=sys.stderr,
         )
         return 2
@@ -1894,6 +2010,36 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            task = kb.get_task(conn, tid)
+            if task is None:
+                failed.append(tid)
+                print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
+                continue
+            report = _build_evidence_report(
+                conn,
+                task,
+                strict=require_evidence,
+                summary=summary or args.result,
+                metadata=metadata,
+                run_id=_worker_run_id_for(tid),
+                task_status="done",
+            )
+            if report.verdict != "pass":
+                print(ke.format_report(report), file=sys.stderr)
+                if require_evidence and not report.ok:
+                    failed.append(tid)
+                    if not bool(getattr(args, "no_prompt_next", False)):
+                        prompt = _build_prompt_next_from_report(
+                            conn,
+                            task,
+                            latest_summary=summary or args.result,
+                            latest_metadata=metadata,
+                            report=report,
+                        )
+                        print("", file=sys.stderr)
+                        print("--- prompt-next ---", file=sys.stderr)
+                        print(prompt, file=sys.stderr)
+                    continue
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,
@@ -1906,6 +2052,89 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    prompt: Optional[str] = None
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, args.task_id)
+        if task is None:
+            print(f"kanban check: unknown task {args.task_id}", file=sys.stderr)
+            return 1
+        latest, latest_summary, latest_metadata, _ = _latest_run_context(conn, task)
+        report = _build_evidence_report(
+            conn,
+            task,
+            strict=bool(getattr(args, "strict", False)),
+            summary=latest_summary,
+            metadata=latest_metadata,
+            run_id=latest.id if latest else None,
+        )
+        if not bool(getattr(args, "no_prompt_next", False)):
+            prompt = _build_prompt_next_from_report(
+                conn,
+                task,
+                latest_summary=latest_summary,
+                latest_metadata=latest_metadata,
+                report=report,
+            )
+    if getattr(args, "json", False):
+        payload = report.to_dict()
+        if prompt is not None:
+            payload["prompt_next"] = prompt
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(ke.format_report(report))
+        if prompt is not None:
+            print()
+            print("--- prompt-next ---")
+            print(prompt)
+    if getattr(args, "strict", False) and not report.ok:
+        return 1
+    return 0
+
+
+def _cmd_prompt_next(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, args.task_id)
+        if task is None:
+            print(f"kanban prompt-next: unknown task {args.task_id}", file=sys.stderr)
+            return 1
+        latest, latest_summary, latest_metadata, _ = _latest_run_context(conn, task)
+        report = _build_evidence_report(
+            conn,
+            task,
+            strict=False,
+            summary=latest_summary,
+            metadata=latest_metadata,
+            run_id=latest.id if latest else None,
+        )
+        worker_context = kb.build_worker_context(conn, task.id)
+        prompt = ke.build_prompt_next(
+            task_id=task.id,
+            title=task.title,
+            body=task.body,
+            status=task.status,
+            latest_summary=latest_summary,
+            latest_metadata=latest_metadata,
+            report=report,
+            worker_context=worker_context,
+        )
+    if getattr(args, "json", False):
+        payload = {
+            "task_id": task.id,
+            "title": task.title,
+            "status": task.status,
+            "latest_run_id": latest.id if latest else None,
+            "latest_summary": latest_summary,
+            "latest_metadata": latest_metadata,
+            "report": report.to_dict(),
+            "prompt": prompt,
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(prompt)
+    return 0
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
@@ -2745,6 +2974,8 @@ Common subcommands:
   `assignees`           Known profiles + counts
   `context <id>`        Full worker-context dump
   `runs <id>`           Attempt history
+  `check <id>`          Evidence report + automatic handoff prompt
+  `prompt-next <id>`    Handoff prompt only, for the next worker/session
   `log <id>`            Worker log
 
 Run `/kanban <subcommand> -h` for arguments. \

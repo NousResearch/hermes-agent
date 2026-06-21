@@ -24,6 +24,43 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+EVIDENCE_BODY = """**Goal**
+- Finish a verifiable Kanban task.
+
+**Approach**
+- Inspect the relevant code.
+- Make the requested change.
+
+**Acceptance criteria**
+- The evidence check can pass.
+- The run leaves a handoff.
+
+**Evidence required**
+- Record changed files.
+- Record real verification.
+
+**Out of scope**
+- None known.
+"""
+
+
+def evidence_metadata() -> dict:
+    return {
+        "changed_files": ["hermes_cli/kanban.py"],
+        "commands_run": ["pytest tests/hermes_cli/test_kanban_cli.py"],
+        "tests": [{"name": "pytest", "status": "passed"}],
+        "acceptance": [{"criterion": "evidence check can pass", "status": "met"}],
+        "artifacts": [],
+        "decisions": [],
+        "open_questions": [],
+        "critic_review": {"verdict": "pass"},
+        "temp_files": [],
+        "cleanup": {},
+        "repair_loop": {},
+        "hypothesis_tests": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
@@ -183,6 +220,151 @@ def test_run_slash_context_output_format(kanban_home):
     assert "tech spec" in ctx
     assert "write an RFC" in ctx
     assert "performance section" in ctx
+
+
+def test_kanban_check_json_does_not_mutate_runs(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="evidence task",
+            body=EVIDENCE_BODY,
+            assignee="alice",
+        )
+        before = len(kb.list_runs(conn, tid))
+    raw = kc.run_slash(f"check {tid} --json")
+    payload = json.loads(raw)
+    with kb.connect() as conn:
+        after = len(kb.list_runs(conn, tid))
+    assert payload["task_id"] == tid
+    assert payload["verdict"] == "warning"
+    assert "prompt_next" in payload
+    assert f"Continue Hermes Kanban task {tid}: evidence task" in payload["prompt_next"]
+    assert before == after
+
+
+def test_kanban_check_strict_returns_nonzero_on_missing_evidence(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="strict evidence task",
+            body=EVIDENCE_BODY,
+            assignee="alice",
+        )
+    code = kc._cmd_check(
+        argparse.Namespace(
+            task_id=tid,
+            strict=True,
+            json=False,
+            no_prompt_next=False,
+        )
+    )
+    assert code == 1
+
+
+def test_kanban_check_prints_prompt_next_by_default(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="check handoff task",
+            body=EVIDENCE_BODY,
+            assignee="alice",
+        )
+    out = kc.run_slash(f"check {tid}")
+    assert "Kanban evidence check" in out
+    assert f"Continue Hermes Kanban task {tid}: check handoff task" in out
+    assert "## Next action" in out
+
+
+def test_kanban_check_can_suppress_prompt_next(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="quiet check task",
+            body=EVIDENCE_BODY,
+            assignee="alice",
+        )
+    out = kc.run_slash(f"check {tid} --no-prompt-next")
+    assert "Kanban evidence check" in out
+    assert "Continue Hermes Kanban task" not in out
+
+
+def test_kanban_complete_warning_only_keeps_legacy_flow(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="legacy complete task",
+            body="plain body",
+            assignee="alice",
+        )
+    out = kc.run_slash(f"complete {tid}")
+    assert f"Completed {tid}" in out
+    assert "Kanban evidence check" in out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "done"
+
+
+def test_kanban_complete_require_evidence_blocks_missing_evidence(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="blocked complete task",
+            body="plain body",
+            assignee="alice",
+        )
+    out = kc.run_slash(f"complete {tid} --require-evidence")
+    assert "Kanban evidence check" in out
+    assert f"Continue Hermes Kanban task {tid}: blocked complete task" in out
+    assert "## Next action" in out
+    assert "Completed" not in out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status != "done"
+
+
+def test_kanban_complete_require_evidence_ignores_prior_run_metadata(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="prior evidence task",
+            body=EVIDENCE_BODY,
+            assignee="alice",
+        )
+        kb._synthesize_ended_run(
+            conn,
+            tid,
+            outcome="blocked",
+            summary="Prior attempt had evidence.",
+            metadata=evidence_metadata(),
+        )
+    out = kc.run_slash(f"complete {tid} --require-evidence")
+    assert "summary is missing" in out
+    assert "Completed" not in out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status != "done"
+
+
+def test_kanban_prompt_next_contains_handoff_context(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="handoff task",
+            body=EVIDENCE_BODY,
+            assignee="alice",
+        )
+    metadata = json.dumps(evidence_metadata(), separators=(",", ":"))
+    out = kc.run_slash(
+        f"complete {tid} --summary verified --metadata '{metadata}' --require-evidence"
+    )
+    assert f"Completed {tid}" in out
+    prompt = kc.run_slash(f"prompt-next {tid}")
+    assert f"Continue Hermes Kanban task {tid}: handoff task" in prompt
+    assert "## Evidence status" in prompt
+    assert "Verdict: pass" in prompt
 
 
 def test_run_slash_tenant_filter(kanban_home):

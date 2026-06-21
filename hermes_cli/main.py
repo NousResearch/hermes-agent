@@ -4199,6 +4199,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_work_wiki(args):
+    """Repo-local agent work evidence wiki."""
+    from hermes_cli.agent_work_wiki import agent_work_wiki_command
+
+    return agent_work_wiki_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -11122,6 +11129,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "work-wiki",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -11853,6 +11861,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # work-wiki command - bounded agent-work receipts + durable wiki handoffs
+    # =========================================================================
+    from hermes_cli.agent_work_wiki import build_parser as _build_work_wiki_parser
+
+    work_wiki_parser = _build_work_wiki_parser(subparsers)
+    work_wiki_parser.set_defaults(func=cmd_work_wiki)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

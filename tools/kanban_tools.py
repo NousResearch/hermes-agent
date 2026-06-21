@@ -1081,8 +1081,12 @@ KANBAN_COMPLETE_SCHEMA = {
         "Mark your current task done with a structured handoff for "
         "downstream workers and humans. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
-        "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
+        "machine-readable evidence in ``metadata`` (changed_files, "
+        "commands_run, tests, acceptance, artifacts, decisions, "
+        "open_questions, critic_review, temp_files, cleanup, "
+        "repair_loop, hypothesis_tests). Hypothesis tests and critic "
+        "notes guide repair but do not replace real verification. At "
+        "least one of "
         "``summary`` or ``result`` is required. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
@@ -1112,10 +1116,12 @@ KANBAN_COMPLETE_SCHEMA = {
             "metadata": {
                 "type": "object",
                 "description": (
-                    "Free-form dict of structured facts about this "
-                    "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "Free-form evidence dict for this attempt. Recommended "
+                    "keys: changed_files, commands_run, tests, acceptance, "
+                    "artifacts, decisions, open_questions, critic_review, "
+                    "temp_files, cleanup, repair_loop, hypothesis_tests. "
+                    "Use [] when a category is intentionally empty. "
+                    "Temp files should be ledger objects, not bare paths."
                 ),
             },
             "result": {

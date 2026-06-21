@@ -71,6 +71,63 @@ def _compression_lock_holder(agent: Any) -> str:
     )
 
 
+def _maybe_write_pre_compression_handoff(
+    agent: Any,
+    messages: list,
+    approx_tokens: Optional[int],
+) -> None:
+    """Best-effort pre-compression handoff receipt for ordinary sessions."""
+    try:
+        cfg = getattr(agent, "config", {}) or {}
+        handoff_cfg = cfg.get("context_handoff", {}) if isinstance(cfg, dict) else {}
+        if handoff_cfg.get("enabled", True) is False:
+            return
+
+        compressor = getattr(agent, "context_compressor", None)
+        context_length = int(getattr(compressor, "context_length", 0) or 0)
+        token_count = int(approx_tokens or 0)
+        if token_count <= 0:
+            token_count = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+        context_pct = (token_count / context_length) if context_length > 0 else 0.0
+        max_chars = int(handoff_cfg.get("max_chars", 6000) or 6000)
+
+        todos = []
+        todo_store = getattr(agent, "_todo_store", None)
+        if todo_store is not None and hasattr(todo_store, "read"):
+            try:
+                todos = list(todo_store.read() or [])
+            except Exception:
+                todos = []
+
+        from hermes_constants import get_hermes_home
+        from agent.session_handoff import format_short_notice, maybe_write_session_handoff
+
+        handoff, bundle = maybe_write_session_handoff(
+            session_id=str(getattr(agent, "session_id", "session") or "session"),
+            messages=messages,
+            context_pct=context_pct,
+            todos=todos,
+            root=get_hermes_home(),
+            max_chars=max_chars,
+            risks=[
+                "Context compression is starting; use this receipt if context is lost or compression fails.",
+            ],
+        )
+        setattr(agent, "_last_session_handoff_bundle", bundle)
+        try:
+            agent._emit_status(format_short_notice(handoff))
+        except Exception:
+            pass
+        logger.info(
+            "pre-compression session handoff saved: session=%s handoff=%s path=%s",
+            getattr(agent, "session_id", None) or "none",
+            getattr(bundle, "handoff_id", "unknown"),
+            getattr(bundle, "json_path", ""),
+        )
+    except Exception as exc:
+        logger.debug("pre-compression session handoff failed: %s", exc)
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the auxiliary compression model's context
     window is smaller than the main model's compression threshold.
@@ -432,6 +489,10 @@ def compress_context(
                 _lock_db.release_compression_lock(_lock_sid, _lock_holder)
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
+
+    # Persist a bounded handoff receipt before compression discards context.
+    # This is best-effort and intentionally does not affect compression.
+    _maybe_write_pre_compression_handoff(agent, messages, approx_tokens)
 
     # Notify external memory provider before compression discards context
     if agent._memory_manager:

@@ -5766,6 +5766,59 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_session_check_command(self, cmd_original: str = "") -> None:
+        """Create a bounded handoff receipt for the current session."""
+        cfg = self.config.get("context_handoff", {}) if isinstance(self.config, dict) else {}
+        if cfg.get("enabled", True) is False:
+            print("Session handoff is disabled in config.")
+            return
+
+        history = list(getattr(self, "conversation_history", []) or [])
+        if not history:
+            print("No conversation history yet; send a message before /session-check.")
+            return
+
+        agent = getattr(self, "agent", None)
+        compressor = getattr(agent, "context_compressor", None) if agent else None
+        context_limit = int(getattr(compressor, "context_length", 0) or 0)
+        used_tokens = 0
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            used_tokens = int(estimate_request_tokens_rough(
+                history,
+                system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+                tools=getattr(agent, "tools", None) or None,
+            ) or 0)
+        except Exception:
+            used_tokens = 0
+        if used_tokens <= 0:
+            used_tokens = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+
+        context_pct = (used_tokens / context_limit) if context_limit > 0 else 0.0
+        max_chars = int(cfg.get("max_chars", 6000) or 6000)
+
+        todos = []
+        todo_store = getattr(agent, "_todo_store", None) if agent else None
+        if todo_store is not None:
+            try:
+                todos = list(todo_store.read() or [])
+            except Exception:
+                todos = []
+
+        from agent.session_handoff import format_short_notice, maybe_write_session_handoff
+
+        handoff, bundle = maybe_write_session_handoff(
+            session_id=str(getattr(self, "session_id", "session") or "session"),
+            messages=history,
+            context_pct=context_pct,
+            todos=todos,
+            root=get_hermes_home(),
+            max_chars=max_chars,
+        )
+        print(format_short_notice(handoff))
+        print(f"Saved: {bundle.json_path}")
     
     def _fast_command_available(self) -> bool:
         try:
@@ -7720,6 +7773,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "session-check":
+            self._handle_session_check_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

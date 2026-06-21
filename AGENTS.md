@@ -1064,8 +1064,9 @@ kanban task.
 
 - **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
   `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
-  `unlink`, `comment`, `complete`, `block`, `unblock`, `archive`,
-  `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
+  `unlink`, `comment`, `complete`, `check`, `prompt-next`, `block`,
+  `unblock`, `archive`, `tail`, plus less-commonly-used `watch`,
+  `stats`, `runs`, `log`,
   `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
 - **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
   `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`,
@@ -1090,6 +1091,31 @@ Isolation model:
 - After `kanban.failure_limit` consecutive non-success attempts on the
   same task (default: 2), the dispatcher auto-blocks it to prevent spin
   loops.
+
+Finish / handoff gate:
+- Kanban task bodies should use the sections `Goal`, `Approach`,
+  `Acceptance criteria`, `Evidence required`, and `Out of scope`.
+- Completion evidence belongs in `task_runs.metadata` via
+  `kanban_complete(metadata=...)` or `hermes kanban complete --metadata`.
+  Recommended keys are `changed_files`, `commands_run`, `tests`,
+  `acceptance`, `artifacts`, `decisions`, `open_questions`,
+  `critic_review`, `temp_files`, `cleanup`, `repair_loop`, and
+  `hypothesis_tests`.
+- `hermes kanban check <task_id>` reports missing summary, acceptance
+  evidence, real verification, temp-file ledger gaps, critic gaps, and
+  retry status. `--strict` returns non-zero for missing required
+  evidence.
+- `hermes kanban prompt-next <task_id>` produces the next-session
+  handoff: current spec, latest summary/metadata, remaining gaps,
+  temp files to inspect, failed strategies, and recommended next action.
+- Default `complete` remains warning-only for compatibility.
+  `complete --require-evidence` is the opt-in hard gate.
+- Hypothesis tests and critic review can guide repair decisions, but
+  they do not count as real verification without `commands_run` or
+  `tests`.
+- Temp files must be ledger objects, not bare paths. Record which
+  session/task/run created them, why they exist, whether success should
+  delete them, and whether they were deleted or kept.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 

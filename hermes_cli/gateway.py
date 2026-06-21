@@ -2309,8 +2309,16 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
-def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
-    """Build PATH directory list for service units, excluding non-existent dirs."""
+def _build_service_path_dirs(
+    project_root: Path | None = None,
+    hermes_home: str | Path | None = None,
+) -> list[str]:
+    """Build PATH directory list for service units, excluding non-existent dirs.
+
+    When *hermes_home* is provided it is used in place of ``get_hermes_home()``
+    so callers that know the target user (e.g. ``generate_systemd_unit(system=True)``
+    running under sudo) can check the correct home directory instead of root's.
+    """
     if project_root is None:
         project_root = PROJECT_ROOT
 
@@ -2332,11 +2340,11 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     if _is_dir(node_bin):
         candidates.append(str(node_bin))
 
-    hermes_home = get_hermes_home()
-    hermes_node = hermes_home / "node" / "bin"
+    resolved_home = Path(hermes_home) if hermes_home else get_hermes_home()
+    hermes_node = resolved_home / "node" / "bin"
     if _is_dir(hermes_node):
         candidates.append(str(hermes_node))
-    hermes_nm = hermes_home / "node_modules" / ".bin"
+    hermes_nm = resolved_home / "node_modules" / ".bin"
     if _is_dir(hermes_nm):
         candidates.append(str(hermes_nm))
 
@@ -2377,12 +2385,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
-    path_entries = _build_service_path_dirs()
     resolved_node = shutil.which("node")
-    if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
-        if resolved_node_dir not in path_entries:
-            path_entries.append(resolved_node_dir)
 
     common_bin_paths = [
         "/usr/local/sbin",
@@ -2405,6 +2408,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
+        # Use the target user's HERMES_HOME so _build_service_path_dirs
+        # checks the correct ~/.hermes/node/bin (not root's ~/hermes when
+        # running under sudo).
+        path_entries = _build_service_path_dirs(hermes_home=hermes_home)
+        if resolved_node:
+            resolved_node_dir = str(Path(resolved_node).resolve().parent)
+            if resolved_node_dir not in path_entries:
+                path_entries.append(resolved_node_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
@@ -2453,6 +2464,11 @@ WantedBy=multi-user.target
 
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
+    path_entries = _build_service_path_dirs()
+    if resolved_node:
+        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        if resolved_node_dir not in path_entries:
+            path_entries.append(resolved_node_dir)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)

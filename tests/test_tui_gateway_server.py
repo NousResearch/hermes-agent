@@ -1769,6 +1769,36 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(done) is False
 
 
+def test_ws_orphan_reap_spares_detached_session_still_in_progress(monkeypatch):
+    """A crashed desktop window must not reap work that can still resume."""
+
+    building_ready = threading.Event()
+    building = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+        agent_ready=building_ready,
+        agent_build_started=True,
+    )
+    assert server._ws_session_is_orphaned(building, "building-sid") is False
+
+    inflight = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+        inflight_turn={"user": "still streaming"},
+    )
+    assert server._ws_session_is_orphaned(inflight, "inflight-sid") is False
+
+    pending_event = threading.Event()
+    server._pending["approval-1"] = ("prompt-sid", pending_event)
+    server._pending_prompt_payloads["approval-1"] = ("approval.request", {})
+    try:
+        waiting = _session(transport=server._detached_ws_transport, running=False)
+        assert server._ws_session_is_orphaned(waiting, "prompt-sid") is False
+    finally:
+        server._pending.pop("approval-1", None)
+        server._pending_prompt_payloads.pop("approval-1", None)
+
+
 def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     """Grace=0 disables the reaper entirely (pre-fix park-forever behaviour)."""
     fired = {"timer": False}

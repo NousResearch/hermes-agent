@@ -493,16 +493,24 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
 
 
 
-def _ws_session_is_orphaned(session: dict | None) -> bool:
+def _ws_session_is_orphaned(session: dict | None, sid: str | None = None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
     After ``handle_ws`` detaches a disconnected client it points the session at
     ``_detached_ws_transport``. A session left on that transport (and not
-    mid-turn) is genuinely orphaned and safe to reap.
+    mid-turn / mid-build / waiting on input) is genuinely orphaned and safe to
+    reap.
     """
     if not session or session.get("_finalized"):
         return False
     if session.get("running"):
+        return False
+    if sid and _session_pending_kind(sid):
+        return False
+    if session.get("inflight_turn") is not None:
+        return False
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set() and session.get("agent_build_started"):
         return False
     return session.get("transport") is _detached_ws_transport
 
@@ -528,7 +536,7 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
         with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
+            if not _ws_session_is_orphaned(_sessions.get(sid), sid):
                 return
             _close_session_by_id(sid, end_reason="ws_orphan_reap")
 

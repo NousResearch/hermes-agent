@@ -1615,7 +1615,17 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    result = read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    # Record the read for the worktree conflict watcher (jcode adoption).
+    # Best-effort: failures here never affect the tool result.
+    try:
+        from tools.worktree_watcher import global_watched_set
+        path = args.get("path") if isinstance(args.get("path"), str) else ""
+        if path and isinstance(result, dict) and result.get("success"):
+            global_watched_set().note_read(path)
+    except Exception:
+        pass
+    return result
 
 
 def _handle_write_file(args, **kw):

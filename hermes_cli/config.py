@@ -999,6 +999,13 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Worktree conflict notifications (jcode adoption).
+        # When two agents run in parallel worktrees on the same repo,
+        # notify a peer when one edits a file the other has recently read.
+        # Default false — opt-in to avoid surprising users who haven't
+        # asked for cross-agent coordination. Also accepts
+        # ``hermes --conflict-notify`` on the command line.
+        "worktree_conflict_notifications": False,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

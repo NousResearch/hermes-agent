@@ -14398,6 +14398,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    conflict_notify: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -14555,7 +14556,41 @@ def main(
             f"The original repo is at {wt_info['repo_root']}.]"
         )
         cli.system_prompt = (cli.system_prompt or "") + wt_note
-    
+
+        # Worktree conflict notifications (jcode adoption): if the user
+        # passed --conflict-notify or has the config flag on, start a
+        # GitIndexWatcher on the worktree's repo root. The watcher polls
+        # the git index every 2s and notifies peers (via kanban comment
+        # or log fallback) when watched files change.
+        _conflict_notify = bool(
+            conflict_notify
+            or CLI_CONFIG.get("agent", {}).get(
+                "worktree_conflict_notifications", False
+            )
+        )
+        if _conflict_notify:
+            try:
+                from tools.worktree_watcher import (
+                    should_run_watcher,
+                    start_watcher_for_repo,
+                )
+                if should_run_watcher({"worktree_conflict_notifications": True}):
+                    _watcher = start_watcher_for_repo(
+                        Path(wt_info["repo_root"]),
+                        source_session_id=getattr(cli, "session_id", None),
+                    )
+                    if _watcher is not None:
+                        atexit.register(_watcher.stop)
+                        logger.info(
+                            "worktree conflict notifications enabled "
+                            "(repo=%s)",
+                            wt_info["repo_root"],
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "failed to start worktree conflict watcher: %s", exc,
+                )
+
     # Handle list commands (don't init agent for these)
     if list_tools:
         cli.show_banner()

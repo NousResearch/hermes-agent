@@ -321,6 +321,16 @@ def build_top_level_parser():
         default=argparse.SUPPRESS,
         help="Run in an isolated git worktree (for parallel agents on the same repo)",
     )
+    chat_parser.add_argument(
+        "--conflict-notify",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Enable worktree conflict notifications (jcode adoption). "
+            "Notifies peer agents when one edits a file the other has "
+            "read. Implies --worktree."
+        ),
+    )
     _inherited_flag(
         chat_parser,
         "--accept-hooks",

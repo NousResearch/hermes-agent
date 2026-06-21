@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import html as _html
 import re
 from datetime import datetime, timezone
@@ -530,6 +531,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Anti-Flood Hardening: Token Bucket rate limiter + Circuit Breaker
+        self._shutting_down: bool = False
+        self._token_buckets: Dict[str, tuple] = {}  # chat_id -> (last_refill, tokens)
+        self._circuit_breakers: Dict[str, float] = {}  # chat_id -> breaker_reset_time
+        self._TOKEN_BUCKET_CAP: int = 20       # max messages per window per chat
+        self._TOKEN_BUCKET_WINDOW: float = 30.0  # seconds
+        self._CIRCUIT_BREAKER_THRESHOLD: float = 20.0  # FloodWait > this → trip
+        self._CIRCUIT_BREAKER_COOLDOWN: float = 60.0   # seconds breaker stays open
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -545,6 +554,46 @@ class TelegramAdapter(BasePlatformAdapter):
         if (metadata or {}).get("notify"):
             return {}
         return {"disable_notification": True}
+
+    def _check_send_allowed(self, chat_id: str) -> tuple:
+        """Token Bucket + Circuit Breaker + Shutdown check.
+
+        Returns (allowed: bool, reason: str).
+        Call at the top of every send path.
+        """
+        if self._shutting_down:
+            return False, "shutting_down"
+        # Circuit breaker — if tripped, block all sends to this chat
+        cb_reset = self._circuit_breakers.get(chat_id, 0.0)
+        now = time.monotonic()
+        if now < cb_reset:
+            remaining = cb_reset - now
+            return False, f"circuit_breaker:{remaining:.0f}s"
+        # Token bucket
+        last_refill, tokens = self._token_buckets.get(
+            chat_id, (now, float(self._TOKEN_BUCKET_CAP))
+        )
+        elapsed = now - last_refill
+        refill_rate = self._TOKEN_BUCKET_CAP / self._TOKEN_BUCKET_WINDOW
+        tokens = min(float(self._TOKEN_BUCKET_CAP), tokens + elapsed * refill_rate)
+        if tokens < 1.0:
+            wait = (1.0 - tokens) / refill_rate
+            return False, f"rate_limited:{wait:.1f}s"
+        tokens -= 1.0
+        self._token_buckets[chat_id] = (now, tokens)
+        return True, ""
+
+    def _trip_circuit_breaker(self, chat_id: str, retry_after: float) -> None:
+        """Trip the circuit breaker for a chat when FloodWait exceeds threshold."""
+        if retry_after > self._CIRCUIT_BREAKER_THRESHOLD:
+            self._circuit_breakers[chat_id] = (
+                time.monotonic() + self._CIRCUIT_BREAKER_COOLDOWN
+            )
+            logger.warning(
+                "[%s] Circuit breaker tripped for chat %s "
+                "(FloodWait %.1fs > %.1fs threshold)",
+                self.name, chat_id, retry_after, self._CIRCUIT_BREAKER_THRESHOLD,
+            )
 
     def _is_callback_user_authorized(
         self,
@@ -2329,6 +2378,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Anti-Flood: immediately block all new sends + clear queues
+        self._shutting_down = True
+        self._token_buckets.clear()
+        self._circuit_breakers.clear()
+        # Clear all pending message queues — don't try to send them during shutdown
+        self._pending_text_batches.clear()
+        for task in self._pending_text_batch_tasks.values():
+            if task and not task.done():
+                task.cancel()
+        self._pending_text_batch_tasks.clear()
         # Mark the bot "Offline" in its short description while the bot's HTTP
         # client is still alive (before app shutdown closes it). Opt-in via
         # extra.status_indicator. Non-fatal. This is the clean-shutdown path;
@@ -2338,7 +2397,6 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_status_indicator(online=False)
         except Exception:
             pass
-
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()
@@ -2404,6 +2462,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
+
+        # Anti-Flood: shutdown guard + token bucket + circuit breaker
+        allowed, reason = self._check_send_allowed(chat_id)
+        if not allowed:
+            return SendResult(success=False, error=reason, retryable=True)
 
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
@@ -2627,8 +2690,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception as send_err:
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
+                            # Trip circuit breaker if flood wait too long
+                            _wait = float(retry_after) if retry_after is not None else 1.0
+                            self._trip_circuit_breaker(chat_id, _wait)
                             if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
+                                wait = _wait
                                 logger.warning(
                                     "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
                                     self.name,
@@ -2817,6 +2883,8 @@ class TelegramAdapter(BasePlatformAdapter):
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
+                # Trip circuit breaker if flood wait too long
+                self._trip_circuit_breaker(chat_id, float(wait))
                 logger.warning(
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,

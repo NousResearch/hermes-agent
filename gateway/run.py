@@ -6498,11 +6498,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._draining = True
 
-            # Notify all chats with active agents BEFORE draining.
-            # Adapters are still connected here, so messages can be sent.
-            await self._notify_active_sessions_of_shutdown()
+            # Anti-Flood: immediately block all TG sends by setting shutdown
+            # flag on every Telegram adapter BEFORE any drain/timeout work.
+            # This prevents the shutdown-notification path and any in-flight
+            # stream consumer from cascading into FloodWait → SIGKILL.
+            for _adapter in self.adapters.values():
+                if hasattr(_adapter, "_shutting_down"):
+                    _adapter._shutting_down = True
+                    _adapter._token_buckets.clear()
+                    _adapter._circuit_breakers.clear()
+
+            # Skip _notify_active_sessions_of_shutdown() — sending Telegram
+            # messages during shutdown is the #1 cause of FloodWait cascading
+            # into Drain Timeout → SIGKILL.  systemd journal + gateway log
+            # already capture the shutdown context.
             logger.info(
-                "Shutdown phase: notify_active_sessions done at +%.2fs",
+                "Shutdown phase: notify_active_sessions skipped (anti-flood), "
+                "adapters marked _shutting_down at +%.2fs",
                 _phase_elapsed(),
             )
 

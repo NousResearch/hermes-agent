@@ -45,6 +45,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "panghuer023@users.noreply.github.com": "panghuer023",  # PR #37994 salvage (interrupt unblocks pending gateway approval; #8697)
     "w.a.t.s.o.n.mk10@gmail.com": "natehale",  # PR #48678 salvage (typing indicator lingers after final reply)
     "0x0sec@gmail.com": "kn8-codes",  # PR #48422 salvage (rich messages opt-in default off)
     "liaoshiwu@gmail.com": "de1tydev",  # PR #10158 salvage (poll read-only for notify_on_complete watcher; #10156)
